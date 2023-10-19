@@ -119,6 +119,21 @@ local plugins = {
   -- :TransparentToggle
   { "xiyaowong/transparent.nvim" },
 
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-tree/nvim-web-devicons", -- not strictly required, but recommended
+      "MunifTanjim/nui.nvim",
+    },
+    config = function()
+      vim.api.nvim_create_user_command('EE', function()
+        vim.cmd('Neotree')
+      end, { desc = 'Explore with the Neotr[EE] command.' })
+    end,
+  },
+
   -- https://github.com/prichrd/netrw.nvim
   -- Adds a layer of ✨bling✨ and config to your favorite file explorer.
   {
