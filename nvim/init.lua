@@ -49,6 +49,9 @@ vim.cmd('highlight Comment guifg=#89b9e7')
 --  You can also configure plugins after the setup call,
 --    as they will be available in your neovim runtime.
 
+-- Toggles theme between "light" | "dark"
+vim.o.background = "dark"
+
 ---@type LazySpec
 ---See [Lazy Plugin Spec](https://github.com/folke/lazy.nvim#-plugin-spec)
 local lazyPlugins = {
@@ -80,7 +83,7 @@ local lazyPlugins = {
 
       -- Useful status updates for LSP
       -- NOTE: `opts = {}` is the same as calling `require('fidget').setup({})`
-      { 'j-hui/fidget.nvim',             opts = {} },
+      { 'j-hui/fidget.nvim',             tag = "legacy", opts = {} },
 
       -- Additional lua configuration, makes nvim stuff amazing!
       'folke/neodev.nvim',
@@ -101,7 +104,9 @@ local lazyPlugins = {
     -- Autocompletion
     'hrsh7th/nvim-cmp',
     dependencies = {
-      'hrsh7th/cmp-nvim-lsp', 'L3MON4D3/LuaSnip', 'saadparwaiz1/cmp_luasnip',
+      'hrsh7th/cmp-nvim-lsp',
+      { 'L3MON4D3/LuaSnip', version = "v2.*", build = "make install_jsregexp" },
+      'saadparwaiz1/cmp_luasnip',
       'rafamadriz/friendly-snippets' },
   },
 
@@ -127,12 +132,46 @@ local lazyPlugins = {
     },
   },
 
+  -- THEME ------------------------------------------------------------
+  -- To switch between light and dark, comment out one of the either light or
+  -- dark. If you leave both uncommented, the one with highe "priority" will be
+  -- the theme.
+
+  --[[ THEME / LIGHT ]] --
+  {
+    -- Repo: https://github.com/catppuccin/nvim
+    "catppuccin/nvim",
+    name = "catppuccin",
+    priority = 420,
+    config = function()
+      -- Early return if the background is not set to "light"
+      if vim.o.background ~= "light" then
+        return
+      end
+
+      vim.cmd.colorscheme "catppuccin"
+      -- colorscheme can be: catppuccin-latte, catppuccin-frappe, catpuccin-macchiato,
+      -- catpuccin-mocha
+      local theme = require("catppuccin")
+      theme.setup({
+        flavour = "latte", -- options: latte, frappe, macchiato, mocha
+        transparent_background = true,
+      })
+    end
+  },
+
+  --[[ THEME / DARK ]] --
   {
     -- Theme inspired by Atom
     -- Repo: https://github.com/navarasu/onedark.nvim
     'navarasu/onedark.nvim',
     priority = 1000,
     config = function()
+      -- Early return if the background is not set to "dark"
+      if vim.o.background ~= "dark" then
+        return
+      end
+
       vim.cmd.colorscheme 'onedark'
       local theme_onedark = require('onedark')
       theme_onedark.setup {
@@ -215,6 +254,7 @@ local lazyPlugins = {
   {
     -- Add indentation guides even on blank lines
     'lukas-reineke/indent-blankline.nvim',
+    version = "v2.*",
     -- Enable `lukas-reineke/indent-blankline.nvim`
     -- See `:help indent_blankline.txt`
     opts = {
@@ -360,4 +400,5 @@ require('core/cmp')
 require('core/fmt')
 -- require('core/fmt-conform')
 
+require('core/comment')
 require('core/harpoon')
