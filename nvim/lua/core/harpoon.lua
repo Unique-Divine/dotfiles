@@ -29,10 +29,11 @@ vim_map_n('<leader>a', require("harpoon.mark").add_file, '[A]dd file to harpoon'
 vim.api.nvim_set_keymap('n', '<C-e>', '', {})
 vim_map_n('<C-e>', require("harpoon.ui").toggle_quick_menu, 'Toggle quick m[E]nu for harpoon')
 
-vim.api.nvim_set_keymap('n', '<C-t>', '', {})
-vim.api.nvim_set_keymap('n', '<C-h>', '', {})
+vim.api.nvim_set_keymap('n', '<C-n>', '', {})
 vim_map_n('<C-n>', require("harpoon.ui").nav_next, 'harpoon [N]ext')
-vim_map_n('<C-t>', require("harpoon.ui").nav_prev, 'harpoon [T]ime before')
+-- vim.api.nvim_set_keymap('n', '<C-t>', '', {})
+-- vim_map_n('<C-t>', require("harpoon.ui").nav_prev, 'harpoon [T]ime before')
+
 -- vim_map_n('<C-h>', require("harpoon.ui").toggle_quick_menu, 'Toggle quick m[E]nu for harpoon')
 
 -- nmap('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
