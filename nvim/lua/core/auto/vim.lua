@@ -46,17 +46,6 @@ vim.opt.textwidth = 81
 -- `buffer=true` ensures that the keymap defined in the statement will only be
 -- active within the current buffer, providing localized behavior rather than
 -- affecting global keymaps.
-vim.keymap.set('n',
-  '<leader>dbjs',
-  'iconsole.debug("DEBUG obj: %o", obj)<Esc>',
-  { buffer = false, desc = "[d]e[b]ug in [js]" }
-)
-
-vim.keymap.set('n',
-  '<leader>dbgo',
-  'ifmt.Printf("DEBUG obj: %v", obj)<Esc>',
-  { buffer = false, desc = "[d]e[b]ug in [go]" }
-)
 
 -- netrw is the default Vim explorer. It's what comes up when you use
 -- commands like: ":Ex", ":e .", ":Explore", and ":E".

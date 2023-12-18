@@ -4,7 +4,10 @@
 -- and other language-aware features for Neovim using Tree-sitter parsers.
 require('nvim-treesitter.configs').setup {
   -- ensure_installed: Add languages to be installed here that you want installed for treesitter
-  ensure_installed = { 'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'typescript', 'vimdoc', 'vim' },
+  ensure_installed = {
+    'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx',
+    'typescript', 'vimdoc', 'vim', 'vue', 'html', 'css', 'scss', 'javascript'
+  },
 
   -- 1. Missing required fields in type `TSConfig`: `modules`, `ignore_install` [missing-fields]
 

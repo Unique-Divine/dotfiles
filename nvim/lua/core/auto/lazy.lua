@@ -117,7 +117,15 @@ local plugins = {
   -- :TransparentEnable
   -- :TransparentDisable
   -- :TransparentToggle
-  { "xiyaowong/transparent.nvim" },
+  -- { "xiyaowong/transparent.nvim" },
+
+  {
+    "folke/todo-comments.nvim",
+    dependencies = { "nvim-lua/plenary.nvim" },
+    opts = {
+      hightlight = { pattern = [[*(KEYWORDS)\s*]] }
+    },
+  },
 
   {
     "nvim-neo-tree/neo-tree.nvim",
@@ -128,9 +136,9 @@ local plugins = {
       "MunifTanjim/nui.nvim",
     },
     config = function()
-      vim.api.nvim_create_user_command('EE', function()
+      vim.api.nvim_create_user_command('NE', function()
         vim.cmd('Neotree')
-      end, { desc = 'Explore with the Neotr[EE] command.' })
+      end, { desc = 'Explore with the [N]eotr[E]e command.' })
     end,
   },
 
@@ -146,7 +154,7 @@ local plugins = {
         file = ""
       },
     },
-  }
+  },
 
 }
 return plugins
