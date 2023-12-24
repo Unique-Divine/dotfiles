@@ -117,7 +117,7 @@ mason_lspconfig.setup_handlers {
 }
 
 -- Uses the 'markdown-toc' binary installed with Mason on the current file.
-vim.api.nvim_create_user_command('Toc', function()
+vim.api.nvim_create_user_command('TocMd', function()
   vim.cmd('!markdown-toc % --bullets="-" --max-depth=2 --no-firsth1 | clip.exe')
   print('markdown-toc: successfully yanked headers for table of contents')
 end, {})

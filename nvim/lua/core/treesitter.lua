@@ -6,7 +6,8 @@ require('nvim-treesitter.configs').setup {
   -- ensure_installed: Add languages to be installed here that you want installed for treesitter
   ensure_installed = {
     'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx',
-    'typescript', 'vimdoc', 'vim', 'vue', 'html', 'css', 'scss', 'javascript'
+    'typescript', 'vimdoc', 'vim', 'vue', 'html', 'css', 'scss', 'javascript',
+    'gomod', 'gosum', 'gowork', 'graphql', 'markdown', 'markdown_inline',
   },
 
   -- 1. Missing required fields in type `TSConfig`: `modules`, `ignore_install` [missing-fields]
@@ -91,7 +92,7 @@ require('nvim-treesitter.configs').setup {
   -- For treesitter plugin: 'JoosepAlviste/nvim-ts-context-commentstring'
   -- See: https://github.com/JoosepAlviste/nvim-ts-context-commentstring
   -- [Plugin docs](https://github.com/JoosepAlviste/nvim-ts-context-commentstring/blob/main/doc/nvim-ts-context-commentstring.txt)
-  context_commentstring = { enable = true },
+  -- context_commentstring = { enable = true },
 }
 
 -- Setup the plugin manually rather than as an nvim-treesitter module. We do

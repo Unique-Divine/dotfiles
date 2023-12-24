@@ -41,8 +41,10 @@ local plugins = {
 
   { 'mhartington/formatter.nvim' },
 
-  -- Used for the `:Toc` command in markdown
+  -- Used for the `:TocMd` command in markdown
+  -- TODO: Replace with custom implementation from Unique-Divine/jiyuu repo.
   { 'jonschlinkert/markdown-toc' },
+
 
   --- This import is for [MunifTanjim/prettier.nvim](https://github.com/MunifTanjim/prettier.nvim)
   --- Currently, 'prettierd' is installed with Mason.

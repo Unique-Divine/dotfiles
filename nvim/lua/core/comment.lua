@@ -15,6 +15,18 @@ local config = {
 }
 
 --[[
+Since Nov 18, 2023, usage of "JoosepAlviste/nvim-ts-context-commentstring" as
+an nvim-treesitter module has been deprecated. The plugin is set up automatically
+now.
+
+Q: Why use it?  A: For proper commenting inside of jsx and tsx (React) blocks.
+
+- Plugin: https://github.com/JoosepAlviste/nvim-ts-context-commentstring/issues/82
+- Migation Guide: https://github.com/JoosepAlviste/nvim-ts-context-commentstring/issues/82#issuecomment-1817659634
+]]
+--
+
+--[[
 Vue support: https://github.com/numToStr/Comment.nvim/discussions/259
 
 According to the maintainer, numToStr, Vue support should work automatically
