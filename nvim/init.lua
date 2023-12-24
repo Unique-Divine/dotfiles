@@ -287,6 +287,11 @@ local lazyPlugins = {
   {
     -- Highlight, edit, and navigate code
     -- Setup is in the "lua/core/treesitter.lua" file.
+    --
+    -- Commands I had to run to get things working:
+    -- ```nvim
+    -- :TSInstall astro
+    -- ```
     'nvim-treesitter/nvim-treesitter',
     dependencies = {
       -- Extra module for nvim-treesitter
