@@ -7,16 +7,24 @@
 # your text-based TODO-list open.
 todos() {
   local before="$(pwd)"
-  z gh-realu/kojin
-  nvim "$KOJIN_PATH/free/todo.md"
+  z kojin
+  nvim "$KOJIN_PATH/free/todos.md"
   cd "$before" || return 1
 }
 
 # notes: Opens NeoVim with a notes workspace as the working directory.
 notes() {
   local before="$(pwd)"
-  z gh-realu/kojin
+  z kojin
   nvim .
+  cd "$before" || return 1
+}
+
+# music: Opens the Windows file explorer to your music files.
+music() {
+  local before="$(pwd)"
+  cd /mnt/c/Users/realu/Music/携帯に追加した || return 1
+  explorer.exe . 
   cd "$before" || return 1
 }
 
@@ -89,8 +97,8 @@ git_mf() {
 
 RPC_LOCAL="http://localhost:26657"
 RPC_TESTNET="https://rpc.testnet-1.nibiru.fi:443"  # load balanced between nodes
-RPC_DEVNET="https://rpc.devnet-3.nibiru.fi:443"
 RPC_NIBI="https://rpc.nibiru.fi:443"
+RPC_DEVNET="https://rpc.devnet-3.nibiru.fi:443"
 # ITN_RPC="https://rpc-1.itn-1.nibiru.fi:443"   # individual node
 # https://rpc-nibiru.nodeist.net:443 # an alternative RPC 
 
@@ -186,4 +194,8 @@ del_nvm_other() {
   # To delete all `nvm` versions beside the one you're currently using:
   # Note, $NVM_DIR is usually set to $HOME/.nvim
   cd $NVM_DIR/versions/node; ls -A | grep -v `nvm current` | xargs rm -rf
+}
+
+del_zone() {
+  find -type f -name '*Zone*' -delete
 }
