@@ -22,6 +22,8 @@ alias vim="nvim"
 alias vv="view -"
 alias vvjq="jq | vv"
 
+alias ess="2>&1"
+
 # clipboard
 # see: https://github.com/microsoft/WSL/issues/4933#issuecomment-664471199
 alias pbcopy="clip.exe"
@@ -29,6 +31,13 @@ alias pbpaste="powershell.exe -command 'Get-Clipboard' | head -n -1"
 
 alias start="cmd.exe /C start"
 # Ex: cmd.exe /C start https://google.com
+
+git config --global alias.co checkout
+git config --global alias.br branch
+git config --global alias.ci commit
+git config --global alias.st status
+git config --global alias.ac '!git add -A && git commit'
+git config --global core.editor "nvim"
 
 # Broadcast tx and open it in vim.
 # alias tx="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibid q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' | vv}"
