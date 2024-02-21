@@ -12,11 +12,11 @@ main_bash_setup() {
     return 1
   fi
 
-  source "$DOTFILES/zsh/bash_lib.sh"
+  source "$DOTFILES/zsh/bashlib.sh"
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
   # For a full list of active aliases, run `alias`.
-  nvm use lts/hydrogen
+  nvm use lts/hydrogen >/dev/null 2>&1 || true
 }
 
 
