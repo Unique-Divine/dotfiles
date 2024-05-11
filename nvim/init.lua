@@ -193,6 +193,29 @@ local lazyPlugins = {
           strings = 'none',
           variables = 'none'
         },
+        -- Colors
+        -- See https://github.com/navarasu/onedark.nvim?tab=readme-ov-file#customization
+        -- for more info on custom colors.
+        colors            = {
+          neo_blue_light = "#04d9d9",
+          neo_blue = "#17a0bf",
+          neo_pink_light = "#f2bdd6",
+          neo_pink = "#f29ac4",
+          midnight_blue = "#101720",
+          -- yellow = "#04d9d9",
+          yellow = "#FDDEA8",
+          purple = "#f29ac4",
+          orange = "#FF9B3F",
+          green = "#3DD164",
+          blue = "#17a0bf",
+          cyan = "#04d9d9",
+        },
+        highlights        = {
+          -- ["@function.builtin"] = { fg = "$neo_blue" },
+          -- ["@function"] = { fg = "$neo_blue" },
+          -- ["@string"] = { fg = "$neo_blue" },
+          -- ["@keyword"] = { fg = "$neo_blue" },
+        },
       }
       theme_onedark.load() -- officially load the theme
     end,
