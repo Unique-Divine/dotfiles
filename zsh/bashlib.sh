@@ -15,6 +15,7 @@ main_bash_setup() {
   source "$DOTFILES/zsh/bashlib.sh"
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
+  source "$DOTFILES/env.sh"
   # For a full list of active aliases, run `alias`.
   nvm use lts/hydrogen >/dev/null 2>&1 || true
 }
@@ -85,26 +86,26 @@ export COLOR_BRIGHT_WHITE="\033[97m"
 
 # log_debug: Simple wrapper for `echo` with a DEBUG prefix.
 log_debug() {
-  echo "${COLOR_CYAN}DEBUG${COLOR_RESET}" "$@"
+  echo -e "${COLOR_CYAN}DEBUG${COLOR_RESET}" "$@"
 }
 
 # log_error: ERROR messages in red, output to stderr.
 log_error() {
-  echo "❌ ${COLOR_RED}ERROR:${COLOR_RESET}" "$@" >&2
+  echo -e "❌ ${COLOR_RED}ERROR:${COLOR_RESET}" "$@" >&2
 }
 
 log_success() {
-  echo "${COLOR_GREEN}✅ Success:${COLOR_RESET}" "$@"
+  echo -e "${COLOR_GREEN}✅ Success:${COLOR_RESET}" "$@"
 }
 
 # log_warning: WARNING messages represent non-critical issues that might not
 # require immediate action but should be noted as points of concern or failure.
 log_warning() {
-  echo "${COLOR_YELLOW}INFO${COLOR_RESET}" "$@" >&2
+  echo -e "${COLOR_YELLOW}INFO${COLOR_RESET}" "$@" >&2
 }
 
 log_info() {
-  echo "${COLOR_MAGENTA}INFO${COLOR_RESET}" "$@"
+  echo -e "${COLOR_MAGENTA}INFO${COLOR_RESET}" "$@"
 }
 
 # —————————————————————————————————————————————————
@@ -139,4 +140,20 @@ env_var_ok() {
   else
     return 0  # Return 0 to indicate success (variable is set)
   fi
+}
+
+# env_vars_ok: Plural version of `env_var_ok`. This function accepts a list
+# of strings that identify environment variables, checks if they have a 
+# non-empty value, and errors if that's the case.
+#
+# Example: 
+# env_vars_ok FROM GITHUB_KEY NPM_KEY 
+env_vars_ok() {
+  local all_set=true
+  for env_var in "$@"; do
+    if ! env_var_ok "$env_var"; then
+      return 1 # Return 1 to indicate error
+    fi
+  done 
+  return 0
 }
