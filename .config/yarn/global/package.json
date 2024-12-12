@@ -1,16 +1,13 @@
 {
   "dependencies": {
-    "@angular/cli": "^13.3.3",
     "@bufbuild/buf": "^1.15.0-1",
-    "@graphprotocol/graph-cli": "^0.29.0",
     "@marp-team/marp-cli": "^3.1.0",
-    "@vue/cli": "^5.0.8",
+    "bun": "^1.1.13",
     "chromium": "^3.0.3",
+    "create-next-app": "^14.2.3",
     "create-slidev": "^0.42.9",
-    "create-vite": "^3.2.1",
     "depcheck": "^1.4.3",
     "dotenv-cli": "^6.0.0",
-    "ghost-cli": "^1.24.0",
     "jest": "^28.1.3",
     "localtunnel": "^2.0.2",
     "md-to-pdf": "^5.2.4",
