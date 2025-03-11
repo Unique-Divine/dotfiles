@@ -1,0 +1,371 @@
+# .zshrc
+#
+# Contact: Unique Divine <realuniquedivine@gmail.com>
+# The .zshrc runs after .zshenv
+
+# The $DOTFILES  and $KOJIN_PATH variables are exported from .zshenv.
+
+source $DOTFILES/zsh/bashlib.sh
+main_bash_setup
+# For a full list of active aliases, run `alias`.
+# Set $DOTFILES/zsh/aliases.sh for custom ones.
+
+add_ssh_keys() {
+  eval `ssh-agent -s` # This eval must be before the ssh-add commands. 
+  ssh-add ~/.ssh/personal_sb3_wsl_key  # realuniquedivine@gmail.com
+  ssh-add ~/.ssh/peggyWSL              # realuniquedivine@gmail.com
+  ssh-add ~/.ssh/personalSB3Key        # realuniquedivine@gmail.com
+  ssh-add ~/.ssh/dieselSB3WSL_key      # vimdiesel@matrixsystems.co
+  echo "✅ Added ssh private keys to the ssh auth agent"
+}
+
+# 2>/dev/null     # Suppress output to stderr 
+#   - The `2` represents the file descriptor for stderr. 
+#   - `>/dev/null` redirects the output of stderr to `/dev/null`, 
+#     which  discards whatever is sent to it. This effectively 
+#     suppresses (or discards) the stderr output.
+#
+# >/dev/null 2>&1 # Suppress output to stderr and stdout
+#   - The difference here from 2>/dev/null is that this command redirects 
+#     the entire output rather than just stderr (2).
+#   - `2>&1` is a command that means, "redirect stderr (2) to stdout (1)"
+add_ssh_keys 2>/dev/null 
+
+# Back up the .zshrc config.
+backup_shell_config() {
+  local kojin_repo="$HOME/ki/kojin-Scratch"
+  cp ~/.zshrc $kojin_repo/backups/
+
+  if [ -d "$kojin_repo" ]; then
+    cd $kojin_repo
+  else
+    echo "❌ No repo found at path: $kojin_repo"
+    exit 1
+  fi
+
+  git_push_backup() {
+    git add backups
+    git ci -m "auto-backup .zshrc"
+    git push
+  }
+  output=$(git_push_backup 2>&1) || echo "$output"
+  cd ~
+}
+
+backup_shell_config
+
+# The following command creates a symbolic link named `view`that points to the
+# `nvim` executable.
+# `ln -s`: This is the command to create a symbolic link (or symlink) on a 
+#   Unix system. The `-s` option is what makes it symbollic. 
+#   The `-f` means "force". We force here because there's already a symlink 
+#   for `view` that points to `vim`.
+#
+# ```bash
+# sudo ln -s -f $(which nvim) $(which view)
+# ```
+check_view_symlink_target() {
+  local view_path=$(which view)
+  local nvim_path=$(which nvim)
+  if ! command -v view >/dev/null 2>&1; then
+    echo "❌ view command does not exist"
+  elif ! command -v nvim >/dev/null 2>&1; then
+    echo "❌ nvim command does not exist"
+  elif [[ $(readlink -f $(which view)) == $(which nvim) ]]; then
+    echo "✅ $view_path points to $nvim_path"
+  else
+    echo "❌ $view_path does not point to $nvim_path"
+    local install_cmd='sudo ln -s -f $(which nvim) $(which view)'
+    printf "\nYou can create a symbolic link to for view targetted at nvim with\n$install_cmd\n"
+  fi
+}
+
+export_nvm() {
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+  [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+  # The nvm lts version can be found here: https://github.com/nodejs/Release 
+  echo "lts/jod" > "$HOME/.nvmrc" # jod == v22
+  # nvm install lts/jod || true
+  nvm use # bun install --global yarn
+  # bun install --global yarn
+}
+
+check_view_symlink_target
+export_nvm
+echo "⚡ Shell setup with IO complete."
+
+# ------------ --------------------------------------------- ------------
+# -            NOTE: Perform any console IO above this block.           -
+# ------------ --------------------------------------------- ------------
+
+# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
+# Initialization code that may require console input (password prompts, [y/n]
+# confirmations, etc.) must go above this block; everything else may go below.
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+
+# If you come from bash you might have to change your $PATH.
+export PATH=$HOME/bin:/usr/local/bin:$DOTFILES/bin:$PATH
+
+# Clipboard
+source $DOTFILES/zsh/clipboard.sh
+
+vs_code="/mnt/c/Program Files/Microsoft VS Code"
+export PATH=$vs_code/bin:$PATH
+
+source $DOTFILES/zsh/oh-my-zsh.sh
+
+# User configuration
+
+# export MANPATH="/usr/local/man:$MANPATH"
+
+# You may need to manually set your language environment
+# export LANG=en_US.UTF-8
+
+# Preferred editor for local and remote sessions
+# if [[ -n $SSH_CONNECTION ]]; then
+#   export EDITOR='vim'
+# else
+#   export EDITOR='mvim'
+# fi
+
+# Compilation flags
+# export ARCHFLAGS="-arch x86_64"
+
+# Set personal aliases, overriding those provided by oh-my-zsh libs,
+# plugins, and themes. Aliases can be placed here, though oh-my-zsh
+# users are encouraged to define aliases within the ZSH_CUSTOM folder.
+#
+# Example aliases
+
+# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
+# Enable vim keybinds
+bindkey -v
+source ~/powerlevel10k/powerlevel10k.zsh-theme
+
+export PATH=$HOME/bin:$PATH
+
+# source ~/.profile
+
+# ----------------------- Go / Golang
+export GOROOT="/usr/local/go"
+export GOPATH="$HOME/go"
+export PATH="$GOPATH/bin:$GOROOT/bin:$PATH"
+export GO111MODULE=on
+
+# 1. Define environment variable GOENV_ROOT to point to the path where goenv repo is clone
+export GOENV_ROOT="$HOME/.goenv"
+# 2. Add $GOENV_ROOT/bin to your $PATH for access to the goenv command-line utility.
+export PATH="$GOENV_ROOT/bin:$PATH"
+# 3. Enable shims, management of GOPATH and GOROOT and auto-completion. 
+# Please make sure eval "$(goenv init -)" is placed toward the end of the shell 
+# configuration file since it manipulates PATH during the initialization.
+eval "$(goenv init -)"
+# 4. Allow 'goenv' to manage GOPATH and GOROOT (recommended).
+# Add these commands to your shell after 'eval "$(goenv init -)"'. 
+export PATH="$GOROOT/bin:$PATH"
+export PATH="$PATH:$GOPATH/bin"
+
+export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
+export PATH="/mnt/c/Users/realu/AppData/Local/Programs/Microsoft VS Code/bin:$PATH"
+
+# Rust test a package
+rt() {
+  local show_help=0
+  local is_verbose=0
+
+  # Parse command-line options
+  while getopts ":hv" opt; do
+    case ${opt} in
+      h )
+        show_help=1
+        ;;
+      v )
+        is_verbose=1
+        ;;
+      \? )
+        echo "Invalid option: -$OPTARG" 1>&2
+        return 1
+        ;;
+    esac
+  done
+  shift $((OPTIND -1))
+
+  if [ $show_help -eq 1 ]; then
+    echo "Usage: rt [-h] [-v] <package_name>"
+    echo "Run tests for the specified Rust package."
+    echo ""
+    echo "Options:"
+    echo "  -h,     Show this help message and exit."
+    echo "  -v      Enable verbose output."
+    return 0
+  fi
+
+
+  if [ -z "$pkg" ]; then
+    echo "Error: Package name is empty. Set the 'pkg' environment variable to the package name."
+    return 1
+  fi
+
+  local rust_backtrace="1"
+  if [ $is_verbose -eq 1 ]; then
+    rust_backtrace="full"  # turns on verbose backtrace
+  fi
+
+  RUST_BACKTRACE=$rust_backtrace cargo test --package "$pkg"
+}
+
+# Cosmos-sdk 'file' backend
+# alias keyd='f(){ "$@" --keyring-backend test;  unset -f f; }; f'
+export KEYRING=--keyring-backend=test
+# nibid flag for outputting in JSON format
+# you can also edit the config directly with `nibid config [key] [value]`
+# Display the current binary config by running `nibid config`
+
+# Yarn and nvm
+export_yarn_nvim() {
+  export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
+}
+
+export_yarn_nvim
+
+export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"
+
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+command -v pyenv >/dev/null 
+export PATH=$(pyenv root)/shims:$PATH
+eval "$(pyenv init -)"
+eval "$(pyenv init --path)"
+
+# export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.10.4"
+# export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.9.13"
+
+# The next line updates PATH for the Google Cloud SDK.
+if [ -f '/home/realu/google-cloud-sdk/path.zsh.inc' ]; then . '/home/realu/google-cloud-sdk/path.zsh.inc'; fi
+
+# The next line enables shell command completion for gcloud.
+if [ -f '/home/realu/google-cloud-sdk/completion.zsh.inc' ]; then . '/home/realu/google-cloud-sdk/completion.zsh.inc'; fi
+
+# Enable pyenv-virtualenv
+# https://github.com/pyenv/pyenv-virtualenv 
+# eval "$(pyenv virtualenv-init -)"
+
+export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.poetry/bin:$PATH"
+
+clean_poetry() {
+  # Cleans and resets the enviroment for the Poeatry package manager, which is
+  # used to manage Python dependencies.
+  echo "clearing .cache/pypoetry" 
+  rm -rf ~/.cache/pypoetry
+
+  echo "clearing .venv" 
+  rm -rf .venv
+
+  echo "clearing poetry.lock" 
+  rm -f poetry.lock
+
+  echo "poetry cache clear pypi --all"
+  poetry cache clear pypi --all
+
+  poetry env use $(pyenv versions | grep '*' | cut -d' ' -f2)
+}
+
+ppytest() {
+  poetry run pytest $@
+}
+
+export ADDR_VAL="nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl"
+export ADDR_VAL2="nibi1de655f3f9sce94ncuvmcf5plnmxljfvdxx6487"
+export ADDR_UD="nibi1ah8gqrtjllhc5ld4rxgl4uglvwl93ag0sh6e6v"
+export ADDR_DELPHI="nibi10gm4kys9yyrlqpvj05vqvjwvje87gln8nsm8wa"
+export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
+export MNEM_VAL="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host"
+export MNEM_VAL2="video spider leaf until sheriff worry please hole dirt depart injury thing genuine future buddy metal clever limb goose diagram math time foot cry"
+export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
+
+keys_recover() {
+  local name="$1"
+  local mnemonic="$2"
+  echo "$mnemonic" | nibid keys add $name --recover --keyring-backend=test
+}
+
+export NIBI="000000unibi"
+export NUSD="000000unusd"
+export FAUCET_WEB="nibi1cq87ggjzlt3jzs8u7fc2e36e7nellvatzw8a63"
+export FAUCET_DISCORD="nibi1x9tym6ah8lzrnmzvv33pwmz9jeqd6ucd69kemr"
+export TXFLAG=(--gas-prices 0.25unibi --gas auto --gas-adjustment 1.3)
+
+nibi_addrs() {
+  echo $ADDR_VAL ADDR_VAL 
+  echo $ADDR_UD ADDR_UD 
+  echo $ADDR_DELPHI ADDR_DELPHI 
+  echo $FAUCET_WEB FAUCET_WEB 
+  echo $FAUCET_DISCORD FAUCET_DISCORD 
+}
+
+nibi_faucets() {
+  echo "FAUCET_WEB: $FAUCET_WEB" 
+  nibid q bank balances $FAUCET_WEB | jq .
+  echo "FAUCET_DISCORD: $FAUCET_DISCORD" 
+  nibid q bank balances $FAUCET_DISCORD | jq .
+}
+
+nibi_keys() {
+  echo "tilt exhaust lawsuit dad duck shield rookie cigar solution blush celery typical flag joke broom flight soldier certain comic bless rather fee business letter" | nibid keys add --recover liq
+
+  echo "have kiss gift clog desk happy motor law crack pink mirror giant pledge alcohol monitor opera return sudden wagon number grass alley length unknown" | nibid keys add --recover delphi
+
+  KEY_NAME="test-me"
+  local MNEM="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" 
+  echo "$MNEM" | nibid keys add $KEY_NAME --recover --keyring-backend test
+}
+
+
+# Too many open files
+# List the soft file limit: ulimit -n
+# Increase soft file limit: ulimit -n 4096
+ulimit -n 4096
+
+sharex() {
+  # HOME=/home/realu
+  bash $HOME/warpath/gh-realu/kojin-Scratch/sharex.sh
+}
+
+# bruh: re-runs the last command with sudo.
+bruh() { 
+  local last_cmd=$(history | tail -n 1 | head -n 1 | cut -d ' ' -f 2-)
+  echo "last_cmd: $last_cmd"
+  eval "sudo $last_cmd"
+}
+
+last_cmd() {
+  local last_cmd=$(history | tail -n 1 | head -n 1 | cut -d ' ' -f 2-)
+  echo "last_cmd: $last_cmd"
+}
+
+autoload -U +X bashcompinit && bashcompinit
+complete -o nospace -C /home/realu/go/bin/gocomplete go
+
+main_bash_setup
+
+# bun completions
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# bun completions
+[ -s "/home/realu/.bun/_bun" ] && source "/home/realu/.bun/_bun"
+source ~/powerlevel10k/powerlevel10k.zsh-theme
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"

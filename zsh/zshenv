@@ -1,5 +1,5 @@
 . "$HOME/.cargo/env"
 export KOJIN_PATH="$HOME/ki/kojin-Scratch"
 export DOTFILES="$KOJIN_PATH/dotfiles"
-source $DOTFILES/symlinks.sh
+source "$DOTFILES/symlinks.sh"
 export NCHOME="$HOME/ki/NibiruChain"

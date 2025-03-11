@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# ℹ️  -------- IMPORTS --------  ℹ️
+source "$DOTFILES/zsh/bashlib.sh"
+
 # shellcheck disable=SC2155
 # The $DOTFILES  and $KOJIN_PATH variables are exported from .zshenv.
 
@@ -39,6 +42,7 @@ myrc() {
   cd "$before" || return 1
 }
 
+# dotf: Edit your dotfiles.
 dotf() {
   local before="$(pwd)"
   cd "$DOTFILES" || return 1
@@ -47,8 +51,8 @@ dotf() {
   cd "$before" || return 1
 }
 
-# nvim_cfg: Edit your nvim config.
-nvim_cfg() {
+# cfg_nvim: Edit your nvim config.
+cfg_nvim() {
   local before="$(pwd)"
   local cfg="$HOME/.config/nvim"
   cd "$cfg" || return 1
@@ -56,8 +60,8 @@ nvim_cfg() {
   cd "$before" || return 1
 }
 
-# nvim_cfg: Edit your tmux config.
-tmux_cfg() {
+# cfg_tmux: Edit your tmux config.
+cfg_tmux() {
   local before="$(pwd)"
   local tmux_path="$HOME/.tmux.conf"
   nvim "$tmux_path"
@@ -96,16 +100,18 @@ git_mf() {
 # - Update any relevant .env files in py-sdk, ts-sdk, etc.
 
 RPC_LOCAL="http://localhost:26657"
-RPC_TESTNET="https://rpc.testnet-1.nibiru.fi:443"  # load balanced between nodes
-RPC_NIBI="https://rpc.nibiru.fi:443"
+RPC_TESTNET="https://rpc.archive.testnet-2.nibiru.fi:443"  # load balanced between nodes
+# RPC_TESTNET="https://rpc.testnet-2.nibiru.fi:443"  # load balanced between nodes
+RPC_NIBI="https://rpc.archive.nibiru.fi:443"
+# RPC_NIBI="https://rpc.nibiru.fi:443"
 RPC_DEVNET="https://rpc.devnet-3.nibiru.fi:443"
 # ITN_RPC="https://rpc-1.itn-1.nibiru.fi:443"   # individual node
 # https://rpc-nibiru.nodeist.net:443 # an alternative RPC 
 
 # Functions for switching chain configurations on nibiru.
 
-# config_localnet: Fn for switching the Nibid config to local network.
-config_localnet() {
+# cfg_nibi_local: Set Nibiru CLI config to local network.
+cfg_nibi_local() {
   local rpc_url="$RPC_LOCAL"
   local chain_id="nibiru-localnet-0"
   nibid config node $rpc_url
@@ -115,10 +121,10 @@ config_localnet() {
   export RPC="$rpc_url"
 }
 
-# config_testnet: Fn for switching the Nibid config to a test network (testnet).
-config_testnet() {
+# cfg_nibi_test: Set Nibiru CLI config to a test network (testnet).
+cfg_nibi_test() {
   local rpc_url="$RPC_TESTNET"
-  local chain_id="nibiru-testnet-1"
+  local chain_id="nibiru-testnet-2"
   nibid config node $rpc_url
   nibid config chain-id "$chain_id"
   nibid config broadcast-mode sync 
@@ -126,8 +132,8 @@ config_testnet() {
   export RPC="$rpc_url"
 }
 
-# config_devnet: Fn for switching the Nibid config to a dev network (devnet).
-config_devnet() {
+# cfg_nibi_dev: Set Nibiru CLI config to a dev network (devnet).
+cfg_nibi_dev() {
   local rpc_url="$RPC_DEVNET"
   nibid config node $rpc_url
   nibid config chain-id nibiru-devnet-3
@@ -136,7 +142,8 @@ config_devnet() {
   export RPC="$rpc_url"
 }
 
-config_nibi() {
+# cfg_nibi: Set Nibiru CLI config to mainnet (cataclysm-1). 
+cfg_nibi() {
   local rpc_url="$RPC_NIBI"
   nibid config node $rpc_url
   nibid config chain-id cataclysm-1
@@ -147,6 +154,7 @@ config_nibi() {
 
 
 # Ex: nibid tx bank send ... -y | tx
+# unalias tx
 tx() {
   # Check if there is input from stdin
   # `cat` will hang if nothing is passed to this fn.
@@ -178,6 +186,38 @@ do_faucet() {
   curl -X POST -d '{"address": "'"$ADDR"'", "coins": ["10000000000unibi","100000000000unusd", "100000000000uusdt"]}' $FAUCET_URL
 }
 
+# Nibiru Flex Multsig
+# Ex: msig_vote yes 83
+# Ex: msig_vote no 84
+msig_vote() {
+  local vote="$1"
+  local proposal_id="$2"
+
+  log_info "Execute flex multisig vote."
+  log_info "\$vote: $vote"
+  log_info "\$proposal_id: $proposal_id"
+  log_info "\$MULTISIG: $MULTISIG"
+  log_info "\$FROM: $FROM"
+  env_vars_ok vote proposal_id MULTISIG FROM
+
+  # Vote on CW3
+  cat << EOF | jq | tee vote.json
+{
+  "vote": {
+    "proposal_id": $proposal_id,
+    "vote": "$vote"
+  }
+}
+EOF
+
+  nibid tx wasm execute "$MULTISIG" "$(cat vote.json)" \
+  --from "$FROM" \
+  --gas auto \
+  --gas-adjustment 1.5 \
+  --gas-prices 0.025unibi \
+  --yes | tx
+}
+
 # Deletion Commands
 
 clean_yarn() {
@@ -199,3 +239,5 @@ del_nvm_other() {
 del_zone() {
   find -type f -name '*Zone*' -delete
 }
+
+

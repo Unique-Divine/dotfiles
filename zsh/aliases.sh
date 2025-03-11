@@ -24,11 +24,6 @@ alias vvjq="jq | vv"
 
 alias ess="2>&1"
 
-# clipboard
-# see: https://github.com/microsoft/WSL/issues/4933#issuecomment-664471199
-alias pbcopy="clip.exe"
-alias pbpaste="powershell.exe -command 'Get-Clipboard' | head -n -1"
-
 alias start="cmd.exe /C start"
 # Ex: cmd.exe /C start https://google.com
 
