@@ -39,6 +39,8 @@ local plugins = {
     end
   },
 
+  -- https://github.com/nvim-neotest/nvim-nio
+  { "nvim-neotest/nvim-nio" },
   { 'mhartington/formatter.nvim' },
 
   -- Used for the `:TocMd` command in markdown
@@ -157,6 +159,23 @@ local plugins = {
       },
     },
   },
+
+  {
+    "christoomey/vim-tmux-navigator",
+    cmd = {
+      "TmuxNavigateLeft",
+      "TmuxNavigateDown",
+      "TmuxNavigateUp",
+      "TmuxNavigateRight",
+      "TmuxNavigatePrevious",
+    },
+    keys = {
+      { "<C-h>",  "<cmd><C-U>TmuxNavigateLeft<cr>" },
+      { "<C-w>k", "<cmd><C-U>TmuxNavigateDown<cr>" }, { "<C-w>k", "<cmd><C-U>TmuxNavigateUp<cr>" },
+      { "<C-l>",  "<cmd><C-U>TmuxNavigateRight<cr>" },
+      { "<C-\\>", "<cmd><C-U>TmuxNavigatePrevious<cr>" },
+    },
+  }
 
 }
 return plugins

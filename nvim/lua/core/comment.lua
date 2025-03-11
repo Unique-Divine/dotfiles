@@ -1,7 +1,11 @@
 -- core/comment.lua
 --
--- "gc" to comment visual regions/lines
--- "gcc" to comment current line
+-- Use "gc" to comment visual regions/lines
+-- Use "gcc" to comment current line
+--
+-- Similar to "o" and "O":
+-- Use "gco" to comment the line below
+-- Use "gcO" to comment the line above
 --
 -- Plugin repo: https://github.com/numToStr/Comment.nvim
 -- Installed in the init.lua.

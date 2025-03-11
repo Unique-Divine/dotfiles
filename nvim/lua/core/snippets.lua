@@ -84,16 +84,28 @@ luasnip.add_snippets("all", {
 
   new_snippet({ trig = "cl", docstring = "[c]onsole [l]og shorthand with DEBUG" }, {
     -- equivalent to "console.debug(\"DEBUG ${1:foo}:\", ${1:foo})"
-    t("console.debug(\"DEBUG "), i(1, "[foo]"), t(":\", "), i(1, "[foo]"),
+    t("console.debug(\"DEBUG %o: \", "), i(1, "[foo]"),
     t(")"),
   }),
+
+  new_snippet({ trig = "gh-dt", docstring = "[g]it[hub] [d]e[t]ails collapsible menu" }, {
+    -- GitHub details collapsile menu
+    t({ "<details>",
+      "<summary>[Display Text]</summary>",
+      "",
+      "### Markdown Content (yes, the blank lines are needed)",
+      "",
+      "</details>",
+    }),
+  }),
+
 
   new_snippet({ trig = "afn", docstring = "JS [a]rrow [fn]" }, {
     -- == "() => {${1}}"
     t("() => {"), i(1, "{fn}"), t("}"),
   }),
 
-  new_snippet({ trig = "afn", docstring = "JS [a]sync [a]rrow [fn]" }, {
+  new_snippet({ trig = "aafn", docstring = "JS [a]sync [a]rrow [fn]" }, {
     -- == "() => {${1}}"
     t("async () => {"), i(1, "{fn}"), t("}"),
   }),
@@ -101,6 +113,11 @@ luasnip.add_snippets("all", {
   new_snippet({ trig = "jscwt", docstring = "[JS] [c]onstant [w]ith [t]ype" }, {
     -- == "const ${1:name}: ${3:type} = ${2:val}"
     t("const "), i(1, "{name}"), t(": "), i(3, "{type}"), t(" = "), i(2, "{val}")
+  }),
+
+  new_snippet({ trig = "todoc", docstring = "[TODO] [c]omment" }, {
+    -- equivalent to "${1:cond} ? ${2:then} : ${3:else}"
+    t("TODO: UD-DEBUG: ")
   }),
 
   --

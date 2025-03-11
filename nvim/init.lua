@@ -77,6 +77,7 @@ local lazyPlugins = {
       {
         'williamboman/mason.nvim',
         config = true,
+        -- docs on "ensure_installed": https://github.com/williamboman/mason-lspconfig.nvim
         opts = { ensure_installed = { "rust-analyzer", "markdown-toc", "prettier" } }
       },
       'williamboman/mason-lspconfig.nvim',
@@ -336,7 +337,7 @@ local lazyPlugins = {
 
   -- NOTE: The import below automatically adds your own plugins, configuration, etc from `lua/core/auto/*.lua`
   -- You can use this folder to prevent any conflicts with this init.lua if you're interested in keeping
-  -- up-to-date with whatever is in the kickstart repo.
+  -- up-to-date with whatever is in the kickstart repo.k
   --
   -- For additional information see:
   -- https://github.com/folke/lazy.nvim#-structuring-your-plugins
@@ -362,6 +363,17 @@ vim.o.mouse = 'a'
 --  Remove this option if you want your OS clipboard to remain independent.
 --  See `:help 'clipboard'`
 vim.o.clipboard = 'unnamed,unnamedplus'
+vim.g.clipboard = {
+  name = "WSL (MacOS-like)",
+  copy = {
+    ["+"] = "pbcopy",
+    ["*"] = "pbcopy",
+  },
+  paste = {
+    ["+"] = "pbpaste",
+    ["*"] = "pbcopy",
+  },
+}
 
 -- Enable break indent
 vim.o.breakindent = true
@@ -430,3 +442,6 @@ require('core/fmt')
 
 require('core/comment')
 require('core/harpoon')
+
+-- Vim settings
+require('core/vim')

@@ -16,6 +16,8 @@ local conformCfg = {
       -- The ideal case below is to run 'prettierd', 'eslint_d'.
       { "prettierd", "prettier" }, "eslint_d" },
     bash = { "beautysh" },
+
+    rust = { "rustfmt", lsp_format = "fallback" },
   },
   format_on_save = {
     timeout_ms = 300,
