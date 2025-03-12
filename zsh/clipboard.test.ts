@@ -1,25 +1,5 @@
-import type { Subprocess } from "bun";
 import { test, expect, describe } from "bun:test";
-
-interface BashOut {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-}
-
-const bash = async (cmd: string): Promise<BashOut> => {
-  const rawOut: Subprocess = Bun.spawn(["bash", "-c", cmd]);
-  const { stdout, stderr, exitCode } = rawOut;
-  return {
-    stdout: await new Response(
-      typeof stdout === "number" ? stdout.toString() : stdout,
-    ).text(),
-    stderr: await new Response(
-      typeof stderr === "number" ? stderr.toString() : stderr,
-    ).text(),
-    exitCode,
-  };
-};
+import { bash } from "@uniquedivine/bash";
 
 test("commands present: pbcopy, pbpaste", async () => {
   let out = await bash(`which pbcopy`);
@@ -48,4 +28,26 @@ describe("pbpaste correctly retrieves a multiple lines", async () => {
     let output = await bash("pbpaste");
     expect(output.stdout).toBe("line0\nline1");
   });
+});
+
+describe("echo suite", async () => {
+  const cases: { given: string; want: string }[] = [
+    { given: "sanity check", want: "sanity check" },
+    { given: "HJK 日本語", want: "HJK 日本語" },
+    {
+      given: `この職場は、経験よりも腕を優先する考え方だ。
+職場 (しょくば)
+`,
+      want: `この職場は、経験よりも腕を優先する考え方だ。
+職場 (しょくば)
+`,
+    },
+  ];
+  for (let { given, want } of cases) {
+    test(`input: "${given}", want: "${want}"`, async () => {
+      await bash(`printf "${given}" | pbcopy`);
+      const out = await bash("pbpaste");
+      expect(out.stdout).toBe(want);
+    });
+  }
 });

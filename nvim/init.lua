@@ -375,6 +375,25 @@ vim.g.clipboard = {
   },
 }
 
+vim.api.nvim_create_user_command('WY', function(opts)
+  -- Yank text into the '+' register: if a range was provided, yank that range;
+  -- otherwise, yank the current line.
+  if opts.range > 0 then
+    vim.cmd(string.format('%d,%dyank +', opts.line1, opts.line2))
+  else
+    vim.cmd('normal! "+y')
+  end
+
+  -- Get the yanked text from the '+' register.
+  local text = vim.fn.getreg('+')
+
+  -- Convert the text from UTF-8 to UTF-16LE and pipe it to pbcopy.
+  vim.fn.system('iconv -f UTF-8 -t UTF-16LE | pbcopy', text)
+
+  print("Yanked text copied to Windows clipboard (UTF-16LE).")
+end, { range = true, desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy" })
+
+
 -- Enable break indent
 vim.o.breakindent = true
 

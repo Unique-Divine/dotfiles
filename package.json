@@ -3,7 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@uniquedivine/bash": "/home/realu/ki/jiyuu/bash-ts"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

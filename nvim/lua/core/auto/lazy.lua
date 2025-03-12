@@ -32,10 +32,11 @@ local plugins = {
 
   {
     'saecki/crates.nvim',
-    ft = { "rust", "toml" },
+    tag = "stable",
+    -- ft = { "rust", "toml" },
     dependencies = { 'nvim-lua/plenary.nvim' },
     config = function()
-      require('crates').setup()
+      require('crates').setup({})
     end
   },
 
@@ -131,20 +132,21 @@ local plugins = {
     },
   },
 
-  {
-    "nvim-neo-tree/neo-tree.nvim",
-    branch = "v3.x",
-    dependencies = {
-      "nvim-lua/plenary.nvim",
-      "nvim-tree/nvim-web-devicons", -- not strictly required, but recommended
-      "MunifTanjim/nui.nvim",
-    },
-    config = function()
-      vim.api.nvim_create_user_command('NE', function()
-        vim.cmd('Neotree')
-      end, { desc = 'Explore with the [N]eotr[E]e command.' })
-    end,
-  },
+  -- DISABLED neo-tree
+  -- {
+  --   "nvim-neo-tree/neo-tree.nvim",
+  --   branch = "v3.x",
+  --   dependencies = {
+  --     "nvim-lua/plenary.nvim",
+  --     "nvim-tree/nvim-web-devicons", -- not strictly required, but recommended
+  --     "MunifTanjim/nui.nvim",
+  --   },
+  --   config = function()
+  --     vim.api.nvim_create_user_command('NE', function()
+  --       vim.cmd('Neotree')
+  --     end, { desc = 'Explore with the [N]eotr[E]e command.' })
+  --   end,
+  -- },
 
   -- https://github.com/prichrd/netrw.nvim
   -- Adds a layer of ✨bling✨ and config to your favorite file explorer.
