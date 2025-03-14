@@ -13,6 +13,10 @@ time to read through a guide.
 
  - https://learnxinyminutes.com/docs/lua/
  - And then you can explore or search through `:help lua-guide`
+
+Neovim Verison: [0.10.4](https://github.com/neovim/neovim/releases/tag/v0.10.4)
+Neovim Version Date: 2025-03-13
+
 --]]
 
 -- Set <space> as the leader key
@@ -453,6 +457,8 @@ vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagn
 
 --- LSP settings.
 require('core/lsp')
+
+require('core/editors')
 
 -- nvim-cmp setup
 require('core/cmp')
