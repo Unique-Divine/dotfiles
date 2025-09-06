@@ -54,7 +54,7 @@ vim.cmd('highlight Comment guifg=#89b9e7')
 --    as they will be available in your neovim runtime.
 
 -- Toggles theme between "light" | "dark"
-vim.o.background = "dark"
+vim.o.background = "light"
 
 ---@type LazySpec
 ---See [Lazy Plugin Spec](https://github.com/folke/lazy.nvim#-plugin-spec)
@@ -105,6 +105,20 @@ local lazyPlugins = {
     },
   },
 
+  -- Debugger
+  {
+    -- "dap" is short for debugging adapter protocol.
+    -- [TJ DeVries - simple neovim debugging setup (in 10 minutes)](https://youtu.be/lyNfnI-B640)
+    "mfussenegger/nvim-dap",
+    dependencies = {
+      "leoluz/nvim-dap-go", -- Golang debugging utilities
+      "rcarriga/nvim-dap-ui",
+      "theHamsta/nvim-dap-virtual-text",
+      "nvim-neotest/nvim-nio",
+      "williamboman/mason.nvim",
+    },
+  },
+
   {
     -- Autocompletion
     'hrsh7th/nvim-cmp',
@@ -130,8 +144,11 @@ local lazyPlugins = {
         changedelete = { text = '~' },
       },
       on_attach = function(bufnr)
-        vim.keymap.set('n', '[c', require('gitsigns').prev_hunk, { buffer = bufnr, desc = 'Go to Previous Hunk' })
-        vim.keymap.set('n', ']c', require('gitsigns').next_hunk, { buffer = bufnr, desc = 'Go to Next Hunk' })
+        local gitsigns = require('gitsigns')
+        vim.keymap.set('n', '[c', gitsigns.nav_hunk('prev'),
+          { buffer = bufnr, desc = 'Go to Previous Hunk' })
+        vim.keymap.set('n', ']c', gitsigns.nav_hunk('next'),
+          { buffer = bufnr, desc = 'Go to Next Hunk' })
         vim.keymap.set('n', '<leader>ph', require('gitsigns').preview_hunk, { buffer = bufnr, desc = '[P]review [H]unk' })
       end,
     },
@@ -172,11 +189,6 @@ local lazyPlugins = {
     'navarasu/onedark.nvim',
     priority = 1000,
     config = function()
-      -- Early return if the background is not set to "dark"
-      if vim.o.background ~= "dark" then
-        return
-      end
-
       vim.cmd.colorscheme 'onedark'
       local theme_onedark = require('onedark')
       theme_onedark.setup {
@@ -222,6 +234,14 @@ local lazyPlugins = {
           -- ["@keyword"] = { fg = "$neo_blue" },
         },
       }
+
+      -- Early return if the background is not set to "dark"
+      -- The reason we call `require('onedark').setup` without loading when the
+      -- theme is light is because the "nvim-lualine/lualine.nvim" plugin depends
+      -- on "onedark" and shows a warning if it does not exist.
+      if vim.o.background ~= "dark" then
+        return
+      end
       theme_onedark.load() -- officially load the theme
     end,
   },
@@ -464,6 +484,8 @@ require('core/editors')
 require('core/cmp')
 require('core/fmt')
 -- require('core/fmt-conform')
+
+require('core/debugger')
 
 require('core/comment')
 require('core/harpoon')
