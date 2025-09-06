@@ -17,6 +17,12 @@ require('telescope').setup {
       },
     },
   },
+  -- pickers.find_files.follow adds support for symlinks in search.
+  pickers = {
+    find_files = {
+      follow = true,
+    },
+  },
   -- extensions = {
   --   -- nvim-telescope/telescope-file-browser
   --   -- https://github.com/nvim-telescope/telescope-file-browser.nvim#setup-and-configuration
@@ -30,42 +36,57 @@ require('telescope').setup {
 -- Enable telescope fzf native, if installed
 pcall(require('telescope').load_extension, 'fzf')
 
+local telescope = require('telescope.builtin')
+
 -- See `:help telescope.builtin`
-vim.keymap.set('n', '<leader>?', require('telescope.builtin').oldfiles, { desc = '[?] Find recently opened files' })
-vim.keymap.set('n', '<leader><space>', require('telescope.builtin').buffers, { desc = '[ ] Find existing buffers' })
-vim.keymap.set('n', '<leader>/', function()
+vim.keymap.set('n', '<leader>?', telescope.oldfiles,
+  { desc = '[?] Find recently opened files' })
+vim.keymap.set('n', '<leader><space>', telescope.buffers,
+  { desc = '[ ] Find existing buffers' })
+
+local function current_buffer_fuzzy_find()
   -- You can pass additional configuration to telescope to change theme, layout, etc.
-  require('telescope.builtin').current_buffer_fuzzy_find(require('telescope.themes').get_dropdown {
+  telescope.current_buffer_fuzzy_find(require('telescope.themes').get_dropdown {
     winblend = 10,
     previewer = false,
   })
-end, { desc = '[/] Fuzzily search in current buffer' })
+end
 
-vim.keymap.set('n', '<leader>sf', function()
-  require('telescope.builtin').find_files({
-    layout_strategy = 'vertical', prompt_prefix = "🔍 " })
-end, { desc = '[S]earch [F]iles (without hidden)' })
-vim.keymap.set('n', '<leader>sF', ':Telescope find_files hidden=true<cr>', { desc = '[S]earch [F]iles' })
-vim.keymap.set('n', '<leader>gf', require('telescope.builtin').git_files, { desc = 'Search [G]it [F]iles' })
+vim.keymap.set('n', '<leader>/', current_buffer_fuzzy_find,
+  { desc = '[/] Fuzzily search in current buffer' })
+vim.keymap.set('n', '<leader>sb', current_buffer_fuzzy_find,
+  { desc = '[/] Fuzzily [s]earch in current [b]uffer' })
 
--- Set <C-p> to use require('telescope.builtin').find_files to mimic the VS Code
+local function find_files_main()
+  telescope.find_files({
+    layout_strategy = 'vertical',
+    prompt_prefix = "🔍 ",
+    hidden = true, -- maps to @field hidden boolean
+  })
+end
+vim.keymap.set('n', '<leader>sf', find_files_main,
+  { desc = '[S]earch [F]iles (main)' })
+vim.keymap.set('n', '<leader>sF', ':Telescope find_files hidden=true no_ignore=true <cr>',
+  { desc = '[S]earch [F]iles (verbose, no_ignore=true)' })
+
+-- Set <C-p> to use telescope.find_files to mimic the VS Code
 -- behavior.
 vim.api.nvim_set_keymap('n', '<C-p>', '', {})
-vim.keymap.set('n', '<C-p>', function()
-  require('telescope.builtin').find_files({
-    layout_strategy = 'vertical', prompt_prefix = "🔍 " })
-end, { desc = '[S]earch [F]iles (without hidden)' })
-vim.keymap.set('n', '<leader><C-g>', require('telescope.builtin').live_grep, { desc = '[G] is for grep' })
+vim.keymap.set('n', '<C-p>', find_files_main,
+  { desc = '[S]earch [F]iles (main)' })
 
+vim.keymap.set('n', '<leader><C-g>', telescope.live_grep, { desc = '[G] is for grep' })
 
-vim.keymap.set('n', '<leader>sh', require('telescope.builtin').help_tags, { desc = '[S]earch [H]elp' })
-vim.keymap.set('n', '<leader>sw', require('telescope.builtin').grep_string, { desc = '[S]earch current [W]ord' })
+vim.keymap.set('n', '<leader>ss', telescope.lsp_document_symbols,
+  { desc = '[S]earch [s]ymbols' })
+vim.keymap.set('n', '<leader>sh', telescope.help_tags, { desc = '[S]earch [H]elp' })
+vim.keymap.set('n', '<leader>sw', telescope.grep_string, { desc = '[S]earch current [W]ord' })
 vim.keymap.set(
   'n', '<leader>sg', function()
-    require('telescope.builtin').live_grep({
+    telescope.live_grep({
       layout_strategy = 'vertical', prompt_prefix = "🔍 " })
   end, { desc = '[S]earch by [G]rep' })
-vim.keymap.set('n', '<leader>sd', require('telescope.builtin').diagnostics, { desc = '[S]earch [D]iagnostics' })
+vim.keymap.set('n', '<leader>sd', telescope.diagnostics, { desc = '[S]earch [D]iagnostics' })
 
 -- [[ Custom setup ]]
 vim.api.nvim_set_keymap('n', '<A-h>', ':lua vim.diagnostic.open_float()<CR>', { silent = true })

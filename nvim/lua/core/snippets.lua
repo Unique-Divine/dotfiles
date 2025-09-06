@@ -121,6 +121,13 @@ luasnip.add_snippets("all", {
   }),
 
   --
+  -- snippets: Golang, go
+  --
+  new_snippet({ trig = "gofmterr", docstring = "[go] [fmt].[Err]orf shortcut" }, {
+    t("fmt.Errorf(\""), i(1, "{errMsg}"), t("\", args)")
+  }),
+
+  --
   -- snippets: Rust, rs
   --
   new_snippet({ trig = "rsfn", docstring = "[R]u[s]t [fn]" }, {
