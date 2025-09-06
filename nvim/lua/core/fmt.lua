@@ -1,6 +1,9 @@
 --- core/fmt.lua: Formatter since null-ls is archived
 --- This largely works in conjunction with 'prettier', which is installed via
 --- the 'williamboman/mason.nvim' plugin.
+---
+--- Note that formatter comes from this plugin.
+--- https://github.com/mhartington/formatter.nvim
 local formatter = require('formatter')
 local _util = require('formatter.util')
 
@@ -51,6 +54,30 @@ formatter.setup(formatterOpt)
 vim.api.nvim_create_autocmd({ "BufWritePost" },
   { command = "FormatWriteLock" }
 )
+
+-- 2025-06-13: I did an exploration on how formatter.nvim
+-- (https://github.com/mhartington/formatter.nvim) works to understand what
+-- arguments prettier gets and why it doesn't respect repospecific prettier configs.
+-- I didn't fix the issue, but the deep dive was quite enlightening.
+--
+-- vim.api.nvim_create_autocmd({ "BufWritePost" }, {
+--   callback = function()
+--     print("UD-DEBUG: I RAN!!")
+--     local ft = vim.bo.filetype
+--     local formatters = require("formatter.config").values.filetype[ft]
+--     if formatters then
+--       for _, fmt in ipairs(formatters) do
+--         if type(fmt) == "function" then
+--           local result = fmt()
+--           print("Formatter config for " .. ft .. ":")
+--           print(vim.inspect(result))
+--         end
+--       end
+--     else
+--       print("No formatter configured for filetype: " .. ft)
+--     end
+--   end,
+-- })
 
 --[[
 Before/after format hooks
