@@ -23,12 +23,14 @@ local plugins = {
     dependencies = { 'nvim-lua/plenary.nvim', 'nvim-telescope/telescope.nvim' }
   },
 
-  {
-    'm4xshen/smartcolumn.nvim',
-    opts = {
-      colorcolumn = "80",
-    }
-  },
+  -- {
+  --   'm4xshen/smartcolumn.nvim',
+  --   -- Default config: https://github.com/m4xshen/smartcolumn.nvim
+  --   opts = {
+  --     colorcolumn = "80",
+  --     disable_filetypes = {},
+  --   }
+  -- },
 
   {
     'saecki/crates.nvim',
@@ -43,11 +45,6 @@ local plugins = {
   -- https://github.com/nvim-neotest/nvim-nio
   { "nvim-neotest/nvim-nio" },
   { 'mhartington/formatter.nvim' },
-
-  -- Used for the `:TocMd` command in markdown
-  -- TODO: Replace with custom implementation from Unique-Divine/jiyuu repo.
-  { 'jonschlinkert/markdown-toc' },
-
 
   --- This import is for [MunifTanjim/prettier.nvim](https://github.com/MunifTanjim/prettier.nvim)
   --- Currently, 'prettierd' is installed with Mason.
@@ -161,6 +158,9 @@ local plugins = {
       },
     },
   },
+
+  -- https://github.com/sindrets/diffview.nvim
+  { 'sindrets/diffview.nvim' },
 
   {
     "christoomey/vim-tmux-navigator",

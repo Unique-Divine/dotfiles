@@ -26,6 +26,7 @@ vim.keymap.set("x", "<leader>p", "\"_dP")
 -- textdwith option
 -- In vim, the `textwidth` option, or `tw` for short, controls the maximum width of text that is allowed in a line. When you use the `gq` command to format text, it will wrap lines to ensure they do not exceed the `textwidth` setting.
 local textwidth = 81
+vim.opt.colorcolumn = tostring(textwidth + 1)
 vim.opt.textwidth = textwidth
 -- [2024-08-14]: I observed that the textwidth setting was being respected but
 -- wasn't set to the proper global value in Rust files.

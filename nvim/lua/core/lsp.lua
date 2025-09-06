@@ -124,15 +124,28 @@ mason_lspconfig.setup_handlers {
       capabilities = capabilities,
       on_attach = on_attach,
       settings = servers[server_name],
+      cmd_env = {
+        GOFLAGS = "-tags=pebbledb", -- 2025-11-07: For Nibiru Go codebase
+      },
     }
   end,
 }
 
--- Uses the 'markdown-toc' binary installed with Mason on the current file.
-vim.api.nvim_create_user_command('TocMd', function()
-  vim.cmd('!markdown-toc % --bullets="-" --max-depth=2 --no-firsth1 | clip.exe')
+--[[
+`:Toc` command: Generates a table of contents (TOC) for a markdown file using
+the 'github.com/Unique-Divine/jiyuu/mdtoc' tool.
+
+Replaces the "jonschlinkert/markdown-toc" tool installed with Mason, as that
+one's it's not actively maintained.
+]]
+vim.api.nvim_create_user_command('Toc', function()
+  vim.cmd('!bun run "$HOME/ki/jiyuu/mdtoc/src/cli.ts" % --bullets="-" --maxdepth=3 --no-firsth1 | clip.exe')
+  -- The "%" means the current file when you run this vim.cmd. This CLI tool
+  -- takes exactly one argument and is configured with flags.
   print('markdown-toc: successfully yanked headers for table of contents')
-end, {})
+end, {
+  desc = "Generate a markdown table of contents (TOC), copying the contents the clipboard",
+})
 
 -- Rust
 -- rust-tools will configure and enable certain LSP features for us.
