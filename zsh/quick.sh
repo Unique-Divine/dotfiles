@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2155
 
 # ℹ️  -------- IMPORTS --------  ℹ️
 source "$DOTFILES/zsh/bashlib.sh"
 
-# shellcheck disable=SC2155
-# The $DOTFILES  and $KOJIN_PATH variables are exported from .zshenv.
+# The $DOTFILES  and $BOKU_PATH variables are exported from .zshenv.
 
 # todos: Opens NeoVim with your notes workspace as the working directory with
 # your text-based TODO-list open.
 todos() {
   local before="$(pwd)"
-  z kojin
-  nvim "$KOJIN_PATH/free/todos.md"
+  z "$BOKU_PATH"
+  nvim "$BOKU_PATH/free/todos.md"
   cd "$before" || return 1
 }
 
 # notes: Opens NeoVim with a notes workspace as the working directory.
 notes() {
   local before="$(pwd)"
-  z kojin
-  nvim .
+  z "$BOKU_PATH"
+  nvim "$BOKU_PATH/free/the-log.md"
   cd "$before" || return 1
 }
 
@@ -142,16 +142,38 @@ cfg_nibi_dev() {
   export RPC="$rpc_url"
 }
 
-# cfg_nibi: Set Nibiru CLI config to mainnet (cataclysm-1). 
 cfg_nibi() {
-  local rpc_url="$RPC_NIBI"
-  nibid config node $rpc_url
-  nibid config chain-id cataclysm-1
-  nibid config broadcast-mode sync 
-  nibid config
-  export RPC="$rpc_url"
+  echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
+  echo "Sets the Nibiru CLI config to one of the Nibiru blockchain networks."
+  case "$1" in
+    --local)
+      cfg_nibi_local
+      ;;
+    --test)
+      cfg_nibi_test
+      ;;
+    --dev)
+      cfg_nibi_dev
+      ;;
+    --prod|--mainnet|"")
+      # Default to mainnet if no args or --prod
+      local rpc_url="$RPC_NIBI"
+      nibid config node "$rpc_url"
+      nibid config chain-id cataclysm-1
+      nibid config broadcast-mode sync
+      nibid config
+      export RPC="$rpc_url"
+      ;;
+    --help|-h)
+      echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
+      ;;
+    *)
+      echo "❌ Unknown flag: $1"
+      echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
+      return 1
+      ;;
+  esac
 }
-
 
 # Ex: nibid tx bank send ... -y | tx
 # unalias tx

@@ -13,7 +13,8 @@ alias ls="exa"    # cargo install exa
 alias la='exa -a'
 alias s='sudo'
 alias yarn-offline='yarn --prefer-offline'
-alias cat="bat" # cargo install bat
+alias cat="bat"   # cargo install bat
+# NOTE: This is important - sudo apt install build-essential
 
 alias vi="nvim"
 alias vim="nvim"

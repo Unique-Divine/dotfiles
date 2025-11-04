@@ -3,7 +3,7 @@
 # Contact: Unique Divine <realuniquedivine@gmail.com>
 # The .zshrc runs after .zshenv
 
-# The $DOTFILES  and $KOJIN_PATH variables are exported from .zshenv.
+# The $DOTFILES  and $BOKU_PATH variables are exported from .zshenv.
 
 source $DOTFILES/zsh/bashlib.sh
 main_bash_setup
@@ -33,7 +33,7 @@ add_ssh_keys 2>/dev/null
 
 # Back up the .zshrc config.
 backup_shell_config() {
-  local kojin_repo="$HOME/ki/kojin-Scratch"
+  local kojin_repo="$HOME/ki/boku"
   cp ~/.zshrc $kojin_repo/backups/
 
   if [ -d "$kojin_repo" ]; then
@@ -277,10 +277,6 @@ clean_poetry() {
   poetry env use $(pyenv versions | grep '*' | cut -d' ' -f2)
 }
 
-ppytest() {
-  poetry run pytest $@
-}
-
 export ADDR_VAL="nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl"
 export ADDR_VAL2="nibi1de655f3f9sce94ncuvmcf5plnmxljfvdxx6487"
 export ADDR_UD="nibi1ah8gqrtjllhc5ld4rxgl4uglvwl93ag0sh6e6v"
@@ -335,7 +331,7 @@ ulimit -n 4096
 
 sharex() {
   # HOME=/home/realu
-  bash $HOME/warpath/gh-realu/kojin-Scratch/sharex.sh
+  bash $BOKU_PATH/sharex.sh
 }
 
 # bruh: re-runs the last command with sudo.
@@ -369,3 +365,5 @@ source ~/powerlevel10k/powerlevel10k.zsh-theme
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+
+[[ -s "/home/realu/.gvm/scripts/gvm" ]] && source "/home/realu/.gvm/scripts/gvm"
