@@ -1,34 +1,34 @@
-import { test, expect, describe } from "bun:test";
-import { bash } from "@uniquedivine/bash";
+import { bash } from "@uniquedivine/bash"
+import { describe, expect, test } from "bun:test"
 
 test("commands present: pbcopy, pbpaste", async () => {
-  let out = await bash(`which pbcopy`);
-  expect(out.stdout).not.toBeEmpty();
-  expect(out.stderr).toBeEmpty();
-  out = await bash(`which pbpaste`);
-  expect(out.stdout).not.toBeEmpty();
-  expect(out.stderr).toBeEmpty();
-});
+  let out = await bash(`which pbcopy`)
+  expect(out.stdout).not.toBeEmpty()
+  expect(out.stderr).toBeEmpty()
+  out = await bash(`which pbpaste`)
+  expect(out.stdout).not.toBeEmpty()
+  expect(out.stderr).toBeEmpty()
+})
 
 test("pbpaste correctly retrieves a single line without extra newlines", async () => {
   // Copy "one line output" to the clipboard (equivalent to pbcopy)
-  await bash(`echo "one line output" | pbcopy`);
-  const output = await bash("pbpaste");
-  expect(output.stdout).toBe("one line output\n");
-});
+  await bash(`echo "one line output" | pbcopy`)
+  const output = await bash("pbpaste")
+  expect(output.stdout).toBe("one line output\n")
+})
 
 describe("pbpaste correctly retrieves a multiple lines", async () => {
   test("with trailing newlines", async () => {
-    await bash(`printf "line0\nline1\n\n\n" | pbcopy`);
-    const output = await bash("pbpaste");
-    expect(output.stdout).toBe("line0\nline1\n\n\n");
-  });
+    await bash(`printf "line0\nline1\n\n\n" | pbcopy`)
+    const output = await bash("pbpaste")
+    expect(output.stdout).toBe("line0\nline1\n\n\n")
+  })
   test("without trailing newlines", async () => {
-    await bash(`printf "line0\nline1" | pbcopy`);
-    let output = await bash("pbpaste");
-    expect(output.stdout).toBe("line0\nline1");
-  });
-});
+    await bash(`printf "line0\nline1" | pbcopy`)
+    let output = await bash("pbpaste")
+    expect(output.stdout).toBe("line0\nline1")
+  })
+})
 
 describe("echo suite", async () => {
   const cases: { given: string; want: string }[] = [
@@ -42,12 +42,12 @@ describe("echo suite", async () => {
 職場 (しょくば)
 `,
     },
-  ];
+  ]
   for (let { given, want } of cases) {
     test(`input: "${given}", want: "${want}"`, async () => {
-      await bash(`printf "${given}" | pbcopy`);
-      const out = await bash("pbpaste");
-      expect(out.stdout).toBe(want);
-    });
+      await bash(`printf "${given}" | pbcopy`)
+      const out = await bash("pbpaste")
+      expect(out.stdout).toBe(want)
+    })
   }
-});
+})

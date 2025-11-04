@@ -1,6 +1,7 @@
-# My Dotfiles
+# Dotfiles - Unique Divine
 
-My personal development environment configuration optimized for Ubuntu 24.04 and WSL, designed to provide a consistent experience across machines.
+My personal development environment configuration optimized for Ubuntu 24.04 and
+WSL, designed to provide a consistent experience across machines.
 
 ## What's Included
 
@@ -16,6 +17,13 @@ My personal development environment configuration optimized for Ubuntu 24.04 and
 # Clone the repository
 git clone https://github.com/yourusername/dotfiles.git
 cd dotfiles
+
+# Install Rust and cargo
+sudo apt install build-essential
+# This might be different for you. The command comes from here: https://rustup.rs/
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
+cargo install just
+cargo install bat
 
 # Create symbolic links for configurations
 ./symlinks.sh
