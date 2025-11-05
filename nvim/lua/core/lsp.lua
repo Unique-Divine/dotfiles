@@ -77,12 +77,13 @@ end
 --  up that documentation yourself.
 --
 --  See: https://github.com/williamboman/mason-lspconfig.nvim#available-lsp-servers
-local servers = {
+local lsp_servers_mason = {
   -- clangd = {},
   gopls = {},
   astro = {},
   -- pyright = {},
-  rust_analyzer = {},
+  -- rust_analyzer = {}, -- ⚠️ Do not manage "rust-analyzer" with mason. Use
+  -- the cargo installation to make sure the LSP matches the real environment.
 
   lua_ls = {
     Lua = {
@@ -106,7 +107,7 @@ capabilities = require('cmp_nvim_lsp').default_capabilities(capabilities)
 local mason_lspconfig = require 'mason-lspconfig'
 
 mason_lspconfig.setup {
-  ensure_installed = vim.tbl_keys(servers),
+  ensure_installed = vim.tbl_keys(lsp_servers_mason),
   -- Whether servers that are set up (via lspconfig) should be automatically installed if they're not already installed.
   -- This setting has no relation with the `ensure_installed` setting.
   -- Can either be:
@@ -114,16 +115,19 @@ mason_lspconfig.setup {
   --   - true: All servers set up via lspconfig are automatically installed.
   --   - { exclude: string[] }: All servers set up via lspconfig, except the ones provided in the list, are automatically installed.
   --       Example: automatic_installation = { exclude = { "rust_analyzer", "solargraph" } }
-  ---@type boolean
-  automatic_installation = true,
+  ---@type boolean|table
+  automatic_installation = { exclude = "rust_analyzer" },
 }
 
 mason_lspconfig.setup_handlers {
   function(server_name)
+    if server_name == "rust_analyzer" then
+      return -- Let cargo and rust-tools handle the "rust-analyzer" server.
+    end
     require('lspconfig')[server_name].setup {
       capabilities = capabilities,
       on_attach = on_attach,
-      settings = servers[server_name],
+      settings = lsp_servers_mason[server_name],
       cmd_env = {
         GOFLAGS = "-tags=pebbledb", -- 2025-11-07: For Nibiru Go codebase
       },
@@ -139,7 +143,7 @@ Replaces the "jonschlinkert/markdown-toc" tool installed with Mason, as that
 one's it's not actively maintained.
 ]]
 vim.api.nvim_create_user_command('Toc', function()
-  vim.cmd('!bun run "$HOME/ki/jiyuu/mdtoc/src/cli.ts" % --bullets="-" --maxdepth=3 --no-firsth1 | clip.exe')
+  vim.cmd('!bun run "$HOME/ki/boku/jiyuu/mdtoc/src/cli.ts" % --bullets="-" --maxdepth=3 --no-firsth1 | clip.exe')
   -- The "%" means the current file when you run this vim.cmd. This CLI tool
   -- takes exactly one argument and is configured with flags.
   print('markdown-toc: successfully yanked headers for table of contents')
@@ -177,9 +181,14 @@ local function setup_rust_tools()
       settings = {
         -- to enable rust-analyzer settings visit:
         -- https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/user/generated_config.adoc
+        -- Useful commands to fix the binary.
+        -- ```
+        -- rustup update
+        -- rustup component add rust-analyzer
+        -- ```
         ["rust-analyzer"] = {
-          -- enable clippy on save
-          checkOnSave = {
+          -- check: enable clippy on save
+          check = {
             command = "clippy",
           },
         },

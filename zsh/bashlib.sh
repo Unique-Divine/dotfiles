@@ -16,7 +16,7 @@ main_bash_setup() {
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
   source "$DOTFILES/env.sh"
-  source "$HOME/ki/jiyuu/mycli/ud.sh"
+  source "$HOME/ki/boku/jiyuu/mycli/ud.sh"
   # For a full list of active aliases, run `alias`.
   nvm use lts/hydrogen >/dev/null 2>&1 || true
 }

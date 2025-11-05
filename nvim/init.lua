@@ -82,7 +82,7 @@ local lazyPlugins = {
         'williamboman/mason.nvim',
         config = true,
         -- docs on "ensure_installed": https://github.com/williamboman/mason-lspconfig.nvim
-        opts = { ensure_installed = { "rust-analyzer", "markdown-toc", "prettier" } }
+        opts = { ensure_installed = { "prettier" } }
       },
       'williamboman/mason-lspconfig.nvim',
 
