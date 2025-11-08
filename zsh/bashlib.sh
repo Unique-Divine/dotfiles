@@ -16,6 +16,7 @@ main_bash_setup() {
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
   source "$DOTFILES/env.sh"
+  source "$HOME/ki/jiyuu/mycli/ud.sh"
   # For a full list of active aliases, run `alias`.
   nvm use lts/hydrogen >/dev/null 2>&1 || true
 }
@@ -32,6 +33,8 @@ ghdiesel() {
   eval "$(ssh-agent -s)"
   ssh-add ~/.ssh/dieselSB3WSL_key  # vimdiesel@matrixsystems.co
 }
+
+# ------ Export Line
 
 # assert attempts to run an arbitrary command and errors out of the script
 # otherwise.
@@ -108,18 +111,28 @@ log_info() {
   echo -e "${COLOR_MAGENTA}INFO${COLOR_RESET}" "$@"
 }
 
-# —————————————————————————————————————————————————
+# -------------------------------------------------
 # OK Suffix: Functions used for error handling or validating inputs.
 
-# which_ok: Check if the given binary is in the $PATH.
+# which_ok: Check if the given binary is in the $PATH or if it is something
+# callable in a bash program.
 # Returns code 0 on success and code 1 if the command fails.
 which_ok() {
+
+  # Runnable binary on $PATH? Ex: "jq", "bun", etc.
+  # Alias? Ex: "ls" (I have it aliased to exa).
+  # Built-in? Ex: "echo", "cd"
   if which "$1" >/dev/null 2>&1; then
     return 0
-  else
-    log_error "$1 is not present in \$PATH"
-    return 1
   fi
+
+  # Function? An example for this is "nvm", which is a pure bash function.
+  if type -a "$1" >/dev/null; then
+    return 0
+  fi
+
+  log_error "$1 is not present in \$PATH"
+  return 1
 }
 
 # source_ok (Function): Sources a bash script if it exists.
