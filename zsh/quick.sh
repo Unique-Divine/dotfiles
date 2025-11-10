@@ -6,6 +6,35 @@ source "$DOTFILES/zsh/bashlib.sh"
 
 # The $DOTFILES  and $BOKU_PATH variables are exported from .zshenv.
 
+# ----------------- Git -----------------
+# Some of my most-used commands. I rely on these daily to quickly finish
+# branches, prepare pull requests, and cleanly sync changes with the remote.
+
+# git_cof: Git "[c]heck [o]ut [f]rom": Check out the target, fetch, prune remote,
+# and delete the starting branch.
+git_cof() {
+  local target_branch="$1"
+  local start_branch="$(git br --show-current)"
+  git fetch --all --prune || true
+  git checkout "$target_branch"
+  git branch -D "$start_branch"
+  git pull || true
+}
+
+# git_mf: Git "[m]erge [f]rom". Fetch, prune, check out the target and merge it
+# into the starting branch.
+git_mf() {
+  local target_branch="$1"
+  local start_branch="$(git br --show-current)"
+  git fetch --all --prune || true
+  git checkout "$target_branch"
+  git pull || true
+  git checkout "$start_branch"
+  git merge "$target_branch"
+}
+
+# ----------------- Daily Shortcuts -----------------
+
 # todos: Opens NeoVim with your notes workspace as the working directory with
 # your text-based TODO-list open.
 todos() {
@@ -69,122 +98,10 @@ cfg_tmux() {
   cd "$before" || return 1
 }
 
-# git_cof: Git "[c]heck [o]ut [f]rom": Check out the target and fetch prune,
-# deleting the starting branch.
-git_cof() {
-  local target_branch="$1"
-  local start_branch="$(git br --show-current)"
-  git fetch --all --prune || true
-  git checkout "$target_branch"
-  git branch -D "$start_branch"
-  git pull || true
-}
-
-# git_mf: Git "[m]erge [f]rom". Fetch, prune, check out the target and merge it
-# into the starting branch.
-git_mf() {
-  local target_branch="$1"
-  local start_branch="$(git br --show-current)"
-  git fetch --all --prune || true
-  git checkout "$target_branch"
-  git pull || true
-  git checkout "$start_branch"
-  git merge "$target_branch"
-}
-
-
-### ----------------- Nibiru Chain -----------------
-#
+# ----------------- Nibiru -----------------
 
 # Reminders for config_* functions
 # - Update any relevant .env files in py-sdk, ts-sdk, etc.
-
-RPC_LOCAL="http://localhost:26657"
-RPC_TESTNET="https://rpc.archive.testnet-2.nibiru.fi:443"  # load balanced between nodes
-# RPC_TESTNET="https://rpc.testnet-2.nibiru.fi:443"  # load balanced between nodes
-RPC_NIBI="https://rpc.archive.nibiru.fi:443"
-# RPC_NIBI="https://rpc.nibiru.fi:443"
-RPC_DEVNET="https://rpc.devnet-3.nibiru.fi:443"
-# ITN_RPC="https://rpc-1.itn-1.nibiru.fi:443"   # individual node
-# https://rpc-nibiru.nodeist.net:443 # an alternative RPC 
-
-# Functions for switching chain configurations on nibiru.
-
-# cfg_nibi_local: Set Nibiru CLI config to local network.
-cfg_nibi_local() {
-  local rpc_url="$RPC_LOCAL"
-  local chain_id="nibiru-localnet-0"
-  nibid config node $rpc_url
-  nibid config chain-id "$chain_id"
-  nibid config broadcast-mode sync 
-  nibid config
-  export RPC="$rpc_url"
-}
-
-# cfg_nibi_test: Set Nibiru CLI config to a test network (testnet).
-cfg_nibi_test() {
-  local rpc_url="$RPC_TESTNET"
-  local chain_id="nibiru-testnet-2"
-  nibid config node $rpc_url
-  nibid config chain-id "$chain_id"
-  nibid config broadcast-mode sync 
-  nibid config
-  export RPC="$rpc_url"
-}
-
-# cfg_nibi_dev: Set Nibiru CLI config to a dev network (devnet).
-cfg_nibi_dev() {
-  local rpc_url="$RPC_DEVNET"
-  nibid config node $rpc_url
-  nibid config chain-id nibiru-devnet-3
-  nibid config broadcast-mode sync 
-  nibid config
-  export RPC="$rpc_url"
-}
-
-cfg_nibi() {
-  echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
-  echo "Sets the Nibiru CLI config to one of the Nibiru blockchain networks."
-  case "$1" in
-    --local)
-      cfg_nibi_local
-      ;;
-    --test)
-      cfg_nibi_test
-      ;;
-    --dev)
-      cfg_nibi_dev
-      ;;
-    --prod|--mainnet|"")
-      # Default to mainnet if no args or --prod
-      local rpc_url="$RPC_NIBI"
-      nibid config node "$rpc_url"
-      nibid config chain-id cataclysm-1
-      nibid config broadcast-mode sync
-      nibid config
-      export RPC="$rpc_url"
-      ;;
-    --help|-h)
-      echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
-      ;;
-    *)
-      echo "❌ Unknown flag: $1"
-      echo "Usage: cfg_nibi [--local | --test | --dev | --prod]"
-      return 1
-      ;;
-  esac
-}
-
-# # cfg_nibi: Set Nibiru CLI config to mainnet (cataclysm-1). 
-# cfg_nibi() {
-#   local rpc_url="$RPC_NIBI"
-#   nibid config node $rpc_url
-#   nibid config chain-id cataclysm-1
-#   nibid config broadcast-mode sync 
-#   nibid config
-#   export RPC="$rpc_url"
-# }
-
 
 # Ex: nibid tx bank send ... -y | tx
 # unalias tx
@@ -251,16 +168,17 @@ EOF
   --yes | tx
 }
 
-# Deletion Commands
-
-clean_yarn() {
-  rm -rf node_modules yarn.lock
-}
+# ----------------- Deletion Commands
 
 del_node_modules() {
   local dir_name="node_modules"
-  find -path "*/$dir_name*" -delete
-  find -type d -name "$dir_name" -delete
+  find . -path "*/$dir_name*" -delete
+  find . -type d -name "$dir_name" -delete
+}
+
+del_yarn() {
+  rm -f yarn.lock
+  del_node_modules
 }
 
 del_nvm_other() {
@@ -272,5 +190,3 @@ del_nvm_other() {
 del_zone() {
   find -type f -name '*Zone*' -delete
 }
-
-
