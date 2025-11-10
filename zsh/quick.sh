@@ -175,6 +175,17 @@ cfg_nibi() {
   esac
 }
 
+# # cfg_nibi: Set Nibiru CLI config to mainnet (cataclysm-1). 
+# cfg_nibi() {
+#   local rpc_url="$RPC_NIBI"
+#   nibid config node $rpc_url
+#   nibid config chain-id cataclysm-1
+#   nibid config broadcast-mode sync 
+#   nibid config
+#   export RPC="$rpc_url"
+# }
+
+
 # Ex: nibid tx bank send ... -y | tx
 # unalias tx
 tx() {

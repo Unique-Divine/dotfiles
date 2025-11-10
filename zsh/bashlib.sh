@@ -16,7 +16,7 @@ main_bash_setup() {
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
   source "$DOTFILES/env.sh"
-  source "$HOME/ki/boku/jiyuu/mycli/ud.sh"
+  source "$DOTFILES/zsh/ud/ud.sh"
   # For a full list of active aliases, run `alias`.
   nvm use lts/hydrogen >/dev/null 2>&1 || true
 }
@@ -162,7 +162,6 @@ env_var_ok() {
 # Example: 
 # env_vars_ok FROM GITHUB_KEY NPM_KEY 
 env_vars_ok() {
-  local all_set=true
   for env_var in "$@"; do
     if ! env_var_ok "$env_var"; then
       return 1 # Return 1 to indicate error
