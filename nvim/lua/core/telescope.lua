@@ -57,11 +57,21 @@ vim.keymap.set('n', '<leader>/', current_buffer_fuzzy_find,
 vim.keymap.set('n', '<leader>sb', current_buffer_fuzzy_find,
   { desc = '[/] Fuzzily [s]earch in current [b]uffer' })
 
+--[[
+Search for files (respecting .gitignore)
+Docs on all available opts for find_files.
+```
+:help telescope.builtin.find_files()
+```
+]]
 local function find_files_main()
   telescope.find_files({
     layout_strategy = 'vertical',
     prompt_prefix = "🔍 ",
-    hidden = true, -- maps to @field hidden boolean
+    --- hidden boolean: determines whether to show hidden files or not (default: false)
+    hidden = false,
+    ---no_ignore boolean: show files ignored by .gitignore, .ignore, etc. (default: false)
+    no_ignore = false,
   })
 end
 vim.keymap.set('n', '<leader>sf', find_files_main,
