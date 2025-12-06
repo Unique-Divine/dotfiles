@@ -21,19 +21,6 @@ main_bash_setup() {
   nvm use lts/hydrogen >/dev/null 2>&1 || true
 }
 
-
-# ghpeggy: Convenience function to add ssh private key to the ssh agent.
-ghpeggy() {
-  eval "$(ssh-agent -s)"
-  ssh-add ~/.ssh/peggyWSL
-}
-
-# ghdiesel: Convenience function to add ssh private key to the ssh agent.
-ghdiesel() {
-  eval "$(ssh-agent -s)"
-  ssh-add ~/.ssh/dieselSB3WSL_key  # vimdiesel@matrixsystems.co
-}
-
 # ------ Export Line
 
 # assert attempts to run an arbitrary command and errors out of the script
