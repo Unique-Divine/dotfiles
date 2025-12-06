@@ -1,11 +1,24 @@
 # Dotfiles - Unique Divine
 
 My personal development environment configuration optimized for Ubuntu 24.04 and
-WSL, designed to provide a consistent experience across machines.
+WSL, designed to provide a consistent and easily reproducible experience across
+machines.
+
+<h2>Table of Contents</h2>
+
+- [What's Included](#whats-included)
+- [Quick Setup](#quick-setup)
+- [Symlink Philosophy](#symlink-philosophy)
+- [Features](#features)
+  - [WSL Clipboard Integration](#wsl-clipboard-integration)
+  - [Neovim Configuration](#neovim-configuration)
+  - [Terminal Environment](#terminal-environment)
+- [Requirements](#requirements)
+- [Testing](#testing)
 
 ## What's Included
 
-- **Neovim**: Kickstart-based configuration with LSP, treesitter, and WSL clipboard integration
+- **Neovim**: Lua configuration with LSP, treesitter, and WSL clipboard integration
 - **Tmux**: Terminal multiplexer with Vim-style navigation and session persistence
 - **Zsh**: Shell configuration with Oh-My-Zsh, aliases, and developer tooling setup
 - **Bash**: Utility scripts, color-coded logging, and environment detection
@@ -15,18 +28,20 @@ WSL, designed to provide a consistent experience across machines.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/dotfiles.git
+git clone https://github.com/Unique-Divine/dotfiles.git
 cd dotfiles
 
 # Install Rust and cargo
-sudo apt install build-essential
-# This might be different for you. The command comes from here: https://rustup.rs/
+sudo apt install build-essential ripgrep
+
+# This might be different for you. The command comes from here: 
+# https://rustup.rs/
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
 cargo install just
 cargo install bat
 
 # Create symbolic links for configurations
-./symlinks.sh
+source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
 
 # Install development tools
 bun install
