@@ -23,6 +23,13 @@ vim.keymap.set("n", "<C-b>", function() end)
 -- greatest remap ever
 vim.keymap.set("x", "<leader>p", "\"_dP")
 
+-- Line wrap for long lines was making j -> gj and k -> gk. I did not like that
+-- and instead want the default vim behavior where j and k always move one line.
+-- These lines make sure that `j` and `k` work normally.
+vim.keymap.set("n", "j", "j", { noremap = true })
+vim.keymap.set("n", "k", "k", { noremap = true })
+
+
 -- textdwith option
 -- In vim, the `textwidth` option, or `tw` for short, controls the maximum width of text that is allowed in a line. When you use the `gq` command to format text, it will wrap lines to ensure they do not exceed the `textwidth` setting.
 local textwidth = 81
