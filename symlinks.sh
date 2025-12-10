@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
+#
+# symlinks.sh - Create symlinks from the dotfiles configuration to appropriate
+# locations in the users "$HOME" directory.
+#
+# Dependencies:
+#   - $DOTFILES: Path to the dotfiles repository root. Set via zshenv.
+#   - $SUDO_PW: Password for sudo operations (from env.sh)
+#   - bashlib.sh: Provides which_ok() and log_warning() functions
+#   - env.sh: Provides $SUDO_PW environment variable
 
 if [[ -z "$DOTFILES" ]]; then
-  echo "ERROR; \$DOTIFLES variable is not set. Run the script via \"zsh/zshenv\""
+  echo "ERROR; \$DOTFILES variable is not set. Run the script via \"zsh/zshenv\""
   exit 1
 fi
 
+# Function `_symlink` creates a symbolic link from source to destination if it
+# doesn't already exist. 
+# Usage: _symlink <source_path> <destination_path>
+_symlink() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ -L "src" ]]; then
+    return 0
+  fi
+  
+  ln -sf "$src" "$dst" 
+}
+
 # Global order for zsh: zshenv, zprofile, zshrc, zlogin
-ln -sf "$DOTFILES/zsh/zshenv" ~/.zshenv # cp ~/.zshenv "$DOTFILES/zsh/zshenv"
-ln -sf "$DOTFILES/zsh/zshrc" ~/.zshrc
-ln -sf "$DOTFILES/rustfmt.toml" ~/rustfmt.toml
-ln -sf "$DOTFILES/tmux/tmux.conf" ~/.tmux.conf
+_symlink "$DOTFILES/zsh/zshenv" ~/.zshenv # cp ~/.zshenv "$DOTFILES/zsh/zshenv"
+_symlink "$DOTFILES/zsh/zshrc" ~/.zshrc
+_symlink "$DOTFILES/rustfmt.toml" ~/rustfmt.toml
+_symlink "$DOTFILES/tmux/tmux.conf" ~/.tmux.conf
 
 mkdir -p ~/.config
-ln -sf "$DOTFILES/nvim" ~/.config/
+_symlink "$DOTFILES/nvim" ~/.config/
 
 source "$DOTFILES/zsh/bashlib.sh"
 source "$DOTFILES/env.sh" # For the $SUDO_PW env var
@@ -28,4 +51,4 @@ else
 fi
 
 mkdir -p ~/.config/yarn/global
-ln -sf "$DOTFILES/.config/yarn/global/package.json" ~/.config/yarn/global/package.json
+_symlink "$DOTFILES/.config/yarn/global/package.json" ~/.config/yarn/global/package.json
