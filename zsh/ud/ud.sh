@@ -387,8 +387,8 @@ EOF
 
 # ------------ main entry point
 
-ud() {
-  local cmd="${1:-help}"
+{
+  cmd="${1:-help}"
   case "$cmd" in
     go) _ud_go "${@:2}" ;;
     rs) _ud_rs "${@:2}" ;;
