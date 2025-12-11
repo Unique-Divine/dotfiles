@@ -21,7 +21,7 @@ _symlink() {
   local src="$1"
   local dst="$2"
 
-  if [[ -L "src" ]]; then
+  if [[ -L "$src" ]]; then
     return 0
   fi
   
@@ -52,3 +52,14 @@ fi
 
 mkdir -p ~/.config/yarn/global
 _symlink "$DOTFILES/.config/yarn/global/package.json" ~/.config/yarn/global/package.json
+
+
+mkdir -p ~/.local/bin
+_symlink "$DOTFILES/zsh/ud/ud.sh" ~/.local/bin/ud
+
+windows_cursor="/mnt/c/Users/realu/.cursor"
+mkdir -p "$windows_cursor/commands"
+cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+
+mkdir -p ~/.cursor/commands
+cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
