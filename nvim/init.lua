@@ -1,22 +1,21 @@
 --[[
-Kickstart.nvim is *not* a distribution.
+Neovim configuration of Unique Divine. You should be able to read every line of
+code from this dotfiles repo and understand what the configuration is doing.
 
-Kickstart.nvim is a template for your own configuration.
-The goal is that you can read every line of code, top-to-bottom, and understand
-what your configuration is doing.
+I hope this serves as a guideline or inspiration for folks interested in
+exploring and beginning to use Neovim.
 
-Once you've done that, you should start exploring, configuring and tinkering to
-explore Neovim!
-
-Lua Guides: If you don't know anything about Lua, I recommend taking some
-time to read through a guide.
-
- - https://learnxinyminutes.com/docs/lua/
- - And then you can explore or search through `:help lua-guide`
-
+### Version Information
 Neovim Verison: [0.10.4](https://github.com/neovim/neovim/releases/tag/v0.10.4)
 Neovim Version Date: 2025-03-13
 
+Lua Guides: If you don't know anything about Lua, I recommend taking some time
+to read through a short guide. The concepts from other programming languages
+carry over.
+ - [Lua basics](https://learnxinyminutes.com/docs/lua/)
+ - And then you can explore or search through `:help lua-guide`. This is
+ important to understand the particulars on how lua, nvim, and vim connect to
+ each other in the editing experience.
 --]]
 
 -- Set <space> as the leader key
@@ -45,9 +44,11 @@ if not vim.loop.fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
+-- ---------------------------------------------
+-- PLUGINS: Start
 -- NOTE: Here is where you install your plugins.
 --  You can configure plugins using the `config` key.
---
+
 vim.cmd('highlight Comment guifg=#89b9e7')
 --
 --  You can also configure plugins after the setup call,
@@ -353,19 +354,18 @@ local lazyPlugins = {
     build = ':TSUpdate',
   },
 
-  -- NOTE: Next Step on Your Neovim Journey: Add/Configure additional "plugins" for kickstart
-  --       These are some example plugins that I've included in the kickstart repository.
-  --       Uncomment any of the lines below to enable them.
-  require 'kickstart.plugins.autoformat',
-  require 'kickstart.plugins.debug',
+  -- NOTE: Next Step on Your Neovim Journey: Add/Configure additional "plugins"
+  -- for kickstart. These are some example plugins that I've included in the
+  -- kickstart repository.
+  require 'core/lsp-nvim-autoformat',
+  require 'core/debug-kickstart',
 
-  -- NOTE: The import below automatically adds your own plugins, configuration, etc from `lua/core/auto/*.lua`
-  -- You can use this folder to prevent any conflicts with this init.lua if you're interested in keeping
-  -- up-to-date with whatever is in the kickstart repo.k
-  --
+  require 'core/lazy-plugins',
+  -- The import below automatically adds your own plugins, configuration, etc
+  -- from `lua/core/auto/*.lua`.
   -- For additional information see:
   -- https://github.com/folke/lazy.nvim#-structuring-your-plugins
-  { import = 'core.auto' },
+  -- { import = 'core.auto' },
 }
 --- @type LazyConfig
 local lazyConfig = {}
@@ -439,7 +439,7 @@ vim.o.timeoutlen = 300
 -- Set completeopt to have a better completion experience
 vim.o.completeopt = 'menuone,noselect'
 
--- NOTE: You should make sure your terminal supports this
+-- NOTE: You should make sure your terminal supports `vim.o.termguicolors`.
 vim.o.termguicolors = true
 
 -- [[ Basic Keymaps ]]
@@ -465,12 +465,6 @@ require('core/telescope')
 
 -- [[ Treesitter ]] See `:help nvim-treesitter`
 require('core/treesitter')
-
--- Diagnostic keymaps
-vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, { desc = 'Go to previous diagnostic message' })
-vim.keymap.set('n', ']d', vim.diagnostic.goto_next, { desc = 'Go to next diagnostic message' })
-vim.keymap.set('n', '<leader>e', vim.diagnostic.open_float, { desc = 'Open floating diagnostic message' })
-vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostics list' })
 
 --- LSP settings.
 require('core/lsp')
