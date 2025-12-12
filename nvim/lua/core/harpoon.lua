@@ -2,7 +2,6 @@
 --
 -- See [Primeagen demonstration](https://youtu.be/FrMRyXtiJkc)
 
-
 --- A shorthand function that lets us more easily define keymaps. It sets
 --- normal mode and a description on each call.
 ---@param keys string Keymap definition statement. Ex.: '<leader>rn', 'gd', '<C-k>'.
@@ -37,3 +36,5 @@ vim_map_n('<C-A-n>', require("harpoon.ui").nav_prev, 'harpoon [N]ext [A]lt (reve
 -- vim_map_n('<C-h>', require("harpoon.ui").toggle_quick_menu, 'Toggle quick m[E]nu for harpoon')
 
 -- nmap('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
+
+return {}

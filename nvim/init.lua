@@ -146,8 +146,6 @@ local lazyPlugins = {
       },
       on_attach = function(bufnr)
         local gitsigns = require('gitsigns')
-        vim.keymap.set('n', '[c', gitsigns.nav_hunk('prev'),
-          { buffer = bufnr, desc = 'Go to Previous Hunk' })
         vim.keymap.set('n', ']c', gitsigns.nav_hunk('next'),
           { buffer = bufnr, desc = 'Go to Next Hunk' })
         vim.keymap.set('n', '<leader>ph', require('gitsigns').preview_hunk, { buffer = bufnr, desc = '[P]review [H]unk' })
@@ -371,94 +369,6 @@ local lazyPlugins = {
 local lazyConfig = {}
 require('lazy').setup(lazyPlugins, lazyConfig)
 
--- [[ Setting options ]]
--- See `:help vim.o`
-
--- Set highlight on search
-vim.o.hlsearch = false
-
--- Make line numbers default
-vim.wo.number = true
-
--- Enable mouse mode
-vim.o.mouse = 'a'
-
--- Sync clipboard between OS and Neovim.
---  Remove this option if you want your OS clipboard to remain independent.
---  See `:help 'clipboard'`
-vim.o.clipboard = 'unnamed,unnamedplus'
-vim.g.clipboard = {
-  name = "WSL (MacOS-like)",
-  copy = {
-    ["+"] = "pbcopy",
-    ["*"] = "pbcopy",
-  },
-  paste = {
-    ["+"] = "pbpaste",
-    ["*"] = "pbcopy",
-  },
-}
-
-vim.api.nvim_create_user_command('WY', function(opts)
-  -- Yank text into the '+' register: if a range was provided, yank that range;
-  -- otherwise, yank the current line.
-  if opts.range > 0 then
-    vim.cmd(string.format('%d,%dyank +', opts.line1, opts.line2))
-  else
-    vim.cmd('normal! "+y')
-  end
-
-  -- Get the yanked text from the '+' register.
-  local text = vim.fn.getreg('+')
-
-  -- Convert the text from UTF-8 to UTF-16LE and pipe it to pbcopy.
-  vim.fn.system('iconv -f UTF-8 -t UTF-16LE | pbcopy', text)
-
-  print("Yanked text copied to Windows clipboard (UTF-16LE).")
-end, { range = true, desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy" })
-
-
--- Enable break indent
-vim.o.breakindent = true
-
--- Save undo history
-vim.o.undofile = true
-
--- Case insensitive searching UNLESS /C or capital in search
-vim.o.ignorecase = true
-vim.o.smartcase = true
-
--- Keep signcolumn on by default
-vim.wo.signcolumn = 'yes'
-
--- Decrease update time
-vim.o.updatetime = 250
-vim.o.timeout = true
-vim.o.timeoutlen = 300
-
--- Set completeopt to have a better completion experience
-vim.o.completeopt = 'menuone,noselect'
-
--- NOTE: You should make sure your terminal supports `vim.o.termguicolors`.
-vim.o.termguicolors = true
-
--- [[ Basic Keymaps ]]
-
--- Keymaps for better default experience
--- See `:help vim.keymap.set()`
-vim.keymap.set({ 'n', 'v' }, '<Space>', '<Nop>', { silent = true })
-
-
--- [[ Highlight on yank ]]
--- See `:help vim.highlight.on_yank()`
-local highlight_group = vim.api.nvim_create_augroup('YankHighlight', { clear = true })
-vim.api.nvim_create_autocmd('TextYankPost', {
-  callback = function()
-    vim.highlight.on_yank()
-  end,
-  group = highlight_group,
-  pattern = '*',
-})
 
 -- [[ Telescope ]] Fuzzy find and search. See `:help telescope`
 require('core/telescope')
@@ -466,7 +376,7 @@ require('core/telescope')
 -- [[ Treesitter ]] See `:help nvim-treesitter`
 require('core/treesitter')
 
---- LSP settings.
+--- LSP (language server protocol) settings.
 require('core/lsp')
 
 require('core/editors')
@@ -481,5 +391,6 @@ require('core/debugger')
 require('core/comment')
 require('core/harpoon')
 
--- Vim settings
+-- Vim settings. This should be last so that plugins don't take control of the
+-- Vim options unexpectedly.
 require('core/vim')

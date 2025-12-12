@@ -41,6 +41,7 @@ local on_attach = function(client, bufnr)
   nmap('gr', require('telescope.builtin').lsp_references, '[G]oto [R]eferences')
   nmap('gI', vim.lsp.buf.implementation, '[G]oto [I]mplementation')
 
+  -- Diagnostic keymaps
   nmap('<leader>df', vim.diagnostic.goto_next, '[D]iagnotic [F]orward')
   nmap('<leader>dF', vim.diagnostic.goto_next, '[D]iagnotic un-[F]orward')
   nmap('<leader>dl', require('telescope.builtin').diagnostics, '[D]iagnostics [L]ist')
