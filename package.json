@@ -4,7 +4,7 @@
   "type": "module",
   "devDependencies": {
     "@types/bun": "latest",
-    "@uniquedivine/bash": "/home/realu/ki/jiyuu/bash-ts"
+    "@uniquedivine/bash": "/home/realu/ki/jiyuu/ts-pkg/bash"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

@@ -24,7 +24,11 @@ vim.keymap.set("n", "<C-b>", function() end)
 vim.keymap.set("x", "<leader>p", "\"_dP")
 
 -- Line wrap for long lines was making j -> gj and k -> gk. I did not like that
--- and instead want the default vim behavior where j and k always move one line.
+-- Remap for dealing with word wrap
+-- vim.keymap.set('n', 'k', "v:count == 0 ? 'gk' : 'k'", { expr = true, silent = true })
+-- vim.keymap.set('n', 'j', "v:count == 0 ? 'gj' : 'j'", { expr = true, silent = true })
+
+-- Instead, I want the default vim behavior where j and k always move one line.
 -- These lines make sure that `j` and `k` work normally.
 vim.keymap.set("n", "j", "j", { noremap = true })
 vim.keymap.set("n", "k", "k", { noremap = true })
