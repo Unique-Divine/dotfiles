@@ -172,7 +172,6 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 
-
 -- To change the default tree list mode in `netrw`, set the `g:netrw_liststyle` variable.
 -- The possible values for `g:netrw_liststyle` are:
 --
@@ -182,39 +181,33 @@ vim.api.nvim_create_autocmd("FileType", {
 -- 3: Wide (multiple files/dirs per line).
 -- 4: Tree (like the "thin" tree but with file sizes and dates).
 -- 5: Changes to the next style each time netrw is started.
--- vim.g.netrw_liststyle = 3
+--
+vim.g.netrw_liststyle = 0
 
 local function highlights_todo()
-  -- We're using the `:syntax keyword` command to add keywords to the a syntax
-  -- group like `UniqueDivineTODO`.
-  --
-  -- The `highlight link` block ensures that the syntax group will be highlighted
-  -- with the built-in `Todo` group, which typically represents tasks and to-dos.
-  -- Highlight tokens like TODO/FIXME/NOTE/Q: without relying on :syntax,
-  -- so it works even with Treesitter highlighting.
+  -- Highlight TODO markers using matchadd() so it works even when Treesitter
+  -- is providing the main syntax highlighting.
   local aug = vim.api.nvim_create_augroup("UD_TokenHighlights", { clear = true })
 
+  local function apply_hl()
+    vim.api.nvim_set_hl(0, "UniqueDivineTODO", { fg = "black", bg = "cyan" })
+  end
+
   -- 1) Define highlight groups (re-apply after colorscheme changes)
-  vim.api.nvim_create_autocmd("ColorScheme", {
-    group = aug,
-    callback = function()
-      vim.api.nvim_set_hl(0, "UniqueDivineTODO", { fg = "black", bg = "cyan" })
-    end,
-  })
+  vim.api.nvim_create_autocmd("ColorScheme", { group = aug, callback = apply_hl })
+  -- 2) Apply immediately (in case a colorscheme is already loaded)
+  apply_hl()
 
-  -- Apply immediately (in case a colorscheme is already loaded)
-  vim.api.nvim_set_hl(0, "UniqueDivineTODO", { fg = "black", bg = "cyan" })
-
-  -- 2) Add matches per-buffer
+  -- 3) Add matches per-buffer
   vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     group = aug,
     callback = function()
       -- Avoid stacking duplicates if this autocmd fires multiple times
-      pcall(vim.fn.matchdelete, vim.b.ud_todo_match_id or -1)
-      pcall(vim.fn.matchdelete, vim.b.ud_car_match_id or -1)
+      if vim.w.ud_todo_match_id then pcall(vim.fn.matchdelete, vim.w.ud_todo_match_id) end
+
 
       -- Match TODO-like tokens
-      vim.b.ud_todo_match_id = vim.fn.matchadd("UniqueDivineTODO", [[\v<TODO>]])
+      vim.w.ud_todo_match_id = vim.fn.matchadd("UniqueDivineTODO", [[\v<TODO>]])
     end,
   })
 end
@@ -253,7 +246,7 @@ local function highlights_question_answer()
       if vim.w.ud_q_match_id then pcall(vim.fn.matchdelete, vim.w.ud_q_match_id) end
       if vim.w.ud_a_match_id then pcall(vim.fn.matchdelete, vim.w.ud_a_match_id) end
 
-      -- Start-of-line markers only (avoids matching inside links/code/etc.)
+      -- Regex markers: "Q:" and "A:".
       vim.w.ud_q_match_id = vim.fn.matchadd("UDQuestion", [[\VQ:]])
       vim.w.ud_a_match_id = vim.fn.matchadd("UDAnswer", [[\VA:]])
     end,
