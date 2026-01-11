@@ -5,8 +5,8 @@ lazy.nvim and provides a modern, modular setup for software development.
 
 ## Version Information
 
-- **Neovim Version:** [0.10.4](https://github.com/neovim/neovim/releases/tag/v0.10.4)
-- **Release Date:** 2025-03-13
+- **Neovim Verison:** [0.12.2](https://github.com/neovim/neovim/releases/tag/v0.12.2)
+- **Release Date:** 2025-04-23
 - **Package Manager:** [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ## Structure
@@ -82,7 +82,7 @@ Core plugins installed via lazy.nvim:
 
 ### Prerequisites
 
-1. **Neovim 0.10.4+**
+1. **[Neovim 0.12.2+](https://github.com/neovim/neovim/releases/tag/stable)**
    ```bash
    nvim --version
    ```

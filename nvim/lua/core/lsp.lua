@@ -77,7 +77,7 @@ end
 --  will be passed to the `settings` field of the server config. You must look
 --  up that documentation yourself.
 --
---  See: https://github.com/williamboman/mason-lspconfig.nvim#available-lsp-servers
+--  See: https://github.com/mason-org/mason-lspconfig.nvim#available-lsp-servers
 local lsp_servers_mason = {
   -- clangd = {},
   gopls = {},
@@ -97,43 +97,35 @@ local lsp_servers_mason = {
   },
 }
 
--- Setup neovim lua configuration
-require('neodev').setup()
-
 -- nvim-cmp supports additional completion capabilities, so broadcast that to servers
 local capabilities = vim.lsp.protocol.make_client_capabilities()
 capabilities = require('cmp_nvim_lsp').default_capabilities(capabilities)
 
--- Ensure the servers above are installed
+-- mason-lspconfig 2.x: use vim.lsp.config (Neovim 0.11+) and automatic_enable; setup_handlers was removed.
+-- https://github.com/mason-org/mason-lspconfig.nvim
+vim.lsp.config('*', {
+  capabilities = capabilities,
+  on_attach = on_attach,
+})
+
+vim.lsp.config('gopls', {
+  cmd_env = {
+    GOFLAGS = "-tags=pebbledb", -- 2025-11-07: For Nibiru Go codebase
+  },
+})
+
+vim.lsp.config('lua_ls', {
+  settings = lsp_servers_mason.lua_ls,
+})
+
 local mason_lspconfig = require 'mason-lspconfig'
 
 mason_lspconfig.setup {
   ensure_installed = vim.tbl_keys(lsp_servers_mason),
-  -- Whether servers that are set up (via lspconfig) should be automatically installed if they're not already installed.
-  -- This setting has no relation with the `ensure_installed` setting.
-  -- Can either be:
-  --   - false: Servers are not automatically installed.
-  --   - true: All servers set up via lspconfig are automatically installed.
-  --   - { exclude: string[] }: All servers set up via lspconfig, except the ones provided in the list, are automatically installed.
-  --       Example: automatic_installation = { exclude = { "rust_analyzer", "solargraph" } }
-  ---@type boolean|table
-  automatic_installation = { exclude = "rust_analyzer" },
-}
-
-mason_lspconfig.setup_handlers {
-  function(server_name)
-    if server_name == "rust_analyzer" then
-      return -- Let cargo and rust-tools handle the "rust-analyzer" server.
-    end
-    require('lspconfig')[server_name].setup {
-      capabilities = capabilities,
-      on_attach = on_attach,
-      settings = lsp_servers_mason[server_name],
-      cmd_env = {
-        GOFLAGS = "-tags=pebbledb", -- 2025-11-07: For Nibiru Go codebase
-      },
-    }
-  end,
+  -- Installed servers are enabled via vim.lsp.enable() except these (rust is handled by rustaceanvim below).
+  automatic_enable = {
+    exclude = { "rust_analyzer" },
+  },
 }
 
 --[[
@@ -152,52 +144,19 @@ end, {
   desc = "Generate a markdown table of contents (TOC), copying the contents the clipboard",
 })
 
--- Rust
--- rust-tools will configure and enable certain LSP features for us.
--- See https://github.com/simrat39/rust-tools.nvim#configuration
-
-local function setup_rust_tools()
-  local opts = {
-    tools = {
-      runnables = {
-        use_telescope = true,
-      },
-
-      -- inlay_hints: These apply to the default RustSetInlayHints command
-      inlay_hints = {
-        -- auto: auto set inlay hints (type hints)
-        auto = true,
-        show_parameter_hints = true,
-        parameter_hints_prefix = "← ", -- default: "<- "
-        other_hints_prefix = "➤ ", -- default: "=> "
-      },
-    },
-
-    -- all the opts to send to nvim-lspconfig
-    -- these override the defaults set by rust-tools.nvim
-    -- see https://github.com/neovim/nvim-lspconfig/blob/v0.1.6/doc/server_configurations.md
-    server = {
-      -- on_attach is a callback called when the language server attachs to the buffer
-      on_attach = on_attach,
-      settings = {
-        -- to enable rust-analyzer settings visit:
-        -- https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/user/generated_config.adoc
-        -- Useful commands to fix the binary.
-        -- ```
-        -- rustup update
-        -- rustup component add rust-analyzer
-        -- ```
-        ["rust-analyzer"] = {
-          -- check: enable clippy on save
-          check = {
-            command = "clippy",
-          },
+-- Rust: rustaceanvim replaces simrat39/rust-tools (archived; used deprecated lspconfig.rust_analyzer.setup).
+-- Pickers: install telescope.nvim or fzf; rustaceanvim uses :RustLsp runnables / testables / …
+-- Inlay hints: Neovim 0.10+ built-in; see :help lsp-inlayhint
+-- https://github.com/mrcjkb/rustaceanvim
+vim.g.rustaceanvim = {
+  server = {
+    on_attach = on_attach,
+    default_settings = {
+      ['rust-analyzer'] = {
+        check = {
+          command = 'clippy',
         },
       },
     },
-  }
-
-  require("rust-tools").setup(opts)
-end
-
-setup_rust_tools()
+  },
+}

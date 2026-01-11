@@ -31,14 +31,17 @@ machines.
 git clone https://github.com/Unique-Divine/dotfiles.git
 cd dotfiles
 
-# Install Rust and cargo
-sudo apt install build-essential ripgrep
+# Install system packages used by the shell and Neovim.
+# - `libclang-dev` is needed so `cargo install tree-sitter-cli` can build.
+# - `tree-sitter-cli` is required by `nvim-treesitter` on the `main` branch.
+sudo apt install build-essential ripgrep libclang-dev
 
 # This might be different for you. The command comes from here: 
 # https://rustup.rs/
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
 cargo install just
 cargo install bat
+cargo install tree-sitter-cli
 
 # Create symbolic links for configurations
 source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
@@ -80,6 +83,7 @@ The `symlinks.sh` script handles creating all necessary symbolic links to connec
 - Tmux with Dracula theme and plugin manager
 - Zsh configured for Node.js, Rust, Go, and Python development
 - Bun JavaScript/TypeScript runtime integration
+- `tree-sitter-cli` support for Neovim parser installation on the `main` branch
 
 ## Requirements
 
@@ -90,6 +94,8 @@ The `symlinks.sh` script handles creating all necessary symbolic links to connec
 - Bun and Node.js
 - Cargo/Rust tools
 - Just command runner (`cargo install just`)
+- `libclang-dev` for building `tree-sitter-cli`
+- `tree-sitter-cli` (`cargo install tree-sitter-cli`)
 
 ## Testing
 

@@ -6,6 +6,9 @@ I hope this serves as a guideline or inspiration for folks interested in
 exploring and beginning to use Neovim.
 
 ### Version Information
+Neovim Verison: [0.12.2](https://github.com/neovim/neovim/releases/tag/v0.12.2)
+Neovim Version Date: 2025-04-23
+
 Neovim Verison: [0.10.4](https://github.com/neovim/neovim/releases/tag/v0.10.4)
 Neovim Version Date: 2025-03-13
 
@@ -32,7 +35,7 @@ package.path = package.path .. ';./?.lua'
 --    https://github.com/folke/lazy.nvim
 --    `:help lazy.nvim.txt` for more info
 local lazypath = vim.fn.stdpath 'data' .. '/lazy/lazy.nvim'
-if not vim.loop.fs_stat(lazypath) then
+if not (vim.uv or vim.loop).fs_stat(lazypath) then
   vim.fn.system {
     'git',
     'clone',
@@ -80,21 +83,36 @@ local lazyPlugins = {
     dependencies = {
       -- Automatically install LSPs to stdpath for neovim
       {
-        'williamboman/mason.nvim',
+        'mason-org/mason.nvim',
         config = true,
-        -- docs on "ensure_installed": https://github.com/williamboman/mason-lspconfig.nvim
+        -- docs on "ensure_installed": https://github.com/mason-org/mason-lspconfig.nvim
         opts = { ensure_installed = { "prettier" } }
       },
-      'williamboman/mason-lspconfig.nvim',
+      'mason-org/mason-lspconfig.nvim',
 
       -- Useful status updates for LSP
       -- NOTE: `opts = {}` is the same as calling `require('fidget').setup({})`
-      { 'j-hui/fidget.nvim',             tag = "legacy", opts = {} },
+      { 'j-hui/fidget.nvim',   tag = "legacy", opts = {} },
 
-      -- Additional lua configuration, makes nvim stuff amazing!
-      'folke/neodev.nvim',
-      'simrat39/rust-tools.nvim',
-      { 'simrat39/symbols-outline.nvim', opts = {} },
+      -- LuaLS workspace integration for Neovim config/plugin development.
+      {
+        'folke/lazydev.nvim',
+        ft = 'lua',
+        opts = {
+          library = {
+            { path = '${3rd}/luv/library', words = { 'vim%.uv' } },
+          },
+        },
+      },
+      { 'mrcjkb/rustaceanvim', version = '^6', ft = { 'rust' } },
+      -- LSP symbol outline. simrat39/symbols-outline is archived; outline.nvim
+      -- is the maintained fork and supports current LSP client APIs.
+      {
+        'hedyhli/outline.nvim',
+        config = function()
+          require('outline').setup({})
+        end,
+      },
     },
     -- Why add opts to 'nvim-lspconfig'?
     -- If we share dotfiles or setup a new computer, we'll automatically have
@@ -116,7 +134,7 @@ local lazyPlugins = {
       "rcarriga/nvim-dap-ui",
       "theHamsta/nvim-dap-virtual-text",
       "nvim-neotest/nvim-nio",
-      "williamboman/mason.nvim",
+      "mason-org/mason.nvim",
     },
   },
 
@@ -146,8 +164,9 @@ local lazyPlugins = {
       },
       on_attach = function(bufnr)
         local gitsigns = require('gitsigns')
-        vim.keymap.set('n', ']c', gitsigns.nav_hunk('next'),
-          { buffer = bufnr, desc = 'Go to Next Hunk' })
+        vim.keymap.set('n', ']c', function()
+          gitsigns.nav_hunk('next')
+        end, { buffer = bufnr, desc = 'Go to Next Hunk' })
         vim.keymap.set('n', '<leader>ph', require('gitsigns').preview_hunk, { buffer = bufnr, desc = '[P]review [H]unk' })
       end,
     },
@@ -316,7 +335,7 @@ local lazyPlugins = {
   { 'numToStr/Comment.nvim',         opts = {} },
 
   -- Fuzzy Finder (files, lsp, etc)
-  { 'nvim-telescope/telescope.nvim', branch = '0.1.x', dependencies = { 'nvim-lua/plenary.nvim' } },
+  { 'nvim-telescope/telescope.nvim', dependencies = { 'nvim-lua/plenary.nvim' } },
 
   -- Fuzzy Finder Algorithm which requires local dependencies to be built.
   -- Only load if `make` is available. Make sure you have the system
@@ -339,11 +358,16 @@ local lazyPlugins = {
     -- ```nvim
     -- :TSInstall astro
     -- ```
+    --
+    -- Use the `main` branch on Neovim 0.12+. It is a full rewrite, so the
+    -- setup lives in `lua/core/treesitter.lua` rather than the legacy
+    -- `require('nvim-treesitter.configs').setup { ... }` API.
     'nvim-treesitter/nvim-treesitter',
+    branch = 'main',
+    lazy = false, -- must load before `require('core/treesitter')` below
     dependencies = {
-      -- Extra module for nvim-treesitter
-      -- https://github.com/nvim-treesitter/nvim-treesitter/wiki/Extra-modules-and-plugins
-      'nvim-treesitter/nvim-treesitter-textobjects',
+      -- Extra textobjects module for the `main` branch API.
+      { 'nvim-treesitter/nvim-treesitter-textobjects', branch = 'main', lazy = false },
 
       -- Sets the `commentstring` based on tree-sitter queries
       'JoosepAlviste/nvim-ts-context-commentstring',
@@ -367,6 +391,9 @@ local lazyPlugins = {
 }
 --- @type LazyConfig
 local lazyConfig = {}
+-- If 'loadplugins' is off, lazy.setup() returns before defining :Lazy (see folke/lazy.nvim
+-- lua/lazy/init.lua). That happens with `nvim --noplugin` or :set noloadplugins.
+vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
 
