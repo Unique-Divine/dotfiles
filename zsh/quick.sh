@@ -67,7 +67,7 @@ git_mf() {
 # your text-based TODO-list open.
 todos() {
   local before="$(pwd)"
-  z "$BOKU_PATH"
+  cd "$BOKU_PATH" || return 1
   nvim "$BOKU_PATH/free/todos.md"
   cd "$before" || return 1
 }
@@ -75,7 +75,7 @@ todos() {
 # notes: Opens NeoVim with a notes workspace as the working directory.
 notes() {
   local before="$(pwd)"
-  z "$BOKU_PATH"
+  cd "$BOKU_PATH" || return 1
   nvim "$BOKU_PATH/free/the-log.md"
   cd "$before" || return 1
 }
@@ -111,7 +111,7 @@ dotf() {
 # skills: Opens AI agent skills directory.
 skills() {
   local before="$(pwd)"
-  z "$HOME/.cursor/skills"
+  cd "$HOME/.cursor/skills" || return 1
   nvim "$HOME/.cursor/skills"
   cd "$before" || return 1
 }

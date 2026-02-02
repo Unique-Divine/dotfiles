@@ -2,6 +2,10 @@
 # This script becomes the `ud` CLI when `symlinks.sh` links:
 #   $DOTFILES/zsh/ud/ud.sh -> ~/.local/bin/ud
 
+shopt -s expand_aliases
+
+source "$DOTFILES/zsh/zshenv"
+
 _ud_help() {
   local help_text
   help_text=$(cat <<EOF
@@ -97,6 +101,10 @@ _ud_go_cover() {
 
 # Command: "ud quick"
 _ud_quick() {
+  source "$DOTFILES/zsh/bashlib.sh"
+  source "$DOTFILES/zsh/aliases.sh"
+  source "$DOTFILES/zsh/quick.sh"
+
   local sub="${1:-help}"
   case "$sub" in
     cfg_nvim)
