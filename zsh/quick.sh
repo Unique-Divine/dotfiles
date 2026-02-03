@@ -134,6 +134,10 @@ cfg_tmux() {
   cd "$before" || return 1
 }
 
+sharex() {
+  bash $BOKU_PATH/sharex.sh
+}
+
 # ----------------- Nibiru -----------------
 
 # Reminders for config_* functions
