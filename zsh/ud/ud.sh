@@ -483,9 +483,26 @@ _ud_docker_start() {
   return 1
 }
 
+# Command: "ud docker stop"
+# Behavior: Stop Docker Desktop on Windows from WSL.
+_ud_docker_stop() {
+  if ! command -v taskkill.exe >/dev/null 2>&1; then
+    echo "taskkill.exe is not available. Are you running from WSL?"
+    return 1
+  fi
+
+  if ! _ud_docker_desktop_running; then
+    echo "Docker Desktop is not running."
+    return 0
+  fi
+
+  echo "Stopping Docker Desktop..."
+  taskkill.exe /IM "Docker Desktop.exe" /T /F
+}
+
 # Command: "ud docker kill-all"
-# Behavior: Tear down running Compose projects with `down -v` and then stop
-# any remaining running containers.
+# Behavior: Tear down running docker compose apps (multi-container) with
+# `docker compose down -v` and then stop any remaining running containers.
 _ud_docker_kill_all() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "Docker CLI is not installed or not on PATH."
@@ -506,11 +523,11 @@ _ud_docker_kill_all() {
   )
 
   if [[ -n "$compose_entries" ]]; then
-    echo "Tearing down running Docker Compose projects with down -v..."
+    echo "Tearing down running docker compose apps (multi-container) with docker compose down -v..."
     while IFS='|' read -r project_name project_workdir project_configs; do
       [[ -z "$project_name" ]] && continue
 
-      echo "Compose project: $project_name"
+      echo "Docker compose app (multi-container): $project_name"
       local compose_args=()
       if [[ -n "$project_workdir" ]]; then
         compose_args+=(--project-directory "$project_workdir")
@@ -527,7 +544,7 @@ _ud_docker_kill_all() {
       }
     done <<< "$compose_entries"
   else
-    echo "No running Docker Compose projects found."
+    echo "No running docker compose apps (multi-container) found."
   fi
 
   local running_container_ids
@@ -547,11 +564,14 @@ _ud_docker_kill_all() {
 _ud_docker() {
   local sub="${1:-help}"
   case "$sub" in
+    kill-all)
+      _ud_docker_kill_all
+      ;;
     start)
       _ud_docker_start
       ;;
-    kill-all)
-      _ud_docker_kill_all
+    stop)
+      _ud_docker_stop
       ;;
 
     help|-h|--help|"")
@@ -564,8 +584,9 @@ DESCRIPTION:
    Docker Desktop helpers for WSL environments.
 
 COMMANDS:
+   kill-all  Stop containers and run docker compose down -v for apps
    start     Start Docker Desktop if not already running
-   kill-all  Stop all running containers and run compose down -v
+   stop      Stop Docker Desktop
 
 FLAGS:
    --help, -h         Show help for this command
