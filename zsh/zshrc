@@ -173,7 +173,9 @@ export PATH=$HOME/bin:$PATH
 
 # Fixes permission denied error in Windows machine sometimes seen with `just`.
 # > error: Recipe `setup` with shebang `#!/usr/bin/env bash` execution error: Permission denied (os error 13)
-sudo mount -o remount,exec "$XDG_RUNTIME_DIR"
+if [[ -n "${SUDO_PW:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then 
+  echo "$SUDO_PW" | sudo -S --prompt="" mount -o remount,exec "$XDG_RUNTIME_DIR"
+fi
 
 # source ~/.profile
 
@@ -198,52 +200,6 @@ export PATH="$PATH:$GOPATH/bin"
 
 export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
 export PATH="/mnt/c/Users/realu/AppData/Local/Programs/Microsoft VS Code/bin:$PATH"
-
-# Rust test a package
-rt() {
-  local show_help=0
-  local is_verbose=0
-
-  # Parse command-line options
-  while getopts ":hv" opt; do
-    case ${opt} in
-      h )
-        show_help=1
-        ;;
-      v )
-        is_verbose=1
-        ;;
-      \? )
-        echo "Invalid option: -$OPTARG" 1>&2
-        return 1
-        ;;
-    esac
-  done
-  shift $((OPTIND -1))
-
-  if [ $show_help -eq 1 ]; then
-    echo "Usage: rt [-h] [-v] <package_name>"
-    echo "Run tests for the specified Rust package."
-    echo ""
-    echo "Options:"
-    echo "  -h,     Show this help message and exit."
-    echo "  -v      Enable verbose output."
-    return 0
-  fi
-
-
-  if [ -z "$pkg" ]; then
-    echo "Error: Package name is empty. Set the 'pkg' environment variable to the package name."
-    return 1
-  fi
-
-  local rust_backtrace="1"
-  if [ $is_verbose -eq 1 ]; then
-    rust_backtrace="full"  # turns on verbose backtrace
-  fi
-
-  RUST_BACKTRACE=$rust_backtrace cargo test --package "$pkg"
-}
 
 # Cosmos-sdk 'file' backend
 # alias keyd='f(){ "$@" --keyring-backend test;  unset -f f; }; f'
@@ -291,15 +247,12 @@ clean_poetry() {
   poetry env use $(pyenv versions | grep '*' | cut -d' ' -f2)
 }
 
-export ADDR_VAL="nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl"
-export ADDR_VAL2="nibi1de655f3f9sce94ncuvmcf5plnmxljfvdxx6487"
 export ADDR_UD="nibi1ah8gqrtjllhc5ld4rxgl4uglvwl93ag0sh6e6v"
-export ADDR_DELPHI="nibi10gm4kys9yyrlqpvj05vqvjwvje87gln8nsm8wa"
 export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
-export MNEM_VAL="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host"
-export MNEM_VAL2="video spider leaf until sheriff worry please hole dirt depart injury thing genuine future buddy metal clever limb goose diagram math time foot cry"
 export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
 
+# TODO: Add fn docs
+# TODO: Move to ud.sh as proper defensive fn (ud nibi keys ... ?)
 keys_recover() {
   local name="$1"
   local mnemonic="$2"
@@ -307,12 +260,16 @@ keys_recover() {
 }
 
 export NIBI="000000unibi"
-export NUSD="000000unusd"
 export FAUCET_WEB="nibi1cq87ggjzlt3jzs8u7fc2e36e7nellvatzw8a63"
 export FAUCET_DISCORD="nibi1x9tym6ah8lzrnmzvv33pwmz9jeqd6ucd69kemr"
 export TXFLAG=(--gas-prices 0.25unibi --gas auto --gas-adjustment 1.3)
 
 nibi_addrs() {
+  # ADDR_DELPHI: (TESTING ONLY)
+  export ADDR_DELPHI="nibi10gm4kys9yyrlqpvj05vqvjwvje87gln8nsm8wa"
+
+  # ADDR_VAL: (TESTING ONLY) Default localnet validator
+  export ADDR_VAL="nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl"
   echo $ADDR_VAL ADDR_VAL 
   echo $ADDR_UD ADDR_UD 
   echo $ADDR_DELPHI ADDR_DELPHI 
@@ -328,11 +285,7 @@ nibi_faucets() {
 }
 
 nibi_keys() {
-  echo "tilt exhaust lawsuit dad duck shield rookie cigar solution blush celery typical flag joke broom flight soldier certain comic bless rather fee business letter" | nibid keys add --recover liq
-
-  echo "have kiss gift clog desk happy motor law crack pink mirror giant pledge alcohol monitor opera return sudden wagon number grass alley length unknown" | nibid keys add --recover delphi
-
-  KEY_NAME="test-me"
+  KEY_NAME="validator"
   local MNEM="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" 
   echo "$MNEM" | nibid keys add $KEY_NAME --recover --keyring-backend test
 }
@@ -342,11 +295,6 @@ nibi_keys() {
 # List the soft file limit: ulimit -n
 # Increase soft file limit: ulimit -n 4096
 ulimit -n 4096
-
-sharex() {
-  # HOME=/home/realu
-  bash $BOKU_PATH/sharex.sh
-}
 
 # bruh: re-runs the last command with sudo.
 bruh() { 
@@ -361,7 +309,7 @@ last_cmd() {
 }
 
 autoload -U +X bashcompinit && bashcompinit
-complete -o nospace -C /home/realu/go/bin/gocomplete go
+complete -o nospace -C "$HOME/go/bin/gocomplete" go
 
 main_bash_setup
 
@@ -372,12 +320,6 @@ main_bash_setup
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
-# bun completions
-[ -s "/home/realu/.bun/_bun" ] && source "/home/realu/.bun/_bun"
 source ~/powerlevel10k/powerlevel10k.zsh-theme
 
-# bun
-export BUN_INSTALL="$HOME/.bun"
-export PATH="$BUN_INSTALL/bin:$PATH"
-
-[[ -s "/home/realu/.gvm/scripts/gvm" ]] && source "/home/realu/.gvm/scripts/gvm"
+[[ -s "$HOME/.gvm/scripts/gvm" ]] && source "$HOME/.gvm/scripts/gvm"

@@ -45,7 +45,7 @@ if which_ok nvim && which_ok view; then
   # The `sudo` command doesn't typically read from stdin, so you have to use
   # `sudo -S` to get the desired behavior. The `-S` is shorthand for `--std-in`.
   # See the docs at `man sudo`.
-  echo "$SUDO_PW" | sudo -S ln -sf "$(which nvim)" "$(which view)"
+  echo "$SUDO_PW" | sudo -S --prompt="" ln -sf "$(which nvim)" "$(which view)"
 else
     log_warning "Skipping symlink creation between nvim <-> view due to missing dependencies." >&2
 fi
