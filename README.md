@@ -32,11 +32,14 @@ git clone https://github.com/Unique-Divine/dotfiles.git
 cd dotfiles
 
 # Install system packages used by the shell and Neovim.
-# - `libclang-dev` is needed so `cargo install tree-sitter-cli` can build.
-# - `tree-sitter-cli` is required by `nvim-treesitter` on the `main` branch.
-# - `lua5.1` and `luarocks` satisfy Lazy's healthcheck on machines using the
-#   system Lua/LuaRocks install.
-sudo apt install build-essential ripgrep libclang-dev lua5.1 luarocks
+# - build-essential: Used in almost everything
+# - gh: GitHub CLI
+# - libclang-dev: Needed so `cargo install tree-sitter-cli` can build.
+# - tree-sitter-cli: Required by `nvim-treesitter` on the `main` branch.
+# - wslu: Provides `wslview` (Example: gh pr view --web). This fixes the error,
+#   > exec: "xdg-open,x-www-browser,www-browser,wslview": executable file not found in $PATH
+
+sudo apt install build-essential ripgrep gh libclang-dev wslu
 
 # This might be different for you. The command comes from here: 
 # https://rustup.rs/
@@ -50,9 +53,12 @@ source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
 # Install development tools
 bun install
 just setup
+```
 
-# For Neovim plugins
-nvim --headless -c 'autocmd User PackerComplete quitall' -c 'PackerSync'
+After installing `nvim`, restore Neovim plugins from the lazy.nvim lockfile:
+
+```bash
+nvim --headless "+Lazy! restore" +qa
 ```
 
 ## Symlink Philosophy
