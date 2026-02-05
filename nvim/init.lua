@@ -57,8 +57,21 @@ vim.cmd('highlight Comment guifg=#89b9e7')
 --  You can also configure plugins after the setup call,
 --    as they will be available in your neovim runtime.
 
--- Toggles theme between "light" | "dark"
-vim.o.background = "light"
+-- Toggles theme between "light" | "dark" with `vim.o.background`.
+-- Defaults to "dark" unless env var "NVIM_BG" says otherwise.
+do
+  local bg = vim.env.NVIM_BG or "dark"
+  ---@type table<string, boolean>
+  local bg_themes = {
+    light = true,
+    dark = true,
+  }
+  if not bg_themes[bg] then
+    bg = "dark"
+  end
+
+  vim.o.background = bg
+end
 
 ---@type LazySpec
 ---See [Lazy Plugin Spec](https://github.com/folke/lazy.nvim#-plugin-spec)
