@@ -360,6 +360,29 @@ EOF
   esac
 }
 
+# Command: "ud nibi stop"
+_ud_nibi_stop() {
+  local pids
+
+  if ! pgrep -x nibid >/dev/null 2>&1; then
+    echo "No nibid processes are running."
+    echo "✅ Done stopping nibid processes."
+    return 0
+  fi
+
+  while pgrep -x nibid >/dev/null 2>&1; do
+    pids="$(pgrep -x nibid)"
+    for pid in $pids; do
+      if kill "$pid" 2>/dev/null; then
+        echo "✅ Killed process $pid (nibid)"
+      fi
+    done
+    sleep 0.2
+  done
+
+  echo "✅ Done stopping nibid processes."
+}
+
 
 # Command: "ud nibi"
 _ud_nibi() {
@@ -383,6 +406,10 @@ _ud_nibi() {
       eval "$cmd"
       ;;
 
+    stop)
+      _ud_nibi_stop
+      ;;
+
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -396,6 +423,7 @@ COMMANDS:
    cfg               Set CLI config to target a network
    addrs             Show common Nibiru addresses used in testing
    get-nibid, gn     Install nibid binary (via curl)
+   stop              Stop running nibid processes
 
 FLAGS:
    --help, -h         Show help for the this command
