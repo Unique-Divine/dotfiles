@@ -37,28 +37,28 @@ git_cof() {
 # git_mf: Git "[m]erge [f]rom". Fetch, prune, check out the target and merge it
 # into the starting branch.
 git_mf() {
-  echo "Usage: git_mf <target_branch>"
-  if [[ "$#" -ne 1 && "$#" -ne 0 ]]; then
-    echo "  ERROR The git_mf function accepts 1 arg or 0, not $#"
-    echo "  If the <target_branch> is empty, git_mf -> git fetch, git pull"
-    return 1
-  fi
+  printf "Usage: git_mf <target_branch> [flags (for git merge)]\n"
+  printf "  If the <target_branch> is empty, git_mf -> git fetch, git pull\n\n"
 
-  local target_branch="$1"
-  echo "RUN git fetch --all --prune"
-  git fetch --all --prune || true
-  if [[ -z "$target_branch" ]]; then
-    echo "No target branch given."
+  if [[ "$#" -eq 0 ]]; then
+    echo "RUN git fetch --all --prune"
+    git fetch --all --prune || true
     echo "RUN git pull"
     git pull || true
     return 0
   fi
 
+  local target_branch="$1"
+  shift # Everythign after $1 is an arg to git merge
+
+  echo "RUN git fetch --all --prune"
+  git fetch --all --prune || true
+
   local start_branch="$(git br --show-current)"
   git checkout "$target_branch"
   git pull || true
   git checkout "$start_branch"
-  git merge "$target_branch"
+  git merge "$target_branch" "$@"
 }
 
 # ----------------- Daily Shortcuts -----------------
