@@ -57,9 +57,9 @@ _ud_go() {
     lint)
       _ud_run "golangci-lint run --allow-parallel-runners --fix" "$@" ;;
     cover-short|cs)
-      _ud_go_cover "go test ./... -short -cover -coverprofile='temp.out' 2>&1 | grep -Ev 'no test|no statement'" ;;
+      _ud_go_cover "go test ./... -short -cover -coverprofile='/tmp/temp.out' 2>&1 | grep -Ev 'no test|no statement'" ;;
     cover|c)
-      _ud_go_cover "go test ./... -cover -coverprofile='temp.out' 2>&1 | grep -v 'no test' | grep -v 'no statement'" ;;
+      _ud_go_cover "go test ./... -cover -coverprofile='/tmp/temp.out' 2>&1 | grep -v 'no test' | grep -v 'no statement'" ;;
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -93,8 +93,11 @@ _ud_go_cover() {
   local test_cmd="$1"
   echo "$test_cmd"
   eval "$test_cmd"
-  go tool cover -html="temp.out" -o coverage.html
-  open coverage.html || explorer.exe coverage.html 2>/dev/null || echo "Coverage report generated."
+  go tool cover -html="/tmp/temp.out" -o /tmp/coverage.html
+  wslview /tmp/coverage.html \
+    || open /tmp/coverage.html \
+    || explorer.exe /tmp/coverage.html 2>/dev/null \
+    || printf "Coverage report generated:\n%s\n" "/tmp/coverage.html"
 }
 
 # ------------ Subcommand: ud quick 
