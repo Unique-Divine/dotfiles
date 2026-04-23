@@ -103,8 +103,8 @@ export_pyenv() {
     echo "Tool \"pyenv\" is not installed. Installing now with: $install_cmd"
     eval "$install_cmd"
   fi
+  [[ -d "$PYENV_ROOT/bin" ]] && export PATH="$PYENV_ROOT/bin:$PATH"
   export PYENV_ROOT=$(pyenv root)
-  [[ -d "$PYENV_ROOT/bin" ]] &&  export PATH="$PYENV_ROOT/bin:$PATH"
   export PATH=$(pyenv root)/shims:$PATH
   eval "$(pyenv init - zsh)"
   eval "$(pyenv init --path)"

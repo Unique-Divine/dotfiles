@@ -1,122 +1,228 @@
 -- core/treesitter.lua
 --
--- nvim-treesitter provides syntax highlighting, text objects, code indentation,
--- and other language-aware features for Neovim using Tree-sitter parsers.
-require('nvim-treesitter.configs').setup {
-  -- ensure_installed: Add languages to be installed here that you want installed for treesitter
-  ensure_installed = {
-    'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'json',
-    'typescript', 'vimdoc', 'vim', 'vue', 'html', 'css', 'scss', 'javascript',
-    'gomod', 'gosum', 'gowork', 'graphql', 'markdown', 'markdown_inline',
-  },
+-- nvim-treesitter `main` is a rewrite for Neovim 0.12+:
+-- - parsers are installed via `require('nvim-treesitter').install`
+-- - highlighting is started with `vim.treesitter.start()`
+-- - indentation is enabled by setting `indentexpr`
+-- - textobjects are configured by the standalone textobjects plugin
 
-  -- 1. Missing required fields in type `TSConfig`: `modules`, `ignore_install` [missing-fields]
-
-  -- sync_install: Installs parsers synchronously (only related to
-  -- `ensure_installed`)
-  sync_install = false,
-
-  -- auto_install: Automatically install language parsers when entering buffer.
-  -- Reccomandation: Set to false if you don't use `tree-sitter` CLI. Defaults
-  -- to false.
-  auto_install = false,
-  -- See https://github.com/nvim-treesitter/nvim-treesitter/blob/master/lua/nvim-treesitter/configs.lua
-  ignore_install = {},
-  modules = {},
-
-  highlight = {
-    enable = true,
-    custom_captures = { ["Todo"] = "ToolbarButton" },
-    additional_vim_regex_highlighting = false,
-  },
-  indent = { enable = true },
-  -- indent = { enable = true, disable = { 'python' } },
-  incremental_selection = {
-    enable = true,
-    keymaps = {
-      init_selection = '<c-space>',
-      node_incremental = '<c-space>',
-      scope_incremental = '<c-s>',
-      node_decremental = '<M-space>',
-    },
-  },
-
-  -- For treesitter plugin: 'nvim-treesitter/nvim-treesitter-textobjects'
-  -- For `Textobjects` definedby tree-sitter queries.
-  textobjects = {
-    select = {
-      enable = true,
-      lookahead = true, -- Automatically jump forward to textobj, similar to targets.vim
-      keymaps = {
-        -- You can use the capture groups defined in textobjects.scm
-        ['aa'] = '@parameter.outer',
-        ['ia'] = '@parameter.inner',
-        ['af'] = '@function.outer',
-        ['if'] = '@function.inner',
-        ['ac'] = '@class.outer',
-        ['ic'] = '@class.inner',
-      },
-    },
-    move = {
-      enable = true,
-      set_jumps = true, -- whether to set jumps in the jumplist
-      goto_next_start = {
-        [']m'] = '@function.outer',
-        [']]'] = '@class.outer',
-      },
-      goto_next_end = {
-        [']M'] = '@function.outer',
-        [']['] = '@class.outer',
-      },
-      goto_previous_start = {
-        ['[m'] = '@function.outer',
-        ['[['] = '@class.outer',
-      },
-      goto_previous_end = {
-        ['[M'] = '@function.outer',
-        ['[]'] = '@class.outer',
-      },
-    },
-    swap = {
-      enable = true,
-      swap_next = {
-        -- ['<leader>a'] = '@parameter.inner',
-      },
-      swap_previous = {
-        ['<leader>A'] = '@parameter.inner',
-      },
-    },
-  },
-
-  -- Sets the `commentstring` based on tree-sitter queries
-  -- For treesitter plugin: 'JoosepAlviste/nvim-ts-context-commentstring'
-  -- See: https://github.com/JoosepAlviste/nvim-ts-context-commentstring
-  -- [Plugin docs](https://github.com/JoosepAlviste/nvim-ts-context-commentstring/blob/main/doc/nvim-ts-context-commentstring.txt)
-  -- context_commentstring = { enable = true },
+local parsers = {
+  'c',
+  'cpp',
+  'css',
+  'go',
+  'gomod',
+  'gosum',
+  'gowork',
+  'graphql',
+  'html',
+  'javascript',
+  'json',
+  'lua',
+  'markdown',
+  'markdown_inline',
+  'python',
+  'rust',
+  'scss',
+  'tsx',
+  'typescript',
+  'vim',
+  'vimdoc',
+  'vue',
 }
 
--- Setup the plugin manually rather than as an nvim-treesitter module. We do
--- this because nvim-treesitter has version > 1.0.
+local indent_languages = {
+  c = true,
+  cpp = true,
+  css = true,
+  go = true,
+  graphql = true,
+  html = true,
+  javascript = true,
+  json = true,
+  lua = true,
+  markdown = true,
+  python = true,
+  rust = true,
+  scss = true,
+  tsx = true,
+  typescript = true,
+  vim = true,
+  vimdoc = true,
+  vue = true,
+}
+
+local nvim_treesitter = require('nvim-treesitter')
+local ts_move = require('nvim-treesitter-textobjects.move')
+local ts_select = require('nvim-treesitter-textobjects.select')
+local ts_swap = require('nvim-treesitter-textobjects.swap')
+local ts_select_builtin = require('vim.treesitter._select')
+
+nvim_treesitter.setup {
+  install_dir = vim.fn.stdpath('data') .. '/site',
+}
+
+local installed = nvim_treesitter.get_installed()
+local missing = vim.tbl_filter(function(lang)
+  return not vim.list_contains(installed, lang)
+end, parsers)
+
+if #missing > 0 then
+  nvim_treesitter.install(missing)
+end
+
+require('nvim-treesitter-textobjects').setup {
+  select = {
+    lookahead = true,
+  },
+  move = {
+    set_jumps = true,
+  },
+}
+
+local function map(modes, lhs, rhs, desc)
+  vim.keymap.set(modes, lhs, rhs, { desc = desc })
+end
+
+-- Incremental selection moved from nvim-treesitter to Neovim core in 0.12.
+-- Neovim help refers to the built-in defaults as:
+--   - `v_an`: in Visual mode, press `a` then `n` to expand to the parent node
+--   - `v_in`: in Visual mode, press `i` then `n` to shrink to the child node
+--   - `v_]n`: in Visual mode, press `]` then `n` for the next sibling node
+--   - `v_[n`: in Visual mode, press `[` then `n` for the previous sibling node
+-- These are powerful because they let you navigate the syntax tree by
+-- structure instead of by lines or words:
+--   - parent: grow outward to the containing expression / statement / block
+--   - child: shrink inward to a more specific nested node
+--   - next sibling: move sideways to the next peer at the same tree depth
+--   - previous sibling: move sideways to the previous peer at the same depth
+-- Example: if the cursor is on one argument in `foo(bar, baz, qux)`, the
+-- sibling motions can move selection across `bar` -> `baz` -> `qux` without
+-- leaving the argument list.
+-- The `v_` prefix is help notation only; it means "this mapping applies in
+-- Visual mode". See `:help treesitter`, `:help v_an`, and `:help v_in`.
+--
+-- Restore the pre-0.12 muscle memory:
+--   - `<C-Space>` starts/grows the selection
+--   - `<M-Space>` shrinks the selection
+map({ 'n', 'x' }, '<C-Space>', function()
+  ts_select_builtin.select_parent(vim.v.count1)
+end, 'Incremental selection expand')
+
+map({ 'n', 'x' }, '<M-Space>', function()
+  ts_select_builtin.select_child(vim.v.count1)
+end, 'Incremental selection shrink')
+
+map({ 'x', 'o' }, 'aa', function()
+  ts_select.select_textobject('@parameter.outer', 'textobjects')
+end, 'Select around parameter')
+
+map({ 'x', 'o' }, 'ia', function()
+  ts_select.select_textobject('@parameter.inner', 'textobjects')
+end, 'Select inside parameter')
+
+map({ 'x', 'o' }, 'af', function()
+  ts_select.select_textobject('@function.outer', 'textobjects')
+end, 'Select around function')
+
+map({ 'x', 'o' }, 'if', function()
+  ts_select.select_textobject('@function.inner', 'textobjects')
+end, 'Select inside function')
+
+map({ 'x', 'o' }, 'ac', function()
+  ts_select.select_textobject('@class.outer', 'textobjects')
+end, 'Select around class')
+
+map({ 'x', 'o' }, 'ic', function()
+  ts_select.select_textobject('@class.inner', 'textobjects')
+end, 'Select inside class')
+
+map({ 'n', 'x', 'o' }, ']m', function()
+  ts_move.goto_next_start('@function.outer', 'textobjects')
+end, 'Go to next function start')
+
+map({ 'n', 'x', 'o' }, ']]', function()
+  ts_move.goto_next_start('@class.outer', 'textobjects')
+end, 'Go to next class start')
+
+map({ 'n', 'x', 'o' }, ']M', function()
+  ts_move.goto_next_end('@function.outer', 'textobjects')
+end, 'Go to next function end')
+
+map({ 'n', 'x', 'o' }, '][', function()
+  ts_move.goto_next_end('@class.outer', 'textobjects')
+end, 'Go to next class end')
+
+map({ 'n', 'x', 'o' }, '[m', function()
+  ts_move.goto_previous_start('@function.outer', 'textobjects')
+end, 'Go to previous function start')
+
+map({ 'n', 'x', 'o' }, '[[', function()
+  ts_move.goto_previous_start('@class.outer', 'textobjects')
+end, 'Go to previous class start')
+
+map({ 'n', 'x', 'o' }, '[M', function()
+  ts_move.goto_previous_end('@function.outer', 'textobjects')
+end, 'Go to previous function end')
+
+map({ 'n', 'x', 'o' }, '[]', function()
+  ts_move.goto_previous_end('@class.outer', 'textobjects')
+end, 'Go to previous class end')
+
+map('n', '<leader>A', function()
+  ts_swap.swap_previous('@parameter.inner')
+end, 'Swap with previous parameter')
+
+-- Neovim 0.12 ships built-in treesitter incremental selection in core Neovim,
+-- so the removed `nvim-treesitter` incremental_selection module is replaced by
+-- the mappings above instead of recreated wholesale.
+local function setup_buffer(bufnr)
+  if not vim.api.nvim_buf_is_loaded(bufnr) then
+    return
+  end
+
+  if vim.bo[bufnr].buftype ~= '' then
+    return
+  end
+
+  local ok = pcall(vim.treesitter.start, bufnr)
+  if not ok then
+    return
+  end
+
+  local filetype = vim.bo[bufnr].filetype
+  local lang = vim.treesitter.language.get_lang(filetype) or filetype
+  if indent_languages[lang] then
+    vim.bo[bufnr].indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
+  end
+end
+
+local group = vim.api.nvim_create_augroup('UserTreesitter', { clear = true })
+
+vim.api.nvim_create_autocmd('FileType', {
+  group = group,
+  callback = function(args)
+    setup_buffer(args.buf)
+  end,
+})
+
+for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+  setup_buffer(bufnr)
+end
+
+-- Setup this plugin directly and let Comment.nvim trigger it via pre_hook.
 require('ts_context_commentstring').setup {
-  context_commentstring = {
-    enable = true,
-    config = {
-      typescript = { __default = '// %s', __multiline = '/* %s */' },
-      -- some languages are not injected with language tree, but have
-      -- multiple commenting styles in the same language. One such example is
-      -- JavaScript with JSX. The JSX section is not an injected language, but a part
-      -- of the tree generated by the `javascript` Treesitter parser.
-      --
-      -- In this more complex case, this plugin supports adding queries for specific
-      -- Treesitter nodes. Each node can have its own unique commenting style. For
-      -- example
-      javascript = {
-        __default = '// %s',
-        jsx_element = '{/* %s */}',
-        jsx_fragment = '{/* %s */}',
-        jsx_attribute = '// %s',
-        comment = '// %s',
-      },
-    }
+  enable_autocmd = false,
+  config = {
+    typescript = { __default = '// %s', __multiline = '/* %s */' },
+    -- JavaScript can embed JSX without an injected language tree, so specific
+    -- node names still need explicit comment styles.
+    javascript = {
+      __default = '// %s',
+      jsx_element = '{/* %s */}',
+      jsx_fragment = '{/* %s */}',
+      jsx_attribute = '// %s',
+      comment = '// %s',
+    },
   },
 }

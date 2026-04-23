@@ -1,6 +1,6 @@
 --- core/fmt.lua: Formatter since null-ls is archived
---- This largely works in conjunction with 'prettier', which is installed via
---- the 'williamboman/mason.nvim' plugin.
+--- Prettier is invoked via mhartington/formatter.nvim; install `prettier` /
+--- `prettierd` with Mason (mason-org/mason.nvim).
 ---
 --- Note that formatter comes from this plugin.
 --- https://github.com/mhartington/formatter.nvim

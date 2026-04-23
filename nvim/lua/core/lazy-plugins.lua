@@ -46,29 +46,9 @@ local plugins = {
   { "nvim-neotest/nvim-nio" },
   { 'mhartington/formatter.nvim' },
 
-  --- This import is for [MunifTanjim/prettier.nvim](https://github.com/MunifTanjim/prettier.nvim)
-  --- Currently, 'prettierd' is installed with Mason.
-  {
-    'MunifTanjim/prettier.nvim',
-    config = function()
-      local prettier = require("prettier")
-      prettier.setup({
-        bin = 'prettierd', -- prettier or prettierd
-        filetypes = {
-          "css",
-          "graphql",
-          "html",
-          "javascript",
-          "javascriptreact",
-          "less",
-          "scss",
-          "typescript",
-          "typescriptreact",
-          "yaml",
-        },
-      })
-    end
-  },
+  -- Prettier formatting: use mhartington/formatter.nvim (core/fmt.lua) and/or
+  -- stevearc/conform.nvim with Mason’s `prettier` / `prettierd` — not
+  -- MunifTanjim/prettier.nvim (triggers deprecated vim.validate on Nvim 0.12+).
 
   -- Corresponds to lua/core/fmt-conform.lua
   -- https://github.com/stevearc/conform.nvim
