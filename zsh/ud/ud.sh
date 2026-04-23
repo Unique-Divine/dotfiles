@@ -24,18 +24,31 @@ EOF
   echo "$help_text"
 }
 
+# Function: _ud_run - Echo a command string and execute it by default. 
+# If `--cmd` is present in the remaining arguments, only print the command
+# without executing it.
+_ud_run() {
+  local base_cmd="$1"; shift
+  if [[ " $* " =~ " --cmd " ]]; then
+    echo "$base_cmd"
+  else
+    echo "$base_cmd"
+    eval "$base_cmd"
+  fi
+}
+
 # Command: "ud go"
 _ud_go() {
   local sub="${1:-help}"
   case "$sub" in
     test-short|ts)
-      _ud_go_run "go test ./... -short 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
+      _ud_run "go test ./... -short 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
     test-int|ti)
-      _ud_go_run "go test ./... -run Integration 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
+      _ud_run "go test ./... -run Integration 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
     test|t)
-      _ud_go_run "go test ./... 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
+      _ud_run "go test ./... 2>&1 | grep -Ev 'no test|no statement'" "$@" ;;
     lint)
-      _ud_go_run "golangci-lint run --allow-parallel-runners --fix" "$@" ;;
+      _ud_run "golangci-lint run --allow-parallel-runners --fix" "$@" ;;
     cover-short|cs)
       _ud_go_cover "go test ./... -short -cover -coverprofile='temp.out' 2>&1 | grep -Ev 'no test|no statement'" ;;
     cover|c)
@@ -69,16 +82,6 @@ EOF
   esac
 }
 
-_ud_go_run() {
-  local base_cmd="$1"; shift
-  if [[ " $* " =~ " --cmd " ]]; then
-    echo "$base_cmd"
-  else
-    echo "$base_cmd"
-    eval "$base_cmd"
-  fi
-}
-
 _ud_go_cover() {
   local test_cmd="$1"
   echo "$test_cmd"
@@ -93,12 +96,24 @@ _ud_go_cover() {
 _ud_quick() {
   local sub="${1:-help}"
   case "$sub" in
+    cfg_nvim)
+      _ud_run "cfg_nvim" "$@" ;;
+    cfg_tmux)
+      _ud_run "cfg_tmux" "$@" ;;
+    dotf)
+      _ud_run "dotf" "$@" ;;
+    music)
+      _ud_run "music" "$@" ;;
+    myrc)
+      _ud_run "myrc" "$@" ;;
     notes)
-      _ud_go_run "notes" "$@" ;;
-    todos)
-      _ud_go_run "todos" "$@" ;;
+      _ud_run "notes" "$@" ;;
     out)
-      _ud_go_run "nvim $HOME/ki/out.txt" "$@" ;;
+      _ud_run "nvim $HOME/ki/out.txt" "$@" ;;
+    skills)
+      _ud_run "skills" "$@" ;;
+    todos)
+      _ud_run "todos" "$@" ;;
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -115,12 +130,13 @@ COMMANDS:
    dotf         Edit your dotfiles
    music        Opens the Windows file explorer to your music files
    myrc         Edit your zshrc config
-   notes        Edit your notes workspac
+   notes        Edit your notes workspace
    out          Edit temporary file at \$HOME/ki/out.txt
+   skills       Open AI agent skills directory in Neovim
    todos        Edit your notes workspace with your text-based TODO-list open
 
 FLAGS:
-   --help, -h         Show help for the this command
+   --help, -h         Show help for this command
 EOF
 )
       echo "$help_text"

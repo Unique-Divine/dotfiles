@@ -80,6 +80,14 @@ dotf() {
   cd "$before" || return 1
 }
 
+# skills: Opens AI agent skills directory.
+skills() {
+  local before="$(pwd)"
+  z "$HOME/.cursor/skills"
+  nvim "$HOME/.cursor/skills"
+  cd "$before" || return 1
+}
+
 # cfg_nvim: Edit your nvim config.
 cfg_nvim() {
   local before="$(pwd)"
@@ -187,6 +195,7 @@ del_nvm_other() {
   cd $NVM_DIR/versions/node; ls -A | grep -v `nvm current` | xargs rm -rf
 }
 
+# Windows sometimes adds
 del_zone() {
-  find -type f -name '*Zone*' -delete
+  find "." -type f -name '*Zone*' -delete
 }

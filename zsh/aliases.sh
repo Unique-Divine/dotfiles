@@ -40,3 +40,4 @@ git config --global core.editor "nvim"
 # Broadcast tx and save it to "txout.json"
 # alias txout="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibid q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' >> txout.json}"
 
+alias ft="focustime" # 2026-03-04
