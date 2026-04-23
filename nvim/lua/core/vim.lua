@@ -59,6 +59,17 @@ vim.api.nvim_create_user_command('WY', function(opts)
   print("Yanked text copied to Windows clipboard (UTF-16LE).")
 end, { range = true, desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy" })
 
+vim.api.nvim_create_user_command("Wfix", function()
+  vim.cmd("write")
+  local file = vim.api.nvim_buf_get_name(0)
+  if file == "" then
+    vim.notify("No file name for current buffer (use :w <path> first).", vim.log.levels.WARN)
+    return
+  end
+  vim.system({ "winfixtext", file })
+  print(("Ran: winfixtext %s"):format(file))
+end, { desc = "Write and run `winfixtext` on the current file" })
+
 
 -- Enable break indent
 vim.o.breakindent = true
