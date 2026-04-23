@@ -87,13 +87,34 @@ export_nvm() {
 
   # The nvm lts version can be found here: https://github.com/nodejs/Release 
   echo "lts/jod" > "$HOME/.nvmrc" # jod == v22
-  # nvm install lts/jod || true
-  nvm use # bun install --global yarn
+  nvm use
   # bun install --global yarn
+}
+
+# pyenv: Python Version Manager (nvm for Python)
+# [Installation](https://pyenv.run/)
+# ```bash
+# curl https://pyenv.run | bash
+# ```
+export_pyenv() {
+  export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
+  if [[ ! -d "$PYENV_ROOT" ]]; then 
+    local install_cmd="curl https://pyenv.run | bash"
+    echo "Tool \"pyenv\" is not installed. Installing now with: $install_cmd"
+    eval "$install_cmd"
+  fi
+  export PYENV_ROOT=$(pyenv root)
+  [[ -d "$PYENV_ROOT/bin" ]] &&  export PATH="$PYENV_ROOT/bin:$PATH"
+  export PATH=$(pyenv root)/shims:$PATH
+  eval "$(pyenv init - zsh)"
+  eval "$(pyenv init --path)"
+  command -v pyenv >/dev/null
 }
 
 check_view_symlink_target
 export_nvm
+export_pyenv
+
 echo "⚡ Shell setup with IO complete."
 
 # ------------ --------------------------------------------- ------------
@@ -226,7 +247,7 @@ rt() {
 
 # Cosmos-sdk 'file' backend
 # alias keyd='f(){ "$@" --keyring-backend test;  unset -f f; }; f'
-export KEYRING=--keyring-backend=test
+export KEYRING="--keyring-backend=test"
 # nibid flag for outputting in JSON format
 # you can also edit the config directly with `nibid config [key] [value]`
 # Display the current binary config by running `nibid config`
@@ -240,25 +261,14 @@ export_yarn_nvim
 
 export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"
 
-export PYENV_ROOT="$HOME/.pyenv"
-export PATH="$PYENV_ROOT/bin:$PATH"
-command -v pyenv >/dev/null 
-export PATH=$(pyenv root)/shims:$PATH
-eval "$(pyenv init -)"
-eval "$(pyenv init --path)"
-
+# Google Cloud SDK:
+# The next line updates PATH for the Google Cloud SDK.
+if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
+# The next line enables shell command completion for gcloud.
+if [ -f "$HOME/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/google-cloud-sdk/completion.zsh.inc"; fi
 # export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.10.4"
 # export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.9.13"
 
-# The next line updates PATH for the Google Cloud SDK.
-if [ -f '/home/realu/google-cloud-sdk/path.zsh.inc' ]; then . '/home/realu/google-cloud-sdk/path.zsh.inc'; fi
-
-# The next line enables shell command completion for gcloud.
-if [ -f '/home/realu/google-cloud-sdk/completion.zsh.inc' ]; then . '/home/realu/google-cloud-sdk/completion.zsh.inc'; fi
-
-# Enable pyenv-virtualenv
-# https://github.com/pyenv/pyenv-virtualenv 
-# eval "$(pyenv virtualenv-init -)"
 
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.poetry/bin:$PATH"

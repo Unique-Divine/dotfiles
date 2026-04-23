@@ -4,7 +4,7 @@
 #   functions for the entire configuration. This function is called during 
 #   main shell setup.
 #
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC2155
 main_bash_setup() {
   # Check if DOTFILES variable is set and not empty
   if [ -z "$DOTFILES" ]; then
@@ -12,13 +12,16 @@ main_bash_setup() {
     return 1
   fi
 
+  source "$DOTFILES/zsh/zshenv"
   source "$DOTFILES/zsh/bashlib.sh"
   source "$DOTFILES/zsh/aliases.sh"
   source "$DOTFILES/zsh/quick.sh"
   source "$DOTFILES/env.sh"
-
   # For a full list of active aliases, run `alias`.
-  nvm use lts/hydrogen >/dev/null 2>&1 || true
+
+  local path_orig="$(pwd)"
+  (cd nvm use >/dev/null 2>&1 || true)
+  cd "$path_orig" || true
 }
 
 # ------ Export Line
