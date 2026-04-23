@@ -150,6 +150,10 @@ source ~/powerlevel10k/powerlevel10k.zsh-theme
 
 export PATH=$HOME/bin:$PATH
 
+# Fixes permission denied error in Windows machine sometimes seen with `just`.
+# > error: Recipe `setup` with shebang `#!/usr/bin/env bash` execution error: Permission denied (os error 13)
+sudo mount -o remount,exec "$XDG_RUNTIME_DIR"
+
 # source ~/.profile
 
 # ----------------------- Go / Golang
