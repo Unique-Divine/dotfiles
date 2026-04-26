@@ -34,14 +34,15 @@ cd dotfiles
 # Install system packages used by the shell and Neovim.
 # - `libclang-dev` is needed so `cargo install tree-sitter-cli` can build.
 # - `tree-sitter-cli` is required by `nvim-treesitter` on the `main` branch.
-sudo apt install build-essential ripgrep libclang-dev
+# - `lua5.1` and `luarocks` satisfy Lazy's healthcheck on machines using the
+#   system Lua/LuaRocks install.
+sudo apt install build-essential ripgrep libclang-dev lua5.1 luarocks
 
 # This might be different for you. The command comes from here: 
 # https://rustup.rs/
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
 cargo install just
-cargo install bat
-cargo install tree-sitter-cli
+cargo install bat tree-sitter-cli
 
 # Create symbolic links for configurations
 source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
@@ -95,6 +96,7 @@ The `symlinks.sh` script handles creating all necessary symbolic links to connec
 - Cargo/Rust tools
 - Just command runner (`cargo install just`)
 - `libclang-dev` for building `tree-sitter-cli`
+- `lua5.1` and `luarocks` for Lazy/LuaRocks health checks
 - `tree-sitter-cli` (`cargo install tree-sitter-cli`)
 
 ## Testing
