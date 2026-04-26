@@ -57,9 +57,14 @@ _symlink "$DOTFILES/.config/yarn/global/package.json" ~/.config/yarn/global/pack
 mkdir -p ~/.local/bin
 _symlink "$DOTFILES/zsh/ud/ud.sh" ~/.local/bin/ud
 
-windows_cursor="/mnt/c/Users/realu/.cursor"
-mkdir -p "$windows_cursor/commands"
-cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
-
-mkdir -p ~/.cursor/commands
-cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# Deprecated in favor of skills, as skills are always visible by the Cursor-CLI
+# (Command "agent" or "cursor-agent"), while commands are not.
+# 
+# ```bash
+# windows_cursor="/mnt/c/Users/realu/.cursor"
+# mkdir -p "$windows_cursor/commands"
+# cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# 
+# mkdir -p ~/.cursor/commands
+# cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# ```
