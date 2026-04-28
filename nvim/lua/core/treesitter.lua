@@ -7,6 +7,7 @@
 -- - textobjects are configured by the standalone textobjects plugin
 
 local parsers = {
+  'bash',
   'c',
   'cpp',
   'css',

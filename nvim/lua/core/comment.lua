@@ -11,11 +11,20 @@
 -- Installed in the init.lua.
 --
 local comment = require("Comment")
+local ts_comment = require('ts_context_commentstring')
+local ts_comment_hook =
+  require('ts_context_commentstring.integrations.comment_nvim').create_pre_hook()
 
 ---@type CommentConfig?
 local config = {
   -- See: https://github.com/numToStr/Comment.nvim#pre-hook
-  pre_hook = require('ts_context_commentstring.integrations.comment_nvim').create_pre_hook(),
+  pre_hook = function(ctx)
+    local commentstring = ts_comment_hook(ctx)
+
+    -- Comment.nvim's treesitter fallback can fail when Nvim knows the
+    -- filetype's commentstring but the matching parser is not installed.
+    return commentstring or vim.bo.commentstring
+  end,
 }
 
 --[[

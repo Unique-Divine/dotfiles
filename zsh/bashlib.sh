@@ -136,9 +136,17 @@ source_ok() {
 }
 
 env_var_ok() {
-  local env_var="$1"
-  if [[ -z "$env_var" ]]; then 
-    log_error "expected env var to be set"
+  local env_var_name="$1"
+  local env_var_value
+
+  if [[ ! "$env_var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    log_error "invalid env var name: $env_var_name"
+    return 1
+  fi
+
+  eval "env_var_value=\"\${$env_var_name:-}\""
+  if [[ -z "$env_var_value" ]]; then 
+    log_error "expected env var to be set: $env_var_name"
     return 1  # Return 1 to indicate error (variable is not set)
   else
     return 0  # Return 0 to indicate success (variable is set)

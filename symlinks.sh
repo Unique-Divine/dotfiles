@@ -45,7 +45,7 @@ if which_ok nvim && which_ok view; then
   # The `sudo` command doesn't typically read from stdin, so you have to use
   # `sudo -S` to get the desired behavior. The `-S` is shorthand for `--std-in`.
   # See the docs at `man sudo`.
-  echo "$SUDO_PW" | sudo -S ln -sf "$(which nvim)" "$(which view)"
+  echo "$SUDO_PW" | sudo -S --prompt="" ln -sf "$(which nvim)" "$(which view)"
 else
     log_warning "Skipping symlink creation between nvim <-> view due to missing dependencies." >&2
 fi
@@ -57,9 +57,14 @@ _symlink "$DOTFILES/.config/yarn/global/package.json" ~/.config/yarn/global/pack
 mkdir -p ~/.local/bin
 _symlink "$DOTFILES/zsh/ud/ud.sh" ~/.local/bin/ud
 
-windows_cursor="/mnt/c/Users/realu/.cursor"
-mkdir -p "$windows_cursor/commands"
-cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
-
-mkdir -p ~/.cursor/commands
-cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# Deprecated in favor of skills, as skills are always visible by the Cursor-CLI
+# (Command "agent" or "cursor-agent"), while commands are not.
+# 
+# ```bash
+# windows_cursor="/mnt/c/Users/realu/.cursor"
+# mkdir -p "$windows_cursor/commands"
+# cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# 
+# mkdir -p ~/.cursor/commands
+# cp "$DOTFILES/cursor/commands"/* "$windows_cursor/commands/"
+# ```

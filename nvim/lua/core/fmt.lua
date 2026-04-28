@@ -58,6 +58,11 @@ vim.api.nvim_create_autocmd({ "BufWritePost" },
 -- 2025-06-13: I did an exploration on how formatter.nvim
 -- (https://github.com/mhartington/formatter.nvim) works to understand what
 -- arguments prettier gets and why it doesn't respect repospecific prettier configs.
+-- 2026-04-25: In `sai-perps/scripts/`, `just fmt-e2e` behaved correctly while
+-- save-time formatting in Neovim differed because `kickstart-lsp-format-ts_ls`
+-- also ran on `BufWritePre`. Useful debugging commands:
+--   :verbose autocmd BufWritePre
+--   :verbose autocmd BufWritePost
 -- I didn't fix the issue, but the deep dive was quite enlightening.
 --
 -- vim.api.nvim_create_autocmd({ "BufWritePost" }, {

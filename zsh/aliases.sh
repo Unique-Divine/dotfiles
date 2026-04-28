@@ -19,6 +19,8 @@ alias cat="bat"   # cargo install bat
 alias vi="nvim"
 alias vim="nvim"
 
+alias rt="ud rs test-short"
+
 # vv: short for "vim view". Piping to vv lets you read stdout in a vi editor
 alias vv="view -"
 alias vvjq="jq | vv"

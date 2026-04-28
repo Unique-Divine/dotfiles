@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# This script becomes the `ud` CLI when `symlinks.sh` links:
+#   $DOTFILES/zsh/ud/ud.sh -> ~/.local/bin/ud
+
+shopt -s expand_aliases
+
+source "$DOTFILES/zsh/zshenv"
 
 _ud_help() {
   local help_text
@@ -15,6 +21,7 @@ COMMANDS:
    rs             Rust-specific commands
    nibi           Nibiru-specific commands
    md             Markdown commands
+   docker         Docker Desktop commands for WSL
    help, h        Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
@@ -50,9 +57,9 @@ _ud_go() {
     lint)
       _ud_run "golangci-lint run --allow-parallel-runners --fix" "$@" ;;
     cover-short|cs)
-      _ud_go_cover "go test ./... -short -cover -coverprofile='temp.out' 2>&1 | grep -Ev 'no test|no statement'" ;;
+      _ud_go_cover "go test ./... -short -cover -coverprofile='/tmp/temp.out' 2>&1 | grep -Ev 'no test|no statement'" ;;
     cover|c)
-      _ud_go_cover "go test ./... -cover -coverprofile='temp.out' 2>&1 | grep -v 'no test' | grep -v 'no statement'" ;;
+      _ud_go_cover "go test ./... -cover -coverprofile='/tmp/temp.out' 2>&1 | grep -v 'no test' | grep -v 'no statement'" ;;
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -86,14 +93,21 @@ _ud_go_cover() {
   local test_cmd="$1"
   echo "$test_cmd"
   eval "$test_cmd"
-  go tool cover -html="temp.out" -o coverage.html
-  open coverage.html || explorer.exe coverage.html 2>/dev/null || echo "Coverage report generated."
+  go tool cover -html="/tmp/temp.out" -o /tmp/coverage.html
+  wslview /tmp/coverage.html \
+    || open /tmp/coverage.html \
+    || explorer.exe /tmp/coverage.html 2>/dev/null \
+    || printf "Coverage report generated:\n%s\n" "/tmp/coverage.html"
 }
 
 # ------------ Subcommand: ud quick 
 
 # Command: "ud quick"
 _ud_quick() {
+  source "$DOTFILES/zsh/bashlib.sh"
+  source "$DOTFILES/zsh/aliases.sh"
+  source "$DOTFILES/zsh/quick.sh"
+
   local sub="${1:-help}"
   case "$sub" in
     cfg_nvim)
@@ -349,6 +363,29 @@ EOF
   esac
 }
 
+# Command: "ud nibi stop"
+_ud_nibi_stop() {
+  local pids
+
+  if ! pgrep -x nibid >/dev/null 2>&1; then
+    echo "No nibid processes are running."
+    echo "✅ Done stopping nibid processes."
+    return 0
+  fi
+
+  while pgrep -x nibid >/dev/null 2>&1; do
+    pids="$(pgrep -x nibid)"
+    for pid in $pids; do
+      if kill "$pid" 2>/dev/null; then
+        echo "✅ Killed process $pid (nibid)"
+      fi
+    done
+    sleep 0.2
+  done
+
+  echo "✅ Done stopping nibid processes."
+}
+
 
 # Command: "ud nibi"
 _ud_nibi() {
@@ -372,6 +409,10 @@ _ud_nibi() {
       eval "$cmd"
       ;;
 
+    stop)
+      _ud_nibi_stop
+      ;;
+
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -385,6 +426,7 @@ COMMANDS:
    cfg               Set CLI config to target a network
    addrs             Show common Nibiru addresses used in testing
    get-nibid, gn     Install nibid binary (via curl)
+   stop              Stop running nibid processes
 
 FLAGS:
    --help, -h         Show help for the this command
@@ -401,6 +443,197 @@ EOF
   esac
 }
 
+# ------------ Subcommand: ud docker
+
+UD_DOCKER_DESKTOP_EXE="/mnt/c/Program Files/Docker/Docker/Docker Desktop.exe"
+UD_DOCKER_DESKTOP_WIN_PATH="C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"
+
+# Function: _ud_docker_is_ready
+# Purpose: Return success when Docker CLI exists and daemon responds.
+_ud_docker_is_ready() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  docker info >/dev/null 2>&1
+}
+
+# Function: _ud_docker_desktop_running
+# Purpose: Detect whether Docker Desktop.exe is running on Windows.
+_ud_docker_desktop_running() {
+  if ! command -v tasklist.exe >/dev/null 2>&1; then
+    return 1
+  fi
+
+  tasklist.exe 2>/dev/null | tr -d "\r" | grep -Fq "Docker Desktop.exe"
+}
+
+# Function: _ud_docker_launch_desktop
+# Purpose: Start Docker Desktop from its WSL-mounted executable path.
+_ud_docker_launch_desktop() {
+  if [[ -x "$UD_DOCKER_DESKTOP_EXE" ]]; then
+    echo "Launching executable:"
+    echo "  $UD_DOCKER_DESKTOP_EXE"
+    echo "  $UD_DOCKER_DESKTOP_WIN_PATH (Windows path)"
+    "$UD_DOCKER_DESKTOP_EXE" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    return 0
+  fi
+
+  return 1
+}
+
+# Command: "ud docker start"
+# Behavior: Start Docker Desktop only when Docker is not already ready.
+_ud_docker_start() {
+  if _ud_docker_is_ready; then
+    echo "Docker is already running."
+    return 0
+  fi
+
+  if _ud_docker_desktop_running; then
+    echo "Docker Desktop is already running. Waiting for Docker engine..."
+    return 0
+  fi
+
+  if [[ ! -f "$UD_DOCKER_DESKTOP_EXE" ]]; then
+    echo "Docker Desktop executable not found:"
+    echo "  $UD_DOCKER_DESKTOP_EXE"
+    echo "Install Docker Desktop or update the ud docker path."
+    return 1
+  fi
+
+  echo "Starting Docker Desktop..."
+  if _ud_docker_launch_desktop; then
+    echo "Docker Desktop launch requested."
+    echo "After startup, run 'docker' to verify it is ready."
+    return 0
+  fi
+
+  echo "Failed to launch Docker Desktop from WSL."
+  return 1
+}
+
+# Command: "ud docker stop"
+# Behavior: Stop Docker Desktop on Windows from WSL.
+_ud_docker_stop() {
+  if ! command -v taskkill.exe >/dev/null 2>&1; then
+    echo "taskkill.exe is not available. Are you running from WSL?"
+    return 1
+  fi
+
+  if ! _ud_docker_desktop_running; then
+    echo "Docker Desktop is not running."
+    return 0
+  fi
+
+  echo "Stopping Docker Desktop..."
+  taskkill.exe /IM "Docker Desktop.exe" /T /F
+}
+
+# Command: "ud docker kill-all"
+# Behavior: Tear down running docker compose apps (multi-container) with
+# `docker compose down -v` and then stop any remaining running containers.
+_ud_docker_kill_all() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker CLI is not installed or not on PATH."
+    return 1
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker daemon is not reachable."
+    return 1
+  fi
+
+  local compose_entries
+  compose_entries=$(
+    docker ps \
+      --filter label=com.docker.compose.project \
+      --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.project.config_files"}}' \
+      | awk '!seen[$0]++'
+  )
+
+  if [[ -n "$compose_entries" ]]; then
+    echo "Tearing down running docker compose apps (multi-container) with docker compose down -v..."
+    while IFS='|' read -r project_name project_workdir project_configs; do
+      [[ -z "$project_name" ]] && continue
+
+      echo "Docker compose app (multi-container): $project_name"
+      local compose_args=()
+      if [[ -n "$project_workdir" ]]; then
+        compose_args+=(--project-directory "$project_workdir")
+      fi
+
+      local cfg
+      IFS=',' read -r -a cfg_list <<< "$project_configs"
+      for cfg in "${cfg_list[@]}"; do
+        [[ -n "$cfg" ]] && compose_args+=(-f "$cfg")
+      done
+
+      docker compose "${compose_args[@]}" down -v || {
+        echo "Failed to fully tear down project: $project_name"
+      }
+    done <<< "$compose_entries"
+  else
+    echo "No running docker compose apps (multi-container) found."
+  fi
+
+  local running_container_ids
+  running_container_ids=$(docker ps --format '{{.ID}}')
+  if [[ -n "$running_container_ids" ]]; then
+    echo "Stopping remaining running containers..."
+    # shellcheck disable=SC2086
+    docker stop $running_container_ids
+  else
+    echo "No remaining running containers found."
+  fi
+
+  echo "Done. Docker Desktop remains running, but containers are inactive."
+}
+
+# Command: "ud docker"
+_ud_docker() {
+  local sub="${1:-help}"
+  case "$sub" in
+    kill-all)
+      _ud_docker_kill_all
+      ;;
+    start)
+      _ud_docker_start
+      ;;
+    stop)
+      _ud_docker_stop
+      ;;
+
+    help|-h|--help|"")
+      local help_text
+      help_text=$(cat <<EOF
+USAGE:
+   ud docker [command]
+
+DESCRIPTION:
+   Docker Desktop helpers for WSL environments.
+
+COMMANDS:
+   kill-all  Stop containers and run docker compose down -v for apps
+   start     Start Docker Desktop if not already running
+   stop      Stop Docker Desktop
+
+FLAGS:
+   --help, -h         Show help for this command
+EOF
+)
+      echo "$help_text"
+      ;;
+
+    *)
+      echo "Unknown docker subcommand: $sub"
+      _ud_docker help
+      return 1
+      ;;
+  esac
+}
+
 # ------------ main entry point
 
 {
@@ -410,6 +643,7 @@ EOF
     rs) _ud_rs "${@:2}" ;;
     md) _ud_md "${@:2}" ;;
     nibi) _ud_nibi "${@:2}" ;;
+    docker) _ud_docker "${@:2}" ;;
     quick|q|cfg) _ud_quick "${@:2}" ;;
     help|-h|--help|"") _ud_help ;;
     *) echo -e "Unknown command: $cmd\n"; _ud_help ;;

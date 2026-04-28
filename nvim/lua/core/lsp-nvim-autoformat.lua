@@ -44,9 +44,14 @@ return {
           return
         end
 
-        -- Tsserver usually works poorly. Sorry you work with bad languages
-        -- You can remove this line if you know what you're doing :)
-        if client.name == 'tsserver' then
+        -- TypeScript LSP formatting often fights repo-local Prettier.
+        -- 2026-04-25: `ts_ls` showed up in `:verbose autocmd BufWritePre`
+        -- while `formatter.nvim` handled save-time Prettier separately.
+        -- Helpful debugging commands:
+        --   :verbose autocmd BufWritePre
+        --   :verbose autocmd BufWritePost
+        -- You can remove this guard if you explicitly want LSP formatting.
+        if client.name == 'tsserver' or client.name == 'ts_ls' then
           return
         end
 
