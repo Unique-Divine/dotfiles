@@ -117,7 +117,7 @@ local lazyPlugins = {
           },
         },
       },
-      { 'mrcjkb/rustaceanvim', version = '^6', ft = { 'rust' } },
+      { 'mrcjkb/rustaceanvim', version = '^7', ft = { 'rust' } },
       -- LSP symbol outline. simrat39/symbols-outline is archived; outline.nvim
       -- is the maintained fork and supports current LSP client APIs.
       {
