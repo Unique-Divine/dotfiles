@@ -112,6 +112,7 @@ dotf() {
 skills() {
   local before="$(pwd)"
   cd "$HOME/.cursor/skills" || return 1
+  [[ -e ~/.cursor/skills/.marksman.toml ]] || touch ~/.cursor/skills/.marksman.toml
   nvim "$HOME/.cursor/skills"
   cd "$before" || return 1
 }
