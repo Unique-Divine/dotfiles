@@ -89,7 +89,7 @@ const assertSafePath = (
 
 const hasPrivateTrue = (markdown: string): boolean => {
   const parsed = matter(markdown)
-  return parsed.data.private === true
+  return parsed.data.metadata?.private === true
 }
 
 const classifySkills = async (cfg: SkillsSyncConfig): Promise<SkillSets> => {

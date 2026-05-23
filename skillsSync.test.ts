@@ -86,13 +86,21 @@ describe("skills-sync", () => {
     await writeFile(join(syncPublicDir, ".marksman.toml"), "[core]\n")
 
     await makeSkill(syncRuntimeDir, "public-missing", "---\n---\n")
-    await makeSkill(syncRuntimeDir, "public-false", "---\nprivate: false\n---\n")
-    await makeSkill(syncRuntimeDir, "private-true", "---\nprivate: true\n---\n")
+    await makeSkill(
+      syncRuntimeDir,
+      "public-false",
+      "---\nmetadata:\n  private: false\n---\n",
+    )
+    await makeSkill(
+      syncRuntimeDir,
+      "private-true",
+      "---\nmetadata:\n  private: true\n---\n",
+    )
 
     await mkdir(join(syncRuntimeDir, "nested/hidden"), { recursive: true })
     await writeFile(
       join(syncRuntimeDir, "nested/hidden/SKILL.md"),
-      "---\nprivate: true\n---\n# Hidden\n",
+      "---\nmetadata:\n  private: true\n---\n# Hidden\n",
     )
 
     const dryRunHomeDir = join(root, "dry-run-home")
