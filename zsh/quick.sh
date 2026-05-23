@@ -108,13 +108,26 @@ dotf() {
   cd "$before" || return 1
 }
 
-# skills: Opens AI agent skills directory.
+# skills: Opens AI agent skills dir in nvim, then sync edits to Git repos.
 skills() {
-  local before="$(pwd)"
-  cd "$HOME/.cursor/skills" || return 1
-  [[ -e ~/.cursor/skills/.marksman.toml ]] || touch ~/.cursor/skills/.marksman.toml
-  nvim "$HOME/.cursor/skills"
-  cd "$before" || return 1
+  (
+    set -euo pipefail
+    local before skills_runtime
+    before="$(pwd)"
+    skills_runtime="$HOME/.cursor/skills"
+
+    mkdir -p "$skills_runtime"
+    [[ -e "$skills_runtime/.marksman.toml" ]] ||
+      touch "$skills_runtime/.marksman.toml"
+
+    cd "$skills_runtime"
+    nvim "$skills_runtime"
+
+    cd "$BOKU_PATH/dotfiles"
+    just skills-sync --run
+
+    cd "$before"
+  )
 }
 
 # cfg_nvim: Edit your nvim config.
