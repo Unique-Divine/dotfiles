@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# main_bash_setup (Function): Sets the expected bash aliases and global 
-#   functions for the entire configuration. This function is called during 
+# main_bash_setup (Function): Sets the expected bash aliases and global
+#   functions for the entire configuration. This function is called during
 #   main shell setup.
 #
 # shellcheck disable=SC1090,SC2155
@@ -129,7 +129,7 @@ which_ok() {
 # Usage:  source_ok [bash_script]
 source_ok() {
   local bash_script="$1"
-  if test -r "$bash_script"; then 
+  if test -r "$bash_script"; then
     # shellcheck disable=SC1090
     source "$bash_script"
   fi
@@ -145,25 +145,83 @@ env_var_ok() {
   fi
 
   eval "env_var_value=\"\${$env_var_name:-}\""
-  if [[ -z "$env_var_value" ]]; then 
+  if [[ -z "$env_var_value" ]]; then
     log_error "expected env var to be set: $env_var_name"
-    return 1  # Return 1 to indicate error (variable is not set)
+    return 1 # Return 1 to indicate error (variable is not set)
   else
-    return 0  # Return 0 to indicate success (variable is set)
+    return 0 # Return 0 to indicate success (variable is set)
   fi
 }
 
 # env_vars_ok: Plural version of `env_var_ok`. This function accepts a list
-# of strings that identify environment variables, checks if they have a 
+# of strings that identify environment variables, checks if they have a
 # non-empty value, and errors if that's the case.
 #
-# Example: 
-# env_vars_ok FROM GITHUB_KEY NPM_KEY 
+# Example:
+# env_vars_ok FROM GITHUB_KEY NPM_KEY
 env_vars_ok() {
   for env_var in "$@"; do
     if ! env_var_ok "$env_var"; then
       return 1 # Return 1 to indicate error
     fi
-  done 
+  done
   return 0
+}
+
+# Function: is_wsl
+# Purpose: Detect whether the current shell is running inside Windows
+#   Subsystem for Linux (WSL).
+#
+# Behavior:
+#   - Return 0 when WSL is detected and print the signal that matched.
+#   - Return 1 when WSL is not detected and print the current kernel family.
+#
+# Detection notes:
+#   - `uname -s` reports "Linux" in WSL because WSL presents a Linux kernel
+#     interface. That means `uname -s` can separate macOS from Linux, but it
+#     cannot separate WSL from a normal Linux machine.
+#   - `$WSL_DISTRO_NAME` is the cleanest signal when present. WSL commonly
+#     exports it with values like "Ubuntu".
+#   - `$PROC_VERSION` points to the Linux kernel version file used for the
+#     fallback check. It defaults to `/proc/version`, but tests can point it at
+#     a temporary fixture file to avoid depending on the host running the test.
+#   - `/proc/version` is a Linux kernel version string. On WSL it commonly
+#     contains text like "microsoft-standard-WSL2", so it is a useful fallback
+#     when the environment variable is absent or not inherited.
+#   - `rg --ignore-case --max-count 1 --only-matching \
+#       'microsoft[^[:space:]]*' /proc/version 2>/dev/null` breaks down as:
+#       rg          Search text for a pattern using ripgrep.
+#       --ignore-case
+#                   Match microsoft/Microsoft/MICROSOFT.
+#       --max-count 1
+#                   Stop after the first matching line in each searched file.
+#       --only-matching
+#                   Print only the matching text, not the whole line.
+#       'microsoft[^[:space:]]*'
+#                   Match "microsoft" and the rest of that non-space token,
+#                   e.g. "microsoft-standard-WSL2".
+#       /proc/version
+#                   File containing the Linux kernel version string.
+#       2>/dev/null Hide errors, e.g. on macOS where /proc/version is absent.
+is_wsl() {
+  if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+    printf 'WSL_DISTRO_NAME=%s\n' "$WSL_DISTRO_NAME"
+    return 0
+  fi
+
+  local proc_version="${PROC_VERSION:-/proc/version}"
+  local proc_version_match
+  proc_version_match="$(rg \
+    --ignore-case \
+    --max-count 1 \
+    --only-matching \
+    'microsoft[^[:space:]]*' \
+    "$proc_version" 2>/dev/null)"
+  if [[ -n "$proc_version_match" ]]; then
+    printf '%s WSL marker=%s\n' "$proc_version" "$proc_version_match"
+    return 0
+  fi
+
+  printf 'not WSL: { uname -s: %s }\n' "$(uname -s)"
+  return 1
 }

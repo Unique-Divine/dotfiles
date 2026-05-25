@@ -25,7 +25,7 @@ git_cof() {
     echo "RUN $*"
     "$@"
   }
-  
+
   local target_branch="$1"
   local start_branch="$(git br --show-current)"
   _run git fetch --all --prune || true
@@ -90,12 +90,12 @@ notes() {
 music() {
   local before="$(pwd)"
   cd /mnt/c/Users/realu/Music/携帯に追加した || return 1
-  explorer.exe . 
+  explorer.exe .
   cd "$before" || return 1
 }
 
 # myrc: For editing your zshrc config. Opens the NeoVim working directory
-# in the zsh section of your dotfiles. This command autosaves to update 
+# in the zsh section of your dotfiles. This command autosaves to update
 # the shell by re-running the main shell aliases and bash lib.
 myrc() {
   local before="$(pwd)"
@@ -154,8 +154,9 @@ cfg_tmux() {
   cd "$before" || return 1
 }
 
+# sharex: ShareX screenshots CLI. Pass --run (nvim) or --explorer; no args -> help.
 sharex() {
-  bash $BOKU_PATH/sharex.sh
+  bash "$BOKU_PATH/sharex.sh" "$@"
 }
 
 # ----------------- Nibiru -----------------
@@ -182,11 +183,11 @@ tx() {
 
   local txoutjson="txout.json"
   if [ ! -f $txoutjson ]; then
-    echo "[]" >> $txoutjson
+    echo "[]" >>$txoutjson
   fi
 
   # echo "$tx_resp" >> "$txoutjson"
-  jq ". += [$tx_resp]" $txoutjson > tmp.json && mv tmp.json $txoutjson
+  jq ". += [$tx_resp]" $txoutjson >tmp.json && mv tmp.json $txoutjson
   echo "$tx_resp" | view -
 }
 
@@ -211,7 +212,7 @@ msig_vote() {
   env_vars_ok vote proposal_id MULTISIG FROM
 
   # Vote on CW3
-  cat << EOF | jq | tee vote.json
+  cat <<EOF | jq | tee vote.json
 {
   "vote": {
     "proposal_id": $proposal_id,
@@ -221,11 +222,11 @@ msig_vote() {
 EOF
 
   nibid tx wasm execute "$MULTISIG" "$(cat vote.json)" \
-  --from "$FROM" \
-  --gas auto \
-  --gas-adjustment 1.5 \
-  --gas-prices 0.025unibi \
-  --yes | tx
+    --from "$FROM" \
+    --gas auto \
+    --gas-adjustment 1.5 \
+    --gas-prices 0.025unibi \
+    --yes | tx
 }
 
 # ----------------- Deletion Commands
@@ -244,7 +245,8 @@ del_yarn() {
 del_nvm_other() {
   # To delete all `nvm` versions beside the one you're currently using:
   # Note, $NVM_DIR is usually set to $HOME/.nvim
-  cd $NVM_DIR/versions/node; ls -A | grep -v `nvm current` | xargs rm -rf
+  cd "$NVM_DIR/versions/node"
+  ls -A | grep -v $(nvm current) | xargs rm -rf
 }
 
 # Windows sometimes adds
