@@ -1,0 +1,37 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Allow concurrent runs on main but cancel stale branch runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Bun
+        # For running TypeScript tests and installing package dependencies.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.22 # Values: latest, <sha>, 1.2.3, canary
+        # Outputs:
+        # - cache-hit    : Whether the executable was read from cache. Ex. "true"
+        # - bun-version  : The output from running `bun-version`. Ex. "1.0.0"
+
+      - name: Install just
+        # casey/just: https://just.systems/man/en/chapter_6.html
+        # taiki-e/install-action: https://github.com/taiki-e/install-action
+        uses: taiki-e/install-action@just
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run tests
+        run: just test
