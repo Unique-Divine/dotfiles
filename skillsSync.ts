@@ -89,12 +89,28 @@ const assertSafePath = (
 
 const hasPrivateTrue = (markdown: string): boolean => {
   const parsed = matter(markdown)
-  return parsed.data.metadata?.private === true
+  const privateFlag = parsed.data.metadata?.private
+
+  if (typeof privateFlag === "boolean") {
+    return privateFlag
+  }
+
+  if (typeof privateFlag === "number") {
+    return false
+  }
+
+  if (typeof privateFlag === "string") {
+    return privateFlag.trim().toLowerCase() === "true"
+  }
+
+  return false
 }
 
 const classifySkills = async (cfg: SkillsSyncConfig): Promise<SkillSets> => {
   const publicSkills = new Set<string>()
   const privateSkills = new Set<string>()
+  // Cursor discovers skills only as direct children of ~/.cursor/skills.
+  // Nested SKILL.md files are deliberately ignored to preserve that flat layout.
   const glob = new Bun.Glob("*/SKILL.md")
 
   for await (const relPath of glob.scan({ cwd: cfg.skillsRuntime })) {
@@ -138,11 +154,11 @@ const rsyncStage = async (stageDir: string, destDir: string): Promise<void> => {
       "rsync",
       "-aL",
       "--delete",
-      "--exclude=.git/",
-      "--exclude=.gitignore",
-      "--exclude=.marksman.toml",
-      "--exclude=README.md",
-      "--exclude=LICENSE",
+      "--exclude=/.git/",
+      "--exclude=/.gitignore",
+      "--exclude=/.marksman.toml",
+      "--exclude=/README.md",
+      "--exclude=/LICENSE",
       dryRunFlags,
       shellQuote(`${stageDir}/`),
       shellQuote(`${destDir}/`),

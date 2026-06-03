@@ -96,6 +96,19 @@ describe("skills-sync", () => {
       "private-true",
       "---\nmetadata:\n  private: true\n---\n",
     )
+    await makeSkill(
+      syncRuntimeDir,
+      "private-string-true",
+      "---\nmetadata:\n  private: \"true\"\n---\n",
+    )
+    await writeFile(
+      join(syncRuntimeDir, "public-false", "README.md"),
+      "public skill readme\n",
+    )
+    await writeFile(
+      join(syncRuntimeDir, "public-false", "LICENSE"),
+      "public skill license\n",
+    )
 
     await mkdir(join(syncRuntimeDir, "nested/hidden"), { recursive: true })
     await writeFile(
@@ -137,7 +150,10 @@ describe("skills-sync", () => {
       "public-false",
       "public-missing",
     ])
-    expect(await dirNames(testCfg.syncPrivateDir)).toEqual(["private-true"])
+    expect(await dirNames(testCfg.syncPrivateDir)).toEqual([
+      "private-string-true",
+      "private-true",
+    ])
 
     expect(
       await Bun.file(
@@ -149,6 +165,13 @@ describe("skills-sync", () => {
         join(testCfg.syncPrivateDir, "private-true/reference.md"),
       ).text(),
     ).toBe("private-true reference\n")
+  })
+
+  test("copies skill-local readme and license files", async () => {
+    expect(await Bun.file(join(testCfg.syncPublicDir, "public-false/README.md")).text())
+      .toBe("public skill readme\n")
+    expect(await Bun.file(join(testCfg.syncPublicDir, "public-false/LICENSE")).text())
+      .toBe("public skill license\n")
   })
 
   test("keeps marksman config in destination dirs", async () => {
