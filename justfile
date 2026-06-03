@@ -9,3 +9,9 @@ setup:
 
 test:
   bun test
+
+alias t := test
+
+# Synchronize runtime skills (~/.cursor/skills) with public and private backups
+skills-sync *ARGS:
+  bun run skillsSync.ts {{ARGS}}
