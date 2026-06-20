@@ -1,8 +1,8 @@
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { basename, dirname, join, resolve } from "node:path"
 import { bash } from "@uniquedivine/bash"
 import matter from "gray-matter"
-import { basename, dirname, join, resolve } from "node:path"
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
 
 interface SkillSets {
   publicSkills: Set<string>
@@ -166,7 +166,11 @@ const rsyncStage = async (stageDir: string, destDir: string): Promise<void> => {
   )
 }
 
-const printSummary = (label: string, skills: Set<string>, dest: string): void => {
+const printSummary = (
+  label: string,
+  skills: Set<string>,
+  dest: string,
+): void => {
   const names = [...skills].sort()
   console.log(`${label}: ${names.length} skill(s) -> ${dest}`)
 

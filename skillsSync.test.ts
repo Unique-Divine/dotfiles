@@ -1,12 +1,6 @@
-import {
-  mkdir,
-  mkdtemp,
-  readdir,
-  rm,
-  writeFile,
-} from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 
 const scriptPath = join(import.meta.dir, "skillsSync.ts")
@@ -99,7 +93,7 @@ describe("skills-sync", () => {
     await makeSkill(
       syncRuntimeDir,
       "private-string-true",
-      "---\nmetadata:\n  private: \"true\"\n---\n",
+      '---\nmetadata:\n  private: "true"\n---\n',
     )
     await writeFile(
       join(syncRuntimeDir, "public-false", "README.md"),
@@ -168,15 +162,22 @@ describe("skills-sync", () => {
   })
 
   test("copies skill-local readme and license files", async () => {
-    expect(await Bun.file(join(testCfg.syncPublicDir, "public-false/README.md")).text())
-      .toBe("public skill readme\n")
-    expect(await Bun.file(join(testCfg.syncPublicDir, "public-false/LICENSE")).text())
-      .toBe("public skill license\n")
+    expect(
+      await Bun.file(
+        join(testCfg.syncPublicDir, "public-false/README.md"),
+      ).text(),
+    ).toBe("public skill readme\n")
+    expect(
+      await Bun.file(
+        join(testCfg.syncPublicDir, "public-false/LICENSE"),
+      ).text(),
+    ).toBe("public skill license\n")
   })
 
   test("keeps marksman config in destination dirs", async () => {
-    expect(await Bun.file(join(testCfg.syncPublicDir, ".marksman.toml")).text())
-      .toBe("[core]\n")
+    expect(
+      await Bun.file(join(testCfg.syncPublicDir, ".marksman.toml")).text(),
+    ).toBe("[core]\n")
   })
 
   test("cleanup fixtures", async () => {

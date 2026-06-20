@@ -116,6 +116,8 @@ _ud_quick() {
       _ud_run "cfg_tmux" "$@" ;;
     dotf)
       _ud_run "dotf" "$@" ;;
+    ip)
+      _ud_quick_ip ;;
     music)
       _ud_run "music" "$@" ;;
     myrc)
@@ -142,6 +144,7 @@ COMMANDS:
    cfg_nvim     Edit nvim (Neovim) config
    cfg_tmux     Edit tmux config
    dotf         Edit your dotfiles
+   ip           Print public IP and best-effort GeoIP region
    music        Opens the Windows file explorer to your music files
    myrc         Edit your zshrc config
    notes        Edit your notes workspace
@@ -161,6 +164,48 @@ EOF
       return 1
       ;;
   esac
+}
+
+# Print the current public IP, plus best-effort region info from a public
+# GeoIP service. Region is not available from the IP address itself; it needs
+# either a local GeoIP database or an external lookup service.
+_ud_quick_ip() {
+  local ip
+  ip=$(curl -s --max-time 12 https://api.ipify.org)
+
+  if [[ -z "$ip" ]]; then
+    echo "Unable to fetch public IP from https://api.ipify.org" >&2
+    return 1
+  fi
+
+  printf "%s\n" "$ip"
+
+  # Use the line format to avoid depending on jq for this small shell helper.
+  # Expected lines: status, country, regionName, city.
+  local geo
+  geo=$(curl -s --max-time 12 \
+    "http://ip-api.com/line/${ip}?fields=status,country,regionName,city" \
+    || true)
+
+  # Split the multiline response into a Bash array so each field can be read by
+  # position without fragile text filters.
+  local -a geo_lines
+  mapfile -t geo_lines <<< "$geo"
+
+  # Only print location data when the provider explicitly reports success.
+  if [[ "${geo_lines[0]:-}" == "success" ]]; then
+    local country="${geo_lines[1]:-}"
+    local region="${geo_lines[2]:-}"
+    local city="${geo_lines[3]:-}"
+    local location=""
+
+    [[ -n "$city" ]] && location="$city"
+    [[ -n "$region" && -n "$location" ]] && location="${location}, "
+    [[ -n "$region" ]] && location="${location}${region}"
+    [[ -n "$country" && -n "$location" ]] && location="${location}, "
+    [[ -n "$country" ]] && location="${location}${country}"
+    [[ -n "$location" ]] && printf "Region: %s\n" "$location"
+  fi
 }
 
 # ------------ Subcommand: ud rs
