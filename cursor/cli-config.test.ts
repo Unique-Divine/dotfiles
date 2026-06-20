@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -108,6 +108,25 @@ describe("cursor cli config", () => {
       expect(secondChanged).toBe(false)
       expect(JSON.parse(firstText)).toEqual(dotfileConfig)
       expect(secondText).toBe(firstText)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("treats blank runtime config as missing config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cursor-cli-config-blank-test-"))
+
+    try {
+      const runtimePath = join(root, ".cursor/cli-config.json")
+      await mkdir(join(root, ".cursor"), { recursive: true })
+      await writeFile(runtimePath, " \n")
+
+      const changed = await applyCliConfig({ runtimePath, quiet: true })
+
+      expect(changed).toBe(true)
+      expect(JSON.parse(await Bun.file(runtimePath).text())).toEqual(
+        dotfileConfig,
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

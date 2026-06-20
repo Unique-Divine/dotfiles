@@ -146,6 +146,11 @@ const readRuntimeConfig = async (
   }
 
   const text = await file.text()
+
+  if (text.trim() === "") {
+    return { config: {}, text }
+  }
+
   return { config: parseJsonObject(text, path), text }
 }
 
