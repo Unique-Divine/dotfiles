@@ -67,6 +67,10 @@ local on_attach = function(client, bufnr)
   vim.api.nvim_buf_create_user_command(bufnr, 'Format', function(_)
     vim.lsp.buf.format()
   end, { desc = 'Format current buffer with LSP' })
+
+  if client:supports_method('textDocument/inlayHint', bufnr) then
+    vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+  end
 end
 -- Enable the following language servers
 -- Feel free to add/remove any LSPs that you want here. They will automatically be installed.
