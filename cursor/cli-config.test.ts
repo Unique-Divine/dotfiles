@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
-import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
+
 import {
   applyCliConfig,
   dotfileConfig,
@@ -141,7 +142,9 @@ describe("cursor cli config", () => {
       expect(runResult.exitCode).toBe(0)
       expect(runResult.stdout).toBe("")
       expect(runResult.stderr).toBe("")
-      expect(JSON.parse(await Bun.file(runtimePath).text())).toEqual(dotfileConfig)
+      expect(JSON.parse(await Bun.file(runtimePath).text())).toEqual(
+        dotfileConfig,
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

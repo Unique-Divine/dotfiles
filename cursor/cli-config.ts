@@ -5,7 +5,9 @@ type JsonPrimitive = string | number | boolean | null
 type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
 type JsonObject = { [key: string]: JsonValue | undefined }
 
-export const runtimeConfigPath = (env: NodeJS.ProcessEnv = process.env): string => {
+export const runtimeConfigPath = (
+  env: NodeJS.ProcessEnv = process.env,
+): string => {
   const home = env.HOME
 
   if (!home) {
@@ -70,7 +72,9 @@ const parseJsonObject = (json: string, path: string): JsonObject => {
   return parsed
 }
 
-const stripUndefined = (value: JsonValue | undefined): JsonValue | undefined => {
+const stripUndefined = (
+  value: JsonValue | undefined,
+): JsonValue | undefined => {
   if (value === undefined) {
     return undefined
   }
@@ -129,7 +133,9 @@ export const mergeRuntimeConfig = (
 const stringify = (config: JsonObject): string =>
   `${JSON.stringify(config, null, 2)}\n`
 
-const readRuntimeConfig = async (path: string): Promise<{
+const readRuntimeConfig = async (
+  path: string,
+): Promise<{
   config: JsonObject
   text: string
 }> => {
@@ -235,7 +241,9 @@ export const applyCliConfig = async ({
 
   if (beforeText === afterText) {
     if (!quiet) {
-      console.log(`Cursor CLI runtime config is already current: ${runtimePath}`)
+      console.log(
+        `Cursor CLI runtime config is already current: ${runtimePath}`,
+      )
     }
 
     return false

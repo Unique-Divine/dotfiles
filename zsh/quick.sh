@@ -61,6 +61,12 @@ git_mf() {
   git merge "$target_branch" "$@"
 }
 
+# git_cipb: Git "commit (ci) with [pb]paste". Commits using a message from the
+# clipboard.
+git_cipb() {
+  git commit -m "$(pbpaste)"
+}
+
 # ----------------- Daily Shortcuts -----------------
 
 # todos: Opens NeoVim with your notes workspace as the working directory with
