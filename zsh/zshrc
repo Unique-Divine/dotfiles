@@ -173,8 +173,15 @@ export PATH=$HOME/bin:$PATH
 
 # Fixes permission denied error in Windows machine sometimes seen with `just`.
 # > error: Recipe `setup` with shebang `#!/usr/bin/env bash` execution error: Permission denied (os error 13)
-if [[ -n "${SUDO_PW:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then 
-  echo "$SUDO_PW" | sudo -S --prompt="" mount -o remount,exec "$XDG_RUNTIME_DIR"
+if [[ -n "${SUDO_PW:-}" ]] &&
+  is_wsl >/dev/null &&
+  [[ "${XDG_RUNTIME_DIR:-}" == /run/user/* ]]; then
+  # WSL can mount /run/user as tmpfs with the noexec option, which prevents
+  # scripts stored under XDG_RUNTIME_DIR from being executed. `just` runs
+  # shebang recipes through temp files there, so noexec can surface as:
+  # "Permission denied (os error 13)". Remounting the actual mount point
+  # (/run/user, not /run/user/1000) with exec allows those temp files to run.
+  echo "$SUDO_PW" | sudo -S --prompt="" mount -o remount,exec /run/user
 fi
 
 # source ~/.profile

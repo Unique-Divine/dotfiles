@@ -30,6 +30,9 @@ jobs:
         # taiki-e/install-action: https://github.com/taiki-e/install-action
         uses: taiki-e/install-action@just
 
+      - name: Install shell dependencies
+        run: just i-bash-ci
+
       - name: Install dependencies
         run: bun install
 
