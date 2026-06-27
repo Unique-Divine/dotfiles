@@ -5,5 +5,3 @@ source "$DOTFILES/symlinks.sh"
 export OUTTXT="$HOME/ki/out.txt"
 export SKILLS="$HOME/.cursor/skills"
 export EPICS="$BOKU_PATH/epics"
-
-export PATH="$PATH:/home/realu/.foundry/bin"
