@@ -21,6 +21,11 @@ carry over.
  each other in the editing experience.
 --]]
 
+-- Oil is the directory explorer. Disable netrw before plugins and startup
+-- arguments are processed so it cannot replace Oil's directory buffers.
+vim.g.loaded_netrw = 1
+vim.g.loaded_netrwPlugin = 1
+
 -- Set <space> as the leader key
 -- See `:help mapleader`
 -- NOTE: Must happen before plugins are required. Others, the wrong leader key
