@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# Save the current Windows clipboard image into WSL and copy its WSL path.
+
+set -Eeuo pipefail
+
+script_file="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_file")" && pwd -P)"
+out_root="${PBPASTE_IMG_DIR:-$HOME/.local/pbpaste-img}"
+script_path="$script_dir/pbpaste-img.ps1"
+bashlib_path="$script_dir/../zsh/bashlib.sh"
+
+if ! command -v powershell.exe >/dev/null 2>&1; then
+  echo "ERROR: powershell.exe is required for Windows clipboard access." >&2
+  exit 1
+fi
+
+if ! command -v wslpath >/dev/null 2>&1; then
+  echo "ERROR: wslpath is required to bridge WSL and Windows paths." >&2
+  exit 1
+fi
+
+mkdir -p "$out_root"
+
+script_path_windows="$(wslpath -w "$script_path")"
+out_root_windows="$(wslpath -w "$out_root")"
+
+if [[ -f "$bashlib_path" ]]; then
+  # shellcheck source=/dev/null
+  source "$bashlib_path"
+fi
+
+powershell_args=(
+  -NoLogo
+  -NoProfile
+  -ExecutionPolicy Bypass
+  -STA
+  -File "$script_path_windows"
+  -OutRootWindows "$out_root_windows"
+)
+
+if declare -F is_wsl >/dev/null 2>&1 && is_wsl >/dev/null; then
+  powershell_args+=(-OutRootWsl "$out_root")
+else
+  powershell_args+=(-WindowsPathToClipboard)
+fi
+
+powershell.exe "${powershell_args[@]}" "$@" | tr -d '\r'
