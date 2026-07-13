@@ -14,7 +14,8 @@ alias t := test
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
-  sudo apt install -y build-essential ripgrep gh libclang-dev wslu
+  sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
+    ca-certificates gnupg curl trash-cli
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:

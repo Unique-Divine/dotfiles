@@ -4,7 +4,7 @@
 # ℹ️  -------- IMPORTS --------  ℹ️
 source "$DOTFILES/zsh/bashlib.sh"
 
-# The $DOTFILES  and $BOKU_PATH variables are exported from .zshenv.
+# The $REPO and $DOTFILES variables are exported from .zshenv.
 
 # ----------------- Git -----------------
 # Some of my most-used commands. I rely on these daily to quickly finish
@@ -73,17 +73,27 @@ git_cipb() {
 # your text-based TODO-list open.
 todos() {
   local before="$(pwd)"
-  cd "$BOKU_PATH" || return 1
-  nvim "$BOKU_PATH/free/todos.md"
+  cd "$REPO/boku" || return 1
+  nvim "$REPO/boku/free/todos.md"
   cd "$before" || return 1
 }
 
 # notes: Opens NeoVim with a notes workspace as the working directory.
 notes() {
   local before="$(pwd)"
-  cd "$BOKU_PATH" || return 1
-  nvim "$BOKU_PATH/free/the-log.md"
+  cd "$REPO/boku" || return 1
+  nvim "$REPO/boku/free/the-log.md"
   cd "$before" || return 1
+}
+
+# todos: Opens NeoVim with your notes workspace as the working directory with
+# your text-based TODO-list open.
+epics() {
+  (
+    # subshell retains path from prior to the edit
+    cd "$REPO/boku"
+    nvim "$REPO/boku/epics"
+  )
 }
 
 # music: Opens the Windows file explorer to your music files.
@@ -129,7 +139,7 @@ skills() {
     cd "$skills_runtime"
     nvim "$skills_runtime"
 
-    cd "$BOKU_PATH/dotfiles"
+    cd "$REPO/boku/dotfiles"
     just skills-sync --run
 
     cd "$before"
@@ -156,7 +166,7 @@ cfg_tmux() {
 
 # sharex: ShareX screenshots CLI. Pass --run (nvim) or --explorer; no args -> help.
 sharex() {
-  bash "$BOKU_PATH/sharex.sh" "$@"
+  bash "$REPO/boku/sharex.sh" "$@"
 }
 
 # ----------------- Nibiru -----------------

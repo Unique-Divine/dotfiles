@@ -3,7 +3,7 @@
 # Contact: Unique Divine <realuniquedivine@gmail.com>
 # The .zshrc runs after .zshenv
 
-# The $DOTFILES  and $BOKU_PATH variables are exported from .zshenv.
+# The $REPO and $DOTFILES variables are exported from .zshenv.
 
 source $DOTFILES/zsh/bashlib.sh
 main_bash_setup
@@ -351,3 +351,7 @@ sync_cursor_cli_config
 source ~/powerlevel10k/powerlevel10k.zsh-theme
 
 [[ -s "$HOME/.gvm/scripts/gvm" ]] && source "$HOME/.gvm/scripts/gvm"
+
+# >>> Codex installer >>>
+export PATH="$HOME/.local/bin:$PATH"
+# <<< Codex installer <<<
