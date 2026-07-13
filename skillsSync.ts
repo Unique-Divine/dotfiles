@@ -1,7 +1,16 @@
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { bash } from "@uniquedivine/bash"
+import { Command } from "commander"
 import matter from "gray-matter"
 
 interface SkillSets {
@@ -13,30 +22,12 @@ interface SkillsSyncConfig {
   skillsRuntime: string
   publicSkillsDir: string
   privateSkillsDir: string
+  codexSkillsDir: string
 }
 
-const args = new Set(Bun.argv.slice(2))
-const help = args.has("--help") || args.has("-h")
-const runSync = args.has("--run") || args.has("-r")
-const dryRun = !runSync
+const codexOwnershipMarker = ".dotfiles-cursor-skills-sync"
 
-const printUsage = (): void => {
-  console.log(`Usage: bun run skillsSync.ts [--run]
-
-Sync Cursor skills from ~/.cursor/skills into version-controlled skill dirs.
-
-Default behavior is a dry run. Pass --run to write changes.
-
-Options:
-  -r, --run      Apply changes with rsync
-  -n, --dry-run  Preview changes only (default)
-  -h, --help     Show this help text`)
-}
-
-if (help) {
-  printUsage()
-  process.exit(0)
-}
+let dryRun = true
 
 const defaultConfig = (env: NodeJS.ProcessEnv): SkillsSyncConfig => {
   const home = env.HOME
@@ -56,10 +47,9 @@ const defaultConfig = (env: NodeJS.ProcessEnv): SkillsSyncConfig => {
     skillsRuntime: resolve(home, ".cursor/skills"),
     publicSkillsDir: resolve(bokuPath, "jiyuu/ai-skills"),
     privateSkillsDir: resolve(bokuPath, "priv-skills"),
+    codexSkillsDir: resolve(home, ".agents/skills"),
   }
 }
-
-const cfg = defaultConfig(process.env)
 
 const shellQuote = (value: string): string => JSON.stringify(value)
 
@@ -148,7 +138,21 @@ const stageSkills = async (
 }
 
 const rsyncStage = async (stageDir: string, destDir: string): Promise<void> => {
-  await mkdir(destDir, { recursive: true })
+  if (dryRun) {
+    try {
+      await lstat(destDir)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        console.log(`Would create directory ${destDir}`)
+        return
+      }
+      throw error
+    }
+  }
+
+  if (!dryRun) {
+    await mkdir(destDir, { recursive: true })
+  }
 
   const dryRunFlags = dryRun ? " --dry-run --itemize-changes" : ""
   await run(
@@ -161,11 +165,110 @@ const rsyncStage = async (stageDir: string, destDir: string): Promise<void> => {
       "--exclude=/.marksman.toml",
       "--exclude=/README.md",
       "--exclude=/LICENSE",
+      `--exclude=/${codexOwnershipMarker}`,
       dryRunFlags,
       shellQuote(`${stageDir}/`),
       shellQuote(`${destDir}/`),
     ].join(" "),
   )
+}
+
+const healthRsyncStage = async (
+  stageDir: string,
+  destDir: string,
+): Promise<boolean> => {
+  try {
+    await lstat(destDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`Skills destination is missing: ${destDir}`)
+      return false
+    }
+    throw error
+  }
+
+  const out = await bash(
+    [
+      "rsync",
+      "-aL",
+      "--delete",
+      "--dry-run",
+      "--itemize-changes",
+      "--omit-dir-times",
+      "--exclude=/.git/",
+      "--exclude=/.gitignore",
+      "--exclude=/.marksman.toml",
+      "--exclude=/README.md",
+      "--exclude=/LICENSE",
+      `--exclude=/${codexOwnershipMarker}`,
+      shellQuote(`${stageDir}/`),
+      shellQuote(`${destDir}/`),
+    ].join(" "),
+  )
+
+  if (out.exitCode !== 0) {
+    throw new Error(
+      `Skills health rsync failed with exit code ${out.exitCode}: ${destDir}`,
+    )
+  }
+
+  if (out.stdout.trim() === "") {
+    return true
+  }
+
+  process.stdout.write(out.stdout)
+  return false
+}
+
+const prepareCodexSkillsDir = async (destDir: string): Promise<void> => {
+  await mkdir(dirname(destDir), { recursive: true })
+
+  try {
+    const info = await lstat(destDir)
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`Codex skills path must be a real directory: ${destDir}`)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    await mkdir(destDir)
+  }
+
+  const entries = await readdir(destDir)
+  if (entries.length > 0 && !entries.includes(codexOwnershipMarker)) {
+    throw new Error(
+      "Refusing to sync into unmanaged non-empty Codex skills directory: " +
+        destDir,
+    )
+  }
+
+  await writeFile(
+    join(destDir, codexOwnershipMarker),
+    "Managed by dotfiles skills-sync from $HOME/.cursor/skills.\n",
+  )
+}
+
+const codexSkillsDirIsHealthy = async (destDir: string): Promise<boolean> => {
+  try {
+    const info = await lstat(destDir)
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      console.error(`Codex skills path must be a real directory: ${destDir}`)
+      return false
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`Codex skills destination is missing: ${destDir}`)
+      return false
+    }
+    throw error
+  }
+
+  const entries = await readdir(destDir)
+  if (!entries.includes(codexOwnershipMarker)) {
+    console.error(`Codex skills destination is unmanaged: ${destDir}`)
+    return false
+  }
+
+  return true
 }
 
 const printSummary = (
@@ -181,29 +284,86 @@ const printSummary = (
   }
 }
 
-assertSafePath(cfg.publicSkillsDir, "/jiyuu/ai-skills", "public skills dir")
-assertSafePath(cfg.privateSkillsDir, "/priv-skills", "private skills dir")
+interface SkillsSyncOptions {
+  dryRun?: boolean
+  health?: boolean
+  run?: boolean
+}
 
-const tmpRoot = await mkdtemp(join(tmpdir(), "skills-sync-"))
-const tmpPublic = join(tmpRoot, "public")
-const tmpPrivate = join(tmpRoot, "private")
+const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
+  const cfg = defaultConfig(process.env)
+  const health = options.health ?? false
+  dryRun = !options.run && !health
 
-try {
-  const { publicSkills, privateSkills } = await classifySkills(cfg)
+  assertSafePath(cfg.publicSkillsDir, "/jiyuu/ai-skills", "public skills dir")
+  assertSafePath(cfg.privateSkillsDir, "/priv-skills", "private skills dir")
+  assertSafePath(cfg.codexSkillsDir, "/.agents/skills", "Codex skills dir")
 
-  await stageSkills(cfg, publicSkills, tmpPublic)
-  await stageSkills(cfg, privateSkills, tmpPrivate)
+  const tmpRoot = await mkdtemp(join(tmpdir(), "skills-sync-"))
+  const tmpPublic = join(tmpRoot, "public")
+  const tmpPrivate = join(tmpRoot, "private")
 
-  printSummary("public", publicSkills, cfg.publicSkillsDir)
-  printSummary("private", privateSkills, cfg.privateSkillsDir)
+  try {
+    const { publicSkills, privateSkills } = await classifySkills(cfg)
+    const allSkills = new Set([...publicSkills, ...privateSkills])
 
-  await rsyncStage(tmpPublic, cfg.publicSkillsDir)
-  await rsyncStage(tmpPrivate, cfg.privateSkillsDir)
+    await stageSkills(cfg, publicSkills, tmpPublic)
+    await stageSkills(cfg, privateSkills, tmpPrivate)
+    const tmpCodex = join(tmpRoot, "codex")
+    await stageSkills(cfg, allSkills, tmpCodex)
 
-  if (dryRun) {
-    console.log("Dry run complete. No files were changed.")
-    console.log("Run with --run to apply these changes.")
+    if (!dryRun) await prepareCodexSkillsDir(cfg.codexSkillsDir)
+
+    printSummary("public", publicSkills, cfg.publicSkillsDir)
+    printSummary("private", privateSkills, cfg.privateSkillsDir)
+    printSummary("codex", allSkills, cfg.codexSkillsDir)
+
+    if (health) {
+      const results = await Promise.all([
+        healthRsyncStage(tmpPublic, cfg.publicSkillsDir),
+        healthRsyncStage(tmpPrivate, cfg.privateSkillsDir),
+        codexSkillsDirIsHealthy(cfg.codexSkillsDir),
+        healthRsyncStage(tmpCodex, cfg.codexSkillsDir),
+      ])
+
+      if (results.every(Boolean)) {
+        console.log("Skills sync is healthy.")
+      } else {
+        process.exitCode = 1
+      }
+    } else {
+      await rsyncStage(tmpPublic, cfg.publicSkillsDir)
+      await rsyncStage(tmpPrivate, cfg.privateSkillsDir)
+      await rsyncStage(tmpCodex, cfg.codexSkillsDir)
+    }
+
+    if (dryRun && !health) {
+      console.log("Dry run complete. No files were changed.")
+      console.log("Run with --run to apply these changes.")
+    }
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true })
   }
-} finally {
-  await rm(tmpRoot, { recursive: true, force: true })
+}
+
+export const createProgram = (): Command => {
+  const program = new Command()
+
+  program
+    .name("skills-sync")
+    .description(
+      "Sync Cursor skills to public, private, and managed Codex destinations.",
+    )
+    .option("-r, --run", "apply changes with rsync")
+    .option("-n, --dry-run", "preview changes without writing")
+    .option("--health", "fail when destinations are unsafe or out of sync")
+    .action(async (options: SkillsSyncOptions) => {
+      await runSkillsSync(options)
+    })
+
+  return program
+}
+
+if (import.meta.main) {
+  await createProgram().parseAsync()
 }
