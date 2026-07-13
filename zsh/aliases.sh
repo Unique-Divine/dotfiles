@@ -2,28 +2,27 @@
 
 alias ohmyzsh="nvim ~/.oh-my-zsh"
 
-# MongoDB alias commands 
+# MongoDB alias commands
 alias mongo="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongo.exe"
 alias mongod="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongod.exe"
 alias mongosh="/mnt/c/Users/realu/AppData/Local/Programs/mongosh/mongosh.exe"
 alias mongos="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongos.exe"
 
 # Unique Divine linux commands
-alias ls="exa"    # cargo install exa
-alias la='exa -a'
-alias s='sudo'
-alias yarn-offline='yarn --prefer-offline'
-alias cat="bat"   # cargo install bat
+alias ls="exa" # cargo install exa
+alias la="exa -a"
+alias s="sudo"
+alias yarn-offline="yarn --prefer-offline"
+alias cat="bat" # cargo install bat
 # NOTE: This is important - sudo apt install build-essential
+alias rm="trash -v"
 
 alias vi="nvim"
 alias vim="nvim"
 
-alias rt="ud rs test-short"
-
 # vv: short for "vim view". Piping to vv lets you read stdout in a vi editor
 alias vv="view -"
-alias vvjq="jq | vv"
+alias vvjq="jq | view -"
 
 alias ess="2>&1"
 
@@ -34,7 +33,7 @@ git config --global alias.co checkout
 git config --global alias.br branch
 git config --global alias.ci commit
 git config --global alias.st status
-git config --global alias.ac '!git add -A && git commit'
+git config --global alias.ac "!git add -A && git commit"
 git config --global core.editor "nvim"
 
 # Broadcast tx and open it in vim.
