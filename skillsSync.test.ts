@@ -45,6 +45,30 @@ const runSkillsSync = async (
   })
 }
 
+const skillsSyncResult = async (
+  homeDir: string,
+  repoPath: string,
+  args: string[],
+): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+  const proc = Bun.spawn(["bun", scriptPath, ...args], {
+    cwd: import.meta.dir,
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      REPO: repoPath,
+    },
+    stderr: "pipe",
+    stdout: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+
+  return { exitCode, stdout, stderr }
+}
+
 const dirNames = async (dir: string): Promise<string[]> => {
   const entries = await readdir(dir, { withFileTypes: true })
   return entries
@@ -60,6 +84,7 @@ describe("skills-sync", () => {
     syncRepoPath: string
     syncPublicDir: string
     syncPrivateDir: string
+    syncCodexDir: string
     dryRunHomeDir: string
     dryRunRepoPath: string
     dryRunPublicDir: string
@@ -74,6 +99,7 @@ describe("skills-sync", () => {
     const syncRuntimeDir = join(syncHomeDir, ".cursor/skills")
     const syncPublicDir = join(syncBokuPath, "jiyuu/ai-skills")
     const syncPrivateDir = join(syncBokuPath, "priv-skills")
+    const syncCodexDir = join(syncHomeDir, ".agents/skills")
 
     await mkdir(syncRuntimeDir, { recursive: true })
     await mkdir(join(syncPublicDir, "stale-public"), { recursive: true })
@@ -127,6 +153,7 @@ describe("skills-sync", () => {
       syncRepoPath,
       syncPublicDir,
       syncPrivateDir,
+      syncCodexDir,
       dryRunHomeDir,
       dryRunRepoPath,
       dryRunPublicDir,
@@ -150,6 +177,12 @@ describe("skills-sync", () => {
       "private-string-true",
       "private-true",
     ])
+    expect(await dirNames(testCfg.syncCodexDir)).toEqual([
+      "private-string-true",
+      "private-true",
+      "public-false",
+      "public-missing",
+    ])
 
     expect(
       await Bun.file(
@@ -161,6 +194,11 @@ describe("skills-sync", () => {
         join(testCfg.syncPrivateDir, "private-true/reference.md"),
       ).text(),
     ).toBe("private-true reference\n")
+    expect(
+      await Bun.file(
+        join(testCfg.syncCodexDir, "public-false/reference.md"),
+      ).text(),
+    ).toBe("public-false reference\n")
   })
 
   test("copies skill-local readme and license files", async () => {
@@ -174,6 +212,28 @@ describe("skills-sync", () => {
         join(testCfg.syncPublicDir, "public-false/LICENSE"),
       ).text(),
     ).toBe("public skill license\n")
+  })
+
+  test("reports healthy only when every destination is synchronized", async () => {
+    const healthy = await skillsSyncResult(
+      testCfg.syncHomeDir,
+      testCfg.syncRepoPath,
+      ["--health"],
+    )
+    expect(healthy).toMatchObject({ exitCode: 0, stderr: "" })
+    expect(healthy.stdout).toContain("Skills sync is healthy.")
+
+    await writeFile(
+      join(testCfg.syncCodexDir, "public-false/reference.md"),
+      "out of sync\n",
+    )
+    const drifted = await skillsSyncResult(
+      testCfg.syncHomeDir,
+      testCfg.syncRepoPath,
+      ["--health"],
+    )
+    expect(drifted.exitCode).toBe(1)
+    expect(drifted.stdout).toContain("public-false/reference.md")
   })
 
   test("keeps marksman config in destination dirs", async () => {

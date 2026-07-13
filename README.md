@@ -10,9 +10,12 @@ machines.
 - [Quick Setup](#quick-setup)
 - [Symlink Philosophy](#symlink-philosophy)
 - [Features](#features)
-  - [WSL Clipboard Integration](#wsl-clipboard-integration)
+  - [Sync and health checks](#sync-and-health-checks)
+  - [AI agent skills](#ai-agent-skills)
   - [Neovim Configuration](#neovim-configuration)
-  - [Terminal Environment](#terminal-environment)
+  - [Terminal Environment: tmux, zsh, bun](#terminal-environment-tmux-zsh-bun)
+  - [Codex config](#codex-config)
+  - [WSL Clipboard Integration](#wsl-clipboard-integration)
 - [Requirements](#requirements)
 - [Testing](#testing)
 
@@ -75,10 +78,21 @@ The `symlinks.sh` script handles creating all necessary symbolic links to connec
 
 ## Features
 
-### WSL Clipboard Integration
-- Custom `pbcopy` and `pbpaste` commands that work with Windows clipboard
-- Neovim configured to use system clipboard across WSL/Windows boundary
-- Automatically removes Windows line endings when pasting
+### Sync and health checks
+
+`just sync` runs the established shell bootstrap, applies portable Codex
+defaults, and synchronizes managed AI skills. `just health` does not write: it
+checks required commands and reports Codex or skills-sync drift with a nonzero
+exit status.
+
+### AI agent skills
+
+`just skills-sync --run` treats `$HOME/.cursor/skills` as the canonical runtime
+directory and also copies all skills to `$HOME/.agents/skills` for Codex CLI.
+The Codex destination is created and marked as managed on first use; an
+existing unrelated non-empty directory is rejected rather than overwritten.
+
+See the [Codex skills documentation](https://developers.openai.com/codex/concepts/customization#skills).
 
 ### Neovim Configuration
 - Light/dark theme toggle (Catppuccin/OneDark)
@@ -86,11 +100,23 @@ The `symlinks.sh` script handles creating all necessary symbolic links to connec
 - LSP with auto-installation of language servers
 - Harpoon, Telescope, and other navigation enhancements
 
-### Terminal Environment
+### Terminal Environment: tmux, zsh, bun
 - Tmux with Dracula theme and plugin manager
 - Zsh configured for Node.js, Rust, Go, and Python development
 - Bun JavaScript/TypeScript runtime integration
 - `tree-sitter-cli` support for Neovim parser installation on the `main` branch
+
+### Codex config
+
+[`codex/config.ts`](codex/config.ts) maintains portable defaults in
+`$HOME/.codex/config.toml` while preserving local project, MCP, and onboarding
+state. Run `bun run codex/config.ts` for its usage and options.
+
+### WSL Clipboard Integration
+- Custom `pbcopy` and `pbpaste` commands that work with Windows clipboard
+- Neovim configured to use system clipboard across WSL/Windows boundary
+- Automatically removes Windows line endings when pasting
+
 
 ## Requirements
 
