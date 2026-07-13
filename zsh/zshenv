@@ -1,7 +1,15 @@
-. "$HOME/.cargo/env"
+[[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 export REPO="$HOME/ki"
 export DOTFILES="$REPO/boku/dotfiles"
 source "$DOTFILES/symlinks.sh"
 export OUTTXT="$HOME/ki/out.txt"
 export SKILLS="$HOME/.cursor/skills"
 export EPICS="$REPO/boku/epics"
+
+# Global bash setup. Written in zshenv for non-interactive terminals like the one
+# used by Codex. Non-interactive shells skip the zshrc setup path.
+source "$DOTFILES/zsh/bashlib.sh"
+source "$DOTFILES/zsh/aliases.sh"
+# For a full list of active aliases, run `alias`.
+source "$DOTFILES/zsh/quick.sh"
+source "$DOTFILES/env.sh"

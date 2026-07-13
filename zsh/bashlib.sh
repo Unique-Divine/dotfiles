@@ -13,11 +13,6 @@ main_bash_setup() {
   fi
 
   source "$DOTFILES/zsh/zshenv"
-  source "$DOTFILES/zsh/bashlib.sh"
-  source "$DOTFILES/zsh/aliases.sh"
-  source "$DOTFILES/zsh/quick.sh"
-  source "$DOTFILES/env.sh"
-  # For a full list of active aliases, run `alias`.
 
   local path_orig="$(pwd)"
   (cd nvm use >/dev/null 2>&1 || true)
