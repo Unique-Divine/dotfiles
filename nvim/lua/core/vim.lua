@@ -183,6 +183,28 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 
+vim.g.netrw_sort_by = "name"
+vim.g.netrw_sort_direction = "reverse"
+vim.g.netrw_sort_sequence =
+[[\(\.bak\|\~\|\.o\|\.h\|\.info\|\.swp\|\.obj\)[*@]\=$,*]]
+
+-- For reference, this is the default sorting sequence
+-- [\/]$,*,\(\.bak\|\~\|\.o\|\.h\|\.info\|\.swp\|\.obj\)[*@]\=$
+
+-- Oil replaces netrw's `:Explore` command and keeps `:E` as a shorthand.
+local function open_oil(opts)
+  local path = opts.args ~= "" and opts.args or nil
+  require("oil").open(path)
+end
+
+local oil_command_opts = {
+  force = true,
+  nargs = "?",
+  complete = "dir",
+}
+vim.api.nvim_create_user_command("Explore", open_oil, oil_command_opts)
+vim.api.nvim_create_user_command("E", open_oil, oil_command_opts)
+
 -- To change the default tree list mode in `netrw`, set the `g:netrw_liststyle` variable.
 -- The possible values for `g:netrw_liststyle` are:
 --
@@ -273,8 +295,16 @@ highlights_question_answer()
 -- `[target-group]`: Syntax highlighting group you want to apply properties to.
 -- `[source-group]`: Syntax highlighting group it will inherit/link from.
 
--- This forces `:E` to map to `:Explore` even if another plugin has already
--- overwritten that command.
-vim.api.nvim_create_user_command("E", "Explore", { force = true })
+vim.api.nvim_create_user_command("PrintWinbar", function()
+  local winbar = vim.wo.winbar
+
+  print(vim.inspect({
+    raw = winbar,
+    rendered = vim.api.nvim_eval_statusline(winbar, {
+      winid = vim.api.nvim_get_current_win(),
+      use_winbar = true,
+    }).str,
+  }))
+end, {})
 
 return {}
