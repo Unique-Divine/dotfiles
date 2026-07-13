@@ -89,12 +89,13 @@ local plugins = {
   {
     'fgheng/winbar.nvim',
     opts = {
-      enabled = true,
+      -- Register the update autocmd below so Oil buffers can be skipped without
+      -- clearing the winbar that oil.nvim owns.
+      enabled = false,
       show_file_path = true,
       show_symbols = true,
       exclude_filetype = {
         'help',
-        'oil', -- Conflicts with oil.nvim winbar
         'startify',
         'dashboard',
         'packer',
@@ -108,7 +109,27 @@ local plugins = {
         'toggleterm',
         'qf',
       },
-    }
+    },
+    config = function(_, opts)
+      require('winbar').setup(opts)
+
+      local winbar_events = {
+        'DirChanged',
+        'CursorMoved',
+        'BufWinEnter',
+        'BufFilePost',
+        'InsertEnter',
+        'BufWritePost',
+      }
+      vim.api.nvim_create_autocmd(winbar_events, {
+        desc = 'Update winbar outside Oil buffers',
+        callback = function()
+          if vim.bo.filetype ~= 'oil' then
+            require('winbar.winbar').show_winbar()
+          end
+        end,
+      })
+    end,
   },
 
   -- https://github.com/xiyaowong/transparent.nvim
@@ -223,25 +244,6 @@ local plugins = {
           vim.schedule(function()
             oil.open(path)
           end)
-        end,
-      })
-
-      -- winbar.nvim clears the winbar for excluded filetypes. Restore Oil's
-      -- own winbar after those callbacks run.
-      local oil_winbar_events = {
-        "DirChanged",
-        "CursorMoved",
-        "BufWinEnter",
-        "BufFilePost",
-        "InsertEnter",
-        "BufWritePost",
-      }
-      vim.api.nvim_create_autocmd(oil_winbar_events, {
-        desc = "Restore Oil's directory winbar",
-        callback = function()
-          if vim.bo.filetype == "oil" then
-            vim.opt_local.winbar = "%!v:lua.get_oil_winbar()"
-          end
         end,
       })
     end,
