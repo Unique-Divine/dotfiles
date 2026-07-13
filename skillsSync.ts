@@ -40,15 +40,17 @@ if (help) {
 
 const defaultConfig = (env: NodeJS.ProcessEnv): SkillsSyncConfig => {
   const home = env.HOME
-  const bokuPath = env.BOKU_PATH
+  const repo = env.REPO
 
   if (!home) {
     throw new Error("HOME is not set")
   }
 
-  if (!bokuPath) {
-    throw new Error("BOKU_PATH is not set")
+  if (!repo) {
+    throw new Error("REPO is not set")
   }
+
+  const bokuPath = resolve(repo, "boku")
 
   return {
     skillsRuntime: resolve(home, ".cursor/skills"),

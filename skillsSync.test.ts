@@ -19,7 +19,7 @@ const makeSkill = async (
 
 const runSkillsSync = async (
   homeDir: string,
-  bokuPath: string,
+  repoPath: string,
   args: string[] = ["--run"],
 ): Promise<void> => {
   const proc = Bun.spawn(["bun", scriptPath, ...args], {
@@ -27,7 +27,7 @@ const runSkillsSync = async (
     env: {
       ...process.env,
       HOME: homeDir,
-      BOKU_PATH: bokuPath,
+      REPO: repoPath,
     },
     stderr: "pipe",
     stdout: "pipe",
@@ -57,11 +57,11 @@ describe("skills-sync", () => {
   let testCfg: {
     root: string
     syncHomeDir: string
-    syncBokuPath: string
+    syncRepoPath: string
     syncPublicDir: string
     syncPrivateDir: string
     dryRunHomeDir: string
-    dryRunBokuPath: string
+    dryRunRepoPath: string
     dryRunPublicDir: string
   }
 
@@ -69,7 +69,8 @@ describe("skills-sync", () => {
     const root = await mkdtemp(join(tmpdir(), "skills-sync-test-"))
 
     const syncHomeDir = join(root, "sync-home")
-    const syncBokuPath = join(root, "sync-boku")
+    const syncRepoPath = join(root, "sync-repo")
+    const syncBokuPath = join(syncRepoPath, "boku")
     const syncRuntimeDir = join(syncHomeDir, ".cursor/skills")
     const syncPublicDir = join(syncBokuPath, "jiyuu/ai-skills")
     const syncPrivateDir = join(syncBokuPath, "priv-skills")
@@ -111,7 +112,8 @@ describe("skills-sync", () => {
     )
 
     const dryRunHomeDir = join(root, "dry-run-home")
-    const dryRunBokuPath = join(root, "dry-run-boku")
+    const dryRunRepoPath = join(root, "dry-run-repo")
+    const dryRunBokuPath = join(dryRunRepoPath, "boku")
     const dryRunRuntimeDir = join(dryRunHomeDir, ".cursor/skills")
     const dryRunPublicDir = join(dryRunBokuPath, "jiyuu/ai-skills")
 
@@ -122,23 +124,23 @@ describe("skills-sync", () => {
     testCfg = {
       root,
       syncHomeDir,
-      syncBokuPath,
+      syncRepoPath,
       syncPublicDir,
       syncPrivateDir,
       dryRunHomeDir,
-      dryRunBokuPath,
+      dryRunRepoPath,
       dryRunPublicDir,
     }
   })
 
   test("defaults to dry run unless --run is passed", async () => {
-    await runSkillsSync(testCfg.dryRunHomeDir, testCfg.dryRunBokuPath, [])
+    await runSkillsSync(testCfg.dryRunHomeDir, testCfg.dryRunRepoPath, [])
 
     expect(await dirNames(testCfg.dryRunPublicDir)).toEqual(["stale-public"])
   })
 
   test("syncs direct runtime skills to public and private repos", async () => {
-    await runSkillsSync(testCfg.syncHomeDir, testCfg.syncBokuPath)
+    await runSkillsSync(testCfg.syncHomeDir, testCfg.syncRepoPath)
 
     expect(await dirNames(testCfg.syncPublicDir)).toEqual([
       "public-false",
