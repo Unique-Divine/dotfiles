@@ -4,7 +4,12 @@ import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { parse, type TomlTable } from "smol-toml"
 
-import { applyConfig, dotfileConfig, mergeRuntimeConfig } from "./config.ts"
+import {
+  applyConfig,
+  dotfileConfig,
+  mergeRuntimeConfig,
+  readCursorMcpServers,
+} from "./config.ts"
 
 const scriptPath = join(import.meta.dir, "config.ts")
 
@@ -53,15 +58,51 @@ describe("codex config", () => {
     })
   })
 
+  test("merges Cursor MCP servers by name and replaces matching entries", () => {
+    const merged = mergeRuntimeConfig(
+      {
+        mcp_servers: {
+          cursor: {
+            command: "old-command",
+            env: { OLD_SECRET: "old" },
+          },
+          private: { command: "private-command" },
+        },
+      },
+      dotfileConfig,
+      {
+        cursor: {
+          command: "new-command",
+          args: ["--serve"],
+          env: { NEW_SECRET: "new" },
+        },
+      },
+    )
+
+    expect(merged.mcp_servers).toEqual({
+      cursor: {
+        command: "new-command",
+        args: ["--serve"],
+        env: { NEW_SECRET: "new" },
+      },
+      private: { command: "private-command" },
+    })
+  })
+
   test("creates the runtime config and is idempotent", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-config-test-"))
 
     try {
       const runtimePath = join(root, ".codex/config.toml")
-      expect(await applyConfig({ runtimePath, quiet: true })).toBe(true)
+      const mcpSourcePath = join(root, "missing-cursor-mcp.json")
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(true)
       const firstText = await Bun.file(runtimePath).text()
       expect(parse(firstText) as TomlTable).toEqual(dotfileConfig)
-      expect(await applyConfig({ runtimePath, quiet: true })).toBe(false)
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(false)
       expect(await Bun.file(runtimePath).text()).toBe(firstText)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -73,6 +114,7 @@ describe("codex config", () => {
 
     try {
       const runtimePath = join(root, ".codex/config.toml")
+      const mcpSourcePath = join(root, "missing-cursor-mcp.json")
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(
         runtimePath,
@@ -82,7 +124,7 @@ describe("codex config", () => {
           "[tui.model_availability_nux]\n\"gpt-5.6-sol\" = 4\n",
       )
 
-      await applyConfig({ runtimePath, quiet: true })
+      await applyConfig({ runtimePath, mcpSourcePath, quiet: true })
       const config = parse(await Bun.file(runtimePath).text()) as TomlTable
       expect(config.projects).toEqual({
         "/tmp/project": { trust_level: "trusted" },
@@ -99,11 +141,85 @@ describe("codex config", () => {
     }
   })
 
+  test("imports Cursor MCP JSON from a configurable source", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-mcp-test-"))
+
+    try {
+      const runtimePath = join(root, ".codex/config.toml")
+      const mcpSourcePath = join(root, "cursor-mcp.json")
+      await writeFile(
+        mcpSourcePath,
+        JSON.stringify({
+          mcpServers: {
+            telegram: {
+              command: "uv",
+              args: ["--directory", "/tmp/telegram", "run", "main.py"],
+              env: { TELEGRAM_TOKEN: "fixture-token" },
+            },
+          },
+        }),
+      )
+
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(true)
+      const config = parse(await Bun.file(runtimePath).text()) as TomlTable
+      expect(config.mcp_servers).toEqual({
+        telegram: {
+          command: "uv",
+          args: ["--directory", "/tmp/telegram", "run", "main.py"],
+          env: { TELEGRAM_TOKEN: "fixture-token" },
+        },
+      })
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("skips a missing source and a source without mcpServers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-empty-mcp-test-"))
+
+    try {
+      const missingPath = join(root, "missing.json")
+      expect(await readCursorMcpServers(missingPath)).toEqual({})
+
+      const sourcePath = join(root, "cursor-mcp.json")
+      await writeFile(sourcePath, JSON.stringify({ version: 1 }))
+      expect(await readCursorMcpServers(sourcePath)).toEqual({})
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects invalid Cursor MCP JSON without changing runtime config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-invalid-mcp-test-"))
+
+    try {
+      const runtimePath = join(root, ".codex/config.toml")
+      const sourcePath = join(root, "cursor-mcp.json")
+      const runtimeText = 'model = "existing-model"\n'
+      await mkdir(join(root, ".codex"), { recursive: true })
+      await writeFile(runtimePath, runtimeText)
+      await writeFile(sourcePath, '{"mcpServers": []}')
+
+      await expect(
+        applyConfig({ runtimePath, mcpSourcePath: sourcePath, quiet: true }),
+      ).rejects.toThrow("mcpServers must be an object")
+      expect(await Bun.file(runtimePath).text()).toBe(runtimeText)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("does not rewrite equivalent TOML comments or formatting", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-config-comment-test-"))
 
     try {
       const runtimePath = join(root, ".codex/config.toml")
+      const mcpSourcePath = join(root, "missing-cursor-mcp.json")
       const text = `# Portable preferences\n${[
         'personality = "pragmatic"',
         'approvals_reviewer = "user"',
@@ -119,7 +235,9 @@ describe("codex config", () => {
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(runtimePath, text)
 
-      expect(await applyConfig({ runtimePath, quiet: true })).toBe(false)
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(false)
       expect(await Bun.file(runtimePath).text()).toBe(text)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -131,11 +249,34 @@ describe("codex config", () => {
 
     try {
       const runtimePath = join(root, ".codex/config.toml")
+      const mcpSourcePath = join(root, "missing-cursor-mcp.json")
       const invalidToml = "model = [\n"
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(runtimePath, invalidToml)
-      await expect(applyConfig({ runtimePath, quiet: true })).rejects.toThrow()
+      await expect(
+        applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).rejects.toThrow()
       expect(await Bun.file(runtimePath).text()).toBe(invalidToml)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects malformed Cursor JSON without changing runtime config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-bad-json-test-"))
+
+    try {
+      const runtimePath = join(root, ".codex/config.toml")
+      const sourcePath = join(root, "cursor-mcp.json")
+      const runtimeText = 'model = "existing-model"\n'
+      await mkdir(join(root, ".codex"), { recursive: true })
+      await writeFile(runtimePath, runtimeText)
+      await writeFile(sourcePath, "{not JSON")
+
+      await expect(
+        applyConfig({ runtimePath, mcpSourcePath: sourcePath, quiet: true }),
+      ).rejects.toThrow("Unable to parse Cursor MCP config")
+      expect(await Bun.file(runtimePath).text()).toBe(runtimeText)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -158,6 +299,31 @@ describe("codex config", () => {
 
       const run = await runConfig(root, ["--run", "--quiet"])
       expect(run).toEqual({ exitCode: 0, stdout: "", stderr: "" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("accepts an MCP source path from the CLI", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-cli-mcp-test-"))
+
+    try {
+      const sourcePath = join(root, "cursor-mcp.json")
+      await writeFile(
+        sourcePath,
+        JSON.stringify({
+          mcpServers: { fixture: { command: "fixture-command" } },
+        }),
+      )
+
+      const result = await runConfig(root, [
+        "--print",
+        "--mcp-source",
+        sourcePath,
+      ])
+      expect(result).toMatchObject({ exitCode: 0, stderr: "" })
+      expect(result.stdout).toContain("[mcp_servers.fixture]")
+      expect(result.stdout).toContain('command = "fixture-command"')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

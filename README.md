@@ -48,7 +48,7 @@ sudo apt install build-essential ripgrep gh libclang-dev wslu
 # https://rustup.rs/
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
 cargo install just
-cargo install bat tree-sitter-cli
+cargo install bat tree-sitter-cli sd
 
 # Create symbolic links for configurations
 source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
@@ -109,8 +109,10 @@ See the [Codex skills documentation](https://developers.openai.com/codex/concept
 ### Codex config
 
 [`codex/config.ts`](codex/config.ts) maintains portable defaults in
-`$HOME/.codex/config.toml` while preserving local project, MCP, and onboarding
-state. Run `bun run codex/config.ts` for its usage and options.
+`$HOME/.codex/config.toml` while preserving local project and onboarding
+state. When present, `$HOME/.cursor/mcp.json` supplies same-named MCP servers;
+other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
+usage and options.
 
 ### WSL Clipboard Integration
 - Custom `pbcopy` and `pbpaste` commands that work with Windows clipboard
