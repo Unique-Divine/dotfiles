@@ -353,7 +353,13 @@ local lazyPlugins = {
   { 'numToStr/Comment.nvim',         opts = {} },
 
   -- Fuzzy Finder (files, lsp, etc)
-  { 'nvim-telescope/telescope.nvim', dependencies = { 'nvim-lua/plenary.nvim' } },
+  -- Pin to a tagged release (not bare master). v0.2.2 is the newest tag;
+  -- GitHub Releases "Latest" is currently v0.2.1.
+  {
+    'nvim-telescope/telescope.nvim',
+    tag = 'v0.2.2',
+    dependencies = { 'nvim-lua/plenary.nvim' },
+  },
 
   -- Fuzzy Finder Algorithm which requires local dependencies to be built.
   -- Only load if `make` is available. Make sure you have the system
