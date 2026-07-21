@@ -133,19 +133,50 @@ mason_lspconfig.setup {
 }
 
 --[[
-`:Toc` command: Generates a table of contents (TOC) for a markdown file using
-the 'github.com/Unique-Divine/jiyuu/mdtoc' tool.
+`:Toc` / `:TocCopy` commands: Generate a markdown TOC via
+'github.com/Unique-Divine/jiyuu/mdtoc'.
+
+`:Toc` inserts/updates the TOC at `<!-- toc -->` in the current file.
+`:TocCopy` prints the TOC to stdout and copies it to the clipboard.
 
 Replaces the "jonschlinkert/markdown-toc" tool installed with Mason, as that
 one's it's not actively maintained.
 ]]
-vim.api.nvim_create_user_command('Toc', function()
-  vim.cmd('!bun run "$HOME/ki/boku/jiyuu/mdtoc/src/cli.ts" % --bullets="-" --maxdepth=3 --no-firsth1 | clip.exe')
+local mdtoc_cli = '"$HOME/ki/boku/jiyuu/mdtoc/src/cli.ts"'
+local mdtoc_flags = '--bullets="-" --maxdepth=3 --no-firsth1'
+
+vim.api.nvim_create_user_command('TocCopy', function()
   -- The "%" means the current file when you run this vim.cmd. This CLI tool
   -- takes exactly one argument and is configured with flags.
-  print('markdown-toc: successfully yanked headers for table of contents')
+  vim.cmd('!bun run ' .. mdtoc_cli .. ' % ' .. mdtoc_flags .. ' | clip.exe')
+  print('markdown-toc: yanked TOC to clipboard')
 end, {
-  desc = "Generate a markdown table of contents (TOC), copying the contents the clipboard",
+  desc = "Generate markdown TOC and copy to clipboard",
+})
+
+vim.api.nvim_create_user_command('Toc', function()
+  local file = vim.fn.expand('%:p')
+  if file == '' then
+    print('markdown-toc: save the buffer first')
+    return
+  end
+  vim.cmd('write')
+  local cmd = table.concat({
+    'bun run',
+    mdtoc_cli,
+    vim.fn.shellescape(file),
+    '-i',
+    mdtoc_flags,
+  }, ' ')
+  vim.fn.system(cmd)
+  if vim.v.shell_error == 0 then
+    vim.cmd('edit!')
+    print('markdown-toc: updated TOC in place')
+  else
+    print('markdown-toc: failed')
+  end
+end, {
+  desc = "Insert/update markdown TOC at <!-- toc --> marker",
 })
 
 -- Rust: rustaceanvim replaces simrat39/rust-tools (archived; used deprecated lspconfig.rust_analyzer.setup).
