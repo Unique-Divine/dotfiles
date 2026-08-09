@@ -119,9 +119,9 @@ describe("codex config", () => {
       await writeFile(
         runtimePath,
         '[projects."/tmp/project"]\ntrust_level = "trusted"\n\n' +
-          "[mcp_servers.private]\ncommand = \"private-command\"\n\n" +
+          '[mcp_servers.private]\ncommand = "private-command"\n\n' +
           "[tui]\nvim_mode_default = false\n\n" +
-          "[tui.model_availability_nux]\n\"gpt-5.6-sol\" = 4\n",
+          '[tui.model_availability_nux]\n"gpt-5.6-sol" = 4\n',
       )
 
       await applyConfig({ runtimePath, mcpSourcePath, quiet: true })
