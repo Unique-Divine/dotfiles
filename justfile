@@ -58,7 +58,7 @@ codex *ARGS:
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
-    ca-certificates gnupg curl trash-cli clang-format
+    ca-certificates gnupg curl trash-cli clang-format sqlite3
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
