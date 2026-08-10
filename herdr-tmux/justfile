@@ -1,0 +1,12 @@
+test:
+    cargo test --locked
+
+lint:
+    cargo fmt --check
+    cargo clippy --all-targets --locked -- -D warnings
+
+build:
+    cargo build --release --locked
+
+install:
+    cargo install --path . --root "$HOME/.local" --force

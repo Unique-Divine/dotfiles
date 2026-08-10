@@ -104,8 +104,9 @@ detach = "prefix+d"
 # cycle_pane_next = "prefix+tab"
 # cycle_pane_previous = "prefix+shift+tab"
 # last_pane = ""          # optional, unset by default; bind e.g. "prefix+tab" for global back-and-forth
-# split_vertical = "prefix+v"
-# split_horizontal = "prefix+minus"
+# Match tmux: Ctrl-b V creates side-by-side panes, and Ctrl-b S stacks panes.
+split_vertical = "prefix+shift+v"
+split_horizontal = "prefix+shift+s"
 # close_pane = "prefix+x"
 # zoom = "prefix+z"       # legacy alias: fullscreen
 # resize_mode = "prefix+r"
@@ -133,6 +134,28 @@ detach = "prefix+d"
 # width = "80%"
 # height = "80%"
 
+# Match tmux's select-layout bindings while preserving the existing live panes.
+# `=` stacks panes evenly top-to-bottom; `_` spreads them evenly left-to-right.
+[[keys.command]]
+key = "prefix+="
+type = "shell"
+command = "$HOME/.local/bin/herdr-tmux layout even-vertical"
+description = "even vertical pane layout"
+
+[[keys.command]]
+key = "prefix+shift+minus"
+type = "shell"
+command = "$HOME/.local/bin/herdr-tmux layout even-horizontal"
+description = "even horizontal pane layout"
+
+[[keys.command]]
+key = "prefix+q"
+type = "popup"
+command = "$HOME/.local/bin/herdr-tmux picker"
+width = 60
+height = 14
+description = "select pane by number"
+
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
 # [keys.indexed]
@@ -154,7 +177,7 @@ detach = "prefix+d"
 # sidebar_max_width = 36
 
 # Start with the sidebar collapsed. Changes take effect on the next launch.
-# sidebar_start_collapsed = false
+sidebar_start_collapsed = false
 
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
@@ -255,11 +278,11 @@ detach = "prefix+d"
 # herdr = show in-app toasts
 # terminal = ask the outer terminal to show a desktop notification
 # system = ask the OS notification service directly
-# delivery = "off"
+delivery = "herdr"
 # delay_seconds = 1
 
 [ui.toast.herdr]
-# position = "bottom-right"
+position = "bottom-right"
 
 [ui.toast.clipboard]
 # enabled = true
