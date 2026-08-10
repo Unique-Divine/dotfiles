@@ -42,6 +42,22 @@ health:
     failed=1
   fi
 
+  if which_ok herdr; then
+    herdr_config="$PWD/herdr/config.toml"
+    runtime_herdr_config="$HOME/.config/herdr/config.toml"
+
+    if ! HERDR_CONFIG_PATH="$herdr_config" herdr config check; then
+      failed=1
+    fi
+
+    if [[ ! -L "$runtime_herdr_config" ]] || \
+      [[ "$(readlink -f -- "$runtime_herdr_config" 2>/dev/null || true)" != \
+         "$(readlink -f -- "$herdr_config")" ]]; then
+      log_error "Herdr config link is missing or points outside dotfiles: $runtime_herdr_config"
+      failed=1
+    fi
+  fi
+
   if [[ -z "${REPO:-}" ]]; then
     log_error "REPO is not set; run just sync first or source zsh/zshenv"
     failed=1

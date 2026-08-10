@@ -36,6 +36,8 @@ _symlink "$DOTFILES/tmux/tmux.conf" ~/.tmux.conf
 
 mkdir -p ~/.config
 _symlink "$DOTFILES/nvim" ~/.config/
+mkdir -p ~/.config/herdr
+_symlink "$DOTFILES/herdr/config.toml" ~/.config/herdr/config.toml
 
 source "$DOTFILES/zsh/bashlib.sh"
 source "$DOTFILES/env.sh" # For the $SUDO_PW env var
