@@ -151,7 +151,7 @@ description = "even horizontal pane layout"
 [[keys.command]]
 key = "prefix+q"
 type = "popup"
-command = "$HOME/.local/bin/herdr-tmux picker"
+command = "$HOME/.local/bin/herdr-tmux focus-pane"
 width = 60
 height = 14
 description = "select pane by number"
@@ -159,7 +159,7 @@ description = "select pane by number"
 [[keys.command]]
 key = "prefix+a"
 type = "popup"
-command = "$HOME/.local/bin/herdr-tmux agent-selector"
+command = "$HOME/.local/bin/herdr-tmux focus-agent"
 width = 72
 height = 14
 description = "select agent by number"

@@ -31,10 +31,10 @@ enum Command {
         #[command(subcommand)]
         layout: Layout,
     },
-    /// Select a pane in the active tab by number.
-    Picker,
-    /// Select a live agent anywhere in the session by number.
-    AgentSelector,
+    /// Focus a pane in the active tab by number.
+    FocusPane,
+    /// Focus a live agent anywhere in the session by number.
+    FocusAgent,
 }
 
 #[derive(Debug, Subcommand)]
@@ -64,8 +64,8 @@ fn main() -> ExitCode {
     };
     let result = match cli.command {
         Command::Layout { layout } => arrange(&target, layout.into()),
-        Command::Picker => pick_pane(&target),
-        Command::AgentSelector => pick_agent(&target),
+        Command::FocusPane => pick_pane(&target),
+        Command::FocusAgent => pick_agent(&target),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -14,10 +14,10 @@ herdr server reload-config
 ```
 
 The configuration key `keys.detach` uses `prefix+d`, matching tmux. Binding
-`prefix+q` opens the local numeric pane picker, and `prefix+a` opens the
-session-wide agent selector.
+`prefix+q` runs `herdr-tmux focus-pane`, and `prefix+a` runs
+`herdr-tmux focus-agent`.
 
-## Pane layouts and picker
+## Pane layouts and focus commands
 
 The tmux layout bindings are available in Herdr too:
 
@@ -29,10 +29,10 @@ The tmux layout bindings are available in Herdr too:
   Each row shows the agent kind and state, workspace and tab IDs, and terminal
   title. Press `0`–`9` without Enter to focus an agent.
 
-The layout commands preserve existing pane processes and scrollback. The
-picker supports up to ten panes, marks the active pane, cancels after 1.5
+The layout commands preserve existing pane processes and scrollback. The pane
+focus command supports up to ten panes, marks the active pane, cancels after 1.5
 seconds or on invalid input, and validates the selected pane before focusing
-it. The agent selector supports the same number of rows and cancellation
+it. The agent focus command supports the same number of rows and cancellation
 behavior, and validates the selected agent before focusing it. Install the
 `herdr-tmux` command from its sibling source directory:
 
