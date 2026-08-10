@@ -1,0 +1,15 @@
+{
+  "workspace_id": "w1",
+  "tab_id": "w1:t1",
+  "zoomed": false,
+  "focused_pane_id": "w1:p3",
+  "root": {
+    "type": "split", "direction": "down", "ratio": 0.4,
+    "first": { "type": "pane", "pane_id": "w1:p1" },
+    "second": {
+      "type": "split", "direction": "right", "ratio": 0.7,
+      "first": { "type": "pane", "pane_id": "w1:p2" },
+      "second": { "type": "pane", "pane_id": "w1:p3" }
+    }
+  }
+}

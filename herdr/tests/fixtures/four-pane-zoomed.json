@@ -1,0 +1,19 @@
+{
+  "workspace_id": "w1",
+  "tab_id": "w1:t1",
+  "zoomed": true,
+  "focused_pane_id": "w1:p4",
+  "root": {
+    "type": "split", "direction": "right", "ratio": 0.5,
+    "first": {
+      "type": "split", "direction": "down", "ratio": 0.5,
+      "first": { "type": "pane", "pane_id": "w1:p1" },
+      "second": { "type": "pane", "pane_id": "w1:p2" }
+    },
+    "second": {
+      "type": "split", "direction": "down", "ratio": 0.5,
+      "first": { "type": "pane", "pane_id": "w1:p3" },
+      "second": { "type": "pane", "pane_id": "w1:p4" }
+    }
+  }
+}
