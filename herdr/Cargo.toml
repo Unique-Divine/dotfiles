@@ -1,9 +1,23 @@
 [package]
 name = "herdr-tmux"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-description = "tmux-style layout commands for Herdr"
-license = "MIT"
+description = "tmux-style even-layout commands for Herdr"
+license = "BSD-2-Clause"
+readme = "README.md"
+repository = "https://github.com/Unique-Divine/dotfiles"
+homepage = "https://github.com/Unique-Divine/dotfiles/tree/main/herdr"
+documentation = "https://docs.rs/herdr-tmux"
+keywords = ["herdr", "tmux", "terminal", "multiplexer"]
+categories = ["command-line-utilities"]
+include = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "src/**",
+    "tests/**",
+]
 
 [workspace]
 

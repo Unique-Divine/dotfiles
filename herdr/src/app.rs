@@ -1,4 +1,4 @@
-//! A deliberately small client for Herdr's public newline-delimited JSON API.
+//! Internal implementation for the `herdr-tmux` command-line application.
 
 use std::env;
 use std::fmt;
@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
+pub(crate) enum Direction {
     Down,
     Right,
 }
@@ -32,20 +32,20 @@ impl Direction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Target {
+pub(crate) struct Target {
     pub socket_path: PathBuf,
     pub tab_id: String,
     pub pane_id: String,
 }
 
 #[derive(Debug, Default)]
-pub struct CliTarget {
+pub(crate) struct CliTarget {
     pub socket_path: Option<PathBuf>,
     pub tab_id: Option<String>,
     pub pane_id: Option<String>,
 }
 
-pub fn resolve_target(cli: CliTarget) -> Result<Target, HerdrError> {
+pub(crate) fn resolve_target(cli: CliTarget) -> Result<Target, HerdrError> {
     let socket_path = cli
         .socket_path
         .or_else(|| env_var_path("HERDR_SOCKET_PATH"));
@@ -71,7 +71,7 @@ fn env_var_path(name: &str) -> Option<PathBuf> {
 }
 
 #[derive(Debug)]
-pub enum HerdrError {
+pub(crate) enum HerdrError {
     Target(String),
     Busy,
     Io(std::io::Error),
@@ -134,7 +134,7 @@ struct LayoutDescription {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum LayoutNode {
+pub(crate) enum LayoutNode {
     Pane {
         pane_id: Option<String>,
     },
@@ -168,7 +168,7 @@ struct PaneInfo {
     tab_id: String,
 }
 
-pub fn leaves(node: &LayoutNode) -> Result<Vec<String>, HerdrError> {
+pub(crate) fn leaves(node: &LayoutNode) -> Result<Vec<String>, HerdrError> {
     match node {
         LayoutNode::Pane {
             pane_id: Some(pane_id),
@@ -184,7 +184,7 @@ pub fn leaves(node: &LayoutNode) -> Result<Vec<String>, HerdrError> {
     }
 }
 
-pub fn even_tree(
+pub(crate) fn even_tree(
     pane_ids: &[String],
     direction: Direction,
 ) -> Result<LayoutNode, HerdrError> {
@@ -316,7 +316,10 @@ impl Client {
     }
 }
 
-pub fn arrange(target: &Target, direction: Direction) -> Result<(), HerdrError> {
+pub(crate) fn arrange(
+    target: &Target,
+    direction: Direction,
+) -> Result<(), HerdrError> {
     let _lock = SessionLock::acquire(&target.socket_path)?;
     let client = Client::new(target.socket_path.clone());
     let exported: ExportResult =
@@ -472,7 +475,7 @@ fn rebuild_from_tree(
     Ok(())
 }
 
-pub fn notify_failure(target: &Target, error: &HerdrError) {
+pub(crate) fn notify_failure(target: &Target, error: &HerdrError) {
     let client = Client::new(target.socket_path.clone());
     let _ = client.request::<Value>(
         "notification.show",

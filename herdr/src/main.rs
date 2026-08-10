@@ -1,10 +1,12 @@
+mod app;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
-use herdr_tmux::{
+use app::{
     arrange, notify_failure, resolve_target, CliTarget, Direction, HerdrError,
 };
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "herdr-tmux", about = "tmux-style layout commands for Herdr")]
@@ -64,7 +66,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn fail(target: Option<&herdr_tmux::Target>, error: HerdrError) -> ExitCode {
+fn fail(target: Option<&app::Target>, error: HerdrError) -> ExitCode {
     if let Some(target) = target {
         notify_failure(target, &error);
     }
