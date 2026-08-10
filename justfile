@@ -59,7 +59,7 @@ health:
   fi
 
   if ! which_ok herdr-tmux; then
-    log_error "herdr-tmux is not installed; run: cd $PWD/herdr && just install"
+    log_error "herdr-tmux is not installed; run: cd $PWD/herdr-tmux && just install"
     failed=1
   fi
 
