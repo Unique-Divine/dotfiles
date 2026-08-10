@@ -13,18 +13,22 @@ HERDR_CONFIG_PATH="$DOTFILES/herdr/config.toml" herdr config check
 herdr server reload-config
 ```
 
-The configuration key `keys.detach` uses `prefix+d`, matching tmux. This
-reserves `prefix+q` for the future pane picker.
+The configuration key `keys.detach` uses `prefix+d`, matching tmux. Binding
+`prefix+q` opens the local numeric pane picker.
 
-## Pane layouts
+## Pane layouts and picker
 
 The tmux layout bindings are available in Herdr too:
 
 - `prefix =` unzooms the active tab and stacks its panes evenly top-to-bottom.
 - `prefix _` unzooms the active tab and spreads its panes evenly left-to-right.
+- `prefix q` opens a popup that lists the active tab's panes in geometric
+  reading order. Press `0`–`9` without Enter to focus a pane.
 
-They preserve the existing pane processes and scrollback. Install the
-`herdr-tmux` command from its sibling source directory:
+The layout commands preserve existing pane processes and scrollback. The
+picker supports up to ten panes, marks the active pane, cancels after 1.5
+seconds or on invalid input, and validates the selected pane before focusing
+it. Install the `herdr-tmux` command from its sibling source directory:
 
 ```bash
 cd "$DOTFILES/herdr-tmux"
