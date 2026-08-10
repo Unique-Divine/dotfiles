@@ -58,6 +58,11 @@ health:
     fi
   fi
 
+  if ! which_ok herdr-tmux; then
+    log_error "herdr-tmux is not installed; run: cd $PWD/herdr && just install"
+    failed=1
+  fi
+
   if [[ -z "${REPO:-}" ]]; then
     log_error "REPO is not set; run just sync first or source zsh/zshenv"
     failed=1
