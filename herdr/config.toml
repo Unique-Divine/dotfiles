@@ -156,6 +156,14 @@ width = 60
 height = 14
 description = "select pane by number"
 
+[[keys.command]]
+key = "prefix+a"
+type = "popup"
+command = "$HOME/.local/bin/herdr-tmux agent-selector"
+width = 72
+height = 14
+description = "select agent by number"
+
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
 # [keys.indexed]

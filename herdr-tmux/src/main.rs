@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use app::{
-    arrange, notify_failure, pick_pane, resolve_target, CliTarget, Direction,
-    HerdrError,
+    arrange, notify_failure, pick_agent, pick_pane, resolve_target, CliTarget,
+    Direction, HerdrError,
 };
 use clap::{Parser, Subcommand};
 
@@ -33,6 +33,8 @@ enum Command {
     },
     /// Select a pane in the active tab by number.
     Picker,
+    /// Select a live agent anywhere in the session by number.
+    AgentSelector,
 }
 
 #[derive(Debug, Subcommand)]
@@ -63,6 +65,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Layout { layout } => arrange(&target, layout.into()),
         Command::Picker => pick_pane(&target),
+        Command::AgentSelector => pick_agent(&target),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

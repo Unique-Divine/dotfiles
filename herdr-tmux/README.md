@@ -26,6 +26,7 @@ Run these commands from a Herdr custom key binding or a Herdr-managed pane:
 herdr-tmux layout even-vertical
 herdr-tmux layout even-horizontal
 herdr-tmux picker
+herdr-tmux agent-selector
 ```
 
 `even-vertical` stacks panes top-to-bottom. `even-horizontal` spreads panes
@@ -39,6 +40,13 @@ picker supports up to ten panes and cancels on Escape, invalid input, or a
 no-ops. Before changing focus, the picker verifies that the selected pane still
 belongs to the originating tab.
 
+Command `herdr-tmux agent-selector` lists every live agent in the session.
+Each row shows its detected kind, lifecycle status, workspace and tab IDs, and
+terminal title. Press `0`–`9` without Enter to focus an agent, even when it is
+in another workspace or tab. It shares the pane picker's cancellation and
+timeout behavior, and confirms the selected agent still occupies its pane
+before focus.
+
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
@@ -46,8 +54,9 @@ overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
 The source repository's [Herdr configuration](https://github.com/Unique-Divine/dotfiles/tree/main/herdr)
 binds `prefix =` to `even-vertical`, `prefix _` to `even-horizontal`, and
-`prefix q` to the popup pane picker. The picker is a local, early feature and
-is not packaged as a Herdr plugin.
+`prefix q` to the popup pane picker. It binds `prefix a` to the session-wide
+agent selector. Both are local, early features and are not packaged as Herdr
+plugins.
 
 ## License
 
