@@ -156,13 +156,6 @@ width = 60
 height = 14
 description = "select pane by number"
 
-# Demo: temporary plugin pane (splits into the tab, closes when command exits).
-[[keys.command]]
-key = "prefix+shift+i"
-type = "pane"
-command = "bash -lc 'printf \"temporary plugin pane\\npane=%s tab=%s\\n\\n\" \"$HERDR_PANE_ID\" \"$HERDR_TAB_ID\"; herdr pane list --workspace \"$HERDR_WORKSPACE_ID\"; echo; printf \"press any key to close\\n\"; read -n1 -s'"
-description = "demo info pane"
-
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
 # [keys.indexed]
@@ -285,11 +278,11 @@ sidebar_start_collapsed = false
 # herdr = show in-app toasts
 # terminal = ask the outer terminal to show a desktop notification
 # system = ask the OS notification service directly
-# delivery = "off"
+delivery = "herdr"
 # delay_seconds = 1
 
 [ui.toast.herdr]
-# position = "bottom-right"
+position = "bottom-right"
 
 [ui.toast.clipboard]
 # enabled = true

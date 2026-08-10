@@ -86,7 +86,7 @@ export_nvm() {
   [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 
   # The nvm lts version can be found here: https://github.com/nodejs/Release 
-  echo "lts/jod" > "$HOME/.nvmrc" # jod == v22
+  echo "lts/krypton" > "$HOME/.nvmrc" # jod == v22
   nvm use
   # bun install --global yarn
 }
