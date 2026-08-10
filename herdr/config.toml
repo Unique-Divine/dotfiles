@@ -148,6 +148,14 @@ type = "shell"
 command = "$HOME/.local/bin/herdr-tmux layout even-horizontal"
 description = "even horizontal pane layout"
 
+[[keys.command]]
+key = "prefix+q"
+type = "popup"
+command = "$HOME/.local/bin/herdr-tmux picker"
+width = 60
+height = 14
+description = "select pane by number"
+
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
 # [keys.indexed]
