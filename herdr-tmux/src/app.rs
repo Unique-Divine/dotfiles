@@ -3,18 +3,22 @@
 use std::env;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
+const PICKER_TIMEOUT: Duration = Duration::from_millis(1_500);
+const MAX_PICKER_PANES: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -163,9 +167,45 @@ struct TabInfo {
 struct PaneGetResponse {
     pane: PaneInfo,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct PaneInfo {
+    pane_id: String,
     tab_id: String,
+    focused: bool,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    terminal_title_stripped: Option<String>,
+    #[serde(default)]
+    display_agent: Option<String>,
+    #[serde(default)]
+    foreground_cwd: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+struct PaneLayoutResponse {
+    layout: PaneLayout,
+}
+#[derive(Debug, Deserialize)]
+struct PaneLayout {
+    tab_id: String,
+    focused_pane_id: String,
+    panes: Vec<PaneLayoutPane>,
+}
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct PaneLayoutPane {
+    pane_id: String,
+    rect: PaneRect,
+}
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+struct PaneRect {
+    x: u16,
+    y: u16,
 }
 
 pub(crate) fn leaves(node: &LayoutNode) -> Result<Vec<String>, HerdrError> {
@@ -309,11 +349,258 @@ impl Client {
         Ok(response.move_result)
     }
     fn pane_tab_id(&self, pane_id: &str) -> Result<String, HerdrError> {
+        Ok(self.pane_get(pane_id)?.tab_id)
+    }
+    fn pane_layout(&self, pane_id: &str) -> Result<PaneLayout, HerdrError> {
+        Ok(self
+            .request::<PaneLayoutResponse>(
+                "pane.layout",
+                json!({"pane_id": pane_id}),
+            )?
+            .layout)
+    }
+    fn pane_get(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
         Ok(self
             .request::<PaneGetResponse>("pane.get", json!({"pane_id": pane_id}))?
-            .pane
-            .tab_id)
+            .pane)
     }
+    fn pane_focus(&self, pane_id: &str) -> Result<PaneInfo, HerdrError> {
+        Ok(self
+            .request::<PaneGetResponse>(
+                "pane.focus",
+                json!({"pane_id": pane_id}),
+            )?
+            .pane)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerChoice {
+    Select(usize),
+    Cancel,
+}
+
+trait RawModeControl {
+    fn enable(&mut self) -> io::Result<()>;
+    fn disable(&mut self) -> io::Result<()>;
+}
+
+struct CrosstermRawMode;
+
+impl RawModeControl for CrosstermRawMode {
+    fn enable(&mut self) -> io::Result<()> {
+        enable_raw_mode()
+    }
+
+    fn disable(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+}
+
+struct RawModeGuard<'a, T: RawModeControl> {
+    mode: &'a mut T,
+}
+
+impl<'a, T: RawModeControl> RawModeGuard<'a, T> {
+    fn enter(mode: &'a mut T) -> io::Result<Self> {
+        mode.enable()?;
+        Ok(Self { mode })
+    }
+}
+
+impl<T: RawModeControl> Drop for RawModeGuard<'_, T> {
+    fn drop(&mut self) {
+        let _ = self.mode.disable();
+    }
+}
+
+fn parse_picker_event(event: Event, pane_count: usize) -> PickerChoice {
+    let Event::Key(key) = event else {
+        return PickerChoice::Cancel;
+    };
+    if key.kind != KeyEventKind::Press {
+        return PickerChoice::Cancel;
+    }
+    match key.code {
+        KeyCode::Char(digit) if digit.is_ascii_digit() => {
+            let index = digit as usize - '0' as usize;
+            if index < pane_count {
+                PickerChoice::Select(index)
+            } else {
+                PickerChoice::Cancel
+            }
+        }
+        KeyCode::Esc => PickerChoice::Cancel,
+        _ => PickerChoice::Cancel,
+    }
+}
+
+fn read_picker_choice_with<M, P, R>(
+    mode: &mut M,
+    pane_count: usize,
+    timeout: Duration,
+    mut poll: P,
+    mut read: R,
+) -> Result<PickerChoice, HerdrError>
+where
+    M: RawModeControl,
+    P: FnMut(Duration) -> io::Result<bool>,
+    R: FnMut() -> io::Result<Event>,
+{
+    let _guard = RawModeGuard::enter(mode)?;
+    if !poll(timeout)? {
+        return Ok(PickerChoice::Cancel);
+    }
+    Ok(parse_picker_event(read()?, pane_count))
+}
+
+fn read_picker_choice(pane_count: usize) -> Result<PickerChoice, HerdrError> {
+    read_picker_choice_with(
+        &mut CrosstermRawMode,
+        pane_count,
+        PICKER_TIMEOUT,
+        event::poll,
+        event::read,
+    )
+}
+
+fn sort_panes(panes: &mut [PaneLayoutPane]) {
+    panes.sort_by(|left, right| {
+        (left.rect.y, left.rect.x, &left.pane_id).cmp(&(
+            right.rect.y,
+            right.rect.x,
+            &right.pane_id,
+        ))
+    });
+}
+
+fn nonempty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().filter(|value| !value.trim().is_empty())
+}
+
+fn pane_description(pane: &PaneInfo) -> String {
+    let description = nonempty(&pane.label)
+        .or_else(|| nonempty(&pane.display_agent))
+        .or_else(|| nonempty(&pane.agent))
+        .or_else(|| nonempty(&pane.title))
+        .or_else(|| nonempty(&pane.terminal_title_stripped))
+        .map(str::to_owned)
+        .or_else(|| {
+            nonempty(&pane.foreground_cwd)
+                .or_else(|| nonempty(&pane.cwd))
+                .and_then(|cwd| Path::new(cwd).file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| pane.pane_id.clone());
+    let mut chars = description.trim().chars().map(|character| {
+        if character.is_control() {
+            ' '
+        } else {
+            character
+        }
+    });
+    let prefix = chars.by_ref().take(44).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn write_picker<W: Write>(
+    writer: &mut W,
+    panes: &[(PaneLayoutPane, PaneInfo)],
+    active_pane_id: &str,
+) -> Result<(), HerdrError> {
+    writeln!(writer, "Select pane (0-9, Esc cancels)\n")?;
+    for (index, (layout, pane)) in panes.iter().enumerate() {
+        let marker = if layout.pane_id == active_pane_id {
+            "*"
+        } else {
+            " "
+        };
+        writeln!(writer, " {index} {marker} {}", pane_description(pane))?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+pub(crate) fn pick_pane(target: &Target) -> Result<(), HerdrError> {
+    pick_pane_with(target, &mut io::stdout().lock(), read_picker_choice)
+}
+
+fn pick_pane_with<W, C>(
+    target: &Target,
+    writer: &mut W,
+    mut choose: C,
+) -> Result<(), HerdrError>
+where
+    W: Write,
+    C: FnMut(usize) -> Result<PickerChoice, HerdrError>,
+{
+    let client = Client::new(target.socket_path.clone());
+    let mut layout = client.pane_layout(&target.pane_id)?;
+    if layout.tab_id != target.tab_id
+        || layout.focused_pane_id != target.pane_id
+        || !layout
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == target.pane_id)
+    {
+        return Err(HerdrError::Protocol(
+            "the active pane is no longer in the originating tab".into(),
+        ));
+    }
+    if layout.panes.len() > MAX_PICKER_PANES {
+        return Err(HerdrError::Protocol(format!(
+            "pane picker supports at most {MAX_PICKER_PANES} panes; this tab has {}",
+            layout.panes.len()
+        )));
+    }
+    if layout.panes.len() <= 1 {
+        return Ok(());
+    }
+
+    sort_panes(&mut layout.panes);
+    let panes = layout
+        .panes
+        .into_iter()
+        .map(|layout_pane| {
+            let pane = client.pane_get(&layout_pane.pane_id)?;
+            if pane.tab_id != target.tab_id {
+                return Err(HerdrError::Protocol(format!(
+                    "pane {} moved outside the originating tab",
+                    layout_pane.pane_id
+                )));
+            }
+            Ok((layout_pane, pane))
+        })
+        .collect::<Result<Vec<_>, HerdrError>>()?;
+
+    write_picker(writer, &panes, &target.pane_id)?;
+    let PickerChoice::Select(index) = choose(panes.len())? else {
+        return Ok(());
+    };
+    let selected_id = &panes[index].0.pane_id;
+    let selected = client.pane_get(selected_id)?;
+    if selected.tab_id != target.tab_id {
+        return Err(HerdrError::Protocol(format!(
+            "pane {selected_id} moved outside the originating tab"
+        )));
+    }
+    if selected_id == &target.pane_id {
+        return Ok(());
+    }
+    let focused = client.pane_focus(selected_id)?;
+    if focused.pane_id != *selected_id
+        || focused.tab_id != target.tab_id
+        || !focused.focused
+    {
+        return Err(HerdrError::Protocol(format!(
+            "Herdr did not focus pane {selected_id}"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn arrange(
@@ -479,13 +766,14 @@ pub(crate) fn notify_failure(target: &Target, error: &HerdrError) {
     let client = Client::new(target.socket_path.clone());
     let _ = client.request::<Value>(
         "notification.show",
-        json!({"title":"Herdr pane layout failed", "body":error.to_string()}),
+        json!({"title":"Herdr tmux command failed", "body":error.to_string()}),
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
     use std::thread;
@@ -511,7 +799,11 @@ mod tests {
                 let method = request["method"].as_str().unwrap();
                 let result = match method {
                     "layout.export" => json!({"layout": layout}),
-                    "pane.get" => json!({"pane": {"tab_id": "w1:t1"}}),
+                    "pane.get" => json!({"pane": {
+                        "pane_id": request["params"]["pane_id"],
+                        "tab_id": "w1:t1",
+                        "focused": false
+                    }}),
                     "pane.move"
                         if request["params"]["destination"]["type"]
                             == "new_tab" =>
@@ -536,6 +828,63 @@ mod tests {
             },
             receiver,
         )
+    }
+
+    fn scripted_server(
+        results: Vec<Value>,
+        pane_id: &str,
+    ) -> (tempfile::TempDir, Target, mpsc::Receiver<Value>) {
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("herdr.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            for result in results {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let response = if let Some(error) = result.get("__error") {
+                    json!({"id": request["id"], "error": error})
+                } else {
+                    json!({"id": request["id"], "result": result})
+                };
+                let mut writer = stream;
+                writeln!(writer, "{response}").unwrap();
+                sender.send(request).unwrap();
+            }
+        });
+        (
+            directory,
+            Target {
+                socket_path,
+                tab_id: "w1:t1".into(),
+                pane_id: pane_id.into(),
+            },
+            receiver,
+        )
+    }
+
+    fn picker_layout(panes: &[(&str, u16, u16)], focused: &str) -> Value {
+        json!({"layout": {
+            "tab_id": "w1:t1",
+            "focused_pane_id": focused,
+            "panes": panes.iter().map(|(pane_id, x, y)| json!({
+                "pane_id": pane_id,
+                "rect": {"x": x, "y": y}
+            })).collect::<Vec<_>>()
+        }})
+    }
+
+    fn picker_pane(pane_id: &str, tab_id: &str, focused: bool) -> Value {
+        json!({"pane": {
+            "pane_id": pane_id,
+            "tab_id": tab_id,
+            "focused": focused,
+            "cwd": format!("/work/{pane_id}")
+        }})
     }
 
     #[test]
@@ -602,6 +951,305 @@ mod tests {
         assert!(matches!(SessionLock::acquire(&path), Err(HerdrError::Busy)));
         drop(first);
         assert!(SessionLock::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn picker_orders_panes_by_y_then_x() {
+        let mut panes = vec![
+            PaneLayoutPane {
+                pane_id: "p3".into(),
+                rect: PaneRect { x: 10, y: 10 },
+            },
+            PaneLayoutPane {
+                pane_id: "p2".into(),
+                rect: PaneRect { x: 20, y: 0 },
+            },
+            PaneLayoutPane {
+                pane_id: "p1".into(),
+                rect: PaneRect { x: 0, y: 0 },
+            },
+        ];
+        sort_panes(&mut panes);
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| pane.pane_id.as_str())
+                .collect::<Vec<_>>(),
+            ["p1", "p2", "p3"]
+        );
+    }
+
+    #[test]
+    fn pane_description_uses_metadata_precedence_and_id_fallback() {
+        let mut pane: PaneInfo = serde_json::from_value(json!({
+            "pane_id": "w1:p1", "tab_id": "w1:t1", "focused": false,
+            "label": "editor", "display_agent": "Codex", "agent": "codex",
+            "title": "task", "terminal_title_stripped": "shell",
+            "foreground_cwd": "/work/repo", "cwd": "/work"
+        }))
+        .unwrap();
+        assert_eq!(pane_description(&pane), "editor");
+        pane.label = None;
+        assert_eq!(pane_description(&pane), "Codex");
+        pane.display_agent = None;
+        pane.agent = None;
+        pane.title = None;
+        pane.terminal_title_stripped = None;
+        assert_eq!(pane_description(&pane), "repo");
+        pane.foreground_cwd = None;
+        pane.cwd = None;
+        assert_eq!(pane_description(&pane), "w1:p1");
+    }
+
+    #[test]
+    fn pane_description_strips_controls_and_truncates_long_text() {
+        let pane: PaneInfo = serde_json::from_value(json!({
+            "pane_id": "w1:p1", "tab_id": "w1:t1", "focused": false,
+            "label": "line one\nline two with a very long pane description that will not fit"
+        }))
+        .unwrap();
+        let description = pane_description(&pane);
+        assert!(!description.contains('\n'));
+        assert!(description.ends_with('…'));
+        assert_eq!(description.chars().count(), 45);
+    }
+
+    #[test]
+    fn picker_selection_parses_digits_and_cancels_other_input() {
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(
+            parse_picker_event(key(KeyCode::Char('2')), 3),
+            PickerChoice::Select(2)
+        );
+        assert_eq!(
+            parse_picker_event(key(KeyCode::Char('3')), 3),
+            PickerChoice::Cancel
+        );
+        assert_eq!(
+            parse_picker_event(key(KeyCode::Esc), 3),
+            PickerChoice::Cancel
+        );
+        assert_eq!(
+            parse_picker_event(key(KeyCode::Char('x')), 3),
+            PickerChoice::Cancel
+        );
+    }
+
+    #[derive(Default)]
+    struct MockRawMode {
+        enabled: usize,
+        disabled: usize,
+    }
+
+    impl RawModeControl for MockRawMode {
+        fn enable(&mut self) -> io::Result<()> {
+            self.enabled += 1;
+            Ok(())
+        }
+
+        fn disable(&mut self) -> io::Result<()> {
+            self.disabled += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn picker_timeout_cancels_and_restores_terminal_mode() {
+        let mut mode = MockRawMode::default();
+        let choice = read_picker_choice_with(
+            &mut mode,
+            2,
+            Duration::from_millis(1),
+            |_| Ok(false),
+            || panic!("timeout must not read an event"),
+        )
+        .unwrap();
+        assert_eq!(choice, PickerChoice::Cancel);
+        assert_eq!((mode.enabled, mode.disabled), (1, 1));
+    }
+
+    #[test]
+    fn picker_selection_restores_terminal_mode() {
+        let mut mode = MockRawMode::default();
+        let choice = read_picker_choice_with(
+            &mut mode,
+            2,
+            Duration::from_millis(1),
+            |_| Ok(true),
+            || {
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Char('1'),
+                    KeyModifiers::NONE,
+                )))
+            },
+        )
+        .unwrap();
+        assert_eq!(choice, PickerChoice::Select(1));
+        assert_eq!((mode.enabled, mode.disabled), (1, 1));
+    }
+
+    #[test]
+    fn picker_read_error_restores_terminal_mode() {
+        let mut mode = MockRawMode::default();
+        let result = read_picker_choice_with(
+            &mut mode,
+            2,
+            Duration::from_millis(1),
+            |_| Ok(true),
+            || Err(io::Error::other("read failed")),
+        );
+        assert!(matches!(result, Err(HerdrError::Io(_))));
+        assert_eq!((mode.enabled, mode.disabled), (1, 1));
+    }
+
+    #[test]
+    fn picker_rejects_more_than_ten_panes_before_input() {
+        let pane_specs = (0..11)
+            .map(|index| (format!("w1:p{index}"), index as u16, 0_u16))
+            .collect::<Vec<_>>();
+        let layout = json!({"layout": {
+            "tab_id": "w1:t1", "focused_pane_id": "w1:p0",
+            "panes": pane_specs.iter().map(|(pane_id, x, y)| json!({
+                "pane_id": pane_id, "rect": {"x": x, "y": y}
+            })).collect::<Vec<_>>()
+        }});
+        let (_directory, target, receiver) =
+            scripted_server(vec![layout], "w1:p0");
+        let mut input_called = false;
+        let error = pick_pane_with(&target, &mut Vec::new(), |_| {
+            input_called = true;
+            Ok(PickerChoice::Cancel)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("at most 10 panes"));
+        assert!(!input_called);
+        assert_eq!(receiver.iter().count(), 1);
+    }
+
+    #[test]
+    fn picker_one_pane_tab_is_a_successful_no_op_before_input() {
+        let (_directory, target, receiver) = scripted_server(
+            vec![picker_layout(&[("w1:p1", 0, 0)], "w1:p1")],
+            "w1:p1",
+        );
+        let mut input_called = false;
+        pick_pane_with(&target, &mut Vec::new(), |_| {
+            input_called = true;
+            Ok(PickerChoice::Cancel)
+        })
+        .unwrap();
+        assert!(!input_called);
+        assert_eq!(receiver.iter().count(), 1);
+    }
+
+    #[test]
+    fn picker_socket_transcript_focuses_selected_id_directly() {
+        let results = vec![
+            picker_layout(&[("w1:p2", 10, 0), ("w1:p1", 0, 0)], "w1:p1"),
+            picker_pane("w1:p1", "w1:t1", true),
+            picker_pane("w1:p2", "w1:t1", false),
+            picker_pane("w1:p2", "w1:t1", false),
+            picker_pane("w1:p2", "w1:t1", true),
+        ];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        let mut output = Vec::new();
+        pick_pane_with(&target, &mut output, |_| Ok(PickerChoice::Select(1)))
+            .unwrap();
+        let requests = receiver.iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "pane.layout",
+                "pane.get",
+                "pane.get",
+                "pane.get",
+                "pane.focus"
+            ]
+        );
+        assert_eq!(
+            requests.last().unwrap()["params"],
+            json!({"pane_id": "w1:p2"})
+        );
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("0 * w1:p1"));
+        assert!(output.contains("1   w1:p2"));
+    }
+
+    #[test]
+    fn picker_same_pane_selection_is_a_successful_no_op() {
+        let results = vec![
+            picker_layout(&[("w1:p1", 0, 0), ("w1:p2", 10, 0)], "w1:p1"),
+            picker_pane("w1:p1", "w1:t1", true),
+            picker_pane("w1:p2", "w1:t1", false),
+            picker_pane("w1:p1", "w1:t1", true),
+        ];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        pick_pane_with(&target, &mut Vec::new(), |_| {
+            Ok(PickerChoice::Select(0))
+        })
+        .unwrap();
+        assert!(!receiver
+            .iter()
+            .any(|request| request["method"] == "pane.focus"));
+    }
+
+    #[test]
+    fn picker_cancellation_leaves_focus_unchanged() {
+        let results = vec![
+            picker_layout(&[("w1:p1", 0, 0), ("w1:p2", 10, 0)], "w1:p1"),
+            picker_pane("w1:p1", "w1:t1", true),
+            picker_pane("w1:p2", "w1:t1", false),
+        ];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        pick_pane_with(&target, &mut Vec::new(), |_| Ok(PickerChoice::Cancel))
+            .unwrap();
+        assert!(!receiver
+            .iter()
+            .any(|request| request["method"] == "pane.focus"));
+    }
+
+    #[test]
+    fn picker_rejects_stale_or_moved_selected_pane_without_focus() {
+        for stale_result in [
+            json!({"__error": {"code": "pane_not_found", "message": "pane not found"}}),
+            picker_pane("w1:p2", "w1:t2", false),
+        ] {
+            let results = vec![
+                picker_layout(&[("w1:p1", 0, 0), ("w1:p2", 10, 0)], "w1:p1"),
+                picker_pane("w1:p1", "w1:t1", true),
+                picker_pane("w1:p2", "w1:t1", false),
+                stale_result,
+            ];
+            let (_directory, target, receiver) =
+                scripted_server(results, "w1:p1");
+            assert!(pick_pane_with(&target, &mut Vec::new(), |_| {
+                Ok(PickerChoice::Select(1))
+            })
+            .is_err());
+            assert!(!receiver
+                .iter()
+                .any(|request| request["method"] == "pane.focus"));
+        }
+    }
+
+    #[test]
+    fn picker_propagates_layout_api_failure() {
+        let (_directory, target, receiver) = scripted_server(
+            vec![json!({"__error": {
+                "code": "pane_layout_unavailable",
+                "message": "pane layout unavailable"
+            }})],
+            "w1:p1",
+        );
+        let error = pick_pane_with(&target, &mut Vec::new(), |_| {
+            Ok(PickerChoice::Cancel)
+        })
+        .unwrap_err();
+        assert!(matches!(error, HerdrError::Api { .. }));
+        assert_eq!(receiver.iter().count(), 1);
     }
 
     #[test]
