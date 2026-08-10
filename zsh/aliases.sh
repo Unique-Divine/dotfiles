@@ -43,3 +43,8 @@ git config --global core.editor "nvim"
 
 alias ft="focustime" # 2026-03-04
 alias npx="bunx"
+
+# Force tuicr to use OSC 52 instead of WSLg's unreliable clipboard path.
+tuicr() {
+  SSH_TTY="${SSH_TTY:-/dev/tty}" command tuicr "$@"
+}
