@@ -1,44 +1,36 @@
-# herdr-tmux
+# Herdr configuration
 
-`herdr-tmux` adds tmux-style even pane layouts to a local
-[Herdr](https://herdr.dev) session. It rearranges the existing panes, so their
-processes and scrollback remain live.
+`config.toml` is the managed Herdr configuration. The dotfiles link script
+places it at `~/.config/herdr/config.toml`; Herdr session state and logs remain
+outside this directory.
 
-This is an early personal tool. The command-line interface may change as its
-use cases become clearer.
+## Apply a configuration change
 
-## Requirements
-
-- A Unix environment with a running Herdr session.
-- Herdr 0.8.0 or later, which provides the local socket API used by this tool.
-
-## Install
+Validate the managed configuration, then reload the running Herdr server:
 
 ```bash
-cargo install herdr-tmux
+HERDR_CONFIG_PATH="$DOTFILES/herdr/config.toml" herdr config check
+herdr server reload-config
 ```
 
-## Usage
+The configuration key `keys.detach` uses `prefix+d`, matching tmux. This
+reserves `prefix+q` for the future pane picker.
 
-Run either command from a Herdr custom key binding or a Herdr-managed pane:
+## Pane layouts
+
+The tmux layout bindings are available in Herdr too:
+
+- `prefix =` unzooms the active tab and stacks its panes evenly top-to-bottom.
+- `prefix _` unzooms the active tab and spreads its panes evenly left-to-right.
+
+They preserve the existing pane processes and scrollback. Install the
+`herdr-tmux` command from its sibling source directory:
 
 ```bash
-herdr-tmux layout even-vertical
-herdr-tmux layout even-horizontal
+cd "$DOTFILES/herdr-tmux"
+just install
 ```
 
-`even-vertical` stacks panes top-to-bottom. `even-horizontal` spreads panes
-left-to-right. Both commands unzoom the active tab, preserve its focused pane,
-and restore the original layout if a recoverable mutation fails.
-
-For development or tests outside a Herdr-managed pane, pass the command-line
-overrides `--socket-path`, `--tab-id`, and `--pane-id`.
-
-## Dotfiles integration
-
-The source repository's [Herdr configuration](https://github.com/Unique-Divine/dotfiles/tree/main/herdr)
-binds `prefix =` to `even-vertical` and `prefix _` to `even-horizontal`.
-
-## License
-
-BSD-2-Clause. See [LICENSE](LICENSE).
+This installs `~/.local/bin/herdr-tmux`, which the managed configuration calls
+directly. For local development, `--socket-path`, `--tab-id`, and `--pane-id`
+override Herdr's injected environment.
