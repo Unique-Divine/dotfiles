@@ -21,6 +21,9 @@ export const dotfileConfig = {
   sandbox_mode: "danger-full-access",
   tui: {
     vim_mode_default: true,
+    // Keep rendered output enabled by default. Toggle raw scrollback during a
+    // session with `/raw` or Alt-R when terminal-native selection is needed.
+    raw_output_mode: false,
   },
 } satisfies TomlTable
 
@@ -163,7 +166,11 @@ export const mergeRuntimeConfig = (
   }
 }
 
-const serialize = (config: TomlTable): string => `${stringify(config)}\n`
+const schemaDirective =
+  "#:schema https://developers.openai.com/codex/config-schema.json"
+
+const serialize = (config: TomlTable): string =>
+  `${schemaDirective}\n${stringify(config)}\n`
 
 const readRuntimeConfig = async (
   path: string,
@@ -254,8 +261,13 @@ export const applyConfig = async ({
   )
   const currentText = serialize(runtimeConfig)
   const afterText = serialize(nextConfig)
+  const hasSchemaDirective = beforeText.startsWith(`${schemaDirective}\n`)
+  const nextText =
+    currentText === afterText && !hasSchemaDirective
+      ? `${schemaDirective}\n${beforeText}`
+      : afterText
 
-  if (currentText === afterText) {
+  if (currentText === afterText && hasSchemaDirective) {
     if (!quiet) {
       console.log(`Codex runtime config is already current: ${runtimePath}`)
     }
@@ -265,13 +277,13 @@ export const applyConfig = async ({
 
   if (!quiet) {
     console.log(`Codex runtime config differs: ${runtimePath}`)
-    process.stdout.write(unifiedDiff(beforeText, afterText))
+    process.stdout.write(unifiedDiff(beforeText, nextText))
   }
 
   if (!dryRun) {
     await mkdir(dirname(runtimePath), { recursive: true })
     const tmpPath = `${runtimePath}.${process.pid}.tmp`
-    await writeFile(tmpPath, afterText, { mode: 0o600 })
+    await writeFile(tmpPath, nextText, { mode: 0o600 })
     await rename(tmpPath, runtimePath)
   }
 

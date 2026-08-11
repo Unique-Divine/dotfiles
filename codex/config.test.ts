@@ -48,6 +48,7 @@ describe("codex config", () => {
     expect(merged).toMatchObject(dotfileConfig)
     expect(merged.tui).toEqual({
       vim_mode_default: true,
+      raw_output_mode: false,
       model_availability_nux: { "gpt-5.6-sol": 4 },
     })
     expect(merged.projects).toEqual({
@@ -99,6 +100,9 @@ describe("codex config", () => {
         await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
       ).toBe(true)
       const firstText = await Bun.file(runtimePath).text()
+      expect(firstText).toStartWith(
+        "#:schema https://developers.openai.com/codex/config-schema.json\n",
+      )
       expect(parse(firstText) as TomlTable).toEqual(dotfileConfig)
       expect(
         await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
@@ -134,6 +138,7 @@ describe("codex config", () => {
       })
       expect(config.tui).toEqual({
         vim_mode_default: true,
+        raw_output_mode: false,
         model_availability_nux: { "gpt-5.6-sol": 4 },
       })
     } finally {
@@ -214,7 +219,7 @@ describe("codex config", () => {
     }
   })
 
-  test("does not rewrite equivalent TOML comments or formatting", async () => {
+  test("adds the schema directive and preserves equivalent TOML comments", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-config-comment-test-"))
 
     try {
@@ -231,14 +236,22 @@ describe("codex config", () => {
         "",
         "[tui]",
         "vim_mode_default = true",
+        "raw_output_mode = false",
       ].join("\n")}\n`
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(runtimePath, text)
 
       expect(
         await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
+      ).toBe(true)
+      const textWithSchema =
+        "#:schema https://developers.openai.com/codex/config-schema.json\n" +
+        text
+      expect(await Bun.file(runtimePath).text()).toBe(textWithSchema)
+      expect(
+        await applyConfig({ runtimePath, mcpSourcePath, quiet: true }),
       ).toBe(false)
-      expect(await Bun.file(runtimePath).text()).toBe(text)
+      expect(await Bun.file(runtimePath).text()).toBe(textWithSchema)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
