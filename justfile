@@ -8,9 +8,30 @@ setup:
   just -l
 
 test:
+  cargo test --manifest-path clipboard/Cargo.toml
   bun test
 
 alias t := test
+
+# Benchmark WSL clipboard copy, paste, backends, and round-trip latency.
+clipboard-bench *ARGS:
+  bun run zsh/clipboard.bench.ts {{ARGS}}
+
+# Build the experimental persistent WSL clipboard bridge.
+clipboard-build:
+  cargo build --manifest-path clipboard/Cargo.toml
+
+# Run the experimental clipboard bridge without installing it.
+clipboard *ARGS:
+  cargo run --manifest-path clipboard/Cargo.toml -- {{ARGS}}
+
+# Benchmark the compiled persistent bridge beside the legacy clipboard commands.
+clipboard-rust-bench *ARGS:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  cargo build --manifest-path clipboard/Cargo.toml
+  WSL_CLIPBOARD_BIN="$PWD/clipboard/target/debug/wsl-clipboard" \
+    bun run zsh/clipboard.bench.ts {{ARGS}}
 
 # Apply shell bootstrap, portable Codex config, and managed AI skills.
 sync:
