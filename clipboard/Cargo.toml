@@ -1,9 +1,7 @@
 [package]
 name = "wsl-clipboard"
 version = "0.1.0"
-edition = "2024"
-
-[workspace]
+edition.workspace = true
 
 [dependencies]
 base64 = "0.22.1"

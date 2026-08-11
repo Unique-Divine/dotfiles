@@ -8,7 +8,7 @@ setup:
   just -l
 
 test:
-  cargo test --manifest-path clipboard/Cargo.toml
+  cargo test --workspace
   bun test
 
 alias t := test
@@ -19,18 +19,18 @@ clipboard-bench *ARGS:
 
 # Build the experimental persistent WSL clipboard bridge.
 clipboard-build:
-  cargo build --manifest-path clipboard/Cargo.toml
+  cargo build --package wsl-clipboard
 
 # Run the experimental clipboard bridge without installing it.
 clipboard *ARGS:
-  cargo run --manifest-path clipboard/Cargo.toml -- {{ARGS}}
+  cargo run --package wsl-clipboard -- {{ARGS}}
 
 # Benchmark the compiled persistent bridge beside the legacy clipboard commands.
 clipboard-rust-bench *ARGS:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  cargo build --manifest-path clipboard/Cargo.toml
-  WSL_CLIPBOARD_BIN="$PWD/clipboard/target/debug/wsl-clipboard" \
+  cargo build --package wsl-clipboard
+  WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
 # Apply shell bootstrap, portable Codex config, and managed AI skills.
