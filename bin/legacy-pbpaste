@@ -1,0 +1,3 @@
+#!/bin/sh
+# One-shot pre-Rust WSL clipboard paste command, retained for benchmarks.
+powershell.exe "(Get-Clipboard).TrimEnd()" | tr -d "\r" | sed -z 's/\n$//'

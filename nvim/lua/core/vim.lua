@@ -30,14 +30,14 @@ vim.o.mouse = 'a'
 --  See `:help 'clipboard'`
 vim.o.clipboard = 'unnamed,unnamedplus'
 vim.g.clipboard = {
-  name = "WSL (MacOS-like)",
+  name = "WSL persistent clipboard",
   copy = {
     ["+"] = "pbcopy",
     ["*"] = "pbcopy",
   },
   paste = {
     ["+"] = "pbpaste",
-    ["*"] = "pbcopy",
+    ["*"] = "pbpaste",
   },
 }
 
@@ -53,12 +53,12 @@ vim.api.nvim_create_user_command('WY', function(opts)
   -- Get the yanked text from the '+' register.
   local text = vim.fn.getreg('+')
 
-  -- Convert the text from UTF-8 to UTF-16LE and pipe it to pbcopy.
-  vim.fn.system('iconv -f UTF-8 -t UTF-16LE | pbcopy', text)
+  -- pbcopy sends UTF-8 text; the bridge handles Windows' UTF-16 clipboard.
+  vim.fn.system('pbcopy', text)
 
-  print("Yanked text copied to Windows clipboard (UTF-16LE).")
+  print("Yanked text copied to the Windows clipboard.")
 end, {
-  desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy",
+  desc = "[W]indows [Y]ank through the persistent clipboard bridge",
   force = true,
   range = true,
 })

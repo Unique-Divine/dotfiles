@@ -17,15 +17,21 @@ alias t := test
 clipboard-bench *ARGS:
   bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Build the experimental persistent WSL clipboard bridge.
+# Build the release WSL clipboard bridge without installing it.
 clipboard-build:
-  cargo build --package wsl-clipboard
+  cargo build --release --package wsl-clipboard
 
-# Run the experimental clipboard bridge without installing it.
+# Install the release WSL clipboard bridge at ~/.local/bin/wsl-clipboard.
+clipboard-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  cargo install --path clipboard --locked --root "$HOME/.local"
+
+# Run the WSL clipboard bridge from the source workspace.
 clipboard *ARGS:
   cargo run --package wsl-clipboard -- {{ARGS}}
 
-# Benchmark the compiled persistent bridge beside the legacy clipboard commands.
+# Benchmark the compiled bridge beside the explicitly named legacy commands.
 clipboard-rust-bench *ARGS:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -39,6 +45,9 @@ sync:
   set -Eeuo pipefail
   source zsh/bashlib.sh
   main_bash_setup
+  if is_wsl >/dev/null; then
+    just clipboard-install
+  fi
   bun run codex/config.ts --run
   bun run skillsSync.ts --run
 
@@ -81,6 +90,11 @@ health:
 
   if ! which_ok herdr-tmux; then
     log_error "herdr-tmux is not installed; run: cd $PWD/herdr-tmux && just install"
+    failed=1
+  fi
+
+  if is_wsl >/dev/null && [[ ! -x "$HOME/.local/bin/wsl-clipboard" ]]; then
+    log_error "wsl-clipboard is not installed; run: just clipboard-install"
     failed=1
   fi
 

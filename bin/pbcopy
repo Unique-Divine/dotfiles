@@ -1,2 +1,4 @@
 #!/bin/sh
-clip.exe
+# Backward-compatible macOS-style entry point for the WSL clipboard bridge.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$script_dir/wsl-pbcopy" "$@"

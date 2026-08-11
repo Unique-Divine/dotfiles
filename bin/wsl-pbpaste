@@ -1,0 +1,14 @@
+#!/bin/sh
+# Paste UTF-8 text through the persistent WSL clipboard bridge.
+if [ "$#" -ne 0 ]; then
+  echo "usage: wsl-pbpaste" >&2
+  exit 2
+fi
+
+clipboard_bin=${WSL_CLIPBOARD_BIN:-"$HOME/.local/bin/wsl-clipboard"}
+if [ ! -x "$clipboard_bin" ]; then
+  echo "wsl-pbpaste: bridge is not installed; run: just clipboard-install" >&2
+  exit 127
+fi
+
+exec "$clipboard_bin" paste

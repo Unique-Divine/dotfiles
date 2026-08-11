@@ -148,7 +148,7 @@ local mdtoc_flags = '--bullets="-" --maxdepth=3 --no-firsth1'
 vim.api.nvim_create_user_command('TocCopy', function()
   -- The "%" means the current file when you run this vim.cmd. This CLI tool
   -- takes exactly one argument and is configured with flags.
-  vim.cmd('!bun run ' .. mdtoc_cli .. ' % ' .. mdtoc_flags .. ' | clip.exe')
+  vim.cmd('!bun run ' .. mdtoc_cli .. ' % ' .. mdtoc_flags .. ' | pbcopy')
   print('markdown-toc: yanked TOC to clipboard')
 end, {
   desc = "Generate markdown TOC and copy to clipboard",

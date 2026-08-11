@@ -303,39 +303,39 @@ const printResults = (results: TimingSummary[]): void => {
   )
 
   const byLabel = new Map(results.map((result) => [result.label, result]))
-  const pbcopy = byLabel.get("pbcopy wrapper")
+  const legacyCopy = byLabel.get("legacy-pbcopy")
   const clip = byLabel.get("clip.exe direct")
-  const pbpaste = byLabel.get("pbpaste wrapper")
+  const legacyPaste = byLabel.get("legacy-pbpaste")
+  const bridgeCopy = byLabel.get("pbcopy (persistent)")
+  const bridgePaste = byLabel.get("pbpaste (persistent)")
   const powershell = byLabel.get("PowerShell direct")
   const noProfile = byLabel.get("PowerShell no-profile")
   const warm = byLabel.get("PowerShell warm cmdlet")
   const persistent = byLabel.get("PowerShell persistent")
-  const roundTrip = byLabel.get("pbcopy + pbpaste")
-  const rustCopy = byLabel.get("wsl-clipboard copy")
-  const rustPaste = byLabel.get("wsl-clipboard paste")
-  const rustRoundTrip = byLabel.get("wsl-clipboard copy + paste")
+  const legacyRoundTrip = byLabel.get("legacy-pbcopy + legacy-pbpaste")
+  const bridgeRoundTrip = byLabel.get("pbcopy + pbpaste (persistent)")
 
   if (
-    pbcopy &&
+    legacyCopy &&
     clip &&
-    pbpaste &&
+    legacyPaste &&
     powershell &&
     noProfile &&
     warm &&
     persistent &&
-    roundTrip
+    legacyRoundTrip
   ) {
-    const copyWrapper = pbcopy.medianMs - clip.medianMs
-    const pasteWrapper = pbpaste.medianMs - powershell.medianMs
+    const copyWrapper = legacyCopy.medianMs - clip.medianMs
+    const pasteWrapper = legacyPaste.medianMs - powershell.medianMs
     const roundTripExtra =
-      roundTrip.medianMs - pbcopy.medianMs - pbpaste.medianMs
+      legacyRoundTrip.medianMs - legacyCopy.medianMs - legacyPaste.medianMs
     const coldStartup = noProfile.medianMs - warm.medianMs
     const persistentOverhead = persistent.medianMs - warm.medianMs
     const persistentSpeedup = noProfile.medianMs / persistent.medianMs
 
     console.log("\nMedian deltas (approximate; subprocess timings are noisy):")
-    console.log(`  pbcopy shell wrapper: ${formatMs(copyWrapper)} ms`)
-    console.log(`  pbpaste shell pipeline: ${formatMs(pasteWrapper)} ms`)
+    console.log(`  legacy pbcopy shell wrapper: ${formatMs(copyWrapper)} ms`)
+    console.log(`  legacy pbpaste shell pipeline: ${formatMs(pasteWrapper)} ms`)
     console.log(`  round-trip coordination: ${formatMs(roundTripExtra)} ms`)
     console.log(`  PowerShell cold startup: ${formatMs(coldStartup)} ms`)
     console.log(
@@ -344,16 +344,23 @@ const printResults = (results: TimingSummary[]): void => {
     console.log(`  persistent paste speedup: ${persistentSpeedup.toFixed(1)}x`)
   }
 
-  if (rustCopy && rustPaste && rustRoundTrip && pbcopy && pbpaste && roundTrip) {
+  if (
+    bridgeCopy &&
+    bridgePaste &&
+    bridgeRoundTrip &&
+    legacyCopy &&
+    legacyPaste &&
+    legacyRoundTrip
+  ) {
     console.log("\nPersistent bridge median speedups:")
     console.log(
-      `  copy: ${(pbcopy.medianMs / rustCopy.medianMs).toFixed(1)}x`,
+      `  copy: ${(legacyCopy.medianMs / bridgeCopy.medianMs).toFixed(1)}x`,
     )
     console.log(
-      `  paste: ${(pbpaste.medianMs / rustPaste.medianMs).toFixed(1)}x`,
+      `  paste: ${(legacyPaste.medianMs / bridgePaste.medianMs).toFixed(1)}x`,
     )
     console.log(
-      `  round trip: ${(roundTrip.medianMs / rustRoundTrip.medianMs).toFixed(1)}x`,
+      `  round trip: ${(legacyRoundTrip.medianMs / bridgeRoundTrip.medianMs).toFixed(1)}x`,
     )
   }
 }
@@ -367,7 +374,7 @@ const main = async (): Promise<void> => {
   ]
   const useRustBridge = Bun.env.WSL_CLIPBOARD_BIN !== undefined
 
-  await runCommand(["pbcopy"], payload)
+  await runCommand(["legacy-pbcopy"], payload)
   if (useRustBridge) {
     await runCommand(wslClipboardArgs("copy"), payload)
   }
@@ -385,9 +392,9 @@ const main = async (): Promise<void> => {
       },
     },
     {
-      label: "pbcopy wrapper",
+      label: "legacy-pbcopy",
       operation: async () => {
-        await runCommand(["pbcopy"], payload)
+        await runCommand(["legacy-pbcopy"], payload)
       },
     },
     {
@@ -405,18 +412,40 @@ const main = async (): Promise<void> => {
       },
     },
     {
-      label: "pbpaste wrapper",
+      label: "legacy-pbpaste",
+      operation: async () => {
+        await runCommand(["legacy-pbpaste"])
+      },
+    },
+    {
+      label: "legacy-pbcopy + legacy-pbpaste",
+      operation: async () => {
+        await runCommand(["legacy-pbcopy"], payload)
+        const pasted = await runCommand(["legacy-pbpaste"])
+        if (pasted !== payload) {
+          throw new Error("Legacy clipboard round trip returned different text")
+        }
+      },
+    },
+    {
+      label: "pbcopy (persistent)",
+      operation: async () => {
+        await runCommand(["pbcopy"], payload)
+      },
+    },
+    {
+      label: "pbpaste (persistent)",
       operation: async () => {
         await runCommand(["pbpaste"])
       },
     },
     {
-      label: "pbcopy + pbpaste",
+      label: "pbcopy + pbpaste (persistent)",
       operation: async () => {
         await runCommand(["pbcopy"], payload)
         const pasted = await runCommand(["pbpaste"])
         if (pasted !== payload) {
-          throw new Error("Clipboard round trip returned different text")
+          throw new Error("Persistent clipboard round trip returned different text")
         }
       },
     },

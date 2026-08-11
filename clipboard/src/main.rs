@@ -19,8 +19,16 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use fs2::FileExt;
 
+/// Caps a frame before allocating its payload, so a malformed local client
+/// cannot make the daemon reserve unbounded memory.
 const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Bounds client startup waits when PowerShell cannot initialize, while still
+/// accommodating the one-time Windows process startup cost.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+// One-byte operation and status codes for the Unix-socket protocol. The
+// payload framing below carries all arbitrary text, not these control values.
 const REQUEST_COPY: u8 = 1;
 const REQUEST_PASTE: u8 = 2;
 const REQUEST_STATUS: u8 = 3;
@@ -28,6 +36,10 @@ const REQUEST_STOP: u8 = 4;
 const RESPONSE_OK: u8 = 0;
 const RESPONSE_ERROR: u8 = 1;
 
+/// A complete, intentionally small request vocabulary for the local bridge.
+///
+/// Keeping this protocol declarative prevents socket clients from supplying
+/// arbitrary PowerShell source code.
 enum Request {
     Copy(Vec<u8>),
     Paste,
@@ -35,12 +47,19 @@ enum Request {
     Stop,
 }
 
+/// Runtime-owned paths used to discover, serialize startup of, and diagnose
+/// the per-user daemon. These files are never part of the repository state.
 struct Paths {
     socket: PathBuf,
     startup_lock: PathBuf,
     log: PathBuf,
 }
 
+/// The one long-lived Windows process that accesses the interactive clipboard.
+///
+/// The daemon serializes access to this object because its stdin/stdout are a
+/// single request-response stream. Reusing it avoids the expensive PowerShell
+/// process startup on every `copy` or `paste` command.
 struct PowerShell {
     child: Child,
     stdin: ChildStdin,
@@ -48,6 +67,8 @@ struct PowerShell {
 }
 
 impl PowerShell {
+    /// Starts a constrained PowerShell loop and waits for its explicit ready
+    /// line before accepting socket requests.
     fn start() -> io::Result<Self> {
         let script = build_power_shell_script();
         let mut child = Command::new("powershell.exe")
@@ -79,6 +100,8 @@ impl PowerShell {
         Ok(power_shell)
     }
 
+    /// Base64-frames arbitrary UTF-8 bytes so newlines never interfere with
+    /// the line-oriented PowerShell control channel.
     fn copy(&mut self, bytes: &[u8]) -> io::Result<()> {
         let request = format!("COPY {}\n", STANDARD.encode(bytes));
         self.stdin.write_all(request.as_bytes())?;
@@ -86,6 +109,7 @@ impl PowerShell {
         self.expect_ok().map(|_| ())
     }
 
+    /// Reads clipboard text through the already-running PowerShell process.
     fn paste(&mut self) -> io::Result<Vec<u8>> {
         self.stdin.write_all(b"PASTE\n")?;
         self.stdin.flush()?;
@@ -116,6 +140,8 @@ impl PowerShell {
         Ok(line.trim_end_matches(['\r', '\n']).to_owned())
     }
 
+    /// Lets the child exit cleanly when the daemon stops, rather than leaving
+    /// a Windows process alive after its Unix-socket owner has gone away.
     fn shutdown(&mut self) {
         let _ = self.stdin.write_all(b"QUIT\n");
         let _ = self.stdin.flush();
@@ -143,6 +169,7 @@ fn run() -> io::Result<()> {
         "copy" => {
             let mut bytes = Vec::new();
             io::stdin().read_to_end(&mut bytes)?;
+            validate_utf8_input(&bytes)?;
             send_client_request(&paths, Request::Copy(bytes), true).map(|_| ())
         }
         "paste" => {
@@ -168,6 +195,8 @@ fn run() -> io::Result<()> {
     }
 }
 
+/// Sends one request to the daemon. Copy and paste commands may launch it on
+/// demand; status and stop stay side-effect free when it is absent.
 fn send_client_request(
     paths: &Paths,
     request: Request,
@@ -185,6 +214,9 @@ fn send_client_request(
     read_response(&mut stream)
 }
 
+/// Starts at most one daemon for a burst of clients that all observe a missing
+/// socket. The lock holder rechecks the socket after acquiring the lock, so a
+/// previously successful starter wins without spawning a duplicate process.
 fn ensure_daemon(paths: &Paths, first_error: io::Error) -> io::Result<()> {
     prepare_runtime_dir(paths)?;
     let lock = OpenOptions::new()
@@ -220,6 +252,8 @@ fn ensure_daemon(paths: &Paths, first_error: io::Error) -> io::Result<()> {
     }
 }
 
+/// Detaches the daemon from the short-lived client and records diagnostics in
+/// a runtime log instead of corrupting command stdout.
 fn spawn_daemon(paths: &Paths) -> io::Result<()> {
     let executable = env::current_exe()?;
     let log = OpenOptions::new()
@@ -235,6 +269,10 @@ fn spawn_daemon(paths: &Paths) -> io::Result<()> {
     Ok(())
 }
 
+/// Owns the Unix socket and the persistent PowerShell child for one WSL user.
+///
+/// Client handlers may run concurrently, but the `PowerShell` mutex preserves
+/// a single ordered request-response conversation with the child process.
 fn run_daemon(paths: Paths) -> io::Result<()> {
     prepare_runtime_dir(&paths)?;
     if UnixStream::connect(&paths.socket).is_ok() {
@@ -269,6 +307,8 @@ fn run_daemon(paths: Paths) -> io::Result<()> {
     Ok(())
 }
 
+/// Executes one socket request and always returns either a framed result or a
+/// framed error, so client command output remains separate from diagnostics.
 fn handle_client(
     mut stream: UnixStream,
     power_shell: Arc<Mutex<PowerShell>>,
@@ -297,6 +337,9 @@ fn handle_client(
     };
 }
 
+/// Selects an application-owned runtime directory. An `XDG_RUNTIME_DIR`
+/// child is preferred; the UID-specific `/tmp` fallback also avoids sharing a
+/// socket namespace across local users when no user runtime directory exists.
 fn socket_paths() -> io::Result<Paths> {
     let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
         .map(|directory| PathBuf::from(directory).join("wsl-clipboard"))
@@ -311,6 +354,8 @@ fn socket_paths() -> io::Result<Paths> {
     })
 }
 
+/// Creates the application directory with owner-only access before placing a
+/// socket, lock, or log inside it.
 fn prepare_runtime_dir(paths: &Paths) -> io::Result<()> {
     let runtime_dir = paths.socket.parent().expect("socket has parent");
     fs::create_dir_all(runtime_dir)?;
@@ -355,6 +400,9 @@ fn read_response<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Writes the binary wire format: one operation/status byte, an unsigned
+/// 64-bit big-endian length, then the exact payload bytes. Length framing keeps
+/// embedded newlines and trailing whitespace lossless across the socket.
 fn write_frame<W: Write>(
     writer: &mut W,
     kind: u8,
@@ -369,6 +417,8 @@ fn write_frame<W: Write>(
     writer.flush()
 }
 
+/// Reads one complete frame and validates its allocation size before creating
+/// the payload buffer.
 fn read_frame<R: Read>(reader: &mut R) -> io::Result<(u8, Vec<u8>)> {
     let mut kind = [0_u8; 1];
     reader.read_exact(&mut kind)?;
@@ -383,10 +433,16 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<(u8, Vec<u8>)> {
     Ok((kind[0], payload))
 }
 
+/// Builds the child script rather than accepting a caller-provided command.
+///
+/// The script recognizes only `COPY`, `PASTE`, and `QUIT`; base64 carries the
+/// actual text and response bytes without invoking PowerShell expression
+/// evaluation on client input.
 fn build_power_shell_script() -> String {
     [
         "$ErrorActionPreference = 'Stop'",
-        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
+        "$utf8 = [Text.UTF8Encoding]::new($false, $true)",
+        "[Console]::OutputEncoding = $utf8",
         "[Console]::Out.WriteLine('READY')",
         "[Console]::Out.Flush()",
         "while (($line = [Console]::In.ReadLine()) -ne $null) {",
@@ -394,18 +450,18 @@ fn build_power_shell_script() -> String {
         "if ($line -eq 'PASTE') {",
         "$text = Get-Clipboard -Raw",
         "if ($null -eq $text) { $text = '' }",
-        "$bytes = [Text.Encoding]::UTF8.GetBytes([string]$text)",
+        "$bytes = $utf8.GetBytes([string]$text)",
         "[Console]::Out.WriteLine('OK ' + [Convert]::ToBase64String($bytes))",
         "} elseif ($line.StartsWith('COPY ')) {",
         "$bytes = [Convert]::FromBase64String($line.Substring(5))",
-        "$text = [Text.Encoding]::UTF8.GetString($bytes)",
+        "$text = $utf8.GetString($bytes)",
         "Set-Clipboard -Value $text",
         "[Console]::Out.WriteLine('OK ')",
         "} elseif ($line -eq 'QUIT') { break } else {",
         "throw 'invalid clipboard command'",
         "}",
         "} catch {",
-        "$bytes = [Text.Encoding]::UTF8.GetBytes($_.Exception.Message)",
+        "$bytes = $utf8.GetBytes($_.Exception.Message)",
         "[Console]::Out.WriteLine('ERR ' + [Convert]::ToBase64String($bytes))",
         "}",
         "[Console]::Out.Flush()",
@@ -432,6 +488,18 @@ fn ignore_missing_file(error: io::Error) -> io::Result<()> {
 
 fn other(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
+}
+
+/// Rejects byte streams that PowerShell could only decode by replacing data.
+///
+/// The public commands are text tools, like macOS `pbcopy` and `pbpaste`.
+/// Windows stores that text as UTF-16 internally, but every Unicode scalar has
+/// a lossless UTF-8 representation at this Unix boundary. Failing here keeps
+/// invalid byte streams visible instead of silently producing U+FFFD.
+fn validate_utf8_input(bytes: &[u8]) -> io::Result<()> {
+    std::str::from_utf8(bytes).map(|_| ()).map_err(|error| {
+        other(format!("clipboard copy expects UTF-8 input: {error}"))
+    })
 }
 
 fn print_usage() {
@@ -473,6 +541,12 @@ mod tests {
         let script = build_power_shell_script();
         assert!(script.contains("Get-Clipboard -Raw"));
         assert!(script.contains("Set-Clipboard -Value $text"));
+        assert!(script.contains("UTF8Encoding]::new($false, $true)"));
         assert!(!script.contains("Invoke-Expression"));
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_copy_input() {
+        assert!(validate_utf8_input(&[0xff]).is_err());
     }
 }
