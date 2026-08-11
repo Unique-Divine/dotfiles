@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
-const PICKER_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Default time a pane or agent picker waits for a selection before cancelling.
+const PICKER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PICKER_PANES: usize = 10;
 const MAX_PICKER_AGENTS: usize = 10;
 
