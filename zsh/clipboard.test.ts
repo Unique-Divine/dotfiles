@@ -7,7 +7,9 @@ const hasCommand = async (cmd: string): Promise<boolean> => {
 }
 
 const hasClipboardBridge =
-  (await hasCommand("pbcopy")) && (await hasCommand("pbpaste"))
+  (await hasCommand("powershell.exe")) &&
+  (await hasCommand("pbcopy")) &&
+  (await hasCommand("pbpaste"))
 
 const clipboardTest = hasClipboardBridge ? test : test.skip
 const clipboardDescribe = hasClipboardBridge ? describe : describe.skip
@@ -17,6 +19,15 @@ clipboardTest("commands present: pbcopy, pbpaste", async () => {
   expect(out.stdout).not.toBeEmpty()
   expect(out.stderr).toBeEmpty()
   out = await bash(`which pbpaste`)
+  expect(out.stdout).not.toBeEmpty()
+  expect(out.stderr).toBeEmpty()
+})
+
+clipboardTest("explicit WSL clipboard aliases are present", async () => {
+  let out = await bash(`which wsl-pbcopy`)
+  expect(out.stdout).not.toBeEmpty()
+  expect(out.stderr).toBeEmpty()
+  out = await bash(`which wsl-pbpaste`)
   expect(out.stdout).not.toBeEmpty()
   expect(out.stderr).toBeEmpty()
 })
@@ -55,6 +66,13 @@ clipboardDescribe("echo suite", async () => {
       want: `この職場は、経験よりも腕を優先する考え方だ。
 職場 (しょくば)
 `,
+    },
+    { given: "’—“” → ← ↔ ✓", want: "’—“” → ← ↔ ✓" },
+    { given: "ΓÇÖ ╬ô├ç├û ΓÇô ΓÇ£ ΓÇ¥", want: "ΓÇÖ ╬ô├ç├û ΓÇô ΓÇ£ ΓÇ¥" },
+    { given: "é café 東京語 𐐷", want: "é café 東京語 𐐷" },
+    {
+      given: "😀 👍 ❤️ 👩‍👩‍👧‍👧 🏳️‍🌈 🇺🇸 🐈",
+      want: "😀 👍 ❤️ 👩‍👩‍👧‍👧 🏳️‍🌈 🇺🇸 🐈",
     },
   ]
   for (let { given, want } of cases) {

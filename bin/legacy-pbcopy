@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# One-shot pre-Rust WSL clipboard copy command, retained for benchmarks.
+clip.exe

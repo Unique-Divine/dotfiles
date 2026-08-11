@@ -17,8 +17,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
-const PICKER_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Default time a pane or agent picker waits for a selection before cancelling.
+const PICKER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PICKER_PANES: usize = 10;
+const MAX_PICKER_AGENTS: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -186,6 +188,37 @@ struct PaneInfo {
     foreground_cwd: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+}
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct AgentInfo {
+    terminal_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    agent_status: String,
+    workspace_id: String,
+    tab_id: String,
+    pane_id: String,
+    focused: bool,
+    #[serde(default)]
+    terminal_title: Option<String>,
+    #[serde(default)]
+    terminal_title_stripped: Option<String>,
+    #[serde(default)]
+    display_agent: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    foreground_cwd: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+struct AgentListResponse {
+    agents: Vec<AgentInfo>,
+}
+#[derive(Debug, Deserialize)]
+struct AgentGetResponse {
+    agent: AgentInfo,
 }
 #[derive(Debug, Deserialize)]
 struct PaneLayoutResponse {
@@ -372,6 +405,24 @@ impl Client {
             )?
             .pane)
     }
+    fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
+        Ok(self
+            .request::<AgentListResponse>("agent.list", json!({}))?
+            .agents)
+    }
+    fn agent_get(&self, target: &str) -> Result<AgentInfo, HerdrError> {
+        Ok(self
+            .request::<AgentGetResponse>("agent.get", json!({"target": target}))?
+            .agent)
+    }
+    fn agent_focus(&self, target: &str) -> Result<AgentInfo, HerdrError> {
+        Ok(self
+            .request::<AgentGetResponse>(
+                "agent.focus",
+                json!({"target": target}),
+            )?
+            .agent)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,6 +558,35 @@ fn pane_description(pane: &PaneInfo) -> String {
     }
 }
 
+fn agent_description(agent: &AgentInfo) -> String {
+    let description = nonempty(&agent.terminal_title_stripped)
+        .or_else(|| nonempty(&agent.terminal_title))
+        .or_else(|| nonempty(&agent.name))
+        .or_else(|| nonempty(&agent.display_agent))
+        .or_else(|| nonempty(&agent.agent))
+        .map(str::to_owned)
+        .or_else(|| {
+            nonempty(&agent.foreground_cwd)
+                .or_else(|| nonempty(&agent.cwd))
+                .and_then(|cwd| Path::new(cwd).file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| agent.pane_id.clone());
+    let mut chars = description.trim().chars().map(|character| {
+        if character.is_control() {
+            ' '
+        } else {
+            character
+        }
+    });
+    let prefix = chars.by_ref().take(36).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
 fn write_picker<W: Write>(
     writer: &mut W,
     panes: &[(PaneLayoutPane, PaneInfo)],
@@ -527,6 +607,85 @@ fn write_picker<W: Write>(
 
 pub(crate) fn pick_pane(target: &Target) -> Result<(), HerdrError> {
     pick_pane_with(target, &mut io::stdout().lock(), read_picker_choice)
+}
+
+fn write_agent_selector<W: Write>(
+    writer: &mut W,
+    agents: &[AgentInfo],
+) -> Result<(), HerdrError> {
+    writeln!(writer, "Select agent (0-9, Esc cancels)\n")?;
+    for (index, agent) in agents.iter().enumerate() {
+        let marker = if agent.focused { "*" } else { " " };
+        let kind = agent.agent.as_deref().unwrap_or("unknown");
+        writeln!(
+            writer,
+            " {index} {marker} {kind:<8} {:<8} {} / {}  {}",
+            agent.agent_status,
+            agent.workspace_id,
+            agent.tab_id,
+            agent_description(agent),
+        )?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
+    pick_agent_with(target, &mut io::stdout().lock(), read_picker_choice)
+}
+
+fn pick_agent_with<W, C>(
+    target: &Target,
+    writer: &mut W,
+    mut choose: C,
+) -> Result<(), HerdrError>
+where
+    W: Write,
+    C: FnMut(usize) -> Result<PickerChoice, HerdrError>,
+{
+    let client = Client::new(target.socket_path.clone());
+    let agents = client.agent_list()?;
+    if agents.len() > MAX_PICKER_AGENTS {
+        return Err(HerdrError::Protocol(format!(
+            "agent selector supports at most {MAX_PICKER_AGENTS} agents; \
+             this session has {}",
+            agents.len()
+        )));
+    }
+    if agents.is_empty() {
+        return Ok(());
+    }
+
+    write_agent_selector(writer, &agents)?;
+    let PickerChoice::Select(index) = choose(agents.len())? else {
+        return Ok(());
+    };
+    let selected = &agents[index];
+    let current = client.agent_get(&selected.pane_id)?;
+    if current.pane_id != selected.pane_id
+        || current.terminal_id != selected.terminal_id
+        || current.agent.is_none()
+    {
+        return Err(HerdrError::Protocol(format!(
+            "selected agent in pane {} changed before focus",
+            selected.pane_id
+        )));
+    }
+    if current.focused {
+        return Ok(());
+    }
+
+    let focused = client.agent_focus(&selected.pane_id)?;
+    if focused.pane_id != selected.pane_id
+        || focused.terminal_id != selected.terminal_id
+        || !focused.focused
+    {
+        return Err(HerdrError::Protocol(format!(
+            "Herdr did not focus agent pane {}",
+            selected.pane_id
+        )));
+    }
+    Ok(())
 }
 
 fn pick_pane_with<W, C>(
@@ -887,6 +1046,26 @@ mod tests {
         }})
     }
 
+    fn selector_agent(
+        pane_id: &str,
+        terminal_id: &str,
+        focused: bool,
+        title: &str,
+    ) -> Value {
+        json!({
+            "terminal_id": terminal_id,
+            "agent": "cursor",
+            "agent_status": "working",
+            "workspace_id": "w1",
+            "tab_id": "w1:t2",
+            "pane_id": pane_id,
+            "focused": focused,
+            "terminal_title_stripped": title,
+            "foreground_cwd": "/work/foreground",
+            "cwd": "/work/inherited"
+        })
+    }
+
     #[test]
     fn even_tree_is_balanced_and_ordered() {
         let ids = ["p1", "p2", "p3", "p4"].map(String::from);
@@ -1033,6 +1212,115 @@ mod tests {
             parse_picker_event(key(KeyCode::Char('x')), 3),
             PickerChoice::Cancel
         );
+    }
+
+    #[test]
+    fn agent_description_prefers_terminal_title_and_sanitizes_controls() {
+        let mut agent: AgentInfo = serde_json::from_value(selector_agent(
+            "w1:p2",
+            "term-2",
+            false,
+            "review\nthis change",
+        ))
+        .unwrap();
+        assert_eq!(agent_description(&agent), "review this change");
+        agent.terminal_title_stripped = None;
+        agent.terminal_title = None;
+        agent.name = None;
+        agent.display_agent = None;
+        agent.agent = None;
+        assert_eq!(agent_description(&agent), "foreground");
+    }
+
+    #[test]
+    fn agent_selector_focuses_selected_agent_from_another_tab() {
+        let first = selector_agent("w1:p1", "term-1", true, "current task");
+        let second = selector_agent("w1:p2", "term-2", false, "review task");
+        let mut focused_second = second.clone();
+        focused_second["focused"] = json!(true);
+        let results = vec![
+            json!({"agents": [first, second.clone()]}),
+            json!({"agent": second.clone()}),
+            json!({"agent": focused_second}),
+        ];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        let mut output = Vec::new();
+        pick_agent_with(&target, &mut output, |_| Ok(PickerChoice::Select(1)))
+            .unwrap();
+
+        let requests = receiver.iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["agent.list", "agent.get", "agent.focus"]
+        );
+        assert_eq!(
+            requests.last().unwrap()["params"],
+            json!({"target": "w1:p2"})
+        );
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains("0 * cursor   working  w1 / w1:t2  current task")
+        );
+        assert!(output.contains("1   cursor   working  w1 / w1:t2  review task"));
+    }
+
+    #[test]
+    fn agent_selector_rejects_stale_agent_before_focus() {
+        let first = selector_agent("w1:p1", "term-1", true, "current task");
+        let second = selector_agent("w1:p2", "term-2", false, "review task");
+        let stale =
+            selector_agent("w1:p2", "replacement-term", false, "replacement");
+        let results =
+            vec![json!({"agents": [first, second]}), json!({"agent": stale})];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        assert!(pick_agent_with(&target, &mut Vec::new(), |_| {
+            Ok(PickerChoice::Select(1))
+        })
+        .is_err());
+        assert!(!receiver
+            .iter()
+            .any(|request| request["method"] == "agent.focus"));
+    }
+
+    #[test]
+    fn agent_selector_rejects_more_than_ten_agents_before_input() {
+        let agents = (0..11)
+            .map(|index| {
+                selector_agent(
+                    &format!("w1:p{index}"),
+                    &format!("term-{index}"),
+                    index == 0,
+                    "task",
+                )
+            })
+            .collect::<Vec<_>>();
+        let (_directory, target, receiver) =
+            scripted_server(vec![json!({"agents": agents})], "w1:p0");
+        let mut input_called = false;
+        let error = pick_agent_with(&target, &mut Vec::new(), |_| {
+            input_called = true;
+            Ok(PickerChoice::Cancel)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("at most 10 agents"));
+        assert!(!input_called);
+        assert_eq!(receiver.iter().count(), 1);
+    }
+
+    #[test]
+    fn agent_selector_cancellation_does_not_focus_an_agent() {
+        let results = vec![json!({"agents": [selector_agent(
+            "w1:p1", "term-1", true, "current task"
+        ), selector_agent("w1:p2", "term-2", false, "review task") ]})];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        pick_agent_with(&target, &mut Vec::new(), |_| Ok(PickerChoice::Cancel))
+            .unwrap();
+        assert!(!receiver
+            .iter()
+            .any(|request| request["method"] == "agent.focus"));
     }
 
     #[derive(Default)]

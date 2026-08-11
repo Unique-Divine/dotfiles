@@ -138,9 +138,15 @@ other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
 usage and options.
 
 ### WSL Clipboard Integration
-- Custom `pbcopy` and `pbpaste` commands that work with Windows clipboard
-- Neovim configured to use system clipboard across WSL/Windows boundary
-- Automatically removes Windows line endings when pasting
+- A persistent Rust bridge that keeps one PowerShell clipboard process warm
+- `pbcopy`, `pbpaste`, `wsl-pbcopy`, and `wsl-pbpaste` are symlinks to the one
+  installed bridge binary; it dispatches by the command name
+- Lossless UTF-8 text across the WSL/Windows boundary, including emoji and
+  non-BMP Unicode; PowerShell performs the internal UTF-16 conversion
+- `just sync` installs `~/.local/bin/wsl-clipboard` on WSL; its daemon starts
+  only on the first copy or paste request
+- `legacy-pbcopy` and `legacy-pbpaste` retain the old one-shot commands for
+  diagnostics and performance comparison
 
 
 ## Requirements

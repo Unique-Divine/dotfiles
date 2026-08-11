@@ -1,3 +1,0 @@
-#!/bin/sh
-# powershell.exe "(Get-Clipboard).TrimEnd()" | tr -d "\r" | sed '${/^$/d;}'
-powershell.exe "(Get-Clipboard).TrimEnd()" | tr -d "\r" | sed -z 's/\n$//'

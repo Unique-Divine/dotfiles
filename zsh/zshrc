@@ -131,9 +131,6 @@ fi
 # If you come from bash you might have to change your $PATH.
 export PATH=$HOME/bin:/usr/local/bin:$DOTFILES/bin:$PATH
 
-# Clipboard
-source $DOTFILES/zsh/clipboard.sh
-
 vs_code="/mnt/c/Program Files/Microsoft VS Code"
 export PATH=$vs_code/bin:$PATH
 

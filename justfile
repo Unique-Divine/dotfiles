@@ -8,9 +8,39 @@ setup:
   just -l
 
 test:
+  cargo test --workspace
   bun test
 
 alias t := test
+
+# Benchmark WSL clipboard copy, paste, backends, and round-trip latency.
+clipboard-bench *ARGS:
+  bun run zsh/clipboard.bench.ts {{ARGS}}
+
+# Build the release WSL clipboard bridge without installing it.
+clipboard-build:
+  cargo build --release --package wsl-clipboard
+
+# Install the release WSL clipboard bridge at ~/.local/bin/wsl-clipboard.
+clipboard-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  cargo install --path clipboard --locked --root "$HOME/.local"
+  for command_name in pbcopy pbpaste wsl-pbcopy wsl-pbpaste; do
+    ln -sfn wsl-clipboard "$HOME/.local/bin/$command_name"
+  done
+
+# Run the WSL clipboard bridge from the source workspace.
+clipboard *ARGS:
+  cargo run --package wsl-clipboard -- {{ARGS}}
+
+# Benchmark the compiled bridge beside the explicitly named legacy commands.
+clipboard-rust-bench *ARGS:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  cargo build --package wsl-clipboard
+  WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
+    bun run zsh/clipboard.bench.ts {{ARGS}}
 
 # Apply shell bootstrap, portable Codex config, and managed AI skills.
 sync:
@@ -18,6 +48,9 @@ sync:
   set -Eeuo pipefail
   source zsh/bashlib.sh
   main_bash_setup
+  if is_wsl >/dev/null; then
+    just clipboard-install
+  fi
   bun run codex/config.ts --run
   bun run skillsSync.ts --run
 
@@ -60,6 +93,11 @@ health:
 
   if ! which_ok herdr-tmux; then
     log_error "herdr-tmux is not installed; run: cd $PWD/herdr-tmux && just install"
+    failed=1
+  fi
+
+  if is_wsl >/dev/null && [[ ! -x "$HOME/.local/bin/wsl-clipboard" ]]; then
+    log_error "wsl-clipboard is not installed; run: just clipboard-install"
     failed=1
   fi
 

@@ -25,6 +25,9 @@ jobs:
         # - cache-hit    : Whether the executable was read from cache. Ex. "true"
         # - bun-version  : The output from running `bun-version`. Ex. "1.0.0"
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install just
         # casey/just: https://just.systems/man/en/chapter_6.html
         # taiki-e/install-action: https://github.com/taiki-e/install-action
