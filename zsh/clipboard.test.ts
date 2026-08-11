@@ -23,7 +23,7 @@ clipboardTest("commands present: pbcopy, pbpaste", async () => {
   expect(out.stderr).toBeEmpty()
 })
 
-clipboardTest("explicit WSL clipboard shims are present", async () => {
+clipboardTest("explicit WSL clipboard aliases are present", async () => {
   let out = await bash(`which wsl-pbcopy`)
   expect(out.stdout).not.toBeEmpty()
   expect(out.stderr).toBeEmpty()

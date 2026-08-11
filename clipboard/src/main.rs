@@ -6,7 +6,7 @@ use std::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -163,7 +163,9 @@ fn main() {
 }
 
 fn run() -> io::Result<()> {
-    let command = env::args().nth(1).unwrap_or_else(|| "help".to_owned());
+    let mut args = env::args();
+    let executable = args.next().unwrap_or_else(|| "wsl-clipboard".to_owned());
+    let command = command_from_invocation(Path::new(&executable), args.next());
     let paths = socket_paths()?;
     match command.as_str() {
         "copy" => {
@@ -192,6 +194,22 @@ fn run() -> io::Result<()> {
             Ok(())
         }
         _ => Err(other(format!("unknown command: {command}"))),
+    }
+}
+
+/// Maps installed command aliases to operations without requiring duplicate
+/// binaries. Cargo installs one `wsl-clipboard` executable; the installer then
+/// creates same-directory symlinks named like the familiar clipboard tools.
+/// The kernel preserves that invoked name in `argv[0]`, so the client can
+/// select copy or paste before it contacts the daemon.
+fn command_from_invocation(
+    executable: &Path,
+    requested: Option<String>,
+) -> String {
+    match executable.file_name().and_then(|name| name.to_str()) {
+        Some("pbcopy" | "wsl-pbcopy") => "copy".to_owned(),
+        Some("pbpaste" | "wsl-pbpaste") => "paste".to_owned(),
+        _ => requested.unwrap_or_else(|| "help".to_owned()),
     }
 }
 
@@ -504,6 +522,7 @@ fn validate_utf8_input(bytes: &[u8]) -> io::Result<()> {
 
 fn print_usage() {
     println!("Usage: wsl-clipboard <copy|paste|status|stop|daemon>");
+    println!("Aliases: pbcopy, pbpaste, wsl-pbcopy, wsl-pbpaste");
 }
 
 #[cfg(test)]
@@ -548,5 +567,30 @@ mod tests {
     #[test]
     fn rejects_invalid_utf8_copy_input() {
         assert!(validate_utf8_input(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn installed_aliases_select_clipboard_operations() {
+        assert_eq!(
+            command_from_invocation(
+                Path::new("/home/user/.local/bin/pbcopy"),
+                None
+            ),
+            "copy"
+        );
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-pbpaste"),
+                Some("status".to_owned())
+            ),
+            "paste"
+        );
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-clipboard"),
+                Some("status".to_owned())
+            ),
+            "status"
+        );
     }
 }

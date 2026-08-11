@@ -306,14 +306,14 @@ const printResults = (results: TimingSummary[]): void => {
   const legacyCopy = byLabel.get("legacy-pbcopy")
   const clip = byLabel.get("clip.exe direct")
   const legacyPaste = byLabel.get("legacy-pbpaste")
-  const bridgeCopy = byLabel.get("pbcopy (persistent)")
-  const bridgePaste = byLabel.get("pbpaste (persistent)")
+  const bridgeCopy = byLabel.get("pbcopy (symlink)")
+  const bridgePaste = byLabel.get("pbpaste (symlink)")
   const powershell = byLabel.get("PowerShell direct")
   const noProfile = byLabel.get("PowerShell no-profile")
   const warm = byLabel.get("PowerShell warm cmdlet")
   const persistent = byLabel.get("PowerShell persistent")
   const legacyRoundTrip = byLabel.get("legacy-pbcopy + legacy-pbpaste")
-  const bridgeRoundTrip = byLabel.get("pbcopy + pbpaste (persistent)")
+  const bridgeRoundTrip = byLabel.get("pbcopy + pbpaste (symlink)")
 
   if (
     legacyCopy &&
@@ -428,19 +428,19 @@ const main = async (): Promise<void> => {
       },
     },
     {
-      label: "pbcopy (persistent)",
+      label: "pbcopy (symlink)",
       operation: async () => {
         await runCommand(["pbcopy"], payload)
       },
     },
     {
-      label: "pbpaste (persistent)",
+      label: "pbpaste (symlink)",
       operation: async () => {
         await runCommand(["pbpaste"])
       },
     },
     {
-      label: "pbcopy + pbpaste (persistent)",
+      label: "pbcopy + pbpaste (symlink)",
       operation: async () => {
         await runCommand(["pbcopy"], payload)
         const pasted = await runCommand(["pbpaste"])

@@ -10,18 +10,12 @@ const LEGACY_PBCOPY: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/legacy-pbcopy");
 const LEGACY_PBPASTE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/legacy-pbpaste");
-const WSL_PBCOPY: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/wsl-pbcopy");
-const WSL_PBPASTE: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/wsl-pbpaste");
-
 struct ClipboardCli {
     name: &'static str,
     copy_executable: &'static str,
     copy_args: &'static [&'static str],
     paste_executable: &'static str,
     paste_args: &'static [&'static str],
-    bridge_binary: Option<&'static str>,
 }
 
 fn binary() -> &'static str {
@@ -35,7 +29,6 @@ fn legacy_clipboard() -> ClipboardCli {
         copy_args: &[],
         paste_executable: LEGACY_PBPASTE,
         paste_args: &[],
-        bridge_binary: None,
     }
 }
 
@@ -46,18 +39,6 @@ fn rust_clipboard() -> ClipboardCli {
         copy_args: &["copy"],
         paste_executable: binary(),
         paste_args: &["paste"],
-        bridge_binary: None,
-    }
-}
-
-fn shim_clipboard() -> ClipboardCli {
-    ClipboardCli {
-        name: "wsl-pbcopy/wsl-pbpaste shims",
-        copy_executable: WSL_PBCOPY,
-        copy_args: &[],
-        paste_executable: WSL_PBPASTE,
-        paste_args: &[],
-        bridge_binary: Some(binary()),
     }
 }
 
@@ -72,12 +53,7 @@ fn command_available(executable: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn run_command(
-    executable: &str,
-    args: &[&str],
-    input: Option<&[u8]>,
-    bridge_binary: Option<&str>,
-) -> Output {
+fn run_command(executable: &str, args: &[&str], input: Option<&[u8]>) -> Output {
     let mut command = Command::new(executable);
     command
         .args(args)
@@ -88,9 +64,6 @@ fn run_command(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(bridge_binary) = bridge_binary {
-        command.env("WSL_CLIPBOARD_BIN", bridge_binary);
-    }
     let mut child = command.spawn().unwrap();
     if let Some(input) = input {
         let mut stdin = child.stdin.take().unwrap();
@@ -100,12 +73,7 @@ fn run_command(
 }
 
 fn copy(cli: &ClipboardCli, input: &[u8]) {
-    let output = run_command(
-        cli.copy_executable,
-        cli.copy_args,
-        Some(input),
-        cli.bridge_binary,
-    );
+    let output = run_command(cli.copy_executable, cli.copy_args, Some(input));
     assert!(
         output.status.success(),
         "{} copy failed: {}",
@@ -117,12 +85,7 @@ fn copy(cli: &ClipboardCli, input: &[u8]) {
 }
 
 fn paste(cli: &ClipboardCli) -> Vec<u8> {
-    let output = run_command(
-        cli.paste_executable,
-        cli.paste_args,
-        None,
-        cli.bridge_binary,
-    );
+    let output = run_command(cli.paste_executable, cli.paste_args, None);
     assert!(
         output.status.success(),
         "{} paste failed: {}",
@@ -134,7 +97,7 @@ fn paste(cli: &ClipboardCli) -> Vec<u8> {
 }
 
 fn run_rust_command(args: &[&str]) -> Output {
-    run_command(binary(), args, None, None)
+    run_command(binary(), args, None)
 }
 
 fn stop_daemon() {
@@ -166,7 +129,6 @@ fn assert_clipboard_case(input: &str) {
     let expected = input.as_bytes();
     let legacy = legacy_clipboard();
     let rust = rust_clipboard();
-    let shims = shim_clipboard();
 
     copy(&legacy, expected);
     let legacy_output = paste(&legacy);
@@ -182,19 +144,9 @@ fn assert_clipboard_case(input: &str) {
         "Rust output differed from expectation"
     );
 
-    copy(&shims, expected);
-    let shim_output = paste(&shims);
-    assert_eq!(
-        shim_output, expected,
-        "shim output differed from expectation"
-    );
     assert_eq!(
         rust_output, legacy_output,
         "Rust output differed from legacy"
-    );
-    assert_eq!(
-        shim_output, legacy_output,
-        "shim output differed from legacy"
     );
 }
 
@@ -202,7 +154,7 @@ fn assert_clipboard_case(input: &str) {
 /// clipboard-mutating scenarios live in one test instead of racing in Rust's
 /// default parallel test runner.
 #[test]
-fn preserves_legacy_cases_unicode_and_shim_compatibility() {
+fn preserves_legacy_cases_and_unicode() {
     if !require_clipboard_prerequisites() {
         return;
     }
@@ -226,13 +178,13 @@ fn preserves_legacy_cases_unicode_and_shim_compatibility() {
     }
 
     let expected = "line one\n日本語\n\n";
-    let shims = shim_clipboard();
-    copy(&shims, expected.as_bytes());
-    assert_eq!(paste(&shims), expected.as_bytes());
+    let rust = rust_clipboard();
+    copy(&rust, expected.as_bytes());
+    assert_eq!(paste(&rust), expected.as_bytes());
 
     stop_daemon();
     wait_for_daemon_stop();
-    assert_eq!(paste(&shims), expected.as_bytes());
+    assert_eq!(paste(&rust), expected.as_bytes());
     stop_daemon();
 }
 
@@ -246,7 +198,7 @@ fn utf16le_to_utf8_preserves_unicode_scalars() {
 #[test]
 fn copy_rejects_invalid_utf8_before_starting_daemon() {
     stop_daemon();
-    let output = run_command(binary(), &["copy"], Some(&[0xff]), None);
+    let output = run_command(binary(), &["copy"], Some(&[0xff]));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("expects UTF-8"));
 }

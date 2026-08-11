@@ -139,8 +139,8 @@ usage and options.
 
 ### WSL Clipboard Integration
 - A persistent Rust bridge that keeps one PowerShell clipboard process warm
-- `pbcopy` and `pbpaste` remain the portable command interface; the explicit
-  `wsl-pbcopy` and `wsl-pbpaste` names invoke the same bridge
+- `pbcopy`, `pbpaste`, `wsl-pbcopy`, and `wsl-pbpaste` are symlinks to the one
+  installed bridge binary; it dispatches by the command name
 - Lossless UTF-8 text across the WSL/Windows boundary, including emoji and
   non-BMP Unicode; PowerShell performs the internal UTF-16 conversion
 - `just sync` installs `~/.local/bin/wsl-clipboard` on WSL; its daemon starts
