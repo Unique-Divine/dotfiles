@@ -57,7 +57,11 @@ vim.api.nvim_create_user_command('WY', function(opts)
   vim.fn.system('iconv -f UTF-8 -t UTF-16LE | pbcopy', text)
 
   print("Yanked text copied to Windows clipboard (UTF-16LE).")
-end, { range = true, desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy" })
+end, {
+  desc = "[W]indows [Y]ank, changing encoding from UTF8 to UTF-16LE on copy",
+  force = true,
+  range = true,
+})
 
 vim.api.nvim_create_user_command("Wfix", function()
   vim.cmd("write")
@@ -68,7 +72,10 @@ vim.api.nvim_create_user_command("Wfix", function()
   end
   vim.system({ "winfixtext", file })
   print(("Ran: winfixtext %s"):format(file))
-end, { desc = "Write and run `winfixtext` on the current file" })
+end, {
+  desc = "Write and run `winfixtext` on the current file",
+  force = true,
+})
 
 
 -- Enable break indent
@@ -98,6 +105,14 @@ vim.o.termguicolors = true
 -- See `:help vim.keymap.set()`
 vim.keymap.set({ 'n', 'v' }, '<Space>', '<Nop>', { silent = true })
 
+-- Keep <Esc> available to terminal applications; double Escape enters
+-- terminal-normal mode, where Neovim receives navigation and command keys.
+vim.keymap.set('t', '<Esc><Esc>', [[<C-\><C-n>]])
+
+-- Re-read the current file when it changed outside Neovim, if it is unmodified.
+-- This also lets the LSP observe the refreshed buffer contents.
+vim.keymap.set('n', '<leader>r', '<Cmd>checktime<CR>',
+  { desc = '[R]efresh file from disk' })
 
 -- [[ Highlight on yank ]]
 -- See `:help vim.highlight.on_yank()`
@@ -137,6 +152,9 @@ vim.keymap.set("n", "k", "k", { noremap = true })
 local textwidth = 81
 vim.opt.colorcolumn = tostring(textwidth + 1)
 vim.opt.textwidth = textwidth
+-- Clear previous FileType handlers before recreating them when this file reloads.
+local core_filetype_group =
+  vim.api.nvim_create_augroup("CoreVimFileTypes", { clear = true })
 -- [2024-08-14]: I observed that the textwidth setting was being respected but
 -- wasn't set to the proper global value in Rust files.
 -- Using `:set textwidth?` allowed me to inspect the value in different buffers.
@@ -145,6 +163,7 @@ vim.opt.textwidth = textwidth
 -- This "autocmd" is a workaround that overrides the vim.opt in a local scope
 -- (vim.opt_local), forcing Rust files to have the proper textwidth setting..
 vim.api.nvim_create_autocmd("FileType", {
+  group = core_filetype_group,
   pattern = "rust",
   callback = function()
     vim.opt_local.textwidth = textwidth
@@ -177,6 +196,7 @@ vim.api.nvim_create_autocmd("FileType", {
 --   autocmd FileType netrw silent! nmap <buffer> <A-h> <F1>
 -- ]])
 vim.api.nvim_create_autocmd("FileType", {
+  group = core_filetype_group,
   pattern = "netrw",
   callback = function(ev)
     vim.keymap.set("n", "<A-h>", "<F1>", { buffer = ev.buf, silent = true })
@@ -305,6 +325,6 @@ vim.api.nvim_create_user_command("PrintWinbar", function()
       use_winbar = true,
     }).str,
   }))
-end, {})
+end, { force = true })
 
 return {}
