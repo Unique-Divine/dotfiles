@@ -30,6 +30,13 @@ clipboard-install:
     ln -sfn wsl-clipboard "$HOME/.local/bin/$command_name"
   done
 
+# Install the gh-rev local review-ledger CLI at ~/.local/bin/gh-rev.
+gh-rev-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  cargo install --path "$REPO/boku/jiyuu/gh-rev" --locked --root "$HOME/.local"
+  "$HOME/.local/bin/gh-rev" --help >/dev/null
+
 # Run the WSL clipboard bridge from the source workspace.
 clipboard *ARGS:
   cargo run --package wsl-clipboard -- {{ARGS}}
@@ -48,6 +55,7 @@ sync:
   set -Eeuo pipefail
   source zsh/bashlib.sh
   main_bash_setup
+  just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install
   fi
