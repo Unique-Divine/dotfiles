@@ -126,6 +126,8 @@ _ud_quick() {
       _ud_run "notes" "$@" ;;
     out)
       _ud_run "nvim $HOME/ki/out.txt" "$@" ;;
+    symlink)
+      _ud_quick_symlink "${@:2}" ;;
     skills)
       _ud_run "skills" "$@" ;;
     todos)
@@ -149,6 +151,7 @@ COMMANDS:
    myrc         Edit your zshrc config
    notes        Edit your notes workspace
    out          Edit temporary file at \$HOME/ki/out.txt
+   symlink      Link a source path to a destination path
    skills       Open AI agent skills directory in Neovim
    todos        Edit your notes workspace with your text-based TODO-list open
 
@@ -164,6 +167,39 @@ EOF
       return 1
       ;;
   esac
+}
+
+# Create a symbolic link when exactly two path arguments are provided.
+# Arguments:
+#   - `src`: Existing file or directory that the new link points to.
+#   - `dst`: Path where the symbolic link is created.
+_ud_quick_symlink() {
+  if [[ "$#" -ne 2 ]]; then
+    cat <<'EOF'
+USAGE:
+   ud q symlink <src> <dst>
+
+DESCRIPTION:
+   Create a symbolic link from dst to src.
+
+ARGUMENTS:
+   src    Existing file or directory that the new link points to
+   dst    Path where the symbolic link is created
+
+EXAMPLE:
+   ud q symlink "$HOME/ki/config/app.toml" "$HOME/.config/app.toml"
+EOF
+    return 0
+  fi
+
+  local src="$1"
+  local dst="$2"
+
+  if [[ -L "$src" ]]; then
+    return 0
+  fi
+
+  ln -sf "$src" "$dst"
 }
 
 # Print the current public IP, plus best-effort region info from a public
