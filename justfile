@@ -131,6 +131,6 @@ i-bash:
 i-bash-ci:
   sudo apt install -y build-essential ripgrep gh
 
-# Synchronize runtime skills (~/.cursor/skills) with public/private backups and Codex
+# Repair or check the repository-backed Cursor and Codex skill links.
 skills-sync *ARGS:
   bun run skillsSync.ts {{ARGS}}

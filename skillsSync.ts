@@ -1,369 +1,231 @@
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
-import { bash } from "@uniquedivine/bash"
+import { lstat, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises"
+import { basename, dirname, join, relative, resolve } from "node:path"
 import { Command } from "commander"
-import matter from "gray-matter"
 
-interface SkillSets {
-  publicSkills: Set<string>
-  privateSkills: Set<string>
-}
-
-interface SkillsSyncConfig {
-  skillsRuntime: string
-  publicSkillsDir: string
-  privateSkillsDir: string
+interface SkillsConfig {
+  cursorSkillsDir: string
   codexSkillsDir: string
-}
-
-const codexOwnershipMarker = ".dotfiles-cursor-skills-sync"
-
-let dryRun = true
-
-const defaultConfig = (env: NodeJS.ProcessEnv): SkillsSyncConfig => {
-  const home = env.HOME
-  const repo = env.REPO
-
-  if (!home) {
-    throw new Error("HOME is not set")
-  }
-
-  if (!repo) {
-    throw new Error("REPO is not set")
-  }
-
-  const bokuPath = resolve(repo, "boku")
-
-  return {
-    skillsRuntime: resolve(home, ".cursor/skills"),
-    publicSkillsDir: resolve(bokuPath, "jiyuu/ai-skills"),
-    privateSkillsDir: resolve(bokuPath, "priv-skills"),
-    codexSkillsDir: resolve(home, ".agents/skills"),
-  }
-}
-
-const shellQuote = (value: string): string => JSON.stringify(value)
-
-const run = async (cmd: string): Promise<void> => {
-  const out = await bash(cmd)
-
-  if (out.stdout.trim() !== "") {
-    process.stdout.write(out.stdout)
-  }
-
-  if (out.stderr.trim() !== "") {
-    process.stderr.write(out.stderr)
-  }
-
-  if (out.exitCode !== 0) {
-    throw new Error(`Command failed with exit code ${out.exitCode}: ${cmd}`)
-  }
-}
-
-const assertSafePath = (
-  path: string,
-  expectedSuffix: string,
-  label: string,
-): void => {
-  if (!path.endsWith(expectedSuffix)) {
-    throw new Error(`${label} has unexpected path: ${path}`)
-  }
-}
-
-const hasPrivateTrue = (markdown: string): boolean => {
-  const parsed = matter(markdown)
-  const privateFlag = parsed.data.metadata?.private
-
-  if (typeof privateFlag === "boolean") {
-    return privateFlag
-  }
-
-  if (typeof privateFlag === "number") {
-    return false
-  }
-
-  if (typeof privateFlag === "string") {
-    return privateFlag.trim().toLowerCase() === "true"
-  }
-
-  return false
-}
-
-const classifySkills = async (cfg: SkillsSyncConfig): Promise<SkillSets> => {
-  const publicSkills = new Set<string>()
-  const privateSkills = new Set<string>()
-  // Cursor discovers skills only as direct children of ~/.cursor/skills.
-  // Nested SKILL.md files are deliberately ignored to preserve that flat layout.
-  const glob = new Bun.Glob("*/SKILL.md")
-
-  for await (const relPath of glob.scan({ cwd: cfg.skillsRuntime })) {
-    const skillFile = join(cfg.skillsRuntime, relPath)
-    const skillDir = dirname(skillFile)
-    const skillName = basename(skillDir)
-    const markdown = await Bun.file(skillFile).text()
-
-    if (hasPrivateTrue(markdown)) {
-      privateSkills.add(skillName)
-    } else {
-      publicSkills.add(skillName)
-    }
-  }
-
-  return { publicSkills, privateSkills }
-}
-
-const stageSkills = async (
-  cfg: SkillsSyncConfig,
-  skills: Set<string>,
-  stageDir: string,
-): Promise<void> => {
-  await mkdir(stageDir, { recursive: true })
-
-  for (const skillName of skills) {
-    await symlink(
-      join(cfg.skillsRuntime, skillName),
-      join(stageDir, skillName),
-      "dir",
-    )
-  }
-}
-
-const rsyncStage = async (stageDir: string, destDir: string): Promise<void> => {
-  if (dryRun) {
-    try {
-      await lstat(destDir)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        console.log(`Would create directory ${destDir}`)
-        return
-      }
-      throw error
-    }
-  }
-
-  if (!dryRun) {
-    await mkdir(destDir, { recursive: true })
-  }
-
-  const dryRunFlags = dryRun ? " --dry-run --itemize-changes" : ""
-  await run(
-    [
-      "rsync",
-      "-aL",
-      "--delete",
-      "--exclude=/.git/",
-      "--exclude=/.gitignore",
-      "--exclude=/.marksman.toml",
-      "--exclude=/README.md",
-      "--exclude=/LICENSE",
-      `--exclude=/${codexOwnershipMarker}`,
-      dryRunFlags,
-      shellQuote(`${stageDir}/`),
-      shellQuote(`${destDir}/`),
-    ].join(" "),
-  )
-}
-
-const healthRsyncStage = async (
-  stageDir: string,
-  destDir: string,
-): Promise<boolean> => {
-  try {
-    await lstat(destDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`Skills destination is missing: ${destDir}`)
-      return false
-    }
-    throw error
-  }
-
-  const out = await bash(
-    [
-      "rsync",
-      "-aL",
-      "--delete",
-      "--dry-run",
-      "--itemize-changes",
-      "--omit-dir-times",
-      "--exclude=/.git/",
-      "--exclude=/.gitignore",
-      "--exclude=/.marksman.toml",
-      "--exclude=/README.md",
-      "--exclude=/LICENSE",
-      `--exclude=/${codexOwnershipMarker}`,
-      shellQuote(`${stageDir}/`),
-      shellQuote(`${destDir}/`),
-    ].join(" "),
-  )
-
-  if (out.exitCode !== 0) {
-    throw new Error(
-      `Skills health rsync failed with exit code ${out.exitCode}: ${destDir}`,
-    )
-  }
-
-  if (out.stdout.trim() === "") {
-    return true
-  }
-
-  process.stdout.write(out.stdout)
-  return false
-}
-
-const prepareCodexSkillsDir = async (destDir: string): Promise<void> => {
-  await mkdir(dirname(destDir), { recursive: true })
-
-  try {
-    const info = await lstat(destDir)
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new Error(`Codex skills path must be a real directory: ${destDir}`)
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    await mkdir(destDir)
-  }
-
-  const entries = await readdir(destDir)
-  if (entries.length > 0 && !entries.includes(codexOwnershipMarker)) {
-    throw new Error(
-      "Refusing to sync into unmanaged non-empty Codex skills directory: " +
-        destDir,
-    )
-  }
-
-  await writeFile(
-    join(destDir, codexOwnershipMarker),
-    "Managed by dotfiles skills-sync from $HOME/.cursor/skills.\n",
-  )
-}
-
-const codexSkillsDirIsHealthy = async (destDir: string): Promise<boolean> => {
-  try {
-    const info = await lstat(destDir)
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      console.error(`Codex skills path must be a real directory: ${destDir}`)
-      return false
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`Codex skills destination is missing: ${destDir}`)
-      return false
-    }
-    throw error
-  }
-
-  const entries = await readdir(destDir)
-  if (!entries.includes(codexOwnershipMarker)) {
-    console.error(`Codex skills destination is unmanaged: ${destDir}`)
-    return false
-  }
-
-  return true
-}
-
-const printSummary = (
-  label: string,
-  skills: Set<string>,
-  dest: string,
-): void => {
-  const names = [...skills].sort()
-  console.log(`${label}: ${names.length} skill(s) -> ${dest}`)
-
-  for (const name of names) {
-    console.log(`  ${name}`)
-  }
+  publicSkillsDir: string
+  unionSkillsDir: string
 }
 
 interface SkillsSyncOptions {
-  dryRun?: boolean
   health?: boolean
+  migrate?: boolean
   run?: boolean
+}
+
+const defaultConfig = (env: NodeJS.ProcessEnv): SkillsConfig => {
+  if (!env.HOME) throw new Error("HOME is not set")
+  if (!env.REPO) throw new Error("REPO is not set")
+
+  const bokuDir = resolve(env.REPO, "boku")
+  return {
+    cursorSkillsDir: resolve(env.HOME, ".cursor/skills"),
+    codexSkillsDir: resolve(env.HOME, ".agents/skills"),
+    publicSkillsDir: resolve(bokuDir, "jiyuu/ai-skills"),
+    unionSkillsDir: resolve(bokuDir, "priv-skills"),
+  }
+}
+
+const isMissing = (error: unknown): boolean =>
+  (error as NodeJS.ErrnoException).code === "ENOENT"
+
+const sorted = (names: Iterable<string>): string[] => [...names].sort()
+
+const skillNames = async (dir: string): Promise<Set<string>> => {
+  const entries = await readdir(dir, { withFileTypes: true })
+  const names = new Set<string>()
+
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue
+    try {
+      const skillFile = await lstat(join(dir, entry.name, "SKILL.md"))
+      if (skillFile.isFile()) names.add(entry.name)
+    } catch (error) {
+      if (!isMissing(error)) throw error
+    }
+  }
+
+  return names
+}
+
+const resolvesTo = async (path: string, expected: string): Promise<boolean> => {
+  try {
+    return resolve(dirname(path), await readlink(path)) === resolve(expected)
+  } catch (error) {
+    if (isMissing(error)) return false
+    throw error
+  }
+}
+
+const syncUnion = async (
+  cfg: SkillsConfig,
+  apply: boolean,
+): Promise<boolean> => {
+  const publicNames = await skillNames(cfg.publicSkillsDir)
+  const unionNames = await skillNames(cfg.unionSkillsDir)
+  let healthy = true
+
+  for (const name of publicNames) {
+    const unionPath = join(cfg.unionSkillsDir, name)
+    const publicPath = join(cfg.publicSkillsDir, name)
+    try {
+      const info = await lstat(unionPath)
+      if (!info.isSymbolicLink()) {
+        throw new Error(
+          `Public/private skill name collision: ${name} is a real directory in ${cfg.unionSkillsDir}`,
+        )
+      }
+      if (!(await resolvesTo(unionPath, publicPath))) {
+        throw new Error(`Public skill link has unexpected target: ${unionPath}`)
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error
+      healthy = false
+      console.log(`Missing public skill link: ${unionPath}`)
+      if (apply) {
+        await symlink(
+          relative(dirname(unionPath), publicPath),
+          unionPath,
+          "dir",
+        )
+      }
+    }
+  }
+
+  for (const name of unionNames) {
+    const unionPath = join(cfg.unionSkillsDir, name)
+    const info = await lstat(unionPath)
+    if (!info.isSymbolicLink()) continue
+
+    const target = resolve(dirname(unionPath), await readlink(unionPath))
+    if (!target.startsWith(`${cfg.publicSkillsDir}/`)) continue
+    if (publicNames.has(name) && target === join(cfg.publicSkillsDir, name)) {
+      continue
+    }
+
+    healthy = false
+    console.log(`Stale public skill link: ${unionPath}`)
+    if (apply) await rm(unionPath)
+  }
+
+  const expectedNames = new Set([...publicNames, ...unionNames])
+  const actualNames = await skillNames(cfg.unionSkillsDir)
+  if (
+    apply &&
+    sorted(expectedNames).join("\n") !== sorted(actualNames).join("\n")
+  ) {
+    throw new Error(
+      "Skill union does not contain exactly the public and private skills",
+    )
+  }
+
+  return healthy
+}
+
+const migrateRuntimeDir = async (
+  runtimeDir: string,
+  expectedNames: Set<string>,
+): Promise<void> => {
+  const actualNames = await skillNames(runtimeDir)
+  if (sorted(actualNames).join("\n") !== sorted(expectedNames).join("\n")) {
+    throw new Error(
+      `Refusing to replace non-matching runtime skills directory: ${runtimeDir}`,
+    )
+  }
+  await rm(runtimeDir, { recursive: true })
+}
+
+const syncRuntimeLink = async (
+  runtimeDir: string,
+  cfg: SkillsConfig,
+  expectedNames: Set<string>,
+  apply: boolean,
+  migrate: boolean,
+): Promise<boolean> => {
+  try {
+    const info = await lstat(runtimeDir)
+    if (info.isSymbolicLink()) {
+      if (await resolvesTo(runtimeDir, cfg.unionSkillsDir)) return true
+      throw new Error(
+        `Runtime skills link has unexpected target: ${runtimeDir}`,
+      )
+    }
+    if (!info.isDirectory()) {
+      throw new Error(
+        `Runtime skills path is not a directory or symlink: ${runtimeDir}`,
+      )
+    }
+    if (!migrate) {
+      console.log(`Runtime skills directory requires migration: ${runtimeDir}`)
+      return false
+    }
+    if (apply) await migrateRuntimeDir(runtimeDir, expectedNames)
+  } catch (error) {
+    if (!isMissing(error)) throw error
+  }
+
+  if (!apply) {
+    console.log(`Missing runtime skills link: ${runtimeDir}`)
+    return false
+  }
+
+  await mkdir(dirname(runtimeDir), { recursive: true })
+  await symlink(cfg.unionSkillsDir, runtimeDir, "dir")
+  return false
 }
 
 const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
   const cfg = defaultConfig(process.env)
   const health = options.health ?? false
-  dryRun = !options.run && !health
+  const apply = options.run ?? false
+  const migrate = options.migrate ?? false
 
-  assertSafePath(cfg.publicSkillsDir, "/jiyuu/ai-skills", "public skills dir")
-  assertSafePath(cfg.privateSkillsDir, "/priv-skills", "private skills dir")
-  assertSafePath(cfg.codexSkillsDir, "/.agents/skills", "Codex skills dir")
+  if (health && apply) throw new Error("--health and --run cannot be combined")
+  if (migrate && !apply) throw new Error("--migrate requires --run")
 
-  const tmpRoot = await mkdtemp(join(tmpdir(), "skills-sync-"))
-  const tmpPublic = join(tmpRoot, "public")
-  const tmpPrivate = join(tmpRoot, "private")
+  const unionHealthy = await syncUnion(cfg, apply)
+  const names = await skillNames(cfg.unionSkillsDir)
+  const cursorHealthy = await syncRuntimeLink(
+    cfg.cursorSkillsDir,
+    cfg,
+    names,
+    apply,
+    migrate,
+  )
+  const codexHealthy = await syncRuntimeLink(
+    cfg.codexSkillsDir,
+    cfg,
+    names,
+    apply,
+    migrate,
+  )
 
-  try {
-    const { publicSkills, privateSkills } = await classifySkills(cfg)
-    const allSkills = new Set([...publicSkills, ...privateSkills])
-
-    await stageSkills(cfg, publicSkills, tmpPublic)
-    await stageSkills(cfg, privateSkills, tmpPrivate)
-    const tmpCodex = join(tmpRoot, "codex")
-    await stageSkills(cfg, allSkills, tmpCodex)
-
-    if (!dryRun) await prepareCodexSkillsDir(cfg.codexSkillsDir)
-
-    printSummary("public", publicSkills, cfg.publicSkillsDir)
-    printSummary("private", privateSkills, cfg.privateSkillsDir)
-    printSummary("codex", allSkills, cfg.codexSkillsDir)
-
-    if (health) {
-      const results = await Promise.all([
-        healthRsyncStage(tmpPublic, cfg.publicSkillsDir),
-        healthRsyncStage(tmpPrivate, cfg.privateSkillsDir),
-        codexSkillsDirIsHealthy(cfg.codexSkillsDir),
-        healthRsyncStage(tmpCodex, cfg.codexSkillsDir),
-      ])
-
-      if (results.every(Boolean)) {
-        console.log("Skills sync is healthy.")
-      } else {
-        process.exitCode = 1
-      }
+  if (health) {
+    if (unionHealthy && cursorHealthy && codexHealthy) {
+      console.log("Skills links are healthy.")
     } else {
-      await rsyncStage(tmpPublic, cfg.publicSkillsDir)
-      await rsyncStage(tmpPrivate, cfg.privateSkillsDir)
-      await rsyncStage(tmpCodex, cfg.codexSkillsDir)
+      process.exitCode = 1
     }
+    return
+  }
 
-    if (dryRun && !health) {
-      console.log("Dry run complete. No files were changed.")
-      console.log("Run with --run to apply these changes.")
-    }
-  } finally {
-    await rm(tmpRoot, { recursive: true, force: true })
+  if (!apply) {
+    console.log("Dry run complete. Run with --run to apply changes.")
   }
 }
 
-export const createProgram = (): Command => {
-  const program = new Command()
-
-  program
+export const createProgram = (): Command =>
+  new Command()
     .name("skills-sync")
-    .description(
-      "Sync Cursor skills to public, private, and managed Codex destinations.",
+    .description("Manage the repository-backed Cursor and Codex skill links.")
+    .option("-r, --run", "apply changes")
+    .option(
+      "--migrate",
+      "replace matching legacy runtime directories with links",
     )
-    .option("-r, --run", "apply changes with rsync")
-    .option("-n, --dry-run", "preview changes without writing")
-    .option("--health", "fail when destinations are unsafe or out of sync")
-    .action(async (options: SkillsSyncOptions) => {
-      await runSkillsSync(options)
-    })
+    .option("--health", "fail when the skill union or runtime links drift")
+    .action(runSkillsSync)
 
-  return program
-}
-
-if (import.meta.main) {
-  await createProgram().parseAsync()
-}
+if (import.meta.main) await createProgram().parseAsync()

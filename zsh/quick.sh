@@ -124,7 +124,7 @@ dotf() {
   cd "$before" || return 1
 }
 
-# skills: Opens AI agent skills dir in nvim, then sync edits to Git repos.
+# skills: Opens the repository-backed AI agent skills union in Neovim.
 skills() {
   (
     set -euo pipefail
@@ -132,15 +132,12 @@ skills() {
     before="$(pwd)"
     skills_runtime="$HOME/.cursor/skills"
 
-    mkdir -p "$skills_runtime"
-    [[ -e "$skills_runtime/.marksman.toml" ]] ||
-      touch "$skills_runtime/.marksman.toml"
+    if [[ ! -d "$skills_runtime" ]]; then
+      echo "Skills link is missing; run: cd $DOTFILES && just skills-sync --run" >&2
+      return 1
+    fi
 
-    cd "$skills_runtime"
     nvim "$skills_runtime"
-
-    cd "$REPO/boku/dotfiles"
-    just skills-sync --run
 
     cd "$before"
   )
