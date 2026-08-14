@@ -188,18 +188,22 @@ ARGUMENTS:
 
 EXAMPLE:
    ud q symlink "$HOME/ki/config/app.toml" "$HOME/.config/app.toml"
+
+   # Relative targets are resolved from the destination directory. This links
+   # .agents/skills to the sibling ai-skills directory and creates .agents/.
+   ud q symlink ../ai-skills .agents/skills
 EOF
     return 0
   fi
 
   local src="$1"
   local dst="$2"
+  local dst_parent
+  dst_parent="$(dirname -- "$dst")"
 
-  if [[ -L "$src" ]]; then
-    return 0
-  fi
+  mkdir -p -- "$dst_parent" || return 1
 
-  ln -sf "$src" "$dst"
+  ln -sfn -- "$src" "$dst"
 }
 
 # Print the current public IP, plus best-effort region info from a public

@@ -15,6 +15,24 @@ ud go fmt   # Formats with gofumpt
 ud rs fmt   # Formats with rustfmt
 ```
 
+## Symbolic links
+
+Command `ud q symlink <src> <dst>` creates the parent directory for destination
+path `dst` before creating or replacing the link. Relative source paths are
+resolved from the directory that contains the symlink, not from the shell's
+current directory after the command exits.
+
+For example, from a repository root with sibling directories `ai-skills/` and
+`.agents/`, run:
+
+```bash
+ud q symlink ../ai-skills .agents/skills
+```
+
+The command creates directory `.agents/` when needed. The resulting link text
+is `../ai-skills`, so path `.agents/skills` resolves to sibling directory
+`ai-skills/`.
+
 ## What this tool is not
 
 1. It's not intended for use by others: Many settings and commands are
