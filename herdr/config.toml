@@ -188,7 +188,7 @@ description = "select agent by number"
 # sidebar_max_width = 36
 
 # Start with the sidebar collapsed. Changes take effect on the next launch.
-sidebar_start_collapsed = false
+sidebar_start_collapsed = true
 
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
@@ -243,7 +243,7 @@ sidebar_start_collapsed = false
 
 # When true, Herdr keeps a visual gap between split panes instead of
 # sharing a single divider border.
-pane_gaps = false
+pane_gaps = true
 
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
