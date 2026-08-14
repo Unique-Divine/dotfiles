@@ -13,7 +13,9 @@ truth is `cli-config.ts`; the generated runtime config is
 ## Model
 
 `cli-config.ts` owns stable user preferences such as `permissions`, `editor`,
-`approvalMode`, `sandbox`, `network`, and display-related settings.
+`approvalMode`, `sandbox`, `network`, and `attribution`. The managed editor
+config keeps Vim mode enabled. Both attribution flags are disabled so commits
+and pull requests created through Cursor do not add agent attribution.
 
 The runtime config can also contain Cursor-managed fields such as `authInfo`,
 `privacyCache`, `serverConfigCache`, `model`, `selectedModel`,

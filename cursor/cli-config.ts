@@ -5,6 +5,73 @@ type JsonPrimitive = string | number | boolean | null
 type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
 type JsonObject = { [key: string]: JsonValue | undefined }
 
+/** Tool permission patterns enforced by the Cursor CLI. */
+export interface CursorCliPermissions {
+  /** Tool-call patterns that the CLI may run without additional approval. */
+  allow: string[]
+  /** Tool-call patterns that the CLI must refuse. */
+  deny: string[]
+}
+
+/** Stable editor behavior managed by this dotfiles repository. */
+export interface CursorCliEditorConfig {
+  /** Enables Vim-style keybindings in the Cursor CLI prompt editor. */
+  vimMode: boolean
+}
+
+/** Controls whether Cursor adds agent attribution to Git operations. */
+export interface CursorCliAttributionConfig {
+  /** Adds agent attribution to commits created through Cursor when enabled. */
+  attributeCommitsToAgent: boolean
+  /** Adds agent attribution to pull requests created through Cursor when enabled. */
+  attributePRsToAgent: boolean
+}
+
+/** Sandbox preferences applied to shell commands run by the Cursor CLI. */
+export interface CursorCliSandboxConfig {
+  /** Enables or disables Cursor's command sandbox. */
+  mode: "disabled" | "enabled"
+}
+
+/** Network transport preferences for the Cursor CLI agent connection. */
+export interface CursorCliNetworkConfig {
+  /** Uses HTTP/1.1 instead of HTTP/2 for agent connections when enabled. */
+  useHttp1ForAgent: boolean
+}
+
+/**
+ * Portable Cursor CLI preferences owned by this dotfiles repository.
+ *
+ * Runtime-managed model, authentication, privacy, and cache fields are
+ * intentionally excluded and preserved when the generated config is merged.
+ */
+export interface CursorCliManagedConfig {
+  /** Cursor CLI configuration schema version. */
+  version: 1
+  /** Tool permission allow and deny patterns. */
+  permissions: CursorCliPermissions
+  /** Prompt-editor behavior that should remain consistent across machines. */
+  editor: CursorCliEditorConfig
+  /** Enables terminal notifications from the Cursor CLI. */
+  notifications: boolean
+  /** Shows contextual usage hints in the Cursor CLI. */
+  hints: boolean
+  /** Enables the conversation rewind control when supported. */
+  rewind: boolean
+  /** Allows Cursor to suggest a follow-up prompt after a response. */
+  suggestNextPrompt: boolean
+  /** Enables max mode globally when supported by the selected model. */
+  maxMode: boolean
+  /** Controls whether tools outside the permission allowlist require approval. */
+  approvalMode: "allowlist" | "unrestricted"
+  /** Shell-command sandbox preferences. */
+  sandbox: CursorCliSandboxConfig
+  /** Agent network transport preferences. */
+  network: CursorCliNetworkConfig
+  /** Commit and pull-request attribution preferences. */
+  attribution: CursorCliAttributionConfig
+}
+
 export const runtimeConfigPath = (
   env: NodeJS.ProcessEnv = process.env,
 ): string => {
@@ -38,7 +105,11 @@ export const dotfileConfig = {
   network: {
     useHttp1ForAgent: false,
   },
-} satisfies JsonObject
+  attribution: {
+    attributeCommitsToAgent: false,
+    attributePRsToAgent: false,
+  },
+} satisfies CursorCliManagedConfig
 
 const ownedTopLevelFields = [
   "version",
