@@ -45,9 +45,9 @@ cd dotfiles
 
 sudo apt install build-essential ripgrep gh libclang-dev wslu
 
-# This might be different for you. The command comes from here: 
+# This might be different for you. The command comes from here:
 # https://rustup.rs/
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh 
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 cargo install bat tree-sitter-cli sd
 
@@ -88,20 +88,31 @@ exit status.
 
 ### AI agent skills
 
-`just skills-sync --run` treats `$HOME/.cursor/skills` as the canonical runtime
-directory and also copies all skills to `$HOME/.agents/skills` for Codex CLI.
-The Codex destination is created and marked as managed on first use; an
-existing unrelated non-empty directory is rejected rather than overwritten.
+Public skills are distributed from Unique-Divine/jiyuu under `jiyuu/ai-skills`
+and omit `metadata.private`. Private skills are real directories in
+`boku/priv-skills` and require `metadata.private: true`. Team skills can also
+live canonically under a source repository's `ai-skills/` directory.
+`just skills-sync --run` makes `priv-skills` a flat union by linking each
+configured public or repository-owned skill into it, then links both
+`$HOME/.cursor/skills` and `$HOME/.agents/skills` to that union. Repository-owned sources also expose a
+relative `.agents/skills` discovery link for teammates. Edit a skill through
+either agent or its canonical repository path: the same file changes
+immediately. Sync rejects duplicate names and unexpected link targets. The
+first conversion from legacy copied runtime directories requires
+`just skills-sync --run --migrate`; it refuses directories whose skills do not
+match the canonical union.
 
 See the [Codex skills documentation](https://developers.openai.com/codex/concepts/customization#skills).
 
 ### Neovim Configuration
+
 - Light/dark theme toggle (Catppuccin/OneDark)
 - Treesitter with support for modern languages including Astro
 - LSP with auto-installation of language servers
 - Harpoon, Telescope, and other navigation enhancements
 
 ### Terminal Environment: tmux, zsh, bun
+
 - Tmux with Dracula theme and plugin manager
 - Zsh configured for Node.js, Rust, Go, and Python development
 - Bun JavaScript/TypeScript runtime integration
@@ -138,6 +149,7 @@ other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
 usage and options.
 
 ### WSL Clipboard Integration
+
 - A persistent Rust bridge that keeps one PowerShell clipboard process warm
 - `pbcopy`, `pbpaste`, `wsl-pbcopy`, and `wsl-pbpaste` are symlinks to the one
   installed bridge binary; it dispatches by the command name
@@ -147,7 +159,6 @@ usage and options.
   only on the first copy or paste request
 - `legacy-pbcopy` and `legacy-pbpaste` retain the old one-shot commands for
   diagnostics and performance comparison
-
 
 ## Requirements
 

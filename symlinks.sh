@@ -14,8 +14,13 @@ if [[ -z "$DOTFILES" ]]; then
   exit 1
 fi
 
-# Function `_symlink` creates a symbolic link from source to destination if it
-# doesn't already exist. 
+# Create a symbolic link from a canonical dotfiles entry to its runtime path.
+# Arguments:
+#   - `src`: Canonical file or directory in the dotfiles repository.
+#   - `dst`: Path through which programs discover `src`.
+# A symbolic-link `src` is skipped to avoid chained links. Otherwise, `ln -sf`
+# replaces an existing destination without prompting. If `dst` is a directory,
+# the link is created inside it with the basename of `src`.
 # Usage: _symlink <source_path> <destination_path>
 _symlink() {
   local src="$1"
@@ -24,8 +29,8 @@ _symlink() {
   if [[ -L "$src" ]]; then
     return 0
   fi
-  
-  ln -sf "$src" "$dst" 
+
+  ln -sf "$src" "$dst"
 }
 
 # Global order for zsh: zshenv, zprofile, zshrc, zlogin

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -101,4 +102,26 @@ func TestNibiCfgProd(t *testing.T) {
 	bashCmd := "ud nibi cfg prod"
 	output := runUdCommand(t, bashCmd)
 	require.Contains(t, output, "ud nibi cfg")
+}
+
+func TestQuickSymlinkCreatesMissingParentForRelativeTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "ai-skills")
+	dst := filepath.Join(tmpDir, ".agents", "skills")
+	require.NoError(t, os.Mkdir(src, 0o755))
+
+	bashCmd := fmt.Sprintf("cd %q && ud q symlink ../ai-skills .agents/skills", tmpDir)
+	runUdCommand(t, bashCmd)
+
+	info, err := os.Lstat(dst)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink)
+
+	target, err := os.Readlink(dst)
+	require.NoError(t, err)
+	require.Equal(t, "../ai-skills", target)
+
+	resolved, err := filepath.EvalSymlinks(dst)
+	require.NoError(t, err)
+	require.Equal(t, src, resolved)
 }

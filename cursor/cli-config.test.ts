@@ -48,7 +48,11 @@ describe("cursor cli config", () => {
         deny: ["Shell(rm)"],
       },
       editor: {
-        vimMode: true,
+        vimMode: false,
+      },
+      attribution: {
+        attributeCommitsToAgent: true,
+        attributePRsToAgent: true,
       },
       display: {
         showLineNumbers: true,
@@ -78,6 +82,11 @@ describe("cursor cli config", () => {
 
     expect(merged.permissions).toEqual(dotfileConfig.permissions)
     expect(merged.editor).toEqual(dotfileConfig.editor)
+    expect(merged.editor).toEqual({ vimMode: true })
+    expect(merged.attribution).toEqual({
+      attributeCommitsToAgent: false,
+      attributePRsToAgent: false,
+    })
     expect(merged.display).toBeUndefined()
     expect(merged.authInfo).toEqual({ email: "user@example.com" })
     expect(merged.privacyCache).toEqual({ privacyMode: 4 })
@@ -107,6 +116,10 @@ describe("cursor cli config", () => {
       expect(firstChanged).toBe(true)
       expect(secondChanged).toBe(false)
       expect(JSON.parse(firstText)).toEqual(dotfileConfig)
+      expect(JSON.parse(firstText).attribution).toEqual({
+        attributeCommitsToAgent: false,
+        attributePRsToAgent: false,
+      })
       expect(secondText).toBe(firstText)
     } finally {
       await rm(root, { recursive: true, force: true })
