@@ -42,6 +42,8 @@ describe("skills-sync", () => {
   let repoDir: string
   let publicDir: string
   let privateDir: string
+  let keeperSkillsDir: string
+  let keeperDiscoveryDir: string
   let cursorDir: string
   let codexDir: string
 
@@ -52,6 +54,8 @@ describe("skills-sync", () => {
     const bokuDir = join(repoDir, "boku")
     publicDir = join(bokuDir, "jiyuu/ai-skills")
     privateDir = join(bokuDir, "priv-skills")
+    keeperSkillsDir = join(repoDir, "sai-keeper/ai-skills")
+    keeperDiscoveryDir = join(repoDir, "sai-keeper/.agents/skills")
     cursorDir = join(homeDir, ".cursor/skills")
     codexDir = join(homeDir, ".agents/skills")
   })
@@ -59,6 +63,8 @@ describe("skills-sync", () => {
   test("creates a flat repository union and both runtime links", async () => {
     await makeSkill(publicDir, "public-skill")
     await makeSkill(privateDir, "private-skill")
+    await makeSkill(keeperSkillsDir, "keeper-skill")
+    await writeFile(join(keeperSkillsDir, "README.md"), "Repository skills\n")
 
     expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
       exitCode: 0,
@@ -71,10 +77,37 @@ describe("skills-sync", () => {
     expect(
       resolve(privateDir, await readlink(join(privateDir, "public-skill"))),
     ).toBe(join(publicDir, "public-skill"))
+    expect(
+      resolve(privateDir, await readlink(join(privateDir, "keeper-skill"))),
+    ).toBe(join(keeperSkillsDir, "keeper-skill"))
+    expect(
+      resolve(
+        join(repoDir, "sai-keeper/.agents"),
+        await readlink(keeperDiscoveryDir),
+      ),
+    ).toBe(keeperSkillsDir)
     for (const runtimeDir of [cursorDir, codexDir]) {
       expect((await lstat(runtimeDir)).isSymbolicLink()).toBe(true)
       expect(resolve(await readlink(runtimeDir))).toBe(privateDir)
+      expect(
+        resolve(privateDir, await readlink(join(runtimeDir, "keeper-skill"))),
+      ).toBe(join(keeperSkillsDir, "keeper-skill"))
     }
+  })
+
+  test("dry run reports a missing repository skill without linking it", async () => {
+    const unionPath = join(privateDir, "keeper-skill")
+    await rm(unionPath)
+
+    const result = await run(homeDir, repoDir, [])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`Missing linked skill: ${unionPath}`)
+    await expect(lstat(unionPath)).rejects.toMatchObject({ code: "ENOENT" })
+
+    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    })
   })
 
   test("health detects a broken runtime target", async () => {
@@ -96,11 +129,54 @@ describe("skills-sync", () => {
     await rm(join(privateDir, "public-skill"), { recursive: true })
   })
 
+  test("refuses collisions between linked repositories", async () => {
+    await makeSkill(keeperSkillsDir, "public-skill")
+    await rm(keeperDiscoveryDir)
+    const result = await run(homeDir, repoDir, ["--run"])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Linked skill name collision")
+    await expect(lstat(keeperDiscoveryDir)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+    await rm(join(keeperSkillsDir, "public-skill"), { recursive: true })
+    await symlink("../ai-skills", keeperDiscoveryDir, "dir")
+  })
+
+  test("refuses a real repository discovery directory", async () => {
+    await rm(keeperDiscoveryDir)
+    await mkdir(keeperDiscoveryDir, { recursive: true })
+
+    const result = await run(homeDir, repoDir, ["--run"])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(
+      "Repository skill discovery path is not a symlink",
+    )
+
+    await rm(keeperDiscoveryDir, { recursive: true })
+    await symlink("../ai-skills", keeperDiscoveryDir, "dir")
+  })
+
+  test("detects and removes stale linked skills", async () => {
+    const stalePath = join(privateDir, "stale-skill")
+    await symlink(join(root, "removed-skill"), stalePath, "dir")
+
+    const health = await run(homeDir, repoDir, ["--health"])
+    expect(health.exitCode).toBe(1)
+    expect(health.stdout).toContain(`Stale linked skill: ${stalePath}`)
+
+    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    })
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
   test("migrates only a matching legacy runtime directory", async () => {
     await rm(codexDir)
     await mkdir(codexDir, { recursive: true })
     await makeSkill(codexDir, "public-skill")
     await makeSkill(codexDir, "private-skill")
+    await makeSkill(codexDir, "keeper-skill")
 
     expect((await run(homeDir, repoDir, ["--run"])).stdout).toContain(
       "requires migration",

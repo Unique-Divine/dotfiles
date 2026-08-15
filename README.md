@@ -88,13 +88,19 @@ exit status.
 
 ### AI agent skills
 
-Public skills live in `jiyuu/ai-skills`; private skills live in
-`boku/priv-skills`. `just skills-sync --run` makes `priv-skills` a flat union
-by linking each public skill into it, then links both `$HOME/.cursor/skills`
-and `$HOME/.agents/skills` to that union. Edit a skill through either agent or
-its repository path: the same file changes immediately. The first conversion
-from the legacy copied directories requires `just skills-sync --run --migrate`;
-it refuses runtime directories whose skills do not match the canonical union.
+Public skills are distributed from Unique-Divine/jiyuu under `jiyuu/ai-skills`
+and omit `metadata.private`. Private skills are real directories in
+`boku/priv-skills` and require `metadata.private: true`. Team skills can also
+live canonically under a source repository's `ai-skills/` directory.
+`just skills-sync --run` makes `priv-skills` a flat union by linking each
+configured public or repository-owned skill into it, then links both
+`$HOME/.cursor/skills` and `$HOME/.agents/skills` to that union. Repository-owned sources also expose a
+relative `.agents/skills` discovery link for teammates. Edit a skill through
+either agent or its canonical repository path: the same file changes
+immediately. Sync rejects duplicate names and unexpected link targets. The
+first conversion from legacy copied runtime directories requires
+`just skills-sync --run --migrate`; it refuses directories whose skills do not
+match the canonical union.
 
 See the [Codex skills documentation](https://developers.openai.com/codex/concepts/customization#skills).
 
