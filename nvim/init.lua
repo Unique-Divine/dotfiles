@@ -379,32 +379,8 @@ local lazyPlugins = {
     end,
   },
 
-  {
-    -- Highlight, edit, and navigate code
-    -- Setup is in the "lua/core/treesitter.lua" file.
-    --
-    -- Commands I had to run to get things working:
-    -- ```nvim
-    -- :TSInstall astro
-    -- ```
-    --
-    -- Use the `main` branch on Neovim 0.12+. It is a full rewrite, so the
-    -- setup lives in `lua/core/treesitter.lua` rather than the legacy
-    -- `require('nvim-treesitter.configs').setup { ... }` API.
-    'nvim-treesitter/nvim-treesitter',
-    branch = 'main',
-    lazy = false, -- must load before `require('core/treesitter')` below
-    dependencies = {
-      -- Extra textobjects module for the `main` branch API.
-      { 'nvim-treesitter/nvim-treesitter-textobjects', branch = 'main', lazy = false },
-
-      -- Sets the `commentstring` based on tree-sitter queries
-      'JoosepAlviste/nvim-ts-context-commentstring',
-      -- 'windwp/nvim-ts-autotag', -- TODO Set this up.
-      --
-    },
-    build = ':TSUpdate',
-  },
+  -- nvim-treesitter `main` (Neovim 0.12+). Spec + setup in core/treesitter.lua.
+  require 'core/treesitter',
 
   -- NOTE: Next Step on Your Neovim Journey: Add/Configure additional "plugins"
   -- for kickstart. These are some example plugins that I've included in the
@@ -427,9 +403,6 @@ local lazyConfig = {}
 vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
-
--- [[ Treesitter ]] See `:help nvim-treesitter`
-require('core/treesitter')
 
 --- LSP (language server protocol) settings.
 require('core/lsp')

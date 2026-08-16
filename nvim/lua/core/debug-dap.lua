@@ -9,7 +9,7 @@
 
 -- Defining this above the spec is fine. require() of this file only
 -- creates the function; Lazy calls it later when a cmd/key loads DAP.
-local function setup_dap()
+local function plugin_config()
   local dap = require('dap')
   local ui = require('dapui')
 
@@ -62,7 +62,8 @@ local function setup_dap()
   vim.keymap.set('n', '<leader>dt', ui.toggle, {})
 end
 
-return {
+--- @type LazyPluginSpec
+local plugin_spec = {
   'mfussenegger/nvim-dap',
   dependencies = {
     'rcarriga/nvim-dap-ui',
@@ -80,15 +81,17 @@ return {
     'DapTerminate',
   },
   keys = {
-    { '<leader>b', desc = '[d]ebugger [b]reakpoint' },
+    { '<leader>b',   desc = '[d]ebugger [b]reakpoint' },
     { '<leader>drc', desc = '[d]ebugger [r]un to [c]ursor' },
-    { '<leader>dc', desc = 'Debug continue' },
-    { '<leader>dt', desc = 'Debug UI toggle' },
-    { '<F1>', desc = 'DAP step into' },
-    { '<F2>', desc = 'DAP step over' },
-    { '<F8>', desc = 'DAP step out' },
-    { '<F9>', desc = 'DAP step back' },
-    { '<F10>', desc = 'DAP restart' },
+    { '<leader>dc',  desc = 'Debug continue' },
+    { '<leader>dt',  desc = 'Debug UI toggle' },
+    { '<F1>',        desc = 'DAP step into' },
+    { '<F2>',        desc = 'DAP step over' },
+    { '<F8>',        desc = 'DAP step out' },
+    { '<F9>',        desc = 'DAP step back' },
+    { '<F10>',       desc = 'DAP restart' },
   },
-  config = setup_dap,
+  config = plugin_config,
 }
+
+return plugin_spec
