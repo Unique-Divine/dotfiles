@@ -16,7 +16,6 @@ nvim/
 ├── init.lua              # Main entry point
 ├── lua/
 │   └── core/            # Core configuration modules
-│       ├── cmp.lua              # Autocompletion (nvim-cmp)
 │       ├── comment.lua          # Comment toggling
 │       ├── debug-dap.lua        # DAP plugin spec and setup
 │       ├── fmt.lua              # Code formatting
@@ -25,7 +24,7 @@ nvim/
 │       ├── lazy-plugins.lua     # Additional lazy plugins
 │       ├── lsp.lua              # LSP plugin spec and setup
 │       ├── snippets.lua         # Code snippets
-│       ├── specs/               # Lazy specs loaded via import
+│       ├── specs/               # Lazy specs (import): cmp.lua
 │       ├── telescope.lua        # Fuzzy finder
 │       ├── treesitter.lua       # Syntax highlighting
 │       └── vim.lua              # Vim options and keymaps

@@ -93,16 +93,6 @@ local lazyPlugins = {
   -- Detect tabstop and shiftwidth automatically
   'tpope/vim-sleuth',
 
-  {
-    -- Autocompletion
-    'hrsh7th/nvim-cmp',
-    dependencies = {
-      'hrsh7th/cmp-nvim-lsp',
-      { 'L3MON4D3/LuaSnip', version = "v2.*", build = "make install_jsregexp" },
-      'saadparwaiz1/cmp_luasnip',
-      'rafamadriz/friendly-snippets' },
-  },
-
   -- Useful plugin to show you pending keybinds.
   { 'folke/which-key.nvim',  opts = {} },
   {
@@ -353,8 +343,6 @@ vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
 
--- nvim-cmp setup
-require('core/cmp')
 require('core/fmt')
 -- require('core/fmt-conform')
 
