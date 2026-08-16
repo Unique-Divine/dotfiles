@@ -2,7 +2,7 @@
 --
 -- See the kickstart.nvim README for more information
 
----@type LazySpec
+---@type LazySpec[]
 ---See [Lazy Plugin Spec](https://github.com/folke/lazy.nvim#-plugin-spec)
 local plugins = {
   -- A wrapper around Neovim's native LSP formatting.
@@ -137,6 +137,8 @@ local plugins = {
 
   {
     "folke/todo-comments.nvim",
+    -- lazy.nvim event VeryLazy fires after the first UI paint. TODO/FIXME
+    -- highlights are not needed on the first frame.
     event = 'VeryLazy',
     dependencies = { "nvim-lua/plenary.nvim" },
     opts = {

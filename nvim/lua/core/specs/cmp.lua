@@ -71,6 +71,9 @@ end
 --- @type LazyPluginSpec
 local plugin_spec = {
   'hrsh7th/nvim-cmp',
+  -- Completion and snippets run only in insert mode. First InsertEnter may
+  -- hitch once while nvim-cmp, LuaSnip, and friendly-snippets load.
+  event = 'InsertEnter',
   dependencies = {
     'hrsh7th/cmp-nvim-lsp',
     { 'L3MON4D3/LuaSnip', version = 'v2.*', build = 'make install_jsregexp' },

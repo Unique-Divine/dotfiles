@@ -94,10 +94,15 @@ local lazyPlugins = {
   'tpope/vim-sleuth',
 
   -- Useful plugin to show you pending keybinds.
+  -- lazy.nvim event VeryLazy fires after the first UI paint. The which-key
+  -- popup is unused until a key chord starts.
   { 'folke/which-key.nvim',  event = 'VeryLazy', opts = {} },
   {
     -- Adds git releated signs to the gutter, as well as utilities for managing changes
     'lewis6991/gitsigns.nvim',
+    -- Load when a file buffer appears, not at UI start. Signs need a path.
+    -- Not official gitsigns guidance: the plugin already attaches on BufRead
+    -- internally. This is a lazy.nvim startup cut; revert if attach breaks.
     event = { 'BufReadPre', 'BufNewFile' },
     opts = {
       -- See `:help gitsigns.txt`
