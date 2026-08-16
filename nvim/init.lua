@@ -343,7 +343,6 @@ vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
 
-require('core/fmt')
 -- require('core/fmt-conform')
 
 require('core/comment')

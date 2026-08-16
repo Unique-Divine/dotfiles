@@ -41,9 +41,9 @@ local plugins = {
 
   -- https://github.com/nvim-neotest/nvim-nio
   { "nvim-neotest/nvim-nio" },
-  { 'mhartington/formatter.nvim' },
 
-  -- Prettier formatting: use mhartington/formatter.nvim (core/fmt.lua) and/or
+  -- Prettier formatting: use mhartington/formatter.nvim (core/specs/fmt.lua)
+  -- and/or
   -- stevearc/conform.nvim with Mason’s `prettier` / `prettierd` — not
   -- MunifTanjim/prettier.nvim (triggers deprecated vim.validate on Nvim 0.12+).
 
