@@ -167,7 +167,7 @@ local lazyPlugins = {
   },
 
   -- Useful plugin to show you pending keybinds.
-  { 'folke/which-key.nvim',          opts = {} },
+  { 'folke/which-key.nvim',  opts = {} },
   {
     -- Adds git releated signs to the gutter, as well as utilities for managing changes
     'lewis6991/gitsigns.nvim',
@@ -350,27 +350,46 @@ local lazyPlugins = {
   -- "gc" to comment visual regions/lines
   -- See: https://github.com/numToStr/Comment.nvim#pre-hook
   -- Setup is in the "lua/core/comment.lua" file.
-  { 'numToStr/Comment.nvim',         opts = {} },
+  { 'numToStr/Comment.nvim', opts = {} },
 
   -- Fuzzy Finder (files, lsp, etc)
   -- Pin to a tagged release (not bare master). v0.2.2 is the newest tag;
   -- GitHub Releases "Latest" is currently v0.2.1.
+  --
+  -- Do not `require('core/telescope')` in this table or before lazy.setup().
+  -- That runs immediately, while telescope.nvim is not on rtp yet.
+  -- `config` runs after Lazy loads the plugin (cmd / keys / first require).
   {
     'nvim-telescope/telescope.nvim',
     tag = 'v0.2.2',
-    dependencies = { 'nvim-lua/plenary.nvim' },
-  },
-
-  -- Fuzzy Finder Algorithm which requires local dependencies to be built.
-  -- Only load if `make` is available. Make sure you have the system
-  -- requirements installed.
-  {
-    'nvim-telescope/telescope-fzf-native.nvim',
-    -- NOTE: If you are having trouble with this installation,
-    --       refer to the README for telescope-fzf-native for more instructions.
-    build = 'make',
-    cond = function()
-      return vim.fn.executable 'make' == 1
+    dependencies = {
+      'nvim-lua/plenary.nvim',
+      {
+        'nvim-telescope/telescope-fzf-native.nvim',
+        build = 'make',
+        cond = function()
+          return vim.fn.executable 'make' == 1
+        end,
+      },
+    },
+    cmd = 'Telescope',
+    keys = {
+      { '<leader>?', desc = '[?] Find recently opened files' },
+      { '<leader><space>', desc = '[ ] Find existing buffers' },
+      { '<leader>/', desc = '[/] Fuzzily search in current buffer' },
+      { '<leader>sb', desc = '[S]earch in current [b]uffer' },
+      { '<leader>sf', desc = '[S]earch [F]iles (main)' },
+      { '<leader>sF', desc = '[S]earch [F]iles (verbose)' },
+      { '<C-p>', desc = 'Search files' },
+      { '<leader><C-g>', desc = '[G] is for grep' },
+      { '<leader>ss', desc = '[S]earch [s]ymbols' },
+      { '<leader>sh', desc = '[S]earch [H]elp' },
+      { '<leader>sw', desc = '[S]earch current [W]ord' },
+      { '<leader>sg', desc = '[S]earch by [G]rep' },
+      { '<leader>sd', desc = '[S]earch [D]iagnostics' },
+    },
+    config = function()
+      require('core/telescope')
     end,
   },
 
@@ -396,6 +415,7 @@ local lazyPlugins = {
       -- Sets the `commentstring` based on tree-sitter queries
       'JoosepAlviste/nvim-ts-context-commentstring',
       -- 'windwp/nvim-ts-autotag', -- TODO Set this up.
+      --
     },
     build = ':TSUpdate',
   },
@@ -407,6 +427,7 @@ local lazyPlugins = {
   require 'core/debug-kickstart',
 
   require 'core/lazy-plugins',
+
   -- The import below automatically adds your own plugins, configuration, etc
   -- from `lua/core/auto/*.lua`.
   -- For additional information see:
@@ -420,9 +441,6 @@ local lazyConfig = {}
 vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
-
--- [[ Telescope ]] Fuzzy find and search. See `:help telescope`
-require('core/telescope')
 
 -- [[ Treesitter ]] See `:help nvim-treesitter`
 require('core/treesitter')
