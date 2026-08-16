@@ -18,10 +18,7 @@ local plugins = {
   -- - Provide any formatting by itself. You still need to use an LSP server
   { 'lukas-reineke/lsp-format.nvim', opts = {} },
 
-  {
-    'ThePrimeagen/harpoon',
-    dependencies = { 'nvim-lua/plenary.nvim', 'nvim-telescope/telescope.nvim' }
-  },
+  require("core/harpoon"),
 
   -- {
   --   'm4xshen/smartcolumn.nvim',

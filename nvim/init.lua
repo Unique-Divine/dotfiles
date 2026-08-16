@@ -93,55 +93,6 @@ local lazyPlugins = {
   -- Detect tabstop and shiftwidth automatically
   'tpope/vim-sleuth',
 
-  -- NOTE: This is where your plugins related to LSP can be installed.
-  --  The configuration is done below. Search for lspconfig to find it below.
-  {
-    -- LSP Configuration & Plugins
-    'neovim/nvim-lspconfig',
-    dependencies = {
-      -- Automatically install LSPs to stdpath for neovim
-      {
-        'mason-org/mason.nvim',
-        config = true,
-        -- docs on "ensure_installed": https://github.com/mason-org/mason-lspconfig.nvim
-        opts = { ensure_installed = { "prettier" } }
-      },
-      'mason-org/mason-lspconfig.nvim',
-
-      -- Useful status updates for LSP
-      -- NOTE: `opts = {}` is the same as calling `require('fidget').setup({})`
-      { 'j-hui/fidget.nvim',   tag = "legacy", opts = {} },
-
-      -- LuaLS workspace integration for Neovim config/plugin development.
-      {
-        'folke/lazydev.nvim',
-        ft = 'lua',
-        opts = {
-          library = {
-            { path = '${3rd}/luv/library', words = { 'vim%.uv' } },
-          },
-        },
-      },
-      { 'mrcjkb/rustaceanvim', version = '^7', ft = { 'rust' } },
-      -- LSP symbol outline. simrat39/symbols-outline is archived; outline.nvim
-      -- is the maintained fork and supports current LSP client APIs.
-      {
-        'hedyhli/outline.nvim',
-        config = function()
-          require('outline').setup({})
-        end,
-      },
-    },
-    -- Why add opts to 'nvim-lspconfig'?
-    -- If we share dotfiles or setup a new computer, we'll automatically have
-    -- certain language servers without you needing to go into Mason.
-    opts = {
-      servers = {
-        tailwindcss = {},
-      }
-    },
-  },
-
   {
     -- Autocompletion
     'hrsh7th/nvim-cmp',
@@ -360,19 +311,19 @@ local lazyPlugins = {
     },
     cmd = 'Telescope',
     keys = {
-      { '<leader>?', desc = '[?] Find recently opened files' },
+      { '<leader>?',       desc = '[?] Find recently opened files' },
       { '<leader><space>', desc = '[ ] Find existing buffers' },
-      { '<leader>/', desc = '[/] Fuzzily search in current buffer' },
-      { '<leader>sb', desc = '[S]earch in current [b]uffer' },
-      { '<leader>sf', desc = '[S]earch [F]iles (main)' },
-      { '<leader>sF', desc = '[S]earch [F]iles (verbose)' },
-      { '<C-p>', desc = 'Search files' },
-      { '<leader><C-g>', desc = '[G] is for grep' },
-      { '<leader>ss', desc = '[S]earch [s]ymbols' },
-      { '<leader>sh', desc = '[S]earch [H]elp' },
-      { '<leader>sw', desc = '[S]earch current [W]ord' },
-      { '<leader>sg', desc = '[S]earch by [G]rep' },
-      { '<leader>sd', desc = '[S]earch [D]iagnostics' },
+      { '<leader>/',       desc = '[/] Fuzzily search in current buffer' },
+      { '<leader>sb',      desc = '[S]earch in current [b]uffer' },
+      { '<leader>sf',      desc = '[S]earch [F]iles (main)' },
+      { '<leader>sF',      desc = '[S]earch [F]iles (verbose)' },
+      { '<C-p>',           desc = 'Search files' },
+      { '<leader><C-g>',   desc = '[G] is for grep' },
+      { '<leader>ss',      desc = '[S]earch [s]ymbols' },
+      { '<leader>sh',      desc = '[S]earch [H]elp' },
+      { '<leader>sw',      desc = '[S]earch current [W]ord' },
+      { '<leader>sg',      desc = '[S]earch by [G]rep' },
+      { '<leader>sd',      desc = '[S]earch [D]iagnostics' },
     },
     config = function()
       require('core/telescope')
@@ -385,16 +336,14 @@ local lazyPlugins = {
   -- NOTE: Next Step on Your Neovim Journey: Add/Configure additional "plugins"
   -- for kickstart. These are some example plugins that I've included in the
   -- kickstart repository.
-  require 'core/lsp-nvim-autoformat',
   require 'core/debug-dap',
 
   require 'core/lazy-plugins',
 
-  -- The import below automatically adds your own plugins, configuration, etc
-  -- from `lua/core/auto/*.lua`.
-  -- For additional information see:
-  -- https://github.com/folke/lazy.nvim#-structuring-your-plugins
-  -- { import = 'core.auto' },
+  require 'core/lsp',
+
+  -- Each lua/core/specs/*.lua file must return a Lazy plugin spec.
+  { import = 'core.specs' },
 }
 --- @type LazyConfig
 local lazyConfig = {}
@@ -404,18 +353,13 @@ vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
 
---- LSP (language server protocol) settings.
-require('core/lsp')
-
-require('core/editors')
-
 -- nvim-cmp setup
 require('core/cmp')
 require('core/fmt')
 -- require('core/fmt-conform')
 
 require('core/comment')
-require('core/harpoon')
+-- require('core/harpoon') -- disable
 
 -- Vim settings. This should be last so that plugins don't take control of the
 -- Vim options unexpectedly.
