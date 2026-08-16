@@ -274,11 +274,6 @@ local lazyPlugins = {
     },
   },
 
-  -- "gc" to comment visual regions/lines
-  -- See: https://github.com/numToStr/Comment.nvim#pre-hook
-  -- Setup is in the "lua/core/comment.lua" file.
-  { 'numToStr/Comment.nvim', opts = {} },
-
   -- Fuzzy Finder (files, lsp, etc)
   -- Pin to a tagged release (not bare master). v0.2.2 is the newest tag;
   -- GitHub Releases "Latest" is currently v0.2.1.
@@ -345,7 +340,6 @@ require('lazy').setup(lazyPlugins, lazyConfig)
 
 -- require('core/fmt-conform')
 
-require('core/comment')
 -- require('core/harpoon') -- disable
 
 -- Vim settings. This should be last so that plugins don't take control of the
