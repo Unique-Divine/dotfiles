@@ -94,7 +94,7 @@ local lazyPlugins = {
   'tpope/vim-sleuth',
 
   -- Useful plugin to show you pending keybinds.
-  { 'folke/which-key.nvim',  opts = {} },
+  { 'folke/which-key.nvim',  event = 'VeryLazy', opts = {} },
   {
     -- Adds git releated signs to the gutter, as well as utilities for managing changes
     'lewis6991/gitsigns.nvim',
@@ -152,7 +152,6 @@ local lazyPlugins = {
     'navarasu/onedark.nvim',
     priority = 1000,
     config = function()
-      vim.cmd.colorscheme 'onedark'
       local theme_onedark = require('onedark')
       theme_onedark.setup {
         style             = 'deep', -- Theme colors. Choose between:

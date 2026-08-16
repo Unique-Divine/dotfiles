@@ -137,6 +137,7 @@ local plugins = {
 
   {
     "folke/todo-comments.nvim",
+    event = 'VeryLazy',
     dependencies = { "nvim-lua/plenary.nvim" },
     opts = {
       hightlight = { pattern = [[*(KEYWORDS)\s*]] }
