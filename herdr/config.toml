@@ -95,7 +95,9 @@ detach = "prefix+d"
 # rename_tab = "prefix+shift+t"
 # previous_tab = "prefix+p"
 # next_tab = "prefix+n"
-# switch_tab = "prefix+1..9"
+# Native zero-indexed tab shortcuts: `prefix+0` selects the first tab and
+# `prefix+8` selects the ninth tab in the active workspace.
+switch_tab = "prefix+0..8"
 # switch_workspace = ""   # optional indexed binding, e.g. "prefix+shift+1..9"
 # close_tab = "prefix+shift+x"
 # rename_pane = "prefix+shift+p"
