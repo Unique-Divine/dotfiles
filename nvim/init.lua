@@ -142,20 +142,6 @@ local lazyPlugins = {
     },
   },
 
-  -- Debugger
-  {
-    -- "dap" is short for debugging adapter protocol.
-    -- [TJ DeVries - simple neovim debugging setup (in 10 minutes)](https://youtu.be/lyNfnI-B640)
-    "mfussenegger/nvim-dap",
-    dependencies = {
-      "leoluz/nvim-dap-go", -- Golang debugging utilities
-      "rcarriga/nvim-dap-ui",
-      "theHamsta/nvim-dap-virtual-text",
-      "nvim-neotest/nvim-nio",
-      "mason-org/mason.nvim",
-    },
-  },
-
   {
     -- Autocompletion
     'hrsh7th/nvim-cmp',
@@ -424,7 +410,7 @@ local lazyPlugins = {
   -- for kickstart. These are some example plugins that I've included in the
   -- kickstart repository.
   require 'core/lsp-nvim-autoformat',
-  require 'core/debug-kickstart',
+  require 'core/debug-dap',
 
   require 'core/lazy-plugins',
 
@@ -454,8 +440,6 @@ require('core/editors')
 require('core/cmp')
 require('core/fmt')
 -- require('core/fmt-conform')
-
-require('core/debugger')
 
 require('core/comment')
 require('core/harpoon')

@@ -18,8 +18,7 @@ nvim/
 │   └── core/            # Core configuration modules
 │       ├── cmp.lua              # Autocompletion (nvim-cmp)
 │       ├── comment.lua          # Comment toggling
-│       ├── debug-kickstart.lua  # Debug adapter setup
-│       ├── debugger.lua         # Debugger configuration
+│       ├── debug-dap.lua        # DAP plugin spec and setup
 │       ├── editors.lua          # Editor-specific settings
 │       ├── fmt.lua              # Code formatting
 │       ├── fmt-conform.lua      # Alternative formatter config
