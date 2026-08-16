@@ -2,7 +2,7 @@
 --
 -- See the kickstart.nvim README for more information
 
----@type LazySpec
+---@type LazySpec[]
 ---See [Lazy Plugin Spec](https://github.com/folke/lazy.nvim#-plugin-spec)
 local plugins = {
   -- A wrapper around Neovim's native LSP formatting.
@@ -18,10 +18,7 @@ local plugins = {
   -- - Provide any formatting by itself. You still need to use an LSP server
   { 'lukas-reineke/lsp-format.nvim', opts = {} },
 
-  {
-    'ThePrimeagen/harpoon',
-    dependencies = { 'nvim-lua/plenary.nvim', 'nvim-telescope/telescope.nvim' }
-  },
+  require("core/harpoon"),
 
   -- {
   --   'm4xshen/smartcolumn.nvim',
@@ -44,9 +41,9 @@ local plugins = {
 
   -- https://github.com/nvim-neotest/nvim-nio
   { "nvim-neotest/nvim-nio" },
-  { 'mhartington/formatter.nvim' },
 
-  -- Prettier formatting: use mhartington/formatter.nvim (core/fmt.lua) and/or
+  -- Prettier formatting: use mhartington/formatter.nvim (core/specs/fmt.lua)
+  -- and/or
   -- stevearc/conform.nvim with Mason’s `prettier` / `prettierd` — not
   -- MunifTanjim/prettier.nvim (triggers deprecated vim.validate on Nvim 0.12+).
 
@@ -140,6 +137,9 @@ local plugins = {
 
   {
     "folke/todo-comments.nvim",
+    -- lazy.nvim event VeryLazy fires after the first UI paint. TODO/FIXME
+    -- highlights are not needed on the first frame.
+    event = 'VeryLazy',
     dependencies = { "nvim-lua/plenary.nvim" },
     opts = {
       hightlight = { pattern = [[*(KEYWORDS)\s*]] }

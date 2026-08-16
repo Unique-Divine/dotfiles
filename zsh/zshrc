@@ -323,6 +323,9 @@ complete -o nospace -C "$HOME/go/bin/gocomplete" go
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
+# Mason - pkgs used in nvim
+export PATH="$HOME/.local/share/nvim/mason/bin:$PATH"
+
 # sync_cursor_cli_config keeps Cursor CLI's runtime config aligned with the
 # dotfile config while preserving Cursor-managed auth, cache, and model state.
 sync_cursor_cli_config() {

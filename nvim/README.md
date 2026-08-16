@@ -16,18 +16,13 @@ nvim/
 ├── init.lua              # Main entry point
 ├── lua/
 │   └── core/            # Core configuration modules
-│       ├── cmp.lua              # Autocompletion (nvim-cmp)
-│       ├── comment.lua          # Comment toggling
-│       ├── debug-kickstart.lua  # Debug adapter setup
-│       ├── debugger.lua         # Debugger configuration
-│       ├── editors.lua          # Editor-specific settings
-│       ├── fmt.lua              # Code formatting
+│       ├── debug-dap.lua        # DAP plugin spec and setup
 │       ├── fmt-conform.lua      # Alternative formatter config
 │       ├── harpoon.lua          # File navigation
 │       ├── lazy-plugins.lua     # Additional lazy plugins
-│       ├── lsp.lua              # LSP configuration
-│       ├── lsp-nvim-autoformat.lua  # Auto-formatting
+│       ├── lsp.lua              # LSP plugin spec and setup
 │       ├── snippets.lua         # Code snippets
+│       ├── specs/               # Lazy specs: cmp, fmt, comment
 │       ├── telescope.lua        # Fuzzy finder
 │       ├── treesitter.lua       # Syntax highlighting
 │       └── vim.lua              # Vim options and keymaps

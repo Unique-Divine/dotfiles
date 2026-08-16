@@ -93,84 +93,17 @@ local lazyPlugins = {
   -- Detect tabstop and shiftwidth automatically
   'tpope/vim-sleuth',
 
-  -- NOTE: This is where your plugins related to LSP can be installed.
-  --  The configuration is done below. Search for lspconfig to find it below.
-  {
-    -- LSP Configuration & Plugins
-    'neovim/nvim-lspconfig',
-    dependencies = {
-      -- Automatically install LSPs to stdpath for neovim
-      {
-        'mason-org/mason.nvim',
-        config = true,
-        -- docs on "ensure_installed": https://github.com/mason-org/mason-lspconfig.nvim
-        opts = { ensure_installed = { "prettier" } }
-      },
-      'mason-org/mason-lspconfig.nvim',
-
-      -- Useful status updates for LSP
-      -- NOTE: `opts = {}` is the same as calling `require('fidget').setup({})`
-      { 'j-hui/fidget.nvim',   tag = "legacy", opts = {} },
-
-      -- LuaLS workspace integration for Neovim config/plugin development.
-      {
-        'folke/lazydev.nvim',
-        ft = 'lua',
-        opts = {
-          library = {
-            { path = '${3rd}/luv/library', words = { 'vim%.uv' } },
-          },
-        },
-      },
-      { 'mrcjkb/rustaceanvim', version = '^7', ft = { 'rust' } },
-      -- LSP symbol outline. simrat39/symbols-outline is archived; outline.nvim
-      -- is the maintained fork and supports current LSP client APIs.
-      {
-        'hedyhli/outline.nvim',
-        config = function()
-          require('outline').setup({})
-        end,
-      },
-    },
-    -- Why add opts to 'nvim-lspconfig'?
-    -- If we share dotfiles or setup a new computer, we'll automatically have
-    -- certain language servers without you needing to go into Mason.
-    opts = {
-      servers = {
-        tailwindcss = {},
-      }
-    },
-  },
-
-  -- Debugger
-  {
-    -- "dap" is short for debugging adapter protocol.
-    -- [TJ DeVries - simple neovim debugging setup (in 10 minutes)](https://youtu.be/lyNfnI-B640)
-    "mfussenegger/nvim-dap",
-    dependencies = {
-      "leoluz/nvim-dap-go", -- Golang debugging utilities
-      "rcarriga/nvim-dap-ui",
-      "theHamsta/nvim-dap-virtual-text",
-      "nvim-neotest/nvim-nio",
-      "mason-org/mason.nvim",
-    },
-  },
-
-  {
-    -- Autocompletion
-    'hrsh7th/nvim-cmp',
-    dependencies = {
-      'hrsh7th/cmp-nvim-lsp',
-      { 'L3MON4D3/LuaSnip', version = "v2.*", build = "make install_jsregexp" },
-      'saadparwaiz1/cmp_luasnip',
-      'rafamadriz/friendly-snippets' },
-  },
-
   -- Useful plugin to show you pending keybinds.
-  { 'folke/which-key.nvim',          opts = {} },
+  -- lazy.nvim event VeryLazy fires after the first UI paint. The which-key
+  -- popup is unused until a key chord starts.
+  { 'folke/which-key.nvim',  event = 'VeryLazy', opts = {} },
   {
     -- Adds git releated signs to the gutter, as well as utilities for managing changes
     'lewis6991/gitsigns.nvim',
+    -- Load when a file buffer appears, not at UI start. Signs need a path.
+    -- Not official gitsigns guidance: the plugin already attaches on BufRead
+    -- internally. This is a lazy.nvim startup cut; revert if attach breaks.
+    event = { 'BufReadPre', 'BufNewFile' },
     opts = {
       -- See `:help gitsigns.txt`
       signs = {
@@ -225,7 +158,6 @@ local lazyPlugins = {
     'navarasu/onedark.nvim',
     priority = 1000,
     config = function()
-      vim.cmd.colorscheme 'onedark'
       local theme_onedark = require('onedark')
       theme_onedark.setup {
         style             = 'deep', -- Theme colors. Choose between:
@@ -347,71 +279,61 @@ local lazyPlugins = {
     },
   },
 
-  -- "gc" to comment visual regions/lines
-  -- See: https://github.com/numToStr/Comment.nvim#pre-hook
-  -- Setup is in the "lua/core/comment.lua" file.
-  { 'numToStr/Comment.nvim',         opts = {} },
-
   -- Fuzzy Finder (files, lsp, etc)
   -- Pin to a tagged release (not bare master). v0.2.2 is the newest tag;
   -- GitHub Releases "Latest" is currently v0.2.1.
+  --
+  -- Do not `require('core/telescope')` in this table or before lazy.setup().
+  -- That runs immediately, while telescope.nvim is not on rtp yet.
+  -- `config` runs after Lazy loads the plugin (cmd / keys / first require).
   {
     'nvim-telescope/telescope.nvim',
     tag = 'v0.2.2',
-    dependencies = { 'nvim-lua/plenary.nvim' },
-  },
-
-  -- Fuzzy Finder Algorithm which requires local dependencies to be built.
-  -- Only load if `make` is available. Make sure you have the system
-  -- requirements installed.
-  {
-    'nvim-telescope/telescope-fzf-native.nvim',
-    -- NOTE: If you are having trouble with this installation,
-    --       refer to the README for telescope-fzf-native for more instructions.
-    build = 'make',
-    cond = function()
-      return vim.fn.executable 'make' == 1
+    dependencies = {
+      'nvim-lua/plenary.nvim',
+      {
+        'nvim-telescope/telescope-fzf-native.nvim',
+        build = 'make',
+        cond = function()
+          return vim.fn.executable 'make' == 1
+        end,
+      },
+    },
+    cmd = 'Telescope',
+    keys = {
+      { '<leader>?',       desc = '[?] Find recently opened files' },
+      { '<leader><space>', desc = '[ ] Find existing buffers' },
+      { '<leader>/',       desc = '[/] Fuzzily search in current buffer' },
+      { '<leader>sb',      desc = '[S]earch in current [b]uffer' },
+      { '<leader>sf',      desc = '[S]earch [F]iles (main)' },
+      { '<leader>sF',      desc = '[S]earch [F]iles (verbose)' },
+      { '<C-p>',           desc = 'Search files' },
+      { '<leader><C-g>',   desc = '[G] is for grep' },
+      { '<leader>ss',      desc = '[S]earch [s]ymbols' },
+      { '<leader>sh',      desc = '[S]earch [H]elp' },
+      { '<leader>sw',      desc = '[S]earch current [W]ord' },
+      { '<leader>sg',      desc = '[S]earch by [G]rep' },
+      { '<leader>sd',      desc = '[S]earch [D]iagnostics' },
+    },
+    config = function()
+      require('core/telescope')
     end,
   },
 
-  {
-    -- Highlight, edit, and navigate code
-    -- Setup is in the "lua/core/treesitter.lua" file.
-    --
-    -- Commands I had to run to get things working:
-    -- ```nvim
-    -- :TSInstall astro
-    -- ```
-    --
-    -- Use the `main` branch on Neovim 0.12+. It is a full rewrite, so the
-    -- setup lives in `lua/core/treesitter.lua` rather than the legacy
-    -- `require('nvim-treesitter.configs').setup { ... }` API.
-    'nvim-treesitter/nvim-treesitter',
-    branch = 'main',
-    lazy = false, -- must load before `require('core/treesitter')` below
-    dependencies = {
-      -- Extra textobjects module for the `main` branch API.
-      { 'nvim-treesitter/nvim-treesitter-textobjects', branch = 'main', lazy = false },
-
-      -- Sets the `commentstring` based on tree-sitter queries
-      'JoosepAlviste/nvim-ts-context-commentstring',
-      -- 'windwp/nvim-ts-autotag', -- TODO Set this up.
-    },
-    build = ':TSUpdate',
-  },
+  -- nvim-treesitter `main` (Neovim 0.12+). Spec + setup in core/treesitter.lua.
+  require 'core/treesitter',
 
   -- NOTE: Next Step on Your Neovim Journey: Add/Configure additional "plugins"
   -- for kickstart. These are some example plugins that I've included in the
   -- kickstart repository.
-  require 'core/lsp-nvim-autoformat',
-  require 'core/debug-kickstart',
+  require 'core/debug-dap',
 
   require 'core/lazy-plugins',
-  -- The import below automatically adds your own plugins, configuration, etc
-  -- from `lua/core/auto/*.lua`.
-  -- For additional information see:
-  -- https://github.com/folke/lazy.nvim#-structuring-your-plugins
-  -- { import = 'core.auto' },
+
+  require 'core/lsp',
+
+  -- Each lua/core/specs/*.lua file must return a Lazy plugin spec.
+  { import = 'core.specs' },
 }
 --- @type LazyConfig
 local lazyConfig = {}
@@ -421,26 +343,9 @@ vim.o.loadplugins = true
 require('lazy').setup(lazyPlugins, lazyConfig)
 
 
--- [[ Telescope ]] Fuzzy find and search. See `:help telescope`
-require('core/telescope')
-
--- [[ Treesitter ]] See `:help nvim-treesitter`
-require('core/treesitter')
-
---- LSP (language server protocol) settings.
-require('core/lsp')
-
-require('core/editors')
-
--- nvim-cmp setup
-require('core/cmp')
-require('core/fmt')
 -- require('core/fmt-conform')
 
-require('core/debugger')
-
-require('core/comment')
-require('core/harpoon')
+-- require('core/harpoon') -- disable
 
 -- Vim settings. This should be last so that plugins don't take control of the
 -- Vim options unexpectedly.
