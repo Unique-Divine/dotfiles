@@ -17,6 +17,10 @@ alias t := test
 clipboard-bench *ARGS:
   bun run zsh/clipboard.bench.ts {{ARGS}}
 
+# Benchmark interactive Zsh startup and shutdown in fresh subprocesses.
+bench-zsh *ARGS:
+  bun run zsh/bench-zsh.ts {{ARGS}}
+
 # Build the release WSL clipboard bridge without installing it.
 clipboard-build:
   cargo build --release --package wsl-clipboard
