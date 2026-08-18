@@ -20,9 +20,9 @@ alias rm="trash -v"
 alias vi="nvim"
 alias vim="nvim"
 
-# vv: short for "vim view". Piping to vv lets you read stdout in a vi editor
-alias vv="view -"
-alias vvjq="jq | view -"
+# vv: short for "vim view". Piping to vv opens stdout in Neovim.
+alias vv="nvim -"
+alias vvjq="jq | nvim -"
 
 alias ess="2>&1"
 

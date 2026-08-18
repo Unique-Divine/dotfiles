@@ -184,7 +184,7 @@ tx() {
 
   # echo "$tx_resp" >> "$txoutjson"
   jq ". += [$tx_resp]" $txoutjson >tmp.json && mv tmp.json $txoutjson
-  echo "$tx_resp" | view -
+  echo "$tx_resp" | nvim -
 }
 
 do_faucet() {

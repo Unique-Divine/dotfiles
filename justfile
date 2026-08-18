@@ -59,6 +59,7 @@ sync:
   set -Eeuo pipefail
   source zsh/bashlib.sh
   main_bash_setup
+  source symlinks.sh
   just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install

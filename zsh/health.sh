@@ -3,6 +3,7 @@ set -Eeuo pipefail
 source zsh/bashlib.sh
 
 failed=0
+manifest_path="$PWD/zsh/managed-links.tsv"
 
 # Verify a runtime path resolves to its dotfiles-managed source without
 # changing either path. Repair any drift with `just sync`.
@@ -22,41 +23,18 @@ check_managed_link() {
   fi
 }
 
-check_view_link() {
-  local nvim_path view_path
-  if ! nvim_path="$(command -v nvim)"; then
-    log_error "nvim is not installed; cannot validate view link"
-    return 1
-  fi
-  if ! view_path="$(command -v view)"; then
-    log_error "view is not installed; repair with: just sync"
-    return 1
-  fi
-  if [[ "$(readlink -f -- "$view_path")" != \
-    "$(readlink -f -- "$nvim_path")" ]]; then
-    log_error "view does not resolve to nvim (repair: just sync)"
-    return 1
-  fi
-}
-
-for link_spec in \
-  "zsh/zshenv:$HOME/.zshenv" \
-  "zsh/zshrc:$HOME/.zshrc" \
-  "rustfmt.toml:$HOME/rustfmt.toml" \
-  "tmux/tmux.conf:$HOME/.tmux.conf" \
-  "nvim:$HOME/.config/nvim" \
-  "herdr/config.toml:$HOME/.config/herdr/config.toml" \
-  ".config/yarn/global/package.json:$HOME/.config/yarn/global/package.json" \
-  "zsh/ud/ud.sh:$HOME/.local/bin/ud"; do
-  source_path="${link_spec%%:*}"
-  runtime_path="${link_spec#*:}"
-  if ! check_managed_link "$PWD/$source_path" "$runtime_path"; then
-    failed=1
-  fi
-done
-
-if ! check_view_link; then
+if [[ ! -r "$manifest_path" ]]; then
+  log_error "managed-links manifest is not readable: $manifest_path"
   failed=1
+else
+  while IFS=$'\t' read -r source_relative destination_relative; do
+    [[ -z "$source_relative" || "$source_relative" == \#* ]] && continue
+
+    if ! check_managed_link \
+      "$PWD/$source_relative" "$HOME/$destination_relative"; then
+      failed=1
+    fi
+  done < "$manifest_path"
 fi
 
 for tool in bun just codex rsync; do
@@ -107,4 +85,3 @@ elif ! bun run skillsSync.ts --health; then
 fi
 
 exit "$failed"
-
