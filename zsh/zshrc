@@ -6,7 +6,6 @@
 # The $REPO and $DOTFILES variables are exported from .zshenv.
 
 source $DOTFILES/zsh/bashlib.sh
-main_bash_setup
 # For a full list of active aliases, run `alias`.
 # Set $DOTFILES/zsh/aliases.sh for custom ones.
 

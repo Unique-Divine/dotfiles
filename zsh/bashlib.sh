@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 
-# main_bash_setup (Function): Sets the expected bash aliases and global
-#   functions for the entire configuration. This function is called during
-#   main shell setup.
+# main_bash_setup (Function): Reloads the shared shell configuration from
+#   zshenv.
+#
+# Usage:
+#   Call it explicitly after editing configuration, such as from `myrc` or
+#   `dotf`. Do not call it during normal Zsh startup: Zsh has already sourced
+#   zshenv before it reads zshrc.
 #
 # shellcheck disable=SC1090,SC2155
 main_bash_setup() {
