@@ -13,10 +13,6 @@ main_bash_setup() {
   fi
 
   source "$DOTFILES/zsh/zshenv"
-
-  local path_orig="$(pwd)"
-  (cd nvm use >/dev/null 2>&1 || true)
-  cd "$path_orig" || true
 }
 
 # ------ Export Line
