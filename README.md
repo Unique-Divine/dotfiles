@@ -51,8 +51,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 cargo install bat tree-sitter-cli sd
 
-# Create symbolic links for configurations
-source zsh/zshenv # internally runs $DOTFILES/symlinks.sh
+# Create and repair symbolic links for configurations
+just sync
 
 # Install development tools
 bun install
@@ -75,7 +75,9 @@ This dotfiles repo uses symbolic links to maintain a single source of truth for 
 - **Safety**: Original system files aren't modified, only linked to
 - **Maintenance**: Updates to the repo instantly apply to all linked machines
 
-The `symlinks.sh` script handles creating all necessary symbolic links to connect the configurations in this repo to their expected locations in your home directory and `.config` folder.
+[`zsh/managed-links.tsv`](zsh/managed-links.tsv) is the source of truth for
+managed symbolic links. `just sync` runs `symlinks.sh` to create or repair each
+mapping; `just health` validates the same mappings without writing state.
 
 ## Features
 

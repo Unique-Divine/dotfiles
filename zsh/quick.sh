@@ -104,17 +104,6 @@ music() {
   cd "$before" || return 1
 }
 
-# myrc: For editing your zshrc config. Opens the NeoVim working directory
-# in the zsh section of your dotfiles. This command autosaves to update
-# the shell by re-running the main shell aliases and bash lib.
-myrc() {
-  local before="$(pwd)"
-  cd "$DOTFILES/zsh" || return 1
-  nvim .
-  main_bash_setup
-  cd "$before" || return 1
-}
-
 # dotf: Edit your dotfiles.
 dotf() {
   local before="$(pwd)"
@@ -195,7 +184,7 @@ tx() {
 
   # echo "$tx_resp" >> "$txoutjson"
   jq ". += [$tx_resp]" $txoutjson >tmp.json && mv tmp.json $txoutjson
-  echo "$tx_resp" | view -
+  echo "$tx_resp" | nvim -
 }
 
 do_faucet() {

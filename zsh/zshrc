@@ -6,7 +6,6 @@
 # The $REPO and $DOTFILES variables are exported from .zshenv.
 
 source $DOTFILES/zsh/bashlib.sh
-main_bash_setup
 # For a full list of active aliases, run `alias`.
 # Set $DOTFILES/zsh/aliases.sh for custom ones.
 
@@ -32,27 +31,27 @@ add_ssh_keys() {
 add_ssh_keys 2>/dev/null 
 
 # Back up the .zshrc config.
-backup_shell_config() {
-  local kojin_repo="$HOME/ki/boku"
-  cp ~/.zshrc $kojin_repo/backups/
+# backup_shell_config() {
+#   local kojin_repo="$HOME/ki/boku"
+#   cp ~/.zshrc $kojin_repo/backups/
 
-  if [ -d "$kojin_repo" ]; then
-    cd $kojin_repo
-  else
-    echo "❌ No repo found at path: $kojin_repo"
-    exit 1
-  fi
+#   if [ -d "$kojin_repo" ]; then
+#     cd $kojin_repo
+#   else
+#     echo "❌ No repo found at path: $kojin_repo"
+#     exit 1
+#   fi
 
-  git_push_backup() {
-    git add backups
-    git ci -m "auto-backup .zshrc"
-    git push
-  }
-  output=$(git_push_backup 2>&1) || echo "$output"
-  cd ~
-}
+#   git_push_backup() {
+#     git add backups
+#     git ci -m "auto-backup .zshrc"
+#     git push
+#   }
+#   output=$(git_push_backup 2>&1) || echo "$output"
+#   cd ~
+# }
 
-backup_shell_config
+# backup_shell_config
 
 # The following command creates a symbolic link named `view`that points to the
 # `nvim` executable.
@@ -80,40 +79,32 @@ check_view_symlink_target() {
   fi
 }
 
-export_nvm() {
+# Load NVM only when `nvm` is invoked. The flag is scoped to this shell session,
+# so NVM is sourced and its default/project version chosen only once.
+typeset -g _dotfiles_nvm_loaded=0
+
+load_nvm() {
+  (( _dotfiles_nvm_loaded )) && return 0
+
   export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-  [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-
-  # The nvm lts version can be found here: https://github.com/nodejs/Release 
-  echo "lts/krypton" > "$HOME/.nvmrc" # jod == v22
-  nvm use
-  # bun install --global yarn
-}
-
-# pyenv: Python Version Manager (nvm for Python)
-# [Installation](https://pyenv.run/)
-# ```bash
-# curl https://pyenv.run | bash
-# ```
-export_pyenv() {
-  export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
-  if [[ ! -d "$PYENV_ROOT" ]]; then 
-    local install_cmd="curl https://pyenv.run | bash"
-    echo "Tool \"pyenv\" is not installed. Installing now with: $install_cmd"
-    eval "$install_cmd"
+  if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+    print -u2 "NVM is not installed at $NVM_DIR/nvm.sh"
+    return 1
   fi
-  [[ -d "$PYENV_ROOT/bin" ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-  export PYENV_ROOT=$(pyenv root)
-  export PATH=$(pyenv root)/shims:$PATH
-  eval "$(pyenv init - zsh)"
-  eval "$(pyenv init --path)"
-  command -v pyenv >/dev/null
+
+  source "$NVM_DIR/nvm.sh"
+  nvm use --silent >/dev/null 2>&1 ||
+    nvm use --silent default >/dev/null 2>&1 || true
+  _dotfiles_nvm_loaded=1
 }
+
+nvm() {
+  load_nvm || return
+  nvm "$@"
+}
+
 
 check_view_symlink_target
-export_nvm
-export_pyenv
 
 echo "⚡ Shell setup with IO complete."
 
@@ -227,8 +218,6 @@ export PATH="$PATH:$HOME/.foundry/bin"
 if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
 # The next line enables shell command completion for gcloud.
 if [ -f "$HOME/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/google-cloud-sdk/completion.zsh.inc"; fi
-# export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.10.4"
-# export CLOUDSDK_PYTHON="$PYENV_ROOT/versions/3.9.13"
 
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -248,11 +237,8 @@ clean_poetry() {
 
   echo "poetry cache clear pypi --all"
   poetry cache clear pypi --all
-
-  poetry env use $(pyenv versions | grep '*' | cut -d' ' -f2)
 }
 
-export ADDR_UD="nibi1ah8gqrtjllhc5ld4rxgl4uglvwl93ag0sh6e6v"
 export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
 export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
 
@@ -276,20 +262,14 @@ nibi_addrs() {
   # ADDR_VAL: (TESTING ONLY) Default localnet validator
   export ADDR_VAL="nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl"
   echo $ADDR_VAL ADDR_VAL 
-  echo $ADDR_UD ADDR_UD 
   echo $ADDR_DELPHI ADDR_DELPHI 
   echo $FAUCET_WEB FAUCET_WEB 
   echo $FAUCET_DISCORD FAUCET_DISCORD 
 }
 
-nibi_faucets() {
-  echo "FAUCET_WEB: $FAUCET_WEB" 
-  nibid q bank balances $FAUCET_WEB | jq .
-  echo "FAUCET_DISCORD: $FAUCET_DISCORD" 
-  nibid q bank balances $FAUCET_DISCORD | jq .
-}
-
 nibi_keys() {
+  # ADDR_VAL: (TESTING ONLY) Default localnet validator
+  # This is the main validator on a fresh local test instance of Nibiru
   KEY_NAME="validator"
   local MNEM="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" 
   echo "$MNEM" | nibid keys add $KEY_NAME --recover --keyring-backend test
@@ -300,18 +280,6 @@ nibi_keys() {
 # List the soft file limit: ulimit -n
 # Increase soft file limit: ulimit -n 4096
 ulimit -n 4096
-
-# bruh: re-runs the last command with sudo.
-bruh() { 
-  local last_cmd=$(history | tail -n 1 | head -n 1 | cut -d ' ' -f 2-)
-  echo "last_cmd: $last_cmd"
-  eval "sudo $last_cmd"
-}
-
-last_cmd() {
-  local last_cmd=$(history | tail -n 1 | head -n 1 | cut -d ' ' -f 2-)
-  echo "last_cmd: $last_cmd"
-}
 
 autoload -U +X bashcompinit && bashcompinit
 complete -o nospace -C "$HOME/go/bin/gocomplete" go
@@ -324,7 +292,9 @@ export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
 # Mason - pkgs used in nvim
-export PATH="$HOME/.local/share/nvim/mason/bin:$PATH"
+# Load to the right side of `PATH` so that other binaries take precedence over
+# the Mason binaries.
+export PATH="$PATH:$HOME/.local/share/nvim/mason/bin"
 
 # sync_cursor_cli_config keeps Cursor CLI's runtime config aligned with the
 # dotfile config while preserving Cursor-managed auth, cache, and model state.
@@ -346,9 +316,21 @@ sync_cursor_cli_config() {
 
 sync_cursor_cli_config
 
-source ~/powerlevel10k/powerlevel10k.zsh-theme
+# GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
+# the regular system `go` command remains available without this setup.
+load_gvm() {
+  [[ -s "$HOME/.gvm/scripts/gvm" ]] || return 1
+  source "$HOME/.gvm/scripts/gvm"
+}
 
-[[ -s "$HOME/.gvm/scripts/gvm" ]] && source "$HOME/.gvm/scripts/gvm"
+gvm() {
+  unfunction gvm
+  load_gvm || {
+    print -u2 "GVM is not installed at $HOME/.gvm/scripts/gvm"
+    return 1
+  }
+  gvm "$@"
+}
 
 # >>> Codex installer >>>
 export PATH="$HOME/.local/bin:$PATH"

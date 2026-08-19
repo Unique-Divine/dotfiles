@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Provide a `node` executable backed by Bun for tools with Node shebangs.
+
+set -Eeuo pipefail
+
+bun_path="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
+if [[ ! -x "$bun_path" ]]; then
+  bun_path="$(command -v bun || true)"
+fi
+
+if [[ -z "$bun_path" || ! -x "$bun_path" ]]; then
+  echo "ERROR: node shim could not find an executable Bun runtime." >&2
+  exit 127
+fi
+
+exec "$bun_path" "$@"
