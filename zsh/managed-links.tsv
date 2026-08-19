@@ -7,3 +7,4 @@ nvim	.config/nvim
 herdr/config.toml	.config/herdr/config.toml
 .config/yarn/global/package.json	.config/yarn/global/package.json
 zsh/ud/ud.sh	.local/bin/ud
+bin/node	.local/bin/node

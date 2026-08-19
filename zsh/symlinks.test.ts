@@ -21,7 +21,7 @@ const manifestPath = join(dotfilesRoot, "zsh", "managed-links.tsv")
 const temporaryHomes: string[] = []
 
 const shellQuote = (value: string) =>
-  `'${value.replaceAll("'", "'\\"'\\"'")}'`
+  `'${value.replaceAll("'", "'\"'\"'")}'`
 
 const readManagedLinks = async (): Promise<ManagedLink[]> => {
   const manifest = await readFile(manifestPath, "utf8")
