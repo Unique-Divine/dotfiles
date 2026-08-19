@@ -316,8 +316,6 @@ sync_cursor_cli_config() {
 
 sync_cursor_cli_config
 
-source ~/powerlevel10k/powerlevel10k.zsh-theme
-
 # GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
 # the regular system `go` command remains available without this setup.
 load_gvm() {
