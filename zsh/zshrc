@@ -93,6 +93,7 @@ load_nvm() {
   fi
 
   source "$NVM_DIR/nvm.sh"
+  nvm alias default lts/krypton >/dev/null
   nvm use --silent >/dev/null 2>&1 ||
     nvm use --silent default >/dev/null 2>&1 || true
   _dotfiles_nvm_loaded=1
