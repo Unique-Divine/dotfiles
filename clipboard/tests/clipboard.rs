@@ -2,6 +2,7 @@ use std::{
     env,
     io::Write,
     process::{Command, Output, Stdio},
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
@@ -10,6 +11,7 @@ const LEGACY_PBCOPY: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/legacy-pbcopy");
 const LEGACY_PBPASTE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/legacy-pbpaste");
+static CLIPBOARD_TEST_LOCK: Mutex<()> = Mutex::new(());
 struct ClipboardCli {
     name: &'static str,
     copy_executable: &'static str,
@@ -100,6 +102,24 @@ fn run_rust_command(args: &[&str]) -> Output {
     run_command(binary(), args, None)
 }
 
+fn verbose_status() -> String {
+    let output = run_rust_command(&["status", "--verbose"]);
+    assert!(
+        output.status.success(),
+        "verbose status failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn status_field(status: &str, name: &str) -> String {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("{name} was missing from status: {status}"))
+        .to_owned()
+}
+
 fn stop_daemon() {
     let _ = run_rust_command(&["stop"]);
 }
@@ -113,6 +133,28 @@ fn wait_for_daemon_stop() {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("clipboard daemon did not stop");
+}
+
+fn wait_for_backend_exit() {
+    let started_at = Instant::now();
+    while started_at.elapsed() < Duration::from_secs(2) {
+        let output = run_rust_command(&["status"]);
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("Windows clipboard backend"),
+                "status did not describe the dead backend: {error}",
+            );
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("clipboard backend did not exit");
+}
+
+fn terminate_process(pid: &str) {
+    let status = Command::new("kill").args(["-TERM", pid]).status().unwrap();
+    assert!(status.success(), "failed to terminate PowerShell PID {pid}");
 }
 
 fn require_clipboard_prerequisites() -> bool {
@@ -150,14 +192,14 @@ fn assert_clipboard_case(input: &str) {
     );
 }
 
-/// The Windows clipboard is global to the interactive desktop, so all
-/// clipboard-mutating scenarios live in one test instead of racing in Rust's
-/// default parallel test runner.
+/// The Windows clipboard is global to the interactive desktop. The shared
+/// lock prevents this scenario from racing the recovery integration test.
 #[test]
 fn preserves_legacy_cases_and_unicode() {
     if !require_clipboard_prerequisites() {
         return;
     }
+    let _clipboard_lock = CLIPBOARD_TEST_LOCK.lock().unwrap();
 
     let cases = [
         "one line output\n",
@@ -189,6 +231,35 @@ fn preserves_legacy_cases_and_unicode() {
 }
 
 #[test]
+fn recovers_after_the_powershell_backend_exits() {
+    if !require_clipboard_prerequisites() {
+        return;
+    }
+    let _clipboard_lock = CLIPBOARD_TEST_LOCK.lock().unwrap();
+    stop_daemon();
+
+    let rust = rust_clipboard();
+    copy(&rust, b"recovery test before\n");
+    let original_status = verbose_status();
+    let original_pid = status_field(&original_status, "powershell_pid");
+    terminate_process(&original_pid);
+    wait_for_backend_exit();
+
+    let recovered = "recovered after backend exit 日本語\n";
+    copy(&rust, recovered.as_bytes());
+    assert_eq!(paste(&rust), recovered.as_bytes());
+    let recovered_status = verbose_status();
+    assert_ne!(
+        status_field(&recovered_status, "powershell_pid"),
+        original_pid,
+        "recovery should create a replacement PowerShell process",
+    );
+
+    stop_daemon();
+    wait_for_daemon_stop();
+}
+
+#[test]
 fn utf16le_to_utf8_preserves_unicode_scalars() {
     let expected = "😀 👩‍👩‍👧‍👧 𐐷 ’—→ 日本語";
     let utf16: Vec<u16> = expected.encode_utf16().collect();
@@ -197,7 +268,6 @@ fn utf16le_to_utf8_preserves_unicode_scalars() {
 
 #[test]
 fn copy_rejects_invalid_utf8_before_starting_daemon() {
-    stop_daemon();
     let output = run_command(binary(), &["copy"], Some(&[0xff]));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("expects UTF-8"));

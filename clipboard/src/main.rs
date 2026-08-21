@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{
         fs::PermissionsExt,
@@ -33,6 +33,7 @@ const REQUEST_COPY: u8 = 1;
 const REQUEST_PASTE: u8 = 2;
 const REQUEST_STATUS: u8 = 3;
 const REQUEST_STOP: u8 = 4;
+const REQUEST_STATUS_VERBOSE: u8 = 5;
 const RESPONSE_OK: u8 = 0;
 const RESPONSE_ERROR: u8 = 1;
 
@@ -43,7 +44,7 @@ const RESPONSE_ERROR: u8 = 1;
 enum Request {
     Copy(Vec<u8>),
     Paste,
-    Status,
+    Status { verbose: bool },
     Stop,
 }
 
@@ -66,10 +67,22 @@ struct PowerShell {
     stdout: BufReader<ChildStdout>,
 }
 
+/// Owns a PowerShell child and recreates it after a WSL-side process failure.
+///
+/// A Unix socket daemon can survive after its Windows child exits. Keeping the
+/// restart policy here makes copy, paste, and health reporting agree on what
+/// constitutes a usable clipboard backend.
+struct ClipboardBackend {
+    power_shell: PowerShell,
+    log: File,
+    socket_path: PathBuf,
+    log_path: PathBuf,
+}
+
 impl PowerShell {
     /// Starts a constrained PowerShell loop and waits for its explicit ready
     /// line before accepting socket requests.
-    fn start() -> io::Result<Self> {
+    fn start(log: &File) -> io::Result<Self> {
         let script = build_power_shell_script();
         let mut child = Command::new("powershell.exe")
             .args([
@@ -82,7 +95,7 @@ impl PowerShell {
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log.try_clone()?))
             .spawn()?;
         let stdin = child.stdin.take().ok_or_else(missing_pipe)?;
         let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
@@ -135,7 +148,10 @@ impl PowerShell {
         let mut line = String::new();
         let read = self.stdout.read_line(&mut line)?;
         if read == 0 {
-            return Err(other("PowerShell closed its output stream"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PowerShell closed its output stream",
+            ));
         }
         Ok(line.trim_end_matches(['\r', '\n']).to_owned())
     }
@@ -146,6 +162,98 @@ impl PowerShell {
         let _ = self.stdin.write_all(b"QUIT\n");
         let _ = self.stdin.flush();
         let _ = self.child.wait();
+    }
+}
+
+impl ClipboardBackend {
+    fn start(paths: &Paths) -> io::Result<Self> {
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.log)?;
+        let power_shell = PowerShell::start(&log)?;
+        Ok(Self {
+            power_shell,
+            log,
+            socket_path: paths.socket.clone(),
+            log_path: paths.log.clone(),
+        })
+    }
+
+    fn copy(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.run_with_recovery("copy", |power_shell| power_shell.copy(bytes))
+    }
+
+    fn paste(&mut self) -> io::Result<Vec<u8>> {
+        self.run_with_recovery("paste", PowerShell::paste)
+    }
+
+    fn status(&mut self, verbose: bool) -> io::Result<Vec<u8>> {
+        self.ensure_healthy()?;
+        let mut report = String::from("running\n");
+        if verbose {
+            report.push_str(&format!(
+                "daemon_pid={}\npowershell_pid={}\nsocket={}\nlog={}\n",
+                std::process::id(),
+                self.power_shell.child.id(),
+                self.socket_path.display(),
+                self.log_path.display(),
+            ));
+        }
+        Ok(report.into_bytes())
+    }
+
+    fn run_with_recovery<T>(
+        &mut self,
+        operation: &str,
+        request: impl Fn(&mut PowerShell) -> io::Result<T>,
+    ) -> io::Result<T> {
+        if let Err(reason) = self.ensure_healthy() {
+            return self.restart_and_retry(operation, reason, request);
+        }
+
+        match request(&mut self.power_shell) {
+            Ok(value) => Ok(value),
+            Err(error) if is_backend_transport_error(&error) => {
+                self.restart_and_retry(operation, error, request)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_healthy(&mut self) -> io::Result<()> {
+        match self.power_shell.child.try_wait()? {
+            Some(status) => Err(other(format!(
+                "Windows clipboard backend exited with status {status}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    fn restart_and_retry<T>(
+        &mut self,
+        operation: &str,
+        reason: io::Error,
+        request: impl Fn(&mut PowerShell) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.power_shell = PowerShell::start(&self.log).map_err(|error| {
+            recovery_error(
+                operation,
+                &reason,
+                "could not restart it",
+                &error,
+                self,
+            )
+        })?;
+        request(&mut self.power_shell).map_err(|error| {
+            recovery_error(
+                operation,
+                &reason,
+                "restarted the backend, but the request still failed",
+                &error,
+                self,
+            )
+        })
     }
 }
 
@@ -165,36 +273,46 @@ fn main() {
 fn run() -> io::Result<()> {
     let mut args = env::args();
     let executable = args.next().unwrap_or_else(|| "wsl-clipboard".to_owned());
-    let command = command_from_invocation(Path::new(&executable), args.next());
+    let command =
+        command_from_invocation(Path::new(&executable), args.collect())?;
     let paths = socket_paths()?;
-    match command.as_str() {
-        "copy" => {
+    match command {
+        CliCommand::Copy => {
             let mut bytes = Vec::new();
             io::stdin().read_to_end(&mut bytes)?;
             validate_utf8_input(&bytes)?;
             send_client_request(&paths, Request::Copy(bytes), true).map(|_| ())
         }
-        "paste" => {
+        CliCommand::Paste => {
             let bytes = send_client_request(&paths, Request::Paste, true)?;
             io::stdout().write_all(&bytes)
         }
-        "status" => {
-            send_client_request(&paths, Request::Status, false)?;
-            println!("running");
-            Ok(())
+        CliCommand::Status { verbose } => {
+            let bytes =
+                send_client_request(&paths, Request::Status { verbose }, false)?;
+            io::stdout().write_all(&bytes)
         }
-        "stop" => {
+        CliCommand::Stop => {
             send_client_request(&paths, Request::Stop, false)?;
             println!("stopped");
             Ok(())
         }
-        "daemon" => run_daemon(paths),
-        "help" | "--help" | "-h" => {
+        CliCommand::Daemon => run_daemon(paths),
+        CliCommand::Help => {
             print_usage();
             Ok(())
         }
-        _ => Err(other(format!("unknown command: {command}"))),
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CliCommand {
+    Copy,
+    Paste,
+    Status { verbose: bool },
+    Stop,
+    Daemon,
+    Help,
 }
 
 /// Maps installed command aliases to operations without requiring duplicate
@@ -204,12 +322,37 @@ fn run() -> io::Result<()> {
 /// select copy or paste before it contacts the daemon.
 fn command_from_invocation(
     executable: &Path,
-    requested: Option<String>,
-) -> String {
+    requested: Vec<String>,
+) -> io::Result<CliCommand> {
     match executable.file_name().and_then(|name| name.to_str()) {
-        Some("pbcopy" | "wsl-pbcopy") => "copy".to_owned(),
-        Some("pbpaste" | "wsl-pbpaste") => "paste".to_owned(),
-        _ => requested.unwrap_or_else(|| "help".to_owned()),
+        Some("pbcopy" | "wsl-pbcopy") if requested.is_empty() => {
+            Ok(CliCommand::Copy)
+        }
+        Some("pbpaste" | "wsl-pbpaste") if requested.is_empty() => {
+            Ok(CliCommand::Paste)
+        }
+        Some("pbcopy" | "wsl-pbcopy" | "pbpaste" | "wsl-pbpaste") => {
+            Err(other("clipboard aliases do not accept arguments"))
+        }
+        _ => match requested.as_slice() {
+            [] => Ok(CliCommand::Help),
+            [command]
+                if matches!(command.as_str(), "help" | "--help" | "-h") =>
+            {
+                Ok(CliCommand::Help)
+            }
+            [command] if command == "copy" => Ok(CliCommand::Copy),
+            [command] if command == "paste" => Ok(CliCommand::Paste),
+            [command] if command == "status" => {
+                Ok(CliCommand::Status { verbose: false })
+            }
+            [command, flag] if command == "status" && flag == "--verbose" => {
+                Ok(CliCommand::Status { verbose: true })
+            }
+            [command] if command == "stop" => Ok(CliCommand::Stop),
+            [command] if command == "daemon" => Ok(CliCommand::Daemon),
+            _ => Err(other(format!("unknown command: {}", requested.join(" ")))),
+        },
     }
 }
 
@@ -303,7 +446,7 @@ fn run_daemon(paths: Paths) -> io::Result<()> {
     fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
 
-    let power_shell = Arc::new(Mutex::new(PowerShell::start()?));
+    let power_shell = Arc::new(Mutex::new(ClipboardBackend::start(&paths)?));
     let running = Arc::new(AtomicBool::new(true));
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
@@ -329,7 +472,7 @@ fn run_daemon(paths: Paths) -> io::Result<()> {
 /// framed error, so client command output remains separate from diagnostics.
 fn handle_client(
     mut stream: UnixStream,
-    power_shell: Arc<Mutex<PowerShell>>,
+    power_shell: Arc<Mutex<ClipboardBackend>>,
     running: Arc<AtomicBool>,
 ) {
     let result = read_request(&mut stream).and_then(|request| match request {
@@ -339,7 +482,9 @@ fn handle_client(
             .copy(&bytes)
             .map(|_| Vec::new()),
         Request::Paste => power_shell.lock().map_err(poisoned)?.paste(),
-        Request::Status => Ok(b"running".to_vec()),
+        Request::Status { verbose } => {
+            power_shell.lock().map_err(poisoned)?.status(verbose)
+        }
         Request::Stop => {
             running.store(false, Ordering::SeqCst);
             Ok(b"stopped".to_vec())
@@ -384,7 +529,8 @@ fn write_request<W: Write>(writer: &mut W, request: Request) -> io::Result<()> {
     let (kind, payload): (u8, &[u8]) = match &request {
         Request::Copy(bytes) => (REQUEST_COPY, bytes),
         Request::Paste => (REQUEST_PASTE, &[]),
-        Request::Status => (REQUEST_STATUS, &[]),
+        Request::Status { verbose: false } => (REQUEST_STATUS, &[]),
+        Request::Status { verbose: true } => (REQUEST_STATUS_VERBOSE, &[]),
         Request::Stop => (REQUEST_STOP, &[]),
     };
     write_frame(writer, kind, payload)
@@ -395,7 +541,12 @@ fn read_request<R: Read>(reader: &mut R) -> io::Result<Request> {
     match kind {
         REQUEST_COPY => Ok(Request::Copy(payload)),
         REQUEST_PASTE if payload.is_empty() => Ok(Request::Paste),
-        REQUEST_STATUS if payload.is_empty() => Ok(Request::Status),
+        REQUEST_STATUS if payload.is_empty() => {
+            Ok(Request::Status { verbose: false })
+        }
+        REQUEST_STATUS_VERBOSE if payload.is_empty() => {
+            Ok(Request::Status { verbose: true })
+        }
         REQUEST_STOP if payload.is_empty() => Ok(Request::Stop),
         _ => Err(other("invalid clipboard request")),
     }
@@ -488,6 +639,29 @@ fn build_power_shell_script() -> String {
     .join("; ")
 }
 
+fn is_backend_transport_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::UnexpectedEof
+    )
+}
+
+fn recovery_error(
+    operation: &str,
+    reason: &io::Error,
+    recovery: &str,
+    error: &io::Error,
+    backend: &ClipboardBackend,
+) -> io::Error {
+    other(format!(
+        "Windows clipboard backend exited unexpectedly during {operation} ({reason}). \
+{recovery}: {error}. Run `wsl-clipboard status --verbose`; log: {}",
+        backend.log_path.display(),
+    ))
+}
+
 fn missing_pipe() -> io::Error {
     other("PowerShell pipe was unavailable")
 }
@@ -574,23 +748,47 @@ mod tests {
         assert_eq!(
             command_from_invocation(
                 Path::new("/home/user/.local/bin/pbcopy"),
-                None
-            ),
-            "copy"
+                vec![]
+            )
+            .unwrap(),
+            CliCommand::Copy
         );
         assert_eq!(
-            command_from_invocation(
-                Path::new("wsl-pbpaste"),
-                Some("status".to_owned())
-            ),
-            "paste"
+            command_from_invocation(Path::new("wsl-pbpaste"), vec![]).unwrap(),
+            CliCommand::Paste
         );
         assert_eq!(
             command_from_invocation(
                 Path::new("wsl-clipboard"),
-                Some("status".to_owned())
-            ),
-            "status"
+                vec!["status".to_owned()]
+            )
+            .unwrap(),
+            CliCommand::Status { verbose: false }
         );
+    }
+
+    #[test]
+    fn status_verbose_is_an_explicit_command() {
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-clipboard"),
+                vec!["status".to_owned(), "--verbose".to_owned()]
+            )
+            .unwrap(),
+            CliCommand::Status { verbose: true }
+        );
+    }
+
+    #[test]
+    fn transport_errors_are_eligible_for_backend_recovery() {
+        assert!(is_backend_transport_error(&io::Error::from(
+            io::ErrorKind::BrokenPipe
+        )));
+        assert!(is_backend_transport_error(&io::Error::from(
+            io::ErrorKind::UnexpectedEof
+        )));
+        assert!(!is_backend_transport_error(&io::Error::from(
+            io::ErrorKind::InvalidInput
+        )));
     }
 }
