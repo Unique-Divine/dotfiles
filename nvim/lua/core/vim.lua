@@ -1,9 +1,82 @@
 -- core/vim.lua: Setting options for `vim.opt` and `vim.o`.
 -- See `:help vim.o`
 
--- Gives you a permanent fat block cursor. I find cursor shape changes
--- distracting.
+-- Cursor contrast in the terminal:
+--
+-- An empty `guicursor` setting leaves the cursor shape and colors to Windows
+-- Terminal. Its block cursor normally reverses the foreground and background
+-- of the cell below it. That makes syntax text easy to read, but a cursor on
+-- dark indentation guides can turn into an almost-black block.
 vim.opt.guicursor = ""
+
+-- Use this fixed light-blue block only while the cursor is in leading spaces or
+-- tabs. It covers the usual indent-guide failure case without replacing the
+-- terminal's nicer reverse-video cursor over code.
+vim.api.nvim_set_hl(0, "WhitespaceCursor", {
+  bg = "#89b4fa",
+  fg = "#1e1e2e",
+})
+
+-- Indentation guide contrast:
+--
+-- `indent-blankline.nvim` draws ordinary `┊` guides with the
+-- `IndentBlanklineChar` highlight group. The previous color, `#21283b`, was
+-- too close to the editor background. Reversing that cell made the terminal
+-- cursor hard to see.
+--
+-- `#2f3a55` keeps ordinary guides muted while leaving enough contrast for the
+-- reverse-video cursor. `#59688f` is lighter so the guide for the current
+-- syntactic context is easy to distinguish. Adjust these colors together if
+-- guides become too prominent or the cursor becomes hard to find again.
+--
+-- `nocombine` prevents Neovim from blending a guide color with syntax colors
+-- below it. The guide then keeps the color defined here.
+local function set_indent_guide_highlights()
+  vim.api.nvim_set_hl(0, "IndentBlanklineChar", {
+    fg = "#2f3a55",
+    nocombine = true,
+  })
+  vim.api.nvim_set_hl(0, "IndentBlanklineSpaceChar", {
+    fg = "#2f3a55",
+    nocombine = true,
+  })
+  vim.api.nvim_set_hl(0, "IndentBlanklineContextChar", {
+    fg = "#59688f",
+    nocombine = true,
+  })
+end
+
+set_indent_guide_highlights()
+
+-- A colorscheme can reset highlight groups after this file loads. Reapply the
+-- guide colors whenever a colorscheme changes.
+vim.api.nvim_create_autocmd("ColorScheme", {
+  callback = set_indent_guide_highlights,
+})
+
+local default_cursor = "a:block"
+local indentation_cursor = "a:block-WhitespaceCursor"
+
+local function update_cursor_style()
+  -- `col` is zero-based. It is inside the leading indentation when it falls
+  -- before the first non-whitespace byte in the line.
+  local _, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local line = vim.api.nvim_get_current_line()
+  local indent = line:match("^[ \t]*") or ""
+  local cursor_style = col < #indent and indentation_cursor or default_cursor
+
+  if vim.o.guicursor ~= cursor_style then
+    vim.opt.guicursor = cursor_style
+  end
+end
+
+vim.api.nvim_create_autocmd(
+  { "CursorMoved", "CursorMovedI", "InsertEnter", "InsertLeave" },
+  { callback = update_cursor_style }
+)
+
+update_cursor_style()
+
 vim.opt.tabstop = 4
 vim.opt.softtabstop = 2
 vim.opt.shiftwidth = 2
