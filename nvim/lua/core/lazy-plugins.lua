@@ -286,6 +286,14 @@ local plugins = {
         -- Background highlight still applies.
         icons = {},
       },
+      bullet = {
+        -- Preserve literal `-`, `+`, and `*` list markers.
+        enabled = false,
+      },
+      checkbox = {
+        -- Keep checkbox state icons and formatting enabled.
+        enabled = true,
+      },
     },
   },
 
