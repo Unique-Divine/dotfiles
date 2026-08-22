@@ -17,7 +17,7 @@ alias t := test
 clipboard-bench *ARGS:
   bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Benchmark interactive Zsh startup and shutdown in fresh subprocesses.
+# Benchmark Zsh synchronous startup or first input-ready prompt with `--mode`.
 bench-zsh *ARGS:
   bun run zsh/bench-zsh.ts {{ARGS}}
 
@@ -60,6 +60,7 @@ sync:
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just i-zinit
   just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install
@@ -74,6 +75,11 @@ health:
 # Run the portable Codex config CLI. For options, run `just codex`.
 codex *ARGS:
   bun run codex/config.ts {{ARGS}}
+
+# Clone Zinit into XDG data if the checkout is missing.
+[private]
+i-zinit:
+  bash zsh/zinit-install.sh
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:

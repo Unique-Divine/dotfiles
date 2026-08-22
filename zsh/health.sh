@@ -77,6 +77,12 @@ if is_wsl >/dev/null && [[ ! -x "$HOME/.local/bin/wsl-clipboard" ]]; then
   failed=1
 fi
 
+zinit_home="${ZINIT_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git}"
+if [[ ! -f "$zinit_home/zinit.zsh" ]]; then
+  log_error "zinit is not installed; run: just sync"
+  failed=1
+fi
+
 if [[ -z "${REPO:-}" ]]; then
   log_error "REPO is not set; run just sync first or source zsh/zshenv"
   failed=1
