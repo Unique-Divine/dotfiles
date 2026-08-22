@@ -26,16 +26,6 @@ zinit snippet OMZP::git
 # directories in ~/.z and provides the familiar `z <query>` jump command.
 zinit light agkozak/zsh-z
 
-# The Oh My Zsh Poetry plugin writes its completion cache here. Keep the
-# variable and fpath entry after removing the framework that previously made
-# both available.
-typeset -g ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oh-my-zsh"
-if [[ ! -d "$ZSH_CACHE_DIR/completions" ]]; then
-  mkdir -p "$ZSH_CACHE_DIR/completions"
-fi
-fpath=("$ZSH_CACHE_DIR/completions" $fpath)
-zinit snippet OMZP::poetry
-
 # These commands and widgets can appear after the first prompt. Syntax
 # highlighting must load last so it sees widgets created by earlier plugins.
 zinit ice wait"0" lucid

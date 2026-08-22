@@ -5,6 +5,7 @@ rustfmt.toml	rustfmt.toml
 tmux/tmux.conf	.tmux.conf
 nvim	.config/nvim
 herdr/config.toml	.config/herdr/config.toml
+systemd/ssh-agent.service	.config/systemd/user/ssh-agent.service
 .config/yarn/global/package.json	.config/yarn/global/package.json
 zsh/ud/ud.sh	.local/bin/ud
 bin/node	.local/bin/node

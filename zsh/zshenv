@@ -6,6 +6,10 @@ export SKILLS="$HOME/.cursor/skills"
 export EPICS="$REPO/boku/epics"
 export HUSKY="0" # Husky hooks can get out of hand.
 
+# The systemd user service owns one SSH agent for this WSL user session. Each
+# shell only needs its stable socket path, not a new agent process.
+export SSH_AUTH_SOCK="${${XDG_RUNTIME_DIR:-/run/user/$UID}%/}/ssh-agent.socket"
+
 # Global bash setup. Written in zshenv for non-interactive terminals like the one
 # used by Codex. Non-interactive shells skip the zshrc setup path.
 source "$DOTFILES/zsh/bashlib.sh"

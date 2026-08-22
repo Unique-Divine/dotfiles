@@ -29,7 +29,6 @@ zinit ice depth"1"
 zinit light romkatv/powerlevel10k
 zinit snippet OMZP::git
 zinit light agkozak/zsh-z
-zinit snippet OMZP::poetry
 zinit snippet OMZP::jsontools
 zinit snippet OMZP::sudo
 zinit light zsh-users/zsh-syntax-highlighting
