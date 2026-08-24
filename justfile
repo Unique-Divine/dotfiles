@@ -88,7 +88,7 @@ i-bash:
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
-  sudo apt install -y build-essential ripgrep gh
+  sudo apt install -y build-essential ripgrep gh zsh
 
 # Repair or check the repository-backed Cursor and Codex skill links.
 skills-sync *ARGS:
