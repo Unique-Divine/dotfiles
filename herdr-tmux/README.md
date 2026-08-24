@@ -41,11 +41,12 @@ no-ops. Before changing focus, the command verifies that the selected pane still
 belongs to the originating tab.
 
 Command `herdr-tmux focus-agent` lists every live agent in the session.
-Each row shows its detected kind, lifecycle status, workspace and tab IDs, and
-terminal title. Press `0`–`9` without Enter to focus an agent, even when it is
-in another workspace or tab. It shares the pane focus command's cancellation and
-timeout behavior, and confirms the selected agent still occupies its pane
-before focus.
+Each row shows its detected kind, lifecycle status, tab position and workspace
+ID, and terminal title. The tab position follows `keys.switch_tab`: `0..8`
+renders `t0` through `t8`, while `1..9` renders `t1` through `t9`. Press
+`0`–`9` without Enter to focus an agent, even when it is in another workspace
+or tab. It shares the pane focus command's cancellation and timeout behavior,
+and confirms the selected agent still occupies its pane before focus.
 
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.

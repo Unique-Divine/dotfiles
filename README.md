@@ -51,7 +51,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 cargo install bat tree-sitter-cli sd
 
-# Create and repair symbolic links for configurations
+# Create and repair symbolic links for configurations.
+# just sync also installs the Zinit checkout.
 just sync
 
 # Install development tools

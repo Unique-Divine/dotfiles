@@ -1,3 +1,5 @@
+#!/usr/bin/env zsh
+#
 # .zshrc
 #
 # Contact: Unique Divine <realuniquedivine@gmail.com>
@@ -9,26 +11,26 @@ source $DOTFILES/zsh/bashlib.sh
 # For a full list of active aliases, run `alias`.
 # Set $DOTFILES/zsh/aliases.sh for custom ones.
 
-add_ssh_keys() {
-  eval `ssh-agent -s` # This eval must be before the ssh-add commands. 
-  ssh-add ~/.ssh/personal_sb3_wsl_key  # realuniquedivine@gmail.com
-  ssh-add ~/.ssh/peggyWSL              # realuniquedivine@gmail.com
-  ssh-add ~/.ssh/personalSB3Key        # realuniquedivine@gmail.com
-  ssh-add ~/.ssh/dieselSB3WSL_key      # vimdiesel@matrixsystems.co
-  echo "✅ Added ssh private keys to the ssh auth agent"
-}
+# Add SSH keys to the persistent systemd-managed agent when a new WSL session
+# needs Git SSH access. New terminals reuse the keys without calling this.
+ssh_setup() {
+  if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
+    print -u2 "SSH agent is unavailable; run: systemctl --user start ssh-agent"
+    return 1
+  fi
 
-# 2>/dev/null     # Suppress output to stderr 
-#   - The `2` represents the file descriptor for stderr. 
-#   - `>/dev/null` redirects the output of stderr to `/dev/null`, 
-#     which  discards whatever is sent to it. This effectively 
-#     suppresses (or discards) the stderr output.
-#
-# >/dev/null 2>&1 # Suppress output to stderr and stdout
-#   - The difference here from 2>/dev/null is that this command redirects 
-#     the entire output rather than just stderr (2).
-#   - `2>&1` is a command that means, "redirect stderr (2) to stdout (1)"
-add_ssh_keys 2>/dev/null 
+  local -a identity_files=(
+    "$HOME/.ssh/personal_sb3_wsl_key"
+    "$HOME/.ssh/peggyWSL"
+    "$HOME/.ssh/personalSB3Key"
+    "$HOME/.ssh/dieselSB3WSL_key"
+  )
+  local identity_file
+  for identity_file in "${identity_files[@]}"; do
+    [[ -r "$identity_file" ]] || continue
+    ssh-add "$identity_file" || return 1
+  done
+}
 
 # Back up the .zshrc config.
 # backup_shell_config() {
@@ -93,6 +95,7 @@ load_nvm() {
   fi
 
   source "$NVM_DIR/nvm.sh"
+  nvm alias default lts/krypton >/dev/null
   nvm use --silent >/dev/null 2>&1 ||
     nvm use --silent default >/dev/null 2>&1 || true
   _dotfiles_nvm_loaded=1
@@ -119,13 +122,14 @@ if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
+source "$DOTFILES/zsh/zinit.sh"
+[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
 # If you come from bash you might have to change your $PATH.
 export PATH=$HOME/bin:/usr/local/bin:$DOTFILES/bin:$PATH
 
 vs_code="/mnt/c/Program Files/Microsoft VS Code"
 export PATH=$vs_code/bin:$PATH
-
-source $DOTFILES/zsh/oh-my-zsh.sh
 
 # User configuration
 
@@ -135,11 +139,9 @@ source $DOTFILES/zsh/oh-my-zsh.sh
 # export LANG=en_US.UTF-8
 
 # Preferred editor for local and remote sessions
-# if [[ -n $SSH_CONNECTION ]]; then
-#   export EDITOR='vim'
-# else
-#   export EDITOR='mvim'
-# fi
+if [[ -n $SSH_CONNECTION ]]; then
+  export EDITOR='vi'
+fi
 
 # Compilation flags
 # export ARCHFLAGS="-arch x86_64"
@@ -150,12 +152,24 @@ source $DOTFILES/zsh/oh-my-zsh.sh
 #
 # Example aliases
 
-# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
-[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
-
 # Enable vim keybinds
 bindkey -v
-source ~/powerlevel10k/powerlevel10k.zsh-theme
+
+# Restore Oh My Zsh's typed-prefix history search for the arrow keys.
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+for keymap in emacs viins vicmd; do
+  bindkey -M "$keymap" "^[[A" up-line-or-beginning-search
+  bindkey -M "$keymap" "^[[B" down-line-or-beginning-search
+  if [[ -n "${terminfo[kcuu1]:-}" ]]; then
+    bindkey -M "$keymap" "$terminfo[kcuu1]" up-line-or-beginning-search
+  fi
+  if [[ -n "${terminfo[kcud1]:-}" ]]; then
+    bindkey -M "$keymap" "$terminfo[kcud1]" down-line-or-beginning-search
+  fi
+done
+unset keymap
 
 export PATH=$HOME/bin:$PATH
 
@@ -172,7 +186,72 @@ if [[ -n "${SUDO_PW:-}" ]] &&
   echo "$SUDO_PW" | sudo -S --prompt="" mount -o remount,exec /run/user
 fi
 
-# source ~/.profile
+# ----------------------------------------------
+# History
+# ----------------------------------------------
+HISTSIZE="100000"
+SAVEHIST="$HISTSIZE"
+HISTDUP="erase"
+HISTFILE="$HOME/.zsh_history"
+
+# APPEND_HISTORY: Append to the HISTFILE instead of overwriting it
+setopt APPEND_HISTORY
+# SHARE_HISTORY: Shares history across all zsh sessions at the same time rather
+#   than treating them independently. Great setting for someone that works across
+#   multiple terminals.
+setopt SHARE_HISTORY
+# Collectively, these prevent duplicates from becoming part of the history.
+setopt HIST_IGNORE_ALL_DUPS
+# HIST_SAVE_NO_DUPS: When writing out the history file, older commands that
+#   duplicate newer ones are omitted.
+setopt HIST_SAVE_NO_DUPS
+# HIST_IGNORE_DUPS: Do not enter command lines into the history list if they are
+#   duplicates of the previous event.
+setopt HIST_IGNORE_DUPS
+# HIST_FIND_NO_DUPS: Prevents dups display in historical search
+setopt HIST_FIND_NO_DUPS
+
+# Binds C-p and C-n to forward and backward history search.
+bindkey '^p' history-search-backward
+bindkey '^n' history-search-forward
+
+# NUMERIC_GLOB_SORT: Sort where file `f10` is after `f9` rather than after `f1`
+setopt NUMERIC_GLOB_SORT
+
+# Completion styling
+# Use case insensitive shell matching
+zstyle  ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+# ----------------------------------------------
+# Fuzzy Finder (fzf)
+# - Use `Ctrl-R` for `fzf` history search. This comes from the
+#   fzf-history-widget. You can see the explicit definition for this inside of the
+#   `fzf/.../key-bindings.zsh` file.
+# ----------------------------------------------
+
+# macOS / Homebrew (Apple Silicon)
+if [[ -f /opt/homebrew/opt/fzf/shell/key-bindings.zsh ]]; then
+  source /opt/homebrew/opt/fzf/shell/key-bindings.zsh
+  source /opt/homebrew/opt/fzf/shell/completion.zsh
+fi
+
+# macOS / Homebrew (Intel)
+if [[ -f /usr/local/opt/fzf/shell/key-bindings.zsh ]]; then
+  source /usr/local/opt/fzf/shell/key-bindings.zsh
+  source /usr/local/opt/fzf/shell/completion.zsh
+fi
+
+# Arch
+if [[ -f /usr/share/fzf/key-bindings.zsh ]]; then
+  source /usr/share/fzf/key-bindings.zsh
+  source /usr/share/fzf/completion.zsh
+fi
+
+# Ubuntu
+if [[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]]; then
+  source /usr/share/doc/fzf/examples/key-bindings.zsh
+  source /usr/share/doc/fzf/examples/completion.zsh
+fi
 
 # ----------------------- Go / Golang
 export GOROOT="/usr/local/go"
@@ -180,16 +259,11 @@ export GOPATH="$HOME/go"
 export PATH="$GOPATH/bin:$GOROOT/bin:$PATH"
 export GO111MODULE=on
 
-# 1. Define environment variable GOENV_ROOT to point to the path where goenv repo is clone
+# Define the Goenv installation and shims before deferred initialization. The
+# shim path lets `go` resolve immediately after the prompt.
 export GOENV_ROOT="$HOME/.goenv"
-# 2. Add $GOENV_ROOT/bin to your $PATH for access to the goenv command-line utility.
 export PATH="$GOENV_ROOT/bin:$PATH"
-# 3. Enable shims, management of GOPATH and GOROOT and auto-completion. 
-# Please make sure eval "$(goenv init -)" is placed toward the end of the shell 
-# configuration file since it manipulates PATH during the initialization.
-eval "$(goenv init -)"
-# 4. Allow 'goenv' to manage GOPATH and GOROOT (recommended).
-# Add these commands to your shell after 'eval "$(goenv init -)"'. 
+export PATH="$PATH:$GOENV_ROOT/shims"
 export PATH="$GOROOT/bin:$PATH"
 export PATH="$PATH:$GOPATH/bin"
 
@@ -204,11 +278,7 @@ export KEYRING="--keyring-backend=test"
 # Display the current binary config by running `nibid config`
 
 # Yarn and nvm
-export_yarn_nvim() {
-  export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
-}
-
-export_yarn_nvim
+export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
 
 export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"
 export PATH="$PATH:$HOME/.foundry/bin"
@@ -218,7 +288,6 @@ export PATH="$PATH:$HOME/.foundry/bin"
 if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
 # The next line enables shell command completion for gcloud.
 if [ -f "$HOME/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/google-cloud-sdk/completion.zsh.inc"; fi
-
 
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.poetry/bin:$PATH"

@@ -17,7 +17,7 @@ alias t := test
 clipboard-bench *ARGS:
   bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Benchmark interactive Zsh startup and shutdown in fresh subprocesses.
+# Benchmark Zsh synchronous startup or first input-ready prompt with `--mode`.
 bench-zsh *ARGS:
   bun run zsh/bench-zsh.ts {{ARGS}}
 
@@ -60,6 +60,7 @@ sync:
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just i-zinit
   just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install
@@ -75,14 +76,19 @@ health:
 codex *ARGS:
   bun run codex/config.ts {{ARGS}}
 
+# Clone Zinit into XDG data if the checkout is missing.
+[private]
+i-zinit:
+  bash zsh/zinit-install.sh
+
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
-    ca-certificates gnupg curl trash-cli clang-format sqlite3
+    ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
-  sudo apt install -y build-essential ripgrep gh
+  sudo apt install -y build-essential ripgrep gh zsh
 
 # Repair or check the repository-backed Cursor and Codex skill links.
 skills-sync *ARGS:

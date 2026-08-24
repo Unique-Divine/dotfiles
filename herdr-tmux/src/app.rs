@@ -1,5 +1,6 @@
 //! Internal implementation for the `herdr-tmux` command-line application.
 
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -221,6 +222,10 @@ struct AgentGetResponse {
     agent: AgentInfo,
 }
 #[derive(Debug, Deserialize)]
+struct TabListResponse {
+    tabs: Vec<TabInfo>,
+}
+#[derive(Debug, Deserialize)]
 struct PaneLayoutResponse {
     layout: PaneLayout,
 }
@@ -414,6 +419,14 @@ impl Client {
         Ok(self
             .request::<AgentGetResponse>("agent.get", json!({"target": target}))?
             .agent)
+    }
+    fn tab_list(&self, workspace_id: &str) -> Result<Vec<TabInfo>, HerdrError> {
+        Ok(self
+            .request::<TabListResponse>(
+                "tab.list",
+                json!({"workspace_id": workspace_id}),
+            )?
+            .tabs)
     }
     fn agent_focus(&self, target: &str) -> Result<AgentInfo, HerdrError> {
         Ok(self
@@ -612,17 +625,22 @@ pub(crate) fn pick_pane(target: &Target) -> Result<(), HerdrError> {
 fn write_agent_selector<W: Write>(
     writer: &mut W,
     agents: &[AgentInfo],
+    tab_labels: &HashMap<String, String>,
 ) -> Result<(), HerdrError> {
     writeln!(writer, "Select agent (0-9, Esc cancels)\n")?;
     for (index, agent) in agents.iter().enumerate() {
         let marker = if agent.focused { "*" } else { " " };
         let kind = agent.agent.as_deref().unwrap_or("unknown");
+        let location = tab_labels.get(&agent.tab_id).ok_or_else(|| {
+            HerdrError::Protocol(format!(
+                "agent in pane {} refers to missing tab {}",
+                agent.pane_id, agent.tab_id
+            ))
+        })?;
         writeln!(
             writer,
-            " {index} {marker} {kind:<8} {:<8} {} / {}  {}",
+            " {index} {marker} {kind:<8} {:<8} {location:<8}  {}",
             agent.agent_status,
-            agent.workspace_id,
-            agent.tab_id,
             agent_description(agent),
         )?;
     }
@@ -631,13 +649,19 @@ fn write_agent_selector<W: Write>(
 }
 
 pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
-    pick_agent_with(target, &mut io::stdout().lock(), read_picker_choice)
+    pick_agent_with(
+        target,
+        &mut io::stdout().lock(),
+        read_picker_choice,
+        configured_tab_display_index_base(),
+    )
 }
 
 fn pick_agent_with<W, C>(
     target: &Target,
     writer: &mut W,
     mut choose: C,
+    tab_display_index_base: usize,
 ) -> Result<(), HerdrError>
 where
     W: Write,
@@ -656,7 +680,8 @@ where
         return Ok(());
     }
 
-    write_agent_selector(writer, &agents)?;
+    let tab_labels = agent_tab_labels(&client, &agents, tab_display_index_base)?;
+    write_agent_selector(writer, &agents, &tab_labels)?;
     let PickerChoice::Select(index) = choose(agents.len())? else {
         return Ok(());
     };
@@ -686,6 +711,91 @@ where
         )));
     }
     Ok(())
+}
+
+fn agent_tab_labels(
+    client: &Client,
+    agents: &[AgentInfo],
+    tab_display_index_base: usize,
+) -> Result<HashMap<String, String>, HerdrError> {
+    let mut workspace_ids = Vec::new();
+    for agent in agents {
+        if !workspace_ids.contains(&agent.workspace_id) {
+            workspace_ids.push(agent.workspace_id.clone());
+        }
+    }
+
+    let mut labels = HashMap::new();
+    for workspace_id in workspace_ids {
+        for (index, tab) in
+            client.tab_list(&workspace_id)?.into_iter().enumerate()
+        {
+            labels.insert(
+                tab.tab_id,
+                format!("t{} / {workspace_id}", index + tab_display_index_base),
+            );
+        }
+    }
+    Ok(labels)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SelectorConfig {
+    #[serde(default)]
+    keys: SelectorKeys,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SelectorKeys {
+    #[serde(default)]
+    switch_tab: Option<OneOrManyStrings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OneOrManyStrings {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn configured_tab_display_index_base() -> usize {
+    let path = herdr_config_path();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return 1;
+    };
+    tab_display_index_base_from_config(&content)
+}
+
+fn herdr_config_path() -> PathBuf {
+    if let Some(path) = env_var_path("HERDR_CONFIG_PATH") {
+        return path;
+    }
+    if let Some(config_home) = env_var_path("XDG_CONFIG_HOME") {
+        return config_home.join("herdr/config.toml");
+    }
+    env_var_path("HOME")
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/herdr/config.toml")
+}
+
+fn tab_display_index_base_from_config(content: &str) -> usize {
+    let Ok(config) = toml::from_str::<SelectorConfig>(content) else {
+        return 1;
+    };
+    let bindings = match config.keys.switch_tab {
+        Some(OneOrManyStrings::One(binding)) => vec![binding],
+        Some(OneOrManyStrings::Many(bindings)) => bindings,
+        None => return 1,
+    };
+    if !bindings.is_empty()
+        && bindings
+            .iter()
+            .all(|binding| binding.split('+').any(|part| part.trim() == "0..8"))
+    {
+        0
+    } else {
+        1
+    }
 }
 
 fn pick_pane_with<W, C>(
@@ -1234,19 +1344,26 @@ mod tests {
 
     #[test]
     fn agent_selector_focuses_selected_agent_from_another_tab() {
-        let first = selector_agent("w1:p1", "term-1", true, "current task");
+        let mut first = selector_agent("w1:p1", "term-1", true, "current task");
+        first["tab_id"] = json!("w1:t1");
         let second = selector_agent("w1:p2", "term-2", false, "review task");
         let mut focused_second = second.clone();
         focused_second["focused"] = json!(true);
         let results = vec![
             json!({"agents": [first, second.clone()]}),
+            json!({"tabs": [{"tab_id": "w1:t1"}, {"tab_id": "w1:t2"}]}),
             json!({"agent": second.clone()}),
             json!({"agent": focused_second}),
         ];
         let (_directory, target, receiver) = scripted_server(results, "w1:p1");
         let mut output = Vec::new();
-        pick_agent_with(&target, &mut output, |_| Ok(PickerChoice::Select(1)))
-            .unwrap();
+        pick_agent_with(
+            &target,
+            &mut output,
+            |_| Ok(PickerChoice::Select(1)),
+            0,
+        )
+        .unwrap();
 
         let requests = receiver.iter().collect::<Vec<_>>();
         assert_eq!(
@@ -1254,17 +1371,15 @@ mod tests {
                 .iter()
                 .map(|request| request["method"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["agent.list", "agent.get", "agent.focus"]
+            ["agent.list", "tab.list", "agent.get", "agent.focus"]
         );
         assert_eq!(
             requests.last().unwrap()["params"],
             json!({"target": "w1:p2"})
         );
         let output = String::from_utf8(output).unwrap();
-        assert!(
-            output.contains("0 * cursor   working  w1 / w1:t2  current task")
-        );
-        assert!(output.contains("1   cursor   working  w1 / w1:t2  review task"));
+        assert!(output.contains("0 * cursor   working  t0 / w1   current task"));
+        assert!(output.contains("1   cursor   working  t1 / w1   review task"));
     }
 
     #[test]
@@ -1273,12 +1388,18 @@ mod tests {
         let second = selector_agent("w1:p2", "term-2", false, "review task");
         let stale =
             selector_agent("w1:p2", "replacement-term", false, "replacement");
-        let results =
-            vec![json!({"agents": [first, second]}), json!({"agent": stale})];
+        let results = vec![
+            json!({"agents": [first, second]}),
+            json!({"tabs": [{"tab_id": "w1:t2"}]}),
+            json!({"agent": stale}),
+        ];
         let (_directory, target, receiver) = scripted_server(results, "w1:p1");
-        assert!(pick_agent_with(&target, &mut Vec::new(), |_| {
-            Ok(PickerChoice::Select(1))
-        })
+        assert!(pick_agent_with(
+            &target,
+            &mut Vec::new(),
+            |_| { Ok(PickerChoice::Select(1)) },
+            0
+        )
         .is_err());
         assert!(!receiver
             .iter()
@@ -1300,10 +1421,15 @@ mod tests {
         let (_directory, target, receiver) =
             scripted_server(vec![json!({"agents": agents})], "w1:p0");
         let mut input_called = false;
-        let error = pick_agent_with(&target, &mut Vec::new(), |_| {
-            input_called = true;
-            Ok(PickerChoice::Cancel)
-        })
+        let error = pick_agent_with(
+            &target,
+            &mut Vec::new(),
+            |_| {
+                input_called = true;
+                Ok(PickerChoice::Cancel)
+            },
+            0,
+        )
         .unwrap_err();
         assert!(error.to_string().contains("at most 10 agents"));
         assert!(!input_called);
@@ -1312,15 +1438,45 @@ mod tests {
 
     #[test]
     fn agent_selector_cancellation_does_not_focus_an_agent() {
-        let results = vec![json!({"agents": [selector_agent(
-            "w1:p1", "term-1", true, "current task"
-        ), selector_agent("w1:p2", "term-2", false, "review task") ]})];
+        let results = vec![
+            json!({"agents": [selector_agent(
+                "w1:p1", "term-1", true, "current task"
+            ), selector_agent("w1:p2", "term-2", false, "review task") ]}),
+            json!({"tabs": [{"tab_id": "w1:t2"}]}),
+        ];
         let (_directory, target, receiver) = scripted_server(results, "w1:p1");
-        pick_agent_with(&target, &mut Vec::new(), |_| Ok(PickerChoice::Cancel))
-            .unwrap();
+        pick_agent_with(
+            &target,
+            &mut Vec::new(),
+            |_| Ok(PickerChoice::Cancel),
+            0,
+        )
+        .unwrap();
         assert!(!receiver
             .iter()
             .any(|request| request["method"] == "agent.focus"));
+    }
+
+    #[test]
+    fn tab_display_index_base_follows_switch_tab_range() {
+        assert_eq!(
+            tab_display_index_base_from_config(
+                "[keys]\nswitch_tab = \"prefix+0..8\"\n"
+            ),
+            0
+        );
+        assert_eq!(
+            tab_display_index_base_from_config(
+                "[keys]\nswitch_tab = \"prefix+1..9\"\n"
+            ),
+            1
+        );
+        assert_eq!(
+            tab_display_index_base_from_config(
+                "[keys]\nswitch_tab = [\"prefix+0..8\", \"alt+1..9\"]\n"
+            ),
+            1
+        );
     }
 
     #[derive(Default)]
