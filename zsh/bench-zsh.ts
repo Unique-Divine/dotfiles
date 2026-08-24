@@ -310,7 +310,9 @@ export const main = async (argv: string[]): Promise<void> => {
   console.info(`Samples: ${samples.map(formatMs).join(", ")}`)
 }
 
-main(process.argv.slice(2)).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+if (import.meta.main) {
+  main(process.argv.slice(2)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })
+}
