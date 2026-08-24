@@ -26,6 +26,12 @@ zinit snippet OMZP::git
 # directories in ~/.z and provides the familiar `z <query>` jump command.
 zinit light agkozak/zsh-z
 
+# Goenv's shims are already in PATH before this file loads. Turbo initializes
+# its shell function and completions after the prompt. If `goenv` is used
+# first, Zinit loads this snippet synchronously and forwards that command.
+zinit ice wait"0" lucid link nocompile trigger-load'!goenv'
+zinit snippet "$DOTFILES/zsh/goenv-init.zsh"
+
 # These commands and widgets can appear after the first prompt. Syntax
 # highlighting must load last so it sees widgets created by earlier plugins.
 zinit ice wait"0" lucid

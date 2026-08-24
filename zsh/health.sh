@@ -5,6 +5,36 @@ source zsh/bashlib.sh
 failed=0
 manifest_path="$PWD/zsh/managed-links.tsv"
 
+bash_files=(
+  symlinks.sh
+  zsh/zshenv
+  zsh/bashlib.sh
+  zsh/aliases.sh
+  zsh/quick.sh
+  zsh/health.sh
+  zsh/zinit-install.sh
+  zsh/ud/ud.sh
+)
+
+zsh_files=(
+  zsh/zshrc.zsh
+  zsh/zinit.sh
+  zsh/goenv-init.zsh
+  zsh/completions.zsh
+)
+
+for file in "${bash_files[@]}"; do
+  if ! bash -n "$file"; then
+    failed=1
+  fi
+done
+
+for file in "${zsh_files[@]}"; do
+  if ! zsh -n "$file"; then
+    failed=1
+  fi
+done
+
 # Verify a runtime path resolves to its dotfiles-managed source without
 # changing either path. Repair any drift with `just sync`.
 check_managed_link() {

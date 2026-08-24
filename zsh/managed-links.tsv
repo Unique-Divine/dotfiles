@@ -1,6 +1,6 @@
 # Source path relative to DOTFILES<TAB>destination path relative to HOME
 zsh/zshenv	.zshenv
-zsh/zshrc	.zshrc
+zsh/zshrc.zsh	.zshrc
 rustfmt.toml	rustfmt.toml
 tmux/tmux.conf	.tmux.conf
 nvim	.config/nvim
