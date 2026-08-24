@@ -1,5 +1,31 @@
 # Zsh configuration
 
+## Zsh startup benchmarks
+
+Recorded on 2026-08-24 on this WSL machine with 20 measured runs and five
+warmups per mode.
+
+| Change | Synchronous startup | Prompt ready |
+| --- | ---: | ---: |
+| Before deferred Goenv initialization | 2178.50 ms | 2696.66 ms |
+| After deferred Goenv initialization | 481.34 ms | 1012.85 ms |
+| Improvement | 77.9% | 62.4% |
+
+Run the same measurements with:
+
+```sh
+just bench-zsh --mode init --runs 20 --warmups 5
+just bench-zsh --mode prompt --runs 20 --warmups 5
+```
+
+Zinit keeps prompt-critical setup synchronous, including Powerlevel10k, Git
+aliases, `z`, and the Goenv shim path. Its Turbo queue moves the full Goenv
+shell initialization off the prompt path. The `goenv` trigger loads that setup
+and replays the command if Goenv is used before Turbo has run.
+
+These are local measurements, not a portable speed claim. Other machines and
+startup state will produce different numbers.
+
 ## Background work
 
 Use `&` only when a task can run independently of the shell configuration. It
