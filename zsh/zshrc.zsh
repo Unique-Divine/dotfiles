@@ -32,29 +32,6 @@ ssh_setup() {
   done
 }
 
-# Back up the .zshrc config.
-# backup_shell_config() {
-#   local kojin_repo="$HOME/ki/boku"
-#   cp ~/.zshrc $kojin_repo/backups/
-
-#   if [ -d "$kojin_repo" ]; then
-#     cd $kojin_repo
-#   else
-#     echo "❌ No repo found at path: $kojin_repo"
-#     exit 1
-#   fi
-
-#   git_push_backup() {
-#     git add backups
-#     git ci -m "auto-backup .zshrc"
-#     git push
-#   }
-#   output=$(git_push_backup 2>&1) || echo "$output"
-#   cd ~
-# }
-
-# backup_shell_config
-
 # Load NVM only when `nvm` is invoked. The flag is scoped to this shell session,
 # so NVM is sourced and its default/project version chosen only once.
 typeset -g _dotfiles_nvm_loaded=0
