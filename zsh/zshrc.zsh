@@ -311,14 +311,6 @@ clean_poetry() {
 export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
 export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
 
-# TODO: Add fn docs
-# TODO: Move to ud.sh as proper defensive fn (ud nibi keys ... ?)
-keys_recover() {
-  local name="$1"
-  local mnemonic="$2"
-  echo "$mnemonic" | nibid keys add $name --recover --keyring-backend=test
-}
-
 export NIBI="000000unibi"
 export FAUCET_WEB="nibi1cq87ggjzlt3jzs8u7fc2e36e7nellvatzw8a63"
 export FAUCET_DISCORD="nibi1x9tym6ah8lzrnmzvv33pwmz9jeqd6ucd69kemr"
