@@ -19,6 +19,7 @@ machines.
   - [WSL Clipboard Integration](#wsl-clipboard-integration)
 - [Requirements](#requirements)
 - [Testing](#testing)
+- [Benchmark log](benchmarks.md)
 
 ## What's Included
 
@@ -50,6 +51,9 @@ sudo apt install build-essential ripgrep gh libclang-dev wslu
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install just
 cargo install bat tree-sitter-cli sd
+
+# Homebrew/Linuxbrew must be on PATH, then install formulas from Brewfile.
+just i-brew
 
 # Create and repair symbolic links for configurations.
 # just sync also installs the Zinit checkout.
@@ -177,6 +181,9 @@ usage and options.
 - `tree-sitter-cli` (`cargo install tree-sitter-cli`)
 
 ## Testing
+
+See the [benchmark log](benchmarks.md) for reverse-chronological performance
+results across the shell, Neovim, and WSL clipboard setup.
 
 ```bash
 # Run all tests

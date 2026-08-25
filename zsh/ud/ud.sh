@@ -471,6 +471,129 @@ _ud_nibi_stop() {
   echo "✅ Done stopping nibid processes."
 }
 
+# Command: "ud nibi keys add-mnem"
+_ud_nibi_keys_add_mnem_help() {
+  cat <<'EOF'
+USAGE:
+   ud nibi keys add-mnem --name <name> --mnem <mnemonic>
+
+EXAMPLE:
+   ud nibi keys add-mnem \
+     --name "alice" \
+     --mnem "word1 word2 ..."
+
+NOTE:
+   The mnemonic is passed as a shell argument and may be saved in shell history.
+   This command uses the `test` keyring backend.
+EOF
+}
+
+_ud_nibi_keys_add_mnem_error() {
+  printf 'Error: %s\n' "$1" >&2
+  _ud_nibi_keys_add_mnem_help >&2
+  return 1
+}
+
+_ud_nibi_keys_add_mnem() {
+  if [[ "$#" -eq 1 ]]; then
+    case "$1" in
+      help|-h|--help)
+        _ud_nibi_keys_add_mnem_help
+        return 0
+        ;;
+    esac
+  fi
+
+  local name=""
+  local mnemonic=""
+  local name_set=false
+  local mnemonic_set=false
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --name)
+        if [[ "$name_set" == true ]]; then
+          _ud_nibi_keys_add_mnem_error "--name may be provided only once."
+          return 1
+        fi
+        if [[ "$#" -lt 2 || -z "$2" || "$2" == -* ]]; then
+          _ud_nibi_keys_add_mnem_error "--name requires a value."
+          return 1
+        fi
+        name="$2"
+        name_set=true
+        shift 2
+        ;;
+      --mnem)
+        if [[ "$mnemonic_set" == true ]]; then
+          _ud_nibi_keys_add_mnem_error "--mnem may be provided only once."
+          return 1
+        fi
+        if [[ "$#" -lt 2 || -z "$2" || "$2" == -* ]]; then
+          _ud_nibi_keys_add_mnem_error "--mnem requires a value."
+          return 1
+        fi
+        mnemonic="$2"
+        mnemonic_set=true
+        shift 2
+        ;;
+      *)
+        _ud_nibi_keys_add_mnem_error "Unknown flag or positional argument: $1"
+        return 1
+        ;;
+    esac
+  done
+
+  [[ "$name_set" == true ]] || {
+    _ud_nibi_keys_add_mnem_error "--name is required."
+    return 1
+  }
+  [[ "$mnemonic_set" == true ]] || {
+    _ud_nibi_keys_add_mnem_error "--mnem is required."
+    return 1
+  }
+
+  local -a pipeline_status
+  printf '%s\n' "$mnemonic" | nibid keys add "$name" --recover --keyring-backend=test
+  pipeline_status=("${PIPESTATUS[@]}")
+  return "${pipeline_status[1]}"
+}
+
+# Command: "ud nibi keys"
+_ud_nibi_keys() {
+  local sub="${1:-help}"
+  case "$sub" in
+    add-mnem)
+      _ud_nibi_keys_add_mnem "${@:2}"
+      ;;
+
+    help|-h|--help|"")
+      cat <<'EOF'
+USAGE:
+   ud nibi keys <command>
+
+COMMANDS:
+   add-mnem --name <name> --mnem <mnemonic>
+      Add a local test key from a mnemonic.
+
+EXAMPLE:
+   ud nibi keys add-mnem \
+     --name "alice" \
+     --mnem "word1 word2 ..."
+
+NOTE:
+   The mnemonic is passed as a shell argument and may be saved in shell history.
+   This command uses the `test` keyring backend.
+EOF
+      ;;
+
+    *)
+      echo "Unknown keys subcommand: $sub" >&2
+      _ud_nibi_keys help
+      return 1
+      ;;
+  esac
+}
 
 # Command: "ud nibi"
 _ud_nibi() {
@@ -498,6 +621,10 @@ _ud_nibi() {
       _ud_nibi_stop
       ;;
 
+    keys)
+      _ud_nibi_keys "${@:2}"
+      ;;
+
     help|-h|--help|"")
       local help_text
       help_text=$(cat <<EOF
@@ -512,6 +639,7 @@ COMMANDS:
    addrs             Show common Nibiru addresses used in testing
    get-nibid, gn     Install nibid binary (via curl)
    stop              Stop running nibid processes
+   keys              Manage local Nibiru test keys
 
 FLAGS:
    --help, -h         Show help for the this command

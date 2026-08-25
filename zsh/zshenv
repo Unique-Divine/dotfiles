@@ -24,6 +24,10 @@ export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR%/}/ssh-agent.socket"
 
 export HUSKY="0" # Husky hooks can get out of hand.
 
+# Ubuntu calls compinit from /etc/zsh/zshrc before ~/.zshrc. Completion setup
+# is deferred and owned by zsh/completions.zsh instead.
+skip_global_compinit=1
+
 # Global bash setup. Written in zshenv for non-interactive terminals like the one
 # used by Codex. Non-interactive shells skip the zshrc setup path.
 source "$DOTFILES/zsh/bashlib.sh"

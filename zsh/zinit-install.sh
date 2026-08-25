@@ -34,7 +34,11 @@ zinit snippet OMZP::jsontools
 zinit snippet OMZP::sudo
 zinit light zsh-users/zsh-syntax-highlighting
 
-# Prepare a linked local snippet without sourcing Goenv during `just sync`.
+# Prepare linked local snippets without sourcing them during `just sync`.
 zinit ice link as"null" nocompile
 zinit snippet "$DOTFILES/zsh/goenv-init.zsh"
+zinit ice link as"null" nocompile
+zinit snippet "$DOTFILES/zsh/docker-init.zsh"
+zinit ice link as"null" nocompile
+zinit snippet "$DOTFILES/zsh/completions.zsh"
 ZSH

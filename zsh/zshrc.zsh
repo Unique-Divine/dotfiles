@@ -32,55 +32,6 @@ ssh_setup() {
   done
 }
 
-# Back up the .zshrc config.
-# backup_shell_config() {
-#   local kojin_repo="$HOME/ki/boku"
-#   cp ~/.zshrc $kojin_repo/backups/
-
-#   if [ -d "$kojin_repo" ]; then
-#     cd $kojin_repo
-#   else
-#     echo "❌ No repo found at path: $kojin_repo"
-#     exit 1
-#   fi
-
-#   git_push_backup() {
-#     git add backups
-#     git ci -m "auto-backup .zshrc"
-#     git push
-#   }
-#   output=$(git_push_backup 2>&1) || echo "$output"
-#   cd ~
-# }
-
-# backup_shell_config
-
-# The following command creates a symbolic link named `view`that points to the
-# `nvim` executable.
-# `ln -s`: This is the command to create a symbolic link (or symlink) on a 
-#   Unix system. The `-s` option is what makes it symbollic. 
-#   The `-f` means "force". We force here because there's already a symlink 
-#   for `view` that points to `vim`.
-#
-# ```bash
-# sudo ln -s -f $(which nvim) $(which view)
-# ```
-check_view_symlink_target() {
-  local view_path=$(which view)
-  local nvim_path=$(which nvim)
-  if ! command -v view >/dev/null 2>&1; then
-    echo "❌ view command does not exist"
-  elif ! command -v nvim >/dev/null 2>&1; then
-    echo "❌ nvim command does not exist"
-  elif [[ $(readlink -f $(which view)) == $(which nvim) ]]; then
-    echo "✅ $view_path points to $nvim_path"
-  else
-    echo "❌ $view_path does not point to $nvim_path"
-    local install_cmd='sudo ln -s -f $(which nvim) $(which view)'
-    printf "\nYou can create a symbolic link to for view targetted at nvim with\n$install_cmd\n"
-  fi
-}
-
 # Load NVM only when `nvm` is invoked. The flag is scoped to this shell session,
 # so NVM is sourced and its default/project version chosen only once.
 typeset -g _dotfiles_nvm_loaded=0
@@ -106,8 +57,6 @@ nvm() {
   nvm "$@"
 }
 
-
-check_view_symlink_target
 
 echo "⚡ Shell setup with IO complete."
 
@@ -171,6 +120,26 @@ for keymap in emacs viins vicmd; do
 done
 unset keymap
 
+# Ensure completion setup exists before the first Tab, even if Zinit's Turbo
+# queue has not run yet. The original widget is preserved after the one-time
+# synchronous source.
+if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
+  _dotfiles_load_completions() {
+    (( ${_dotfiles_completions_loaded:-0} )) && return 0
+    source "$DOTFILES/zsh/completions.zsh"
+  }
+
+  _dotfiles_lazy_complete() {
+    _dotfiles_load_completions || return
+    zle _dotfiles_original_complete
+  }
+
+  zle -A expand-or-complete _dotfiles_original_complete
+  zle -N _dotfiles_lazy_complete
+  bindkey -M emacs '^I' _dotfiles_lazy_complete
+  bindkey -M viins '^I' _dotfiles_lazy_complete
+fi
+
 export PATH=$HOME/bin:$PATH
 
 # Fixes permission denied error in Windows machine sometimes seen with `just`.
@@ -218,40 +187,8 @@ bindkey '^n' history-search-forward
 # NUMERIC_GLOB_SORT: Sort where file `f10` is after `f9` rather than after `f1`
 setopt NUMERIC_GLOB_SORT
 
-# Completion styling
-# Use case insensitive shell matching
-zstyle  ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
-
-# ----------------------------------------------
-# Fuzzy Finder (fzf)
-# - Use `Ctrl-R` for `fzf` history search. This comes from the
-#   fzf-history-widget. You can see the explicit definition for this inside of the
-#   `fzf/.../key-bindings.zsh` file.
-# ----------------------------------------------
-
-# macOS / Homebrew (Apple Silicon)
-if [[ -f /opt/homebrew/opt/fzf/shell/key-bindings.zsh ]]; then
-  source /opt/homebrew/opt/fzf/shell/key-bindings.zsh
-  source /opt/homebrew/opt/fzf/shell/completion.zsh
-fi
-
-# macOS / Homebrew (Intel)
-if [[ -f /usr/local/opt/fzf/shell/key-bindings.zsh ]]; then
-  source /usr/local/opt/fzf/shell/key-bindings.zsh
-  source /usr/local/opt/fzf/shell/completion.zsh
-fi
-
-# Arch
-if [[ -f /usr/share/fzf/key-bindings.zsh ]]; then
-  source /usr/share/fzf/key-bindings.zsh
-  source /usr/share/fzf/completion.zsh
-fi
-
-# Ubuntu
-if [[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]]; then
-  source /usr/share/doc/fzf/examples/key-bindings.zsh
-  source /usr/share/doc/fzf/examples/completion.zsh
-fi
+# Turn off all beeps
+unsetopt BEEP
 
 # ----------------------- Go / Golang
 export GOROOT="/usr/local/go"
@@ -286,8 +223,6 @@ export PATH="$PATH:$HOME/.foundry/bin"
 # Google Cloud SDK:
 # The next line updates PATH for the Google Cloud SDK.
 if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
-# The next line enables shell command completion for gcloud.
-if [ -f "$HOME/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/google-cloud-sdk/completion.zsh.inc"; fi
 
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.poetry/bin:$PATH"
@@ -310,14 +245,6 @@ clean_poetry() {
 
 export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
 export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
-
-# TODO: Add fn docs
-# TODO: Move to ud.sh as proper defensive fn (ud nibi keys ... ?)
-keys_recover() {
-  local name="$1"
-  local mnemonic="$2"
-  echo "$mnemonic" | nibid keys add $name --recover --keyring-backend=test
-}
 
 export NIBI="000000unibi"
 export FAUCET_WEB="nibi1cq87ggjzlt3jzs8u7fc2e36e7nellvatzw8a63"
@@ -349,12 +276,6 @@ nibi_keys() {
 # List the soft file limit: ulimit -n
 # Increase soft file limit: ulimit -n 4096
 ulimit -n 4096
-
-autoload -U +X bashcompinit && bashcompinit
-complete -o nospace -C "$HOME/go/bin/gocomplete" go
-
-# bun completions
-[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
 # bun
 export BUN_INSTALL="$HOME/.bun"

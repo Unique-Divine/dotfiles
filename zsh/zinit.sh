@@ -32,6 +32,16 @@ zinit light agkozak/zsh-z
 zinit ice wait"0" lucid link nocompile trigger-load'!goenv'
 zinit snippet "$DOTFILES/zsh/goenv-init.zsh"
 
+# Start Docker Desktop only when the first Docker command is used. The local
+# snippet waits for the daemon, then Zinit replays the original command.
+zinit ice lucid link nocompile trigger-load'!docker'
+zinit snippet "$DOTFILES/zsh/docker-init.zsh"
+
+# Own compinit and all custom completion registration in one Turbo-loaded file.
+# The first-Tab fallback in zshrc handles a user who types before Turbo runs.
+zinit ice wait"0" lucid link nocompile
+zinit snippet "$DOTFILES/zsh/completions.zsh"
+
 # These commands and widgets can appear after the first prompt. Syntax
 # highlighting must load last so it sees widgets created by earlier plugins.
 zinit ice wait"0" lucid

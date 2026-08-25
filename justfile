@@ -81,10 +81,15 @@ codex *ARGS:
 i-zinit:
   bash zsh/zinit-install.sh
 
+# Install Homebrew packages from the checked-in Brewfile.
+i-brew:
+  brew bundle --file Brewfile
+
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
-    ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf
+    ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
+    pass
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
