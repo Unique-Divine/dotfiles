@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 
-alias ohmyzsh="nvim ~/.oh-my-zsh"
-
-# MongoDB alias commands
-alias mongo="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongo.exe"
-alias mongod="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongod.exe"
-alias mongosh="/mnt/c/Users/realu/AppData/Local/Programs/mongosh/mongosh.exe"
-alias mongos="/mnt/c/Program\ Files/MongoDB/Server/5.0/bin/mongos.exe"
-
+# ===================================================
 # Unique Divine linux commands
-alias ls="exa" # cargo install exa
-alias la="exa -a"
-alias s="sudo"
-alias yarn-offline="yarn --prefer-offline"
-alias cat="bat" # cargo install bat
+# ===================================================
+
+alias ls="exa --icons" # cargo install exa
+alias la="ls -a"
+
+# cargo install bat
+[[ -n "$(command -v bat)" ]] && alias cat="bat" # cargo install bat
+# if command -v bat >/dev/null 2>&1; then
+#   
+# fi
 # NOTE: This is important - sudo apt install build-essential
 alias rm="trash -v"
 
@@ -22,7 +20,17 @@ alias vim="nvim"
 
 # vv: short for "vim view". Piping to vv opens stdout in Neovim.
 alias vv="nvim -"
-alias vvjq="jq | nvim -"
+alias jqvv="jq | nvim -"
+
+# Core Unix
+alias grep="rg --color=auto"
+alias diff="diff --color=auto"
+alias df="df -h"
+
+# Navigate to last directory using single dash, similar to your oil.nvim setup.
+alias -- -='cd -' 
+#  Jump to prev dir with `cd -`
+#  The -- Prevents being parsed as a flag; 
 
 alias ess="2>&1"
 

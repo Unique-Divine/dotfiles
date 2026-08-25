@@ -20,6 +20,7 @@ zsh_files=(
   zsh/zshrc.zsh
   zsh/zinit.sh
   zsh/goenv-init.zsh
+  zsh/docker-init.zsh
   zsh/completions.zsh
 )
 
