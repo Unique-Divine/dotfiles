@@ -53,7 +53,7 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, portable Codex config, and managed AI skills.
+# Apply shell bootstrap, portable Codex and Cursor CLI config, and managed AI skills.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -66,6 +66,7 @@ sync:
     just clipboard-install
   fi
   bun run codex/config.ts --run
+  bun run cursor/cli-config.ts --run
   bun run skillsSync.ts --run
 
 # Check required tools and drift without changing dotfile-managed state.

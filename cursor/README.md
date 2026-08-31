@@ -1,8 +1,9 @@
 # Cursor CLI Config
 
-This directory stores the dotfile config for the Cursor CLI. The source of
-truth is `cli-config.ts`; the generated runtime config is
-`$HOME/.cursor/cli-config.json`.
+File `cli-config.ts` is the source of truth for portable Cursor CLI
+preferences. Command `just sync` merges those values into
+`$HOME/.cursor/cli-config.json`. Command `just health` runs `--check` and
+fails if the runtime file would change.
 
 ## Docs
 
@@ -12,20 +13,23 @@ truth is `cli-config.ts`; the generated runtime config is
 
 ## Model
 
-`cli-config.ts` owns stable user preferences such as `permissions`, `editor`,
-`approvalMode`, `sandbox`, `network`, and `attribution`. The managed editor
-config keeps Vim mode enabled. Both attribution flags are disabled so commits
+Object `dotfileConfig` in file `cli-config.ts` owns `permissions`, `editor`,
+`approvalMode`, `sandbox`, `network`, and `attribution`. Field
+`editor.vimMode` is `true`. Both attribution flags are `false`, so commits
 and pull requests created through Cursor do not add agent attribution.
 
-The runtime config can also contain Cursor-managed fields such as `authInfo`,
+The runtime file can also hold Cursor-managed fields such as `authInfo`,
 `privacyCache`, `serverConfigCache`, `model`, `selectedModel`,
-`modelParameters`, and prompt/cache counters. Those fields are preserved when the
-runtime config is rewritten, but they are not copied into the dotfile config.
+`modelParameters`, and prompt or cache counters. The merge keeps those
+values and does not copy them into `dotfileConfig`.
 
-This keeps the dotfiles portable while allowing Cursor to keep local auth,
-model-picker state, and cache values in the runtime config.
+Do not symlink the runtime JSON. It holds tokens.
 
 ## Usage
+
+`just sync` runs `bun run cursor/cli-config.ts --run`. `just health` runs
+`--check`. The script compares generated JSON with the current runtime file
+and writes only when the content differs.
 
 Show help:
 
@@ -56,7 +60,3 @@ Print the generated runtime config:
 ```bash
 bun run cursor/cli-config.ts --print
 ```
-
-Shell startup runs the script with `--run --quiet`, so normal terminals do not
-get extra output. The script compares the generated JSON with the current
-runtime config and only writes when the content differs.

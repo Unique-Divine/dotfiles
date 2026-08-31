@@ -282,26 +282,6 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 # the Mason binaries.
 export PATH="$PATH:$HOME/.local/share/nvim/mason/bin"
 
-# sync_cursor_cli_config keeps Cursor CLI's runtime config aligned with the
-# dotfile config while preserving Cursor-managed auth, cache, and model state.
-sync_cursor_cli_config() {
-  if ! which_ok bun; then
-    return 0
-  fi
-
-  if [[ ! -f "$DOTFILES/cursor/cli-config.ts" ]]; then
-    return 0
-  fi
-
-  local output
-  output=$(bun run "$DOTFILES/cursor/cli-config.ts" --run --quiet 2>&1) || {
-    echo "Cursor CLI config sync failed:" >&2
-    echo "$output" >&2
-  }
-}
-
-sync_cursor_cli_config
-
 # GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
 # the regular system `go` command remains available without this setup.
 load_gvm() {

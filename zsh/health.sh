@@ -82,6 +82,10 @@ if ! bun run codex/config.ts --check; then
   failed=1
 fi
 
+if ! bun run cursor/cli-config.ts --check; then
+  failed=1
+fi
+
 if which_ok herdr; then
   herdr_config="$PWD/herdr/config.toml"
   runtime_herdr_config="$HOME/.config/herdr/config.toml"
