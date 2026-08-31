@@ -1,8 +1,19 @@
 #!/usr/bin/env zsh
 
-# This file is the single owner of completion initialization. Zinit sources it
-# after the first prompt, while the ZLE wrapper in zshrc can source it on the
-# first Tab press if Turbo has not run yet.
+# Sets up Tab completion for this Zsh configuration. Zsh ships `compinit` as an
+# autoloadable shell function, not a binary. Calling it discovers completion
+# definitions on Zsh's function search path, `fpath`, and registers them so Tab
+# can complete commands, options, and file paths. This file owns that
+# initialization, applies matching rules, and loads extra completion scripts,
+# including fzf's Tab widget. Ubuntu's global compinit is disabled to prevent a
+# second initialization.
+#
+# The work is deferred because scanning definitions and sourcing plugins slows
+# the first prompt. Zinit normally loads this file just after the prompt; the
+# first Tab press can load it sooner. Both paths must produce the same state and
+# initialization must run only once. Keep Tab fallbacks explicit because plugins
+# such as fzf may capture the temporary loader while being sourced.
+
 (( ${_dotfiles_completions_loaded:-0} )) && return 0
 
 # Ubuntu's vendor directory can contain a broken Docker Desktop symlink when
@@ -52,6 +63,10 @@ compdef exa=ls
 # - Use `Ctrl-R` for `fzf` history search. This comes from the
 #   fzf-history-widget in the fzf key-bindings.zsh file.
 # ----------------------------------------------
+
+# fzf records the current Tab widget as its fallback when completion.zsh loads.
+# Tab may still point to our lazy loader here, so name the native widget instead.
+typeset -g fzf_default_completion=expand-or-complete
 
 # macOS / Homebrew (Apple Silicon)
 if [[ -f /opt/homebrew/opt/fzf/shell/key-bindings.zsh ]]; then

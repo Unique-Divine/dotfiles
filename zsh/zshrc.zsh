@@ -121,8 +121,8 @@ done
 unset keymap
 
 # Ensure completion setup exists before the first Tab, even if Zinit's Turbo
-# queue has not run yet. The original widget is preserved after the one-time
-# synchronous source.
+# queue has not run yet. Run native completion directly for that first press.
+# The completion module may install another Tab widget for later presses.
 if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
   _dotfiles_load_completions() {
     (( ${_dotfiles_completions_loaded:-0} )) && return 0
@@ -131,10 +131,9 @@ if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
 
   _dotfiles_lazy_complete() {
     _dotfiles_load_completions || return
-    zle _dotfiles_original_complete
+    zle expand-or-complete
   }
 
-  zle -A expand-or-complete _dotfiles_original_complete
   zle -N _dotfiles_lazy_complete
   bindkey -M emacs '^I' _dotfiles_lazy_complete
   bindkey -M viins '^I' _dotfiles_lazy_complete
