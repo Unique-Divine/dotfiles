@@ -68,17 +68,28 @@ else
   done < "$manifest_path"
 fi
 
-for tool in bun just codex rsync; do
+for tool in bun just codex nvim rsync; do
   if ! which_ok "$tool"; then
     failed=1
   fi
 done
+
+if which_ok nvim; then
+  if ! MASON_LOCK_PATH="$PWD/nvim/mason.lock" \
+    nvim --headless -u NONE -l nvim/mason-health.lua; then
+    failed=1
+  fi
+fi
 
 if ! which_ok bun; then
   exit 1
 fi
 
 if ! bun run codex/config.ts --check; then
+  failed=1
+fi
+
+if ! bun run cursor/cli-config.ts --check; then
   failed=1
 fi
 

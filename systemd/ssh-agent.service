@@ -1,10 +1,29 @@
+# User-level SSH agent for the WSL session.
+#
+# zshenv exports SSH_AUTH_SOCK to this service's stable socket path, allowing
+# separate shells to reuse one agent process. The zshrc helper `ssh_setup`
+# loads available private keys into the agent with `ssh-add`.
+#
+# This file is linked to ~/.config/systemd/user/ssh-agent.service by
+# zsh/managed-links.tsv. Enable and start it with:
+#
+#   systemctl --user enable --now ssh-agent.service
+
 [Unit]
 Description=SSH authentication agent
 
 [Service]
+# Keep ssh-agent in the foreground so systemd owns and monitors the process.
 Type=simple
+
+# %t expands to this user's runtime directory, usually /run/user/$UID.
+# -D keeps ssh-agent in the foreground. -a selects the shared socket path.
 ExecStart=/usr/bin/ssh-agent -D -a %t/ssh-agent.socket
+
+# Restart the agent if it exits unexpectedly.
 Restart=on-failure
 
 [Install]
+# Allow `systemctl --user enable ssh-agent.service` to start it with the
+# user's default systemd target.
 WantedBy=default.target

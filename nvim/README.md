@@ -3,17 +3,39 @@
 Personal Neovim configuration by Unique Divine. This configuration is built on
 lazy.nvim and provides a modern, modular setup for software development.
 
-## Version Information
+## Contents
 
-- **Neovim Verison:** [0.12.2](https://github.com/neovim/neovim/releases/tag/v0.12.2)
-- **Release Date:** 2025-04-23
-- **Package Manager:** [lazy.nvim](https://github.com/folke/lazy.nvim)
+<!-- toc -->
+- [Structure](#structure)
+- [Key Features](#key-features)
+  - [Core Functionality](#core-functionality)
+  - [Themes](#themes)
+  - [Plugins](#plugins)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Setup](#setup)
+- [Key Mappings](#key-mappings)
+  - [General](#general)
+  - [Telescope (Fuzzy Finder)](#telescope-fuzzy-finder)
+  - [LSP](#lsp)
+  - [Git](#git)
+- [Configuration](#configuration)
+  - [Adding Plugins](#adding-plugins)
+  - [Customizing Settings](#customizing-settings)
+  - [Mason packages](#mason-packages)
+- [Learning Resources](#learning-resources)
+- [Notes](#notes)
+<!-- tocstop -->
 
 ## Structure
+
+**Neovim Verison:** [0.12.2](https://github.com/neovim/neovim/releases/tag/v0.12.2)
 
 ```
 nvim/
 ├── init.lua              # Main entry point
+├── mason-health.lua      # Read-only Mason lock health check
+├── mason.lock            # Pinned Mason package versions
 ├── lua/
 │   └── core/            # Core configuration modules
 │       ├── debug-dap.lua        # DAP plugin spec and setup
@@ -21,6 +43,7 @@ nvim/
 │       ├── harpoon.lua          # File navigation
 │       ├── lazy-plugins.lua     # Additional lazy plugins
 │       ├── lsp.lua              # LSP plugin spec and setup
+│       ├── mason-lock.lua        # Mason lock refresh and restore commands
 │       ├── snippets.lua         # Code snippets
 │       ├── specs/               # Lazy specs: cmp, fmt, comment
 │       ├── telescope.lua        # Fuzzy finder
@@ -96,9 +119,6 @@ Core plugins installed via lazy.nvim:
 
    # Ubuntu/Debian
    apt install ripgrep
-
-   # Arch
-   pacman -S ripgrep
    ```
 
 ### Setup
@@ -162,6 +182,62 @@ local lazyPlugins = {
 - **LSP settings:** Edit `lua/core/lsp.lua`
 - **Keymaps:** Distributed across relevant config files
 - **Theme colors:** Edit theme config in `init.lua` (lines 184-245)
+
+### Mason packages
+
+This configuration adds two commands around Mason's installed packages. The
+file `mason.lock` stores one `package@version` entry per installed package. It
+is a snapshot of the tools used by this Neovim configuration, not a list of
+LSP servers configured in `lua/core/lsp.lua`.
+
+Use the `:MasonLock` command after installing, upgrading, or removing a Mason
+package:
+
+```vim
+:MasonLock
+```
+
+The command reads the installed packages from Mason, records their exact
+versions, sorts the entries, and rewrites `mason.lock`. It skips packages that
+Mason no longer recognizes, so review the command's warnings and the Git diff
+before committing the updated lock file.
+
+Use the `:MasonRestore` command to install packages that are listed in
+`mason.lock` but missing from the local Mason directory:
+
+```vim
+:MasonRestore
+```
+
+The command refreshes the Mason registry and requests each missing package at
+the version recorded in the lock file. It reports installed version mismatches
+without replacing those packages. It also leaves packages that are absent
+from the lock file installed.
+
+From the dotfiles repository, run the headless wrapper when setting up another
+machine:
+
+```bash
+just nvim-mason-restore
+```
+
+The `just nvim-mason-restore` command starts Neovim with the normal
+configuration, runs `:MasonRestore`, waits for headless installs to finish,
+and exits with a failure status if the restore cannot match the lock file.
+
+The `just health` command performs a read-only check against `mason.lock`. It
+reports missing packages and version mismatches as errors, and reports extra
+installed packages as warnings. The check loads only `mason-health.lua`, so it
+does not trigger the configuration's automatic
+LSP installation while checking the lock file.
+
+A typical setup or update looks like this:
+
+1. Install or update packages through Mason
+1. Run :MasonLock and review nvim/mason.lock
+1. Commit the lock file, then run just nvim-mason-restore on another machine
+1. Run just health to check the installed versions
+
 
 ## Learning Resources
 

@@ -121,8 +121,8 @@ done
 unset keymap
 
 # Ensure completion setup exists before the first Tab, even if Zinit's Turbo
-# queue has not run yet. The original widget is preserved after the one-time
-# synchronous source.
+# queue has not run yet. Run native completion directly for that first press.
+# The completion module may install another Tab widget for later presses.
 if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
   _dotfiles_load_completions() {
     (( ${_dotfiles_completions_loaded:-0} )) && return 0
@@ -131,10 +131,9 @@ if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
 
   _dotfiles_lazy_complete() {
     _dotfiles_load_completions || return
-    zle _dotfiles_original_complete
+    zle expand-or-complete
   }
 
-  zle -A expand-or-complete _dotfiles_original_complete
   zle -N _dotfiles_lazy_complete
   bindkey -M emacs '^I' _dotfiles_lazy_complete
   bindkey -M viins '^I' _dotfiles_lazy_complete
@@ -243,9 +242,6 @@ clean_poetry() {
   poetry cache clear pypi --all
 }
 
-export ADDR_FOO="nibi1qus4hmeelr6v9894t5jdcgtprzzenlxfak490l"
-export MNEM_FOO="salmon raw foster reform tunnel apple rifle huge easily town lobster nut head index prepare eye awkward trigger general minor life fabric earth price"
-
 export NIBI="000000unibi"
 export FAUCET_WEB="nibi1cq87ggjzlt3jzs8u7fc2e36e7nellvatzw8a63"
 export FAUCET_DISCORD="nibi1x9tym6ah8lzrnmzvv33pwmz9jeqd6ucd69kemr"
@@ -285,26 +281,6 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 # Load to the right side of `PATH` so that other binaries take precedence over
 # the Mason binaries.
 export PATH="$PATH:$HOME/.local/share/nvim/mason/bin"
-
-# sync_cursor_cli_config keeps Cursor CLI's runtime config aligned with the
-# dotfile config while preserving Cursor-managed auth, cache, and model state.
-sync_cursor_cli_config() {
-  if ! which_ok bun; then
-    return 0
-  fi
-
-  if [[ ! -f "$DOTFILES/cursor/cli-config.ts" ]]; then
-    return 0
-  fi
-
-  local output
-  output=$(bun run "$DOTFILES/cursor/cli-config.ts" --run --quiet 2>&1) || {
-    echo "Cursor CLI config sync failed:" >&2
-    echo "$output" >&2
-  }
-}
-
-sync_cursor_cli_config
 
 # GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
 # the regular system `go` command remains available without this setup.
