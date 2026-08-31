@@ -45,7 +45,7 @@ _dotfiles_prepare_vendor_completions() {
 _dotfiles_prepare_vendor_completions
 
 autoload -Uz compinit
-compinit || return 1
+compinit -i || return 1
 
 # Replay completion definitions registered by plugins loaded before this file.
 if (( ${+functions[zinit]} )); then
