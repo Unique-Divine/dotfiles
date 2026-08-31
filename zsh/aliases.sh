@@ -4,13 +4,14 @@
 # Unique Divine linux commands
 # ===================================================
 
-alias ls="exa --icons" # cargo install exa
+alias ls="exa" # cargo install exa
+# alias ls="exa --icons" # cargo install exa
 alias la="ls -a"
 
 # cargo install bat
 [[ -n "$(command -v bat)" ]] && alias cat="bat" # cargo install bat
 # if command -v bat >/dev/null 2>&1; then
-#   
+#
 # fi
 # NOTE: This is important - sudo apt install build-essential
 alias rm="trash -v"
@@ -28,9 +29,9 @@ alias diff="diff --color=auto"
 alias df="df -h"
 
 # Navigate to last directory using single dash, similar to your oil.nvim setup.
-alias -- -='cd -' 
+alias -- -='cd -'
 #  Jump to prev dir with `cd -`
-#  The -- Prevents being parsed as a flag; 
+#  The -- Prevents being parsed as a flag;
 
 alias ess="2>&1"
 
