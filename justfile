@@ -73,6 +73,10 @@ sync:
 health:
   bash zsh/health.sh
 
+# Restore missing Neovim tools from nvim/mason.lock.
+nvim-mason-restore:
+  nvim --headless "+MasonRestore" +qa
+
 # Run the portable Codex config CLI. For options, run `just codex`.
 codex *ARGS:
   bun run codex/config.ts {{ARGS}}

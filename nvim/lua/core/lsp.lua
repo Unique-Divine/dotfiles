@@ -183,6 +183,8 @@ local function plugin_config()
     },
   }
 
+  require('core/mason-lock').setup()
+
   -- `:Toc` / `:TocCopy`: markdown TOC via jiyuu/mdtoc.
   local mdtoc_cli = '"$HOME/ki/boku/jiyuu/mdtoc/src/cli.ts"'
   local mdtoc_flags = '--bullets="-" --maxdepth=3 --no-firsth1'
