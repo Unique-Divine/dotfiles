@@ -9,3 +9,4 @@ systemd/ssh-agent.service	.config/systemd/user/ssh-agent.service
 .config/yarn/global/package.json	.config/yarn/global/package.json
 zsh/ud/ud.sh	.local/bin/ud
 bin/node	.local/bin/node
+zsh/gitconfig.ini	.gitconfig
