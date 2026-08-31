@@ -6,6 +6,7 @@ machines.
 
 <h2>Table of Contents</h2>
 
+<!-- toc -->
 - [What's Included](#whats-included)
 - [Quick Setup](#quick-setup)
 - [Symlink Philosophy](#symlink-philosophy)
@@ -18,8 +19,8 @@ machines.
   - [Codex config](#codex-config)
   - [WSL Clipboard Integration](#wsl-clipboard-integration)
 - [Requirements](#requirements)
-- [Testing](#testing)
-- [Benchmark log](benchmarks.md)
+- [Benchmarks and Testing](#benchmarks-and-testing)
+<!-- tocstop -->
 
 ## What's Included
 
@@ -28,6 +29,29 @@ machines.
 - **Zsh**: Shell configuration with Oh-My-Zsh, aliases, and developer tooling setup
 - **Bash**: Utility scripts, color-coded logging, and environment detection
 - **WSL Integration**: Seamless clipboard sharing between Ubuntu and Windows
+
+## Benchmarks and Testing
+
+
+| Mode | Mean | Median | P95 |
+| --- | ---: | ---: | ---: |
+| Synchronous startup | 493.65 ms | 474.46 ms | 639.55 ms |
+| Prompt ready | 841.24 ms | 756.90 ms | 1138.75 ms |
+
+
+See the [benchmark log](benchmarks.md) for reverse-chronological performance
+results across the shell, Neovim, and WSL clipboard setup.
+
+```bash
+# Run all tests
+just test
+# or
+bun test
+
+# Test clipboard functionality
+bun test zsh/clipboard.test.ts
+```
+
 
 ## Quick Setup
 
@@ -55,12 +79,12 @@ cargo install bat tree-sitter-cli sd
 # Homebrew/Linuxbrew must be on PATH, then install formulas from Brewfile.
 just i-brew
 
+# Install development tools
+bun install
+
 # Create and repair symbolic links for configurations.
 # just sync also installs the Zinit checkout.
 just sync
-
-# Install development tools
-bun install
 just setup
 ```
 
@@ -68,7 +92,11 @@ After installing `nvim`, restore Neovim plugins from the lazy.nvim lockfile:
 
 ```bash
 nvim --headless "+Lazy! restore" +qa
+
+# Restore external Neovim tools from nvim/mason.lock.
+just nvim-mason-restore
 ```
+
 
 ## Symlink Philosophy
 
@@ -89,9 +117,10 @@ mapping; `just health` validates the same mappings without writing state.
 ### Sync and health checks
 
 `just sync` runs the established shell bootstrap, applies portable Codex
-defaults, and synchronizes managed AI skills. `just health` does not write: it
-checks required commands and reports Codex or skills-sync drift with a nonzero
-exit status.
+and Cursor CLI defaults, and synchronizes managed AI skills. `just health`
+does not write: it checks required commands, Mason packages, and Codex,
+Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
+installation remains an explicit action.
 
 ### AI agent skills
 
@@ -170,7 +199,7 @@ usage and options.
 ## Requirements
 
 - Ubuntu 24.04 (or compatible) on WSL2
-- Neovim v10.0.4+ (ARM64 AppImage included)
+- [Neovim setup and version requirements](nvim/README.md)
 - Zsh with Oh-My-Zsh
 - Tmux
 - Bun and Node.js
@@ -179,18 +208,3 @@ usage and options.
 - `libclang-dev` for building `tree-sitter-cli`
 - `lua5.1` and `luarocks` for Lazy/LuaRocks health checks
 - `tree-sitter-cli` (`cargo install tree-sitter-cli`)
-
-## Testing
-
-See the [benchmark log](benchmarks.md) for reverse-chronological performance
-results across the shell, Neovim, and WSL clipboard setup.
-
-```bash
-# Run all tests
-just test
-# or
-bun test
-
-# Test clipboard functionality
-bun test zsh/clipboard.test.ts
-```
