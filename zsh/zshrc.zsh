@@ -60,9 +60,19 @@ nvm() {
 
 echo "⚡ Shell setup with IO complete."
 
-# ------------ --------------------------------------------- ------------
-# -            NOTE: Perform any console IO above this block.           -
-# ------------ --------------------------------------------- ------------
+# -----------------------------------------------
+#  NOTE: Perform any console IO above this block.
+# -----------------------------------------------
+
+# Fuzzy finder (fzf) config
+
+# File source for `fzf`. See `fzf --help`.
+# - Ripgrep respects .gitignore by default, so I use `--no-ignore` to include
+#   ignored files. 
+# - I exclude a few directories directories even when a repository does not 
+#   ignore them, such as [.git, node_modules, target].
+export FZF_DEFAULT_COMMAND="rg --files --hidden --no-ignore --glob '!.git/**' --glob '!node_modules/**' --glob '!target/**'"
+
 
 # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
 # Initialization code that may require console input (password prompts, [y/n]
