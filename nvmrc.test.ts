@@ -1,12 +1,12 @@
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, test } from "bun:test"
 
 import {
+  findNvmrcFiles,
   NVMRC_SET_ALLOW,
   NVMRC_SET_DENY,
-  findNvmrcFiles,
   nvmrcSetDecision,
   parseLevel,
   readNvmrc,
@@ -25,19 +25,20 @@ const makeRoot = async (): Promise<string> => {
 
 afterEach(async () => {
   await Promise.all(
-    tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    tempRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true })),
   )
 })
 
-const writeNvmrc = async (
-  filePath: string,
-  pin: string,
-): Promise<void> => {
+const writeNvmrc = async (filePath: string, pin: string): Promise<void> => {
   await mkdir(join(filePath, ".."), { recursive: true })
   await writeFile(filePath, `${pin}\n`)
 }
 
-const depthTree = async (root: string): Promise<{
+const depthTree = async (
+  root: string,
+): Promise<{
   rootFile: string
   repo: string
   child: string
@@ -51,10 +52,7 @@ const depthTree = async (root: string): Promise<{
   await writeNvmrc(repo, "repo-pin")
   await writeNvmrc(child, "child-pin")
   await writeNvmrc(deep, "deep-pin")
-  await writeNvmrc(
-    join(root, "repo", "node_modules", ".nvmrc"),
-    "hidden",
-  )
+  await writeNvmrc(join(root, "repo", "node_modules", ".nvmrc"), "hidden")
   return { rootFile, repo, child, deep }
 }
 
@@ -87,12 +85,8 @@ describe("nvmrc lists and set decisions", () => {
     expect(nvmrcSetDecision("/ki/nibi-chain/.nvmrc")).toBe("allow")
     expect(nvmrcSetDecision("/ki/sai-web-docs/.nvmrc")).toBe("allow")
     expect(nvmrcSetDecision("/ki/metamask-core/.nvmrc")).toBe("deny")
-    expect(nvmrcSetDecision("/ki/random-app/.nvmrc")).toBe(
-      "not-allowlisted",
-    )
-    expect(nvmrcSetDecision("/ki/metamask-core/.nvmrc", true)).toBe(
-      "allow",
-    )
+    expect(nvmrcSetDecision("/ki/random-app/.nvmrc")).toBe("not-allowlisted")
+    expect(nvmrcSetDecision("/ki/metamask-core/.nvmrc", true)).toBe("allow")
   })
 
   test("parseLevel rejects values below 1", () => {
@@ -105,10 +99,7 @@ describe("nvmrc lists and set decisions", () => {
     const root = await makeRoot()
     const files = await depthTree(root)
 
-    expect(await findNvmrcFiles(root, 2)).toEqual([
-      files.rootFile,
-      files.repo,
-    ])
+    expect(await findNvmrcFiles(root, 2)).toEqual([files.rootFile, files.repo])
     expect(await findNvmrcFiles(root, 3)).toEqual([
       files.rootFile,
       files.repo,
@@ -154,9 +145,7 @@ describe("nvmrc lists and set decisions", () => {
     ])
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain(
-      `${allowed}  lts/jod -> lts/krypton`,
-    )
+    expect(result.stdout).toContain(`${allowed}  lts/jod -> lts/krypton`)
     expect(result.stdout).toContain(`skip  ${denied}  deny`)
     expect(await readNvmrc(allowed)).toBe("lts/krypton")
     expect(await readNvmrc(denied)).toBe("v24.13")

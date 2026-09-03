@@ -1,3 +1,4 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import {
   lstat,
   mkdir,
@@ -9,7 +10,6 @@ import {
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 
 const scriptPath = join(import.meta.dir, "skillsSync.ts")
 

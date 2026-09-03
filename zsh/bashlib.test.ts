@@ -1,7 +1,7 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { bash } from "@uniquedivine/bash"
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 
 const bashlibPath = join(import.meta.dir, "bashlib.sh")
 const testRoot = "/tmp/bashlib"

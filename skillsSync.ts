@@ -38,10 +38,7 @@ const defaultConfig = (env: NodeJS.ProcessEnv): SkillsConfig => {
       {
         label: "sai-keeper",
         skillsDir: resolve(env.REPO, "sai-keeper/ai-skills"),
-        repositoryDiscoveryDir: resolve(
-          env.REPO,
-          "sai-keeper/.agents/skills",
-        ),
+        repositoryDiscoveryDir: resolve(env.REPO, "sai-keeper/.agents/skills"),
       },
     ],
   }
@@ -303,12 +300,7 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
   )
 
   if (health) {
-    if (
-      discoveryHealthy &&
-      unionHealthy &&
-      cursorHealthy &&
-      codexHealthy
-    ) {
+    if (discoveryHealthy && unionHealthy && cursorHealthy && codexHealthy) {
       console.log("Skills links are healthy.")
     } else {
       process.exitCode = 1

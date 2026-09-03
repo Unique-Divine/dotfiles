@@ -18,14 +18,7 @@ describe("parseOptions", () => {
 
   test("parses each numeric option", () => {
     expect(
-      parseOptions([
-        "--iters",
-        "20",
-        "--warmups",
-        "3",
-        "--in-bz",
-        "4096",
-      ]),
+      parseOptions(["--iters", "20", "--warmups", "3", "--in-bz", "4096"]),
     ).toEqual({
       iterations: 20,
       payloadBytes: 4096,

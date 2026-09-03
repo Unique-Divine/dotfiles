@@ -1,5 +1,5 @@
-import { bash } from "@uniquedivine/bash"
 import { describe, expect, test } from "bun:test"
+import { bash } from "@uniquedivine/bash"
 
 const hasCommand = async (cmd: string): Promise<boolean> => {
   const out = await bash(`which ${cmd}`)

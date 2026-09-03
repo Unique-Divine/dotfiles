@@ -158,9 +158,7 @@ const runCommand = async (
   ])
 
   if (exitCode !== 0) {
-    throw new Error(
-      `${command[0]} exited with ${exitCode}: ${stderr.trim()}`,
-    )
+    throw new Error(`${command[0]} exited with ${exitCode}: ${stderr.trim()}`)
   }
   return stdout
 }
@@ -223,14 +221,11 @@ const measurePersistentPowerShell = async (
   options: BenchmarkOptions,
 ): Promise<PersistentBenchmark> => {
   const startedAt = performance.now()
-  const process = Bun.spawn(
-    powershellArgs(buildPersistentPowerShellScript()),
-    {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  )
+  const process = Bun.spawn(powershellArgs(buildPersistentPowerShellScript()), {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   const stdin = process.stdin
   if (typeof stdin === "number") {
     process.kill()
@@ -368,10 +363,7 @@ const printResults = (results: TimingSummary[]): void => {
 const main = async (): Promise<void> => {
   const options = parseOptions(Bun.argv.slice(2))
   const payload = "x".repeat(options.payloadBytes)
-  const powershellCommand = [
-    "powershell.exe",
-    "(Get-Clipboard).TrimEnd()",
-  ]
+  const powershellCommand = ["powershell.exe", "(Get-Clipboard).TrimEnd()"]
   const useRustBridge = Bun.env.WSL_CLIPBOARD_BIN !== undefined
 
   await runCommand(["legacy-pbcopy"], payload)
@@ -406,9 +398,7 @@ const main = async (): Promise<void> => {
     {
       label: "PowerShell no-profile",
       operation: async () => {
-        await runCommand(
-          powershellArgs("(Get-Clipboard).TrimEnd()"),
-        )
+        await runCommand(powershellArgs("(Get-Clipboard).TrimEnd()"))
       },
     },
     {
@@ -445,7 +435,9 @@ const main = async (): Promise<void> => {
         await runCommand(["pbcopy"], payload)
         const pasted = await runCommand(["pbpaste"])
         if (pasted !== payload) {
-          throw new Error("Persistent clipboard round trip returned different text")
+          throw new Error(
+            "Persistent clipboard round trip returned different text",
+          )
         }
       },
     },
@@ -470,7 +462,9 @@ const main = async (): Promise<void> => {
           await runCommand(wslClipboardArgs("copy"), payload)
           const pasted = await runCommand(wslClipboardArgs("paste"))
           if (pasted !== payload) {
-            throw new Error("Persistent clipboard round trip returned different text")
+            throw new Error(
+              "Persistent clipboard round trip returned different text",
+            )
           }
         },
       },
