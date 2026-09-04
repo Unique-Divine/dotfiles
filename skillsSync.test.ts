@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, relative, resolve } from "node:path"
 
 const scriptPath = join(import.meta.dir, "skillsSync.ts")
 
@@ -110,6 +110,29 @@ describe("skills-sync", () => {
     })
   })
 
+  test("repairs a Git-materialized public skill link", async () => {
+    const unionPath = join(privateDir, "public-skill")
+    await rm(unionPath)
+    await writeFile(
+      unionPath,
+      relative(privateDir, join(publicDir, "public-skill")),
+    )
+
+    const health = await run(homeDir, repoDir, ["--health"])
+    expect(health.exitCode).toBe(1)
+    expect(health.stdout).toContain(`Git-materialized linked skill: ${unionPath}`)
+    expect((await lstat(unionPath)).isFile()).toBe(true)
+
+    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    })
+    expect((await lstat(unionPath)).isSymbolicLink()).toBe(true)
+    expect(
+      resolve(privateDir, await readlink(unionPath)),
+    ).toBe(join(publicDir, "public-skill"))
+  })
+
   test("health detects a broken runtime target", async () => {
     await rm(cursorDir)
     await symlink(join(root, "wrong"), cursorDir, "dir")
@@ -127,6 +150,18 @@ describe("skills-sync", () => {
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain("collision")
     await rm(join(privateDir, "public-skill"), { recursive: true })
+  })
+
+  test("refuses an unexpected regular file at a linked skill path", async () => {
+    const unionPath = join(privateDir, "public-skill")
+    await writeFile(unionPath, "not-the-expected-link-target")
+
+    const result = await run(homeDir, repoDir, ["--run"])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Linked/private skill name collision")
+
+    await rm(unionPath)
+    await symlink("../jiyuu/ai-skills/public-skill", unionPath, "dir")
   })
 
   test("refuses collisions between linked repositories", async () => {

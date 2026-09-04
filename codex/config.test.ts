@@ -33,10 +33,11 @@ const runConfig = async (
 }
 
 describe("codex config", () => {
-  test("overwrites portable defaults and preserves local tables", () => {
+  test("preserves model preferences and overwrites portable defaults", () => {
     const merged = mergeRuntimeConfig({
       personality: "other",
       model: "other-model",
+      model_reasoning_effort: "high",
       tui: {
         vim_mode_default: false,
         model_availability_nux: { "gpt-5.6-sol": 4 },
@@ -45,7 +46,11 @@ describe("codex config", () => {
       mcp_servers: { private: { command: "private-command" } },
     })
 
-    expect(merged).toMatchObject(dotfileConfig)
+    expect(merged).toMatchObject({
+      ...dotfileConfig,
+      model: "other-model",
+      model_reasoning_effort: "high",
+    })
     expect(merged.tui).toEqual({
       vim_mode_default: true,
       raw_output_mode: false,
@@ -312,6 +317,37 @@ describe("codex config", () => {
 
       const run = await runConfig(root, ["--run", "--quiet"])
       expect(run).toEqual({ exitCode: 0, stdout: "", stderr: "" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("does not report user model preferences as drift", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-model-test-"))
+
+    try {
+      const runtimePath = join(root, ".codex/config.toml")
+      const initial = await runConfig(root, ["--run", "--quiet"])
+      expect(initial).toEqual({ exitCode: 0, stdout: "", stderr: "" })
+
+      const text = await Bun.file(runtimePath).text()
+      await writeFile(
+        runtimePath,
+        text
+          .replace('model = "gpt-5.6-luna"', 'model = "other-model"')
+          .replace(
+            'model_reasoning_effort = "xhigh"',
+            'model_reasoning_effort = "high"',
+          ),
+      )
+
+      expect(await runConfig(root, ["--check"])).toMatchObject({
+        exitCode: 0,
+        stderr: "",
+      })
+      expect(await Bun.file(runtimePath).text()).toContain(
+        'model = "other-model"',
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

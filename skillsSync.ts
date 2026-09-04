@@ -1,4 +1,12 @@
-import { lstat, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises"
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+} from "node:fs/promises"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import { Command } from "commander"
 
@@ -160,26 +168,38 @@ const syncUnion = async (
 
   for (const [name, sourcePath] of targets) {
     const unionPath = join(cfg.unionSkillsDir, name)
+    const relativeTarget = relative(dirname(unionPath), sourcePath)
     try {
       const info = await lstat(unionPath)
-      if (!info.isSymbolicLink()) {
-        throw new Error(
-          `Linked/private skill name collision: ${name} is a real directory in ${cfg.unionSkillsDir}`,
-        )
+      if (info.isSymbolicLink()) {
+        if (!(await resolvesTo(unionPath, sourcePath))) {
+          throw new Error(`Linked skill has unexpected target: ${unionPath}`)
+        }
+        continue
       }
-      if (!(await resolvesTo(unionPath, sourcePath))) {
-        throw new Error(`Linked skill has unexpected target: ${unionPath}`)
+
+      if (
+        info.isFile() &&
+        (await readFile(unionPath, "utf8")) === relativeTarget
+      ) {
+        healthy = false
+        console.log(`Git-materialized linked skill: ${unionPath}`)
+        if (apply) {
+          await rm(unionPath)
+          await symlink(relativeTarget, unionPath, "dir")
+        }
+        continue
       }
+
+      throw new Error(
+        `Linked/private skill name collision: ${name} is not the expected symlink in ${cfg.unionSkillsDir}`,
+      )
     } catch (error) {
       if (!isMissing(error)) throw error
       healthy = false
       console.log(`Missing linked skill: ${unionPath}`)
       if (apply) {
-        await symlink(
-          relative(dirname(unionPath), sourcePath),
-          unionPath,
-          "dir",
-        )
+        await symlink(relativeTarget, unionPath, "dir")
       }
     }
   }
