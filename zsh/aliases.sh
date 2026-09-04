@@ -48,3 +48,7 @@ alias start="cmd.exe /C start"
 alias ft="focustime" # 2026-03-04
 alias npx="bunx"
 alias codex="FORCE_COLOR=1 codex"
+
+# Keep `cursor` on the CLI. `agent update` rewrites ~/.local/bin/cursor
+# as an IDE-forwarding shim.
+alias cursor=agent
