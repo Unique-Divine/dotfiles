@@ -88,6 +88,19 @@ just sync
 just setup
 ```
 
+- [ ] Make the `kubectl` installation reproducible in dotfiles.
+  - Managed path is `brew "kubectl"` in `Brewfile`, installed by `just i-brew`.
+    Homebrew alias for `kubernetes-cli` stable 1.37.0. Verified
+    `kubectl version --client` reports `v1.37.0`.
+  - Previous host binary was a direct Kubernetes release download at
+    `~/.local/bin/kubectl` (`v1.35.7` Linux ARM64 from
+    `https://dl.k8s.io/release/v1.35.7/bin/linux/arm64/kubectl`). That
+    file was removed so it no longer shadows Homebrew on PATH.
+  - [x] Evaluate `brew install kubectl` as the managed direct-binary install
+    path.
+  - [ ] Pin or document client-version compatibility with the GKE control
+    plane.
+
 After installing `nvim`, restore Neovim plugins from the lazy.nvim lockfile:
 
 ```bash

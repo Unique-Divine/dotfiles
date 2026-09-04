@@ -125,10 +125,7 @@ const shellQuote = (value: string): string =>
 const sourceIfReadable = (path: string): string =>
   `[[ -r ${shellQuote(path)} ]] && source ${shellQuote(path)}`
 
-export const buildPromptZshrc = (
-  realZdotdir: string,
-  marker: string,
-): string =>
+export const buildPromptZshrc = (realZdotdir: string, marker: string): string =>
   [
     sourceIfReadable(join(realZdotdir, ".zshrc")),
     "typeset -g _zsh_benchmark_prompt_seen=0",
@@ -217,7 +214,10 @@ const runPromptBenchmark = async (options: Options): Promise<number> => {
         join(directory, ".zlogin"),
         buildStartupFile(realZdotdir, ".zlogin"),
       ),
-      writeFile(join(directory, ".zshrc"), buildPromptZshrc(realZdotdir, marker)),
+      writeFile(
+        join(directory, ".zshrc"),
+        buildPromptZshrc(realZdotdir, marker),
+      ),
     ])
     const startedAt = performance.now()
     const child = Bun.spawn(
@@ -249,7 +249,8 @@ const runPromptBenchmark = async (options: Options): Promise<number> => {
 
     try {
       await waitForMarker(child.stdout, marker)
-      if (timedOut) throw new Error(`Zsh timed out after ${options.timeoutMs}ms`)
+      if (timedOut)
+        throw new Error(`Zsh timed out after ${options.timeoutMs}ms`)
       const elapsedMs = performance.now() - startedAt
       stdin.write("exit\n")
       await stdin.flush()
@@ -306,7 +307,9 @@ export const main = async (argv: string[]): Promise<void> => {
   console.info(`Mean:   ${formatMs(summary.meanMs)}`)
   console.info(`Median: ${formatMs(summary.medianMs)}`)
   console.info(`P95:    ${formatMs(summary.p95Ms)}`)
-  console.info(`Range:  ${formatMs(summary.minMs)} - ${formatMs(summary.maxMs)}`)
+  console.info(
+    `Range:  ${formatMs(summary.minMs)} - ${formatMs(summary.maxMs)}`,
+  )
   console.info(`Samples: ${samples.map(formatMs).join(", ")}`)
 }
 
