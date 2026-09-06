@@ -52,13 +52,11 @@ if (( ${+functions[zinit]} )); then
   zinit cdreplay -q
 fi
 
-# Try case-insensitive prefixes first, then partial words, then substrings.
-# In `epics`, `cd forum<Tab>` can find `governance-forum`, and
-# `cd keeper<Tab>` can find `26-08-18-sai-keeper`.
-zstyle ':completion:*' matcher-list \
-  'm:{a-z}={A-Za-z}' \
-  'r:|=*' \
-  'l:|=* r:|=*'
+# Match case-insensitive substrings anywhere in a completion candidate.
+# In `epics`, `ls sai<Tab>` includes `sai-designs.md` and
+# `26-08-18-sai-keeper`. Keep these rules together: separate entries are
+# fallbacks, so a `sai-*` prefix would hide dated `*-sai-*` names.
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z} l:|=* r:|=*'
 
 # Reuse `ls` shell completions for `exa`.
 compdef exa=ls

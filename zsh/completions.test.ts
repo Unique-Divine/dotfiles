@@ -38,7 +38,7 @@ describe("Zsh completion setup", () => {
     }
   })
 
-  test("tries partial-word and substring matches after prefix matches", () => {
+  test("matches case-insensitive substrings alongside prefixes", () => {
     const testHome = mkdtempSync(join(tmpdir(), "dotfiles-zsh-completion-"))
 
     try {
@@ -64,9 +64,7 @@ describe("Zsh completion setup", () => {
       expect(result.stderr.toString()).toBe("")
       expect(result.exitCode).toBe(0)
       expect(result.stdout.toString().trim().split("\n")).toEqual([
-        "m:{a-z}={A-Za-z}",
-        "r:|=*",
-        "l:|=* r:|=*",
+        "m:{a-z}={A-Za-z} l:|=* r:|=*",
       ])
     } finally {
       rmSync(testHome, { force: true, recursive: true })
