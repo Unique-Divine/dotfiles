@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Strip Cursor's injected Co-authored-by trailer, then run a repo-local
+# commit-msg hook if core.hooksPath hid it.
+set -Eeuo pipefail
+
+readonly cursor_trailer='Co-authored-by: Cursor <cursoragent@cursor.com>'
+
+# Fail open. A crash in this script must not block git commit.
+trap 'exit 0' ERR
+
+msg_file="${1:-}"
+if [[ ! -f "$msg_file" ]]; then
+  exit 0
+fi
+
+tmp="$(mktemp)"
+trap 'rm -f -- "$tmp"; exit 0' ERR
+trap 'rm -f -- "$tmp"' EXIT
+
+# grep -v exits 1 when every line matched the trailer.
+grep -v -F -x -- "$cursor_trailer" "$msg_file" >"$tmp" || true
+mv -- "$tmp" "$msg_file"
+trap - EXIT
+trap 'exit 0' ERR
+
+if git_dir="$(git rev-parse --git-dir 2>/dev/null)"; then
+  local_hook="$git_dir/hooks/commit-msg"
+  this_hook="$(readlink -f -- "$0")"
+  local_hook_real="$(readlink -f -- "$local_hook" 2>/dev/null || true)"
+  if [[ -x "$local_hook" && "$local_hook_real" != "$this_hook" ]]; then
+    trap - ERR
+    exec "$local_hook" "$msg_file"
+  fi
+fi
+
+exit 0

@@ -15,8 +15,15 @@ fails if the runtime file would change.
 
 Object `dotfileConfig` in file `cli-config.ts` owns `permissions`, `editor`,
 `approvalMode`, `sandbox`, `network`, and `attribution`. Field
-`editor.vimMode` is `true`. Both attribution flags are `false`, so commits
-and pull requests created through Cursor do not add agent attribution.
+`editor.vimMode` is `true`. Both attribution flags are `false`.
+
+Cursor still appends `Co-authored-by: Cursor <cursoragent@cursor.com>` on
+`git commit` from the CLI agent. File `cursor/hooks/commit-msg` deletes that
+line. `just sync` links the hooks directory to `$HOME/.config/git/hooks` and
+`zsh/gitconfig.ini` sets `core.hooksPath` there.
+
+A repo that sets its own `core.hooksPath`, including Husky, skips this hook.
+Copy the strip into that repo's `commit-msg` if you need it there.
 
 The runtime file can also hold Cursor-managed fields such as `authInfo`,
 `privacyCache`, `serverConfigCache`, `model`, `selectedModel`,

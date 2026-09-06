@@ -68,6 +68,12 @@ else
   done < "$manifest_path"
 fi
 
+commit_msg_hook="$HOME/.config/git/hooks/commit-msg"
+if [[ ! -x "$commit_msg_hook" ]]; then
+  log_error "git commit-msg hook is missing or not executable: $commit_msg_hook (repair: just sync)"
+  failed=1
+fi
+
 for tool in bun just codex nvim rsync; do
   if ! which_ok "$tool"; then
     failed=1

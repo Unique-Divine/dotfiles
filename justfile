@@ -94,7 +94,7 @@ i-brew:
 i-bash:
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass
+    pass tailscale
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:

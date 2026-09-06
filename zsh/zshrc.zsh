@@ -118,6 +118,14 @@ bindkey -v
 # Zsh otherwise stops at the point where insert mode began.
 bindkey -M viins '^?' backward-delete-char
 
+# Directory shortcuts and stack navigation.
+# `...` expands to `../..`. `dirs -v`, `cd -`, and `cd -1` use the stack.
+alias -g ...='../..'
+alias -g ....='../../..'
+alias -g .....='../../../..'
+alias -g ......='../../../../..'
+setopt AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_MINUS
+
 # Restore Oh My Zsh's typed-prefix history search for the arrow keys.
 autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
 zle -N up-line-or-beginning-search
