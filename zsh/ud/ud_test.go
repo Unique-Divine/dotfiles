@@ -248,3 +248,48 @@ func TestQuickSymlinkCreatesMissingParentForRelativeTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, src, resolved)
 }
+
+func TestExecutablePluginDispatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	plugin := []byte("#!/usr/bin/env bash\n" +
+		"if [[ \"${1:-}\" == --plugin-info ]]; then\n" +
+		"  printf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Test plugin\"}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"printf '%s\\n' \"$*\"\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	output, err := runUdCommandResult(t, "ud example alpha beta", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Equal(t, "alpha beta", output)
+}
+
+func TestPluginInfoAndList(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	plugin := []byte("#!/usr/bin/env bash\nprintf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Test plugin\"}'\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	info, err := runUdCommandResult(t, "ud plugin info example", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Contains(t, info, "\"name\": \"example\"")
+
+	list, err := runUdCommandResult(t, "ud plugin list", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Contains(t, list, "example\t"+pluginPath)
+}
+
+func TestPluginInCurrentDirectoryIsIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-not-discovered")
+	require.NoError(t, os.WriteFile(pluginPath, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+
+	_, err := runUdCommandResult(
+		t,
+		"cd "+fmt.Sprintf("%q", tmpDir)+" && ud not-discovered",
+		"UD_PLUGIN_PATH=",
+		"XDG_DATA_HOME="+filepath.Join(tmpDir, "xdg"),
+	)
+	require.Error(t, err)
+}

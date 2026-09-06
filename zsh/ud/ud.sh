@@ -22,6 +22,7 @@ COMMANDS:
    nibi           Nibiru-specific commands
    md             Markdown commands
    docker         Docker Desktop commands for WSL
+   plugin         Inspect executable ud plugins
    help, h        Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
@@ -29,6 +30,7 @@ GLOBAL OPTIONS:
 EOF
 )
   echo "$help_text"
+  _ud_plugin_help
 }
 
 # Function: _ud_run - Echo a command string and execute it by default. 
@@ -42,6 +44,154 @@ _ud_run() {
     echo "$base_cmd"
     eval "$base_cmd"
   fi
+}
+
+# ------------ Executable plugins
+
+_ud_plugin_dirs() {
+  printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/ud/plugins"
+  if [[ -n "${UD_PLUGIN_PATH:-}" ]]; then
+    local dir
+    local IFS=':'
+    for dir in $UD_PLUGIN_PATH; do
+      [[ -n "$dir" ]] && printf '%s\n' "$dir"
+    done
+  fi
+}
+
+_ud_is_builtin() {
+  case "$1" in
+    go|rs|md|nibi|docker|quick|q|cfg|plugin|help|h) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_ud_find_plugin() {
+  local name="$1"
+  local dir candidate found=""
+  local count=0
+  while IFS= read -r dir; do
+    candidate="$dir/ud-$name"
+    if [[ -x "$candidate" ]]; then
+      found="$candidate"
+      count=$((count + 1))
+    fi
+  done < <(_ud_plugin_dirs)
+  if (( count > 1 )); then
+    printf 'Duplicate ud plugin: %s\n' "$name" >&2
+    return 2
+  fi
+  (( count == 1 )) || return 1
+  printf '%s\n' "$found"
+}
+
+_ud_plugin_names() {
+  local dir candidate name
+  while IFS= read -r dir; do
+    for candidate in "$dir"/ud-*; do
+      [[ -e "$candidate" || -L "$candidate" ]] || continue
+      [[ -x "$candidate" ]] || continue
+      name="${candidate##*/ud-}"
+      [[ -n "$name" ]] && printf '%s\n' "$name"
+    done
+  done < <(_ud_plugin_dirs)
+}
+
+_ud_plugin_info_json() {
+  local name="$1"
+  local plugin info
+  plugin="$(_ud_find_plugin "$name")" || return $?
+  command -v jq >/dev/null 2>&1 || {
+    echo "jq is required to inspect ud plugin metadata." >&2
+    return 1
+  }
+  info="$("$plugin" --plugin-info)" || return $?
+  jq -e --arg name "$name" \
+    '.apiVersion == 1 and .name == $name and (.description | type == "string")' \
+    >/dev/null <<< "$info" || {
+      printf 'Invalid metadata from ud plugin: %s\n' "$name" >&2
+      return 1
+    }
+  jq . <<< "$info"
+}
+
+_ud_plugin_help() {
+  local -a names
+  mapfile -t names < <(_ud_plugin_names | sort -u)
+  (( ${#names[@]} > 0 )) || return 0
+  printf '\nPLUGINS:\n'
+  local name info description
+  for name in "${names[@]}"; do
+    if command -v jq >/dev/null 2>&1 \
+      && info="$(_ud_plugin_info_json "$name" 2>/dev/null)"; then
+      description="$(jq -r '.description' <<< "$info")"
+      printf '   %-14s %s\n' "$name" "$description"
+    else
+      printf '   %s\n' "$name"
+    fi
+  done
+}
+
+_ud_plugin() {
+  local sub="${1:-help}"
+  case "$sub" in
+    list)
+      printf 'BUILT-IN\n'
+      printf '%s\n' go rs md nibi docker quick plugin
+      printf '\nPLUGIN\n'
+      local name plugin
+      while IFS= read -r name; do
+        plugin="$(_ud_find_plugin "$name")" || return $?
+        printf '%s\t%s\n' "$name" "$plugin"
+      done < <(_ud_plugin_names | sort -u)
+      ;;
+    info)
+      [[ -n "${2:-}" ]] || {
+        echo "Usage: ud plugin info <name>" >&2
+        return 1
+      }
+      _ud_plugin_info_json "$2"
+      ;;
+    doctor)
+      command -v jq >/dev/null 2>&1 || {
+        echo "jq is required to validate ud plugin metadata." >&2
+        return 1
+      }
+      local name
+      while IFS= read -r name; do
+        _ud_is_builtin "$name" && {
+          printf 'Plugin command collides with built-in: %s\n' "$name" >&2
+          return 1
+        }
+        _ud_plugin_info_json "$name" >/dev/null || return $?
+      done < <(_ud_plugin_names | sort -u)
+      echo "ud plugins are healthy."
+      ;;
+    help|-h|--help|"")
+      cat <<'EOF'
+USAGE:
+   ud plugin <command>
+
+COMMANDS:
+   list          List built-in commands and installed plugins
+   info <name>   Print and validate one plugin's JSON metadata
+   doctor        Validate installed plugins and discovery conflicts
+EOF
+      ;;
+    *)
+      printf 'Unknown plugin subcommand: %s\n' "$sub" >&2
+      _ud_plugin help >&2
+      return 1
+      ;;
+  esac
+}
+
+_ud_dispatch_plugin() {
+  local name="$1"
+  shift
+  local plugin
+  plugin="$(_ud_find_plugin "$name")" || return $?
+  UD_PLUGIN_API_VERSION=1 UD_PLUGIN_NAME="$name" exec "$plugin" "$@"
 }
 
 # Command: "ud go"
@@ -857,8 +1007,17 @@ EOF
     md) _ud_md "${@:2}" ;;
     nibi) _ud_nibi "${@:2}" ;;
     docker) _ud_docker "${@:2}" ;;
+    plugin) _ud_plugin "${@:2}" ;;
     quick|q|cfg) _ud_quick "${@:2}" ;;
     help|-h|--help|"") _ud_help ;;
-    *) echo -e "Unknown command: $cmd\n"; _ud_help ;;
+    *)
+      _ud_dispatch_plugin "$cmd" "${@:2}"
+      rc=$?
+      if [[ "$rc" -eq 1 ]]; then
+        echo -e "Unknown command: $cmd\n" >&2
+        _ud_help >&2
+      fi
+      exit "$rc"
+      ;;
   esac
 }
