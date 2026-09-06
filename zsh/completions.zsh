@@ -52,8 +52,13 @@ if (( ${+functions[zinit]} )); then
   zinit cdreplay -q
 fi
 
-# Use case-insensitive shell matching.
-zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+# Try case-insensitive prefixes first, then partial words, then substrings.
+# In `epics`, `cd forum<Tab>` can find `governance-forum`, and
+# `cd keeper<Tab>` can find `26-08-18-sai-keeper`.
+zstyle ':completion:*' matcher-list \
+  'm:{a-z}={A-Za-z}' \
+  'r:|=*' \
+  'l:|=* r:|=*'
 
 # Reuse `ls` shell completions for `exa`.
 compdef exa=ls

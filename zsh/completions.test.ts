@@ -38,6 +38,41 @@ describe("Zsh completion setup", () => {
     }
   })
 
+  test("tries partial-word and substring matches after prefix matches", () => {
+    const testHome = mkdtempSync(join(tmpdir(), "dotfiles-zsh-completion-"))
+
+    try {
+      const result = Bun.spawnSync(
+        [
+          "zsh",
+          "-f",
+          "-c",
+          'source "$DOTFILES/zsh/completions.zsh"; zstyle -a ":completion:*" matcher-list reply; print -rl -- "${reply[@]}"',
+        ],
+        {
+          env: {
+            ...process.env,
+            DOTFILES: dotfilesDir,
+            HOME: testHome,
+            XDG_CACHE_HOME: join(testHome, ".cache"),
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        },
+      )
+
+      expect(result.stderr.toString()).toBe("")
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.toString().trim().split("\n")).toEqual([
+        "m:{a-z}={A-Za-z}",
+        "r:|=*",
+        "l:|=* r:|=*",
+      ])
+    } finally {
+      rmSync(testHome, { force: true, recursive: true })
+    }
+  })
+
   test("the lazy widget invokes native completion directly", async () => {
     const zshrc = await Bun.file(join(zshDir, "zshrc.zsh")).text()
 
