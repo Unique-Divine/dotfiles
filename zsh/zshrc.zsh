@@ -114,6 +114,10 @@ fi
 # Enable vim keybinds
 bindkey -v
 
+# Let Backspace delete existing text while editing in vi insert mode.
+# Zsh otherwise stops at the point where insert mode began.
+bindkey -M viins '^?' backward-delete-char
+
 # Restore Oh My Zsh's typed-prefix history search for the arrow keys.
 autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
 zle -N up-line-or-beginning-search

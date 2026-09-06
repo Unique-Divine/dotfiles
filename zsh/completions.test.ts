@@ -77,4 +77,10 @@ describe("Zsh completion setup", () => {
     expect(zshrc).toContain("zle expand-or-complete")
     expect(zshrc).not.toContain("_dotfiles_original_complete")
   })
+
+  test("keeps Backspace compatible with Oh My Zsh vi insert mode", async () => {
+    const zshrc = await Bun.file(join(zshDir, "zshrc.zsh")).text()
+
+    expect(zshrc).toContain("bindkey -M viins '^?' backward-delete-char")
+  })
 })
