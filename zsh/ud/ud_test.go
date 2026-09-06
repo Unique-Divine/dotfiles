@@ -280,6 +280,47 @@ func TestPluginInfoAndList(t *testing.T) {
 	require.Contains(t, list, "example\t"+pluginPath)
 }
 
+func TestPluginMetadataCacheRefreshesWhenPluginChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	counterPath := filepath.Join(tmpDir, "metadata-count")
+	plugin := []byte("#!/usr/bin/env bash\n" +
+		"if [[ \"${1:-}\" == --plugin-info ]]; then\n" +
+		"  count=0\n" +
+		"  [[ -f \"$PLUGIN_COUNTER\" ]] && count=$(<\"$PLUGIN_COUNTER\")\n" +
+		"  printf '%s\\n' \"$((count + 1))\" > \"$PLUGIN_COUNTER\"\n" +
+		"  printf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Cached test plugin\"}'\n" +
+		"fi\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	env := []string{
+		"HOME=" + tmpDir,
+		"UD_PLUGIN_PATH=" + tmpDir,
+		"PLUGIN_COUNTER=" + counterPath,
+	}
+	for range 2 {
+		output, err := runUdCommandResult(t, "ud --help", env...)
+		require.NoError(t, err, "output: %s", output)
+		require.Contains(t, output, "Cached test plugin")
+	}
+
+	count, err := os.ReadFile(counterPath)
+	require.NoError(t, err)
+	require.Equal(t, "1\n", string(count))
+	require.FileExists(t, filepath.Join(
+		tmpDir, ".cache", "ud", "plugin-metadata", "example.json",
+	))
+
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+	output, err := runUdCommandResult(t, "ud --help", env...)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "Cached test plugin")
+
+	count, err = os.ReadFile(counterPath)
+	require.NoError(t, err)
+	require.Equal(t, "2\n", string(count))
+}
+
 func TestPluginInCurrentDirectoryIsIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
 	pluginPath := filepath.Join(tmpDir, "ud-not-discovered")

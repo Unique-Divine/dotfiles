@@ -97,21 +97,77 @@ _ud_plugin_names() {
   done < <(_ud_plugin_dirs)
 }
 
+_ud_plugin_cache_file() {
+  local name="$1"
+  [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || return 1
+  printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/ud/plugin-metadata/${name}.json"
+}
+
+_ud_plugin_cache_read() {
+  local name="$1"
+  local plugin_path="$2"
+  local cache_file
+  cache_file="$(_ud_plugin_cache_file "$name")" || return 1
+
+  [[ -r "$cache_file" && ! "$plugin_path" -nt "$cache_file" ]] || return 1
+
+  jq -e --arg name "$name" --arg plugin_path "$plugin_path" '
+    select(.pluginPath == $plugin_path)
+    | .metadata
+    | select(
+        .apiVersion == 1
+        and .name == $name
+        and (.description | type == "string")
+      )
+  ' "$cache_file"
+}
+
+_ud_plugin_cache_write() {
+  local name="$1"
+  local plugin_path="$2"
+  local info="$3"
+  local cache_file cache_dir cache_tmp
+  cache_file="$(_ud_plugin_cache_file "$name")" || return 0
+  cache_dir="${cache_file%/*}"
+
+  mkdir -p -m 700 "$cache_dir" || return 1
+  cache_tmp="$(mktemp "$cache_dir/.${name}.XXXXXX")" || return 1
+
+  if ! jq -n --arg plugin_path "$plugin_path" --argjson metadata "$info" \
+    '{pluginPath: $plugin_path, metadata: $metadata}' > "$cache_tmp"; then
+    rm -f "$cache_tmp"
+    return 1
+  fi
+
+  chmod 600 "$cache_tmp"
+  mv -f "$cache_tmp" "$cache_file"
+}
+
 _ud_plugin_info_json() {
   local name="$1"
-  local plugin info
+  local refresh="${2:-}"
+  local plugin plugin_path info
   plugin="$(_ud_find_plugin "$name")" || return $?
   command -v jq >/dev/null 2>&1 || {
     echo "jq is required to inspect ud plugin metadata." >&2
     return 1
   }
+
+  plugin_path="$(readlink -f -- "$plugin")" || plugin_path="$plugin"
+  if [[ "$refresh" != "refresh" ]] \
+    && _ud_plugin_cache_read "$name" "$plugin_path"; then
+    return 0
+  fi
+
   info="$("$plugin" --plugin-info)" || return $?
   jq -e --arg name "$name" \
     '.apiVersion == 1 and .name == $name and (.description | type == "string")' \
     >/dev/null <<< "$info" || {
-      printf 'Invalid metadata from ud plugin: %s\n' "$name" >&2
-      return 1
-    }
+    printf 'Invalid metadata from ud plugin: %s\n' "$name" >&2
+    return 1
+  }
+
+  _ud_plugin_cache_write "$name" "$plugin_path" "$info" || true
   jq . <<< "$info"
 }
 
@@ -163,7 +219,7 @@ _ud_plugin() {
           printf 'Plugin command collides with built-in: %s\n' "$name" >&2
           return 1
         }
-        _ud_plugin_info_json "$name" >/dev/null || return $?
+        _ud_plugin_info_json "$name" refresh >/dev/null || return $?
       done < <(_ud_plugin_names | sort -u)
       echo "ud plugins are healthy."
       ;;
@@ -174,8 +230,8 @@ USAGE:
 
 COMMANDS:
    list          List built-in commands and installed plugins
-   info <name>   Print and validate one plugin's JSON metadata
-   doctor        Validate installed plugins and discovery conflicts
+   info <name>   Print cached metadata, refreshing it when the plugin changes
+   doctor        Run each plugin's metadata check and validate discovery conflicts
 EOF
       ;;
     *)
