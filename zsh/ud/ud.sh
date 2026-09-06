@@ -17,7 +17,7 @@ USAGE:
 
 COMMANDS:
    go             Golang-specific commands
-   quick, q, cfg  Core configuration commands and common jumps to editors
+   quick, q, cfg  Quick commands for editing, navigation, and everyday tasks
    rs             Rust-specific commands
    nibi           Nibiru-specific commands
    md             Markdown commands
@@ -260,18 +260,12 @@ _ud_quick() {
 
   local sub="${1:-help}"
   case "$sub" in
-    cfg_nvim)
-      _ud_run "cfg_nvim" "$@" ;;
-    cfg_tmux)
-      _ud_run "cfg_tmux" "$@" ;;
     dotf)
       _ud_run "dotf" "$@" ;;
     ip)
       _ud_quick_ip ;;
     music)
       _ud_run "music" "$@" ;;
-    myrc)
-      _ud_run "myrc" "$@" ;;
     notes)
       _ud_run "notes" "$@" ;;
     out)
@@ -289,16 +283,12 @@ USAGE:
    ud quick [command]
 
 DESCRIPTION:
-   Quick jumps to open Neovim (nvim) to different working directories.
-   In the below commands, "edit" means "open nvim with a certain working directory".
+   Quick commands for editing, navigation, and everyday tasks.
 
 COMMANDS:
-   cfg_nvim     Edit nvim (Neovim) config
-   cfg_tmux     Edit tmux config
    dotf         Edit your dotfiles
    ip           Print public IP and best-effort GeoIP region
-   music        Opens the Windows file explorer to your music files
-   myrc         Edit your zshrc config
+   music        Open Windows File Explorer at your music folder
    notes        Edit your notes workspace
    out          Edit temporary file at \$HOME/ki/out.txt
    symlink      Link a source path to a destination path
