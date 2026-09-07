@@ -33,6 +33,31 @@ The command creates directory `.agents/` when needed. The resulting link text
 is `../ai-skills`, so path `.agents/skills` resolves to sibling directory
 `ai-skills/`.
 
+## Executable plugins
+
+Command `ud` supports private command branches without sourcing their
+implementation into the public Bash process. A plugin is any executable named
+`ud-<command>`. It may be a native binary or a script with a valid shebang.
+
+The dispatcher searches
+`${XDG_DATA_HOME:-$HOME/.local/share}/ud/plugins`, then each directory in
+colon-separated variable `UD_PLUGIN_PATH`. It never searches the current
+directory or uses a general `PATH` fallback. Built-ins cannot be overridden,
+and duplicate plugin names fail.
+
+Executable `ud-evm` creates branch `ud evm`:
+
+```bash
+ud plugin list
+ud plugin info evm
+ud plugin doctor
+ud evm --help
+```
+
+Each plugin implements flag `--plugin-info` and returns JSON fields
+`apiVersion`, `name`, and `description`. Metadata commands require `jq`;
+ordinary dispatch does not.
+
 ## What this tool is not
 
 1. It's not intended for use by others: Many settings and commands are

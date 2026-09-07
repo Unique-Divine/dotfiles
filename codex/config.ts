@@ -27,6 +27,8 @@ export const dotfileConfig = {
   },
 } satisfies TomlTable
 
+const userOwnedConfigKeys = new Set(["model", "model_reasoning_effort"])
+
 export const runtimeConfigPath = (
   env: NodeJS.ProcessEnv = process.env,
 ): string => {
@@ -150,7 +152,12 @@ export const mergeRuntimeConfig = (
   config: TomlTable = dotfileConfig,
   cursorMcpServers: TomlTable = {},
 ): TomlTable => {
-  const merged = mergeTables(runtimeConfig, config)
+  const managedConfig = { ...config }
+  for (const key of userOwnedConfigKeys) {
+    if (key in runtimeConfig) delete managedConfig[key]
+  }
+
+  const merged = mergeTables(runtimeConfig, managedConfig)
 
   if (Object.keys(cursorMcpServers).length === 0) {
     return merged

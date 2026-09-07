@@ -10,3 +10,4 @@ systemd/ssh-agent.service	.config/systemd/user/ssh-agent.service
 zsh/ud/ud.sh	.local/bin/ud
 bin/node	.local/bin/node
 zsh/gitconfig.ini	.gitconfig
+cursor/hooks	.config/git/hooks

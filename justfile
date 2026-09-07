@@ -38,7 +38,13 @@ clipboard-install:
 gh-rev-install:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  cargo install --path "$REPO/boku/jiyuu/gh-rev" --locked --root "$HOME/.local"
+  : "${REPO:?REPO must point to the directory containing boku}"
+  gh_rev_dir="$REPO/boku/jiyuu/gh-rev"
+  if [[ ! -f "$gh_rev_dir/Cargo.toml" ]]; then
+    echo "gh-rev source is unavailable at $gh_rev_dir; run just sync from a Boku checkout." >&2
+    exit 1
+  fi
+  cargo install --path "$gh_rev_dir" --locked --root "$HOME/.local"
   "$HOME/.local/bin/gh-rev" --help >/dev/null
 
 # Run the WSL clipboard bridge from the source workspace.
@@ -57,6 +63,8 @@ clipboard-rust-bench *ARGS:
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  just i-jiyuu
+  bun install
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
@@ -86,15 +94,38 @@ codex *ARGS:
 i-zinit:
   bash zsh/zinit-install.sh
 
+# Initialize Jiyuu and refresh it to the latest published main branch.
+[private]
+i-jiyuu:
+  bash zsh/sync-jiyuu.sh
+
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
   brew bundle --file Brewfile
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass
+    pass unzip
+  if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    (
+      export SHELL=/bin/sh
+      curl -fsSL https://bun.com/install | bash
+    )
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+      CODEX_NON_INTERACTIVE=1 sh
+  fi
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:

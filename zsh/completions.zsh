@@ -52,8 +52,11 @@ if (( ${+functions[zinit]} )); then
   zinit cdreplay -q
 fi
 
-# Use case-insensitive shell matching.
-zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+# Match case-insensitive substrings anywhere in a completion candidate.
+# In `epics`, `ls sai<Tab>` includes `sai-designs.md` and
+# `26-08-18-sai-keeper`. Keep these rules together: separate entries are
+# fallbacks, so a `sai-*` prefix would hide dated `*-sai-*` names.
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z} l:|=* r:|=*'
 
 # Reuse `ls` shell completions for `exa`.
 compdef exa=ls

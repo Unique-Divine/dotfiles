@@ -56,9 +56,9 @@ bun test zsh/clipboard.test.ts
 ## Quick Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/Unique-Divine/dotfiles.git
-cd dotfiles
+# Clone the Boku workspace and its required submodules.
+git clone --recurse-submodules git@github.com:Unique-Divine/boku.git "$HOME/ki/boku"
+cd "$HOME/ki/boku/dotfiles"
 
 # Install system packages used by the shell and Neovim.
 # - build-essential: Used in almost everything
@@ -82,8 +82,8 @@ just i-brew
 # Install development tools
 bun install
 
-# Create and repair symbolic links for configurations.
-# just sync also installs the Zinit checkout.
+# Create and repair configuration links. Command `just sync` refreshes Jiyuu
+# from `origin/main` before building `gh-rev`; it stops if Jiyuu has local changes.
 just sync
 just setup
 ```

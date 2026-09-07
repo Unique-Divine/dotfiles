@@ -248,3 +248,89 @@ func TestQuickSymlinkCreatesMissingParentForRelativeTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, src, resolved)
 }
+
+func TestExecutablePluginDispatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	plugin := []byte("#!/usr/bin/env bash\n" +
+		"if [[ \"${1:-}\" == --plugin-info ]]; then\n" +
+		"  printf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Test plugin\"}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"printf '%s\\n' \"$*\"\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	output, err := runUdCommandResult(t, "ud example alpha beta", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Equal(t, "alpha beta", output)
+}
+
+func TestPluginInfoAndList(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	plugin := []byte("#!/usr/bin/env bash\nprintf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Test plugin\"}'\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	info, err := runUdCommandResult(t, "ud plugin info example", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Contains(t, info, "\"name\": \"example\"")
+
+	list, err := runUdCommandResult(t, "ud plugin list", "UD_PLUGIN_PATH="+tmpDir)
+	require.NoError(t, err)
+	require.Contains(t, list, "example\t"+pluginPath)
+}
+
+func TestPluginMetadataCacheRefreshesWhenPluginChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-example")
+	counterPath := filepath.Join(tmpDir, "metadata-count")
+	plugin := []byte("#!/usr/bin/env bash\n" +
+		"if [[ \"${1:-}\" == --plugin-info ]]; then\n" +
+		"  count=0\n" +
+		"  [[ -f \"$PLUGIN_COUNTER\" ]] && count=$(<\"$PLUGIN_COUNTER\")\n" +
+		"  printf '%s\\n' \"$((count + 1))\" > \"$PLUGIN_COUNTER\"\n" +
+		"  printf '%s\\n' '{\"apiVersion\":1,\"name\":\"example\",\"description\":\"Cached test plugin\"}'\n" +
+		"fi\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	env := []string{
+		"HOME=" + tmpDir,
+		"UD_PLUGIN_PATH=" + tmpDir,
+		"PLUGIN_COUNTER=" + counterPath,
+	}
+	for range 2 {
+		output, err := runUdCommandResult(t, "ud --help", env...)
+		require.NoError(t, err, "output: %s", output)
+		require.Contains(t, output, "Cached test plugin")
+	}
+
+	count, err := os.ReadFile(counterPath)
+	require.NoError(t, err)
+	require.Equal(t, "1\n", string(count))
+	require.FileExists(t, filepath.Join(
+		tmpDir, ".cache", "ud", "plugin-metadata", "example.json",
+	))
+
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+	output, err := runUdCommandResult(t, "ud --help", env...)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "Cached test plugin")
+
+	count, err = os.ReadFile(counterPath)
+	require.NoError(t, err)
+	require.Equal(t, "2\n", string(count))
+}
+
+func TestPluginInCurrentDirectoryIsIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-not-discovered")
+	require.NoError(t, os.WriteFile(pluginPath, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+
+	_, err := runUdCommandResult(
+		t,
+		"cd "+fmt.Sprintf("%q", tmpDir)+" && ud not-discovered",
+		"UD_PLUGIN_PATH=",
+		"XDG_DATA_HOME="+filepath.Join(tmpDir, "xdg"),
+	)
+	require.Error(t, err)
+}
