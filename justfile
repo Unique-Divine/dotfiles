@@ -90,6 +90,20 @@ sync:
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo is required to build vendored Herdr" >&2
+    exit 1
+  fi
+  herdr_zig="$(command -v zig || true)"
+  if [[ -z "$herdr_zig" && -x /home/linuxbrew/.linuxbrew/opt/zig@0.15/bin/zig ]]; then
+    herdr_zig="/home/linuxbrew/.linuxbrew/opt/zig@0.15/bin/zig"
+  fi
+  if [[ -z "$herdr_zig" ]]; then
+    echo "zig is required to build vendored Herdr; run just i-brew" >&2
+    exit 1
+  fi
+  ZIG="$herdr_zig" cargo install --path lib-herdr --locked --root "$HOME/.local" --force
+  just --justfile herdr-tmux/justfile install
   just i-zinit
   just gh-rev-install
   if is_wsl >/dev/null; then
