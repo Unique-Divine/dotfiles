@@ -64,6 +64,7 @@ sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
   just i-jiyuu
+  bun install
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
@@ -108,9 +109,22 @@ i-bash:
   set -Eeuo pipefail
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass
+    pass unzip
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    (
+      export SHELL=/bin/sh
+      curl -fsSL https://bun.com/install | bash
+    )
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+      CODEX_NON_INTERACTIVE=1 sh
   fi
 
 # Install shell dependencies needed by CI tests.
