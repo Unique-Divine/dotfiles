@@ -92,9 +92,14 @@ i-brew:
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass tailscale
+    pass
+  if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh
+  fi
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
