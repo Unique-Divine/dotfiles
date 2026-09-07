@@ -133,8 +133,9 @@ mapping; `just health` validates the same mappings without writing state.
 and Cursor CLI defaults, and synchronizes managed AI skills. `just health`
 does not write: it checks required commands, Mason packages, and Codex,
 Cursor CLI, or skills-sync drift with a nonzero exit status. It checks the
-`nibi-mm/creds` entry with `pass ls` without decrypting or printing its
-contents. Mason package installation remains an explicit action.
+`nibi-mm/creds` entry with `pass ls`, then checks that the entry can be
+decrypted without printing its contents. Mason package installation remains
+an explicit action.
 
 ### AI agent skills
 

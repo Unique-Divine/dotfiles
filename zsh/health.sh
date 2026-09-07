@@ -81,9 +81,14 @@ for tool in bun just codex nvim rsync pass; do
 done
 
 pass_entry="nibi-mm/creds"
-if which_ok pass && ! pass ls "$pass_entry" >/dev/null 2>&1; then
-  log_error "Pass entry is missing: $pass_entry (create it with: pass insert --multiline $pass_entry)"
-  failed=1
+if which_ok pass; then
+  if ! pass ls "$pass_entry" >/dev/null 2>&1; then
+    log_error "Pass entry is missing: $pass_entry (create it with: pass insert --multiline $pass_entry)"
+    failed=1
+  elif ! pass show "$pass_entry" >/dev/null 2>&1; then
+    log_error "Pass entry cannot be decrypted: $pass_entry (import the matching GPG secret key and unlock gpg-agent)"
+    failed=1
+  fi
 fi
 
 if which_ok nvim; then
