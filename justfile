@@ -63,6 +63,28 @@ clipboard-rust-bench *ARGS:
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+  export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
+  i_bash_stamp="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/i-bash.stamp"
+  i_bash_max_age_seconds=$((24 * 60 * 60))
+  if [[ ! -f "$i_bash_stamp" ]]; then
+    just i-bash
+  else
+    i_bash_last_run="$(stat --format='%Y' "$i_bash_stamp")"
+    if (( $(date +%s) - i_bash_last_run >= i_bash_max_age_seconds )); then
+      just i-bash
+    fi
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    (
+      export SHELL=/bin/sh
+      curl -fsSL https://bun.com/install | bash
+    )
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+      CODEX_NON_INTERACTIVE=1 sh
+  fi
   just i-jiyuu
   bun install
   source zsh/bashlib.sh
@@ -122,12 +144,15 @@ i-jiyuu:
 
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
+  brew trust --tap bufbuild/buf
   brew bundle --file Brewfile
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+  export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
     pass unzip
@@ -135,18 +160,18 @@ i-bash:
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
   if ! command -v bun >/dev/null 2>&1; then
-    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-    export PATH="$BUN_INSTALL/bin:$PATH"
     (
       export SHELL=/bin/sh
       curl -fsSL https://bun.com/install | bash
     )
   fi
   if ! command -v codex >/dev/null 2>&1; then
-    export PATH="$HOME/.local/bin:$PATH"
     curl -fsSL https://chatgpt.com/codex/install.sh | \
       CODEX_NON_INTERACTIVE=1 sh
   fi
+  i_bash_cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles"
+  mkdir -p "$i_bash_cache_dir"
+  touch "$i_bash_cache_dir/i-bash.stamp"
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:
