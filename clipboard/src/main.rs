@@ -405,8 +405,11 @@ fn ensure_daemon(paths: &Paths, first_error: io::Error) -> io::Result<()> {
                 thread::sleep(Duration::from_millis(20));
             }
             Err(error) => {
+                let diagnostic = recent_daemon_log(paths);
                 return Err(other(format!(
-                    "clipboard daemon did not start after {first_error}: {error}",
+                    "clipboard daemon did not start after {first_error}: {error}. \
+                     Log: {}{diagnostic}",
+                    paths.log.display(),
                 )));
             }
         }
@@ -419,7 +422,8 @@ fn spawn_daemon(paths: &Paths) -> io::Result<()> {
     let executable = env::current_exe()?;
     let log = OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&paths.log)?;
     Command::new(executable)
         .arg("daemon")
@@ -442,11 +446,15 @@ fn run_daemon(paths: Paths) -> io::Result<()> {
     if paths.socket.exists() {
         fs::remove_file(&paths.socket)?;
     }
+
+    // Do not publish a socket until the Windows clipboard backend is ready.
+    // Otherwise a failed PowerShell launch leaves a socket path that clients
+    // can only report as `Connection refused`.
+    let power_shell = Arc::new(Mutex::new(ClipboardBackend::start(&paths)?));
     let listener = UnixListener::bind(&paths.socket)?;
     fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
 
-    let power_shell = Arc::new(Mutex::new(ClipboardBackend::start(&paths)?));
     let running = Arc::new(AtomicBool::new(true));
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
@@ -523,6 +531,35 @@ fn prepare_runtime_dir(paths: &Paths) -> io::Result<()> {
     let runtime_dir = paths.socket.parent().expect("socket has parent");
     fs::create_dir_all(runtime_dir)?;
     fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700))
+}
+
+/// Recovers the daemon's most useful startup context for the waiting client.
+///
+/// The daemon is detached so a short-lived `pbcopy` or `pbpaste` process does
+/// not own it, and its stderr is redirected to the runtime log to keep client
+/// stdout clean. That separation has a subtle failure mode: when the daemon
+/// exits before publishing its socket, `status` cannot connect to explain why
+/// startup failed. The original client therefore reads the log directly and
+/// includes its last three lines in the timeout error. The small bound keeps a
+/// long-running backend's history from overwhelming a one-line CLI failure.
+///
+/// Reading is deliberately best-effort. A missing, unreadable, or empty log
+/// contributes no suffix because the connection failure remains the primary
+/// error. `spawn_daemon` truncates the log before each launch, so any returned
+/// lines describe the current startup attempt rather than an older daemon.
+fn recent_daemon_log(paths: &Paths) -> String {
+    let Ok(log) = fs::read_to_string(&paths.log) else {
+        return String::new();
+    };
+    let lines: Vec<_> = log.lines().rev().take(3).collect();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; last error: {}",
+            lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        )
+    }
 }
 
 fn write_request<W: Write>(writer: &mut W, request: Request) -> io::Result<()> {

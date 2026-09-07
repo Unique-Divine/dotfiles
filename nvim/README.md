@@ -209,10 +209,10 @@ Use the `:MasonRestore` command to install packages that are listed in
 :MasonRestore
 ```
 
-The command refreshes the Mason registry and requests each missing package at
-the version recorded in the lock file. It reports installed version mismatches
-without replacing those packages. It also leaves packages that are absent
-from the lock file installed.
+The command refreshes the Mason registry and installs the exact version of each
+package recorded in the lock file. It replaces installed packages whose
+versions do not match. It leaves packages that are absent from the lock file
+installed.
 
 From the dotfiles repository, run the headless wrapper when setting up another
 machine:
@@ -224,6 +224,10 @@ just nvim-mason-restore
 The `just nvim-mason-restore` command starts Neovim with the normal
 configuration, runs `:MasonRestore`, waits for headless installs to finish,
 and exits with a failure status if the restore cannot match the lock file.
+The wrapper installs and selects NVM release line `lts/krypton` so Mason
+packages that use npm have Node.js available. It derives `GOROOT` from the
+selected `go` executable, verifies that directory exists, and exports it for
+Go-based package installers.
 
 The `just health` command performs a read-only check against `mason.lock`. It
 reports missing packages and version mismatches as errors, and reports extra

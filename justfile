@@ -63,7 +63,30 @@ clipboard-rust-bench *ARGS:
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+  export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
+  i_bash_stamp="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/i-bash.stamp"
+  i_bash_max_age_seconds=$((24 * 60 * 60))
+  if [[ ! -f "$i_bash_stamp" ]]; then
+    just i-bash
+  else
+    i_bash_last_run="$(stat --format='%Y' "$i_bash_stamp")"
+    if (( $(date +%s) - i_bash_last_run >= i_bash_max_age_seconds )); then
+      just i-bash
+    fi
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    (
+      export SHELL=/bin/sh
+      curl -fsSL https://bun.com/install | bash
+    )
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+      CODEX_NON_INTERACTIVE=1 sh
+  fi
   just i-jiyuu
+  bun install
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
@@ -82,6 +105,27 @@ health:
 
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+    printf 'NVM is not installed at %s\n' "$NVM_DIR/nvm.sh" >&2
+    exit 1
+  fi
+  source "$NVM_DIR/nvm.sh"
+  nvm install --lts=krypton
+  nvm alias default lts/krypton
+  nvm use --silent lts/krypton
+  if ! command -v go >/dev/null 2>&1; then
+    printf 'Go is not installed or is missing from PATH\n' >&2
+    exit 1
+  fi
+  go_root="$(env -u GOROOT go env GOROOT)"
+  if [[ ! -d "$go_root" ]]; then
+    printf 'Go installation root is missing: %s\n' "$go_root" >&2
+    exit 1
+  fi
+  export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
 # Run the portable Codex config CLI. For options, run `just codex`.
@@ -100,18 +144,34 @@ i-jiyuu:
 
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
+  brew trust --tap bufbuild/buf
   brew bundle --file Brewfile
 
 # Install baseline Ubuntu/WSL shell dependencies.
 i-bash:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+  export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu openssh-server \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass
+    pass unzip
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
+  if ! command -v bun >/dev/null 2>&1; then
+    (
+      export SHELL=/bin/sh
+      curl -fsSL https://bun.com/install | bash
+    )
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+      CODEX_NON_INTERACTIVE=1 sh
+  fi
+  i_bash_cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles"
+  mkdir -p "$i_bash_cache_dir"
+  touch "$i_bash_cache_dir/i-bash.stamp"
 
 # Install shell dependencies needed by CI tests.
 i-bash-ci:

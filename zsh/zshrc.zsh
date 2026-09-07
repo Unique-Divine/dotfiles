@@ -163,17 +163,26 @@ fi
 
 export PATH=$HOME/bin:$PATH
 
-# Fixes permission denied error in Windows machine sometimes seen with `just`.
+# Fix this error sometimes produced by `just` on WSL:
 # > error: Recipe `setup` with shebang `#!/usr/bin/env bash` execution error: Permission denied (os error 13)
+#
+# Why it fails:
+# - For a shebang recipe, `just` creates an executable temporary file under
+#   XDG_RUNTIME_DIR and asks Linux to run it.
+# - `noexec` is an option on a mounted filesystem. Linux refuses to execute
+#   files stored on that mount and returns permission error 13 (EACCES).
+# - WSL can mount /run/user/$UID separately beneath /run/user. Mount options
+#   do not cascade: remounting /run/user does not change its child mount.
+#
+# Why this fixes it:
+# - XDG_RUNTIME_DIR names the location where `just` creates its temporary file.
+# - Remount that exact location with `exec` instead of assuming that the parent
+#   /run/user mount controls it.
 if [[ -n "${SUDO_PW:-}" ]] &&
   is_wsl >/dev/null &&
   [[ "${XDG_RUNTIME_DIR:-}" == /run/user/* ]]; then
-  # WSL can mount /run/user as tmpfs with the noexec option, which prevents
-  # scripts stored under XDG_RUNTIME_DIR from being executed. `just` runs
-  # shebang recipes through temp files there, so noexec can surface as:
-  # "Permission denied (os error 13)". Remounting the actual mount point
-  # (/run/user, not /run/user/1000) with exec allows those temp files to run.
-  echo "$SUDO_PW" | sudo -S --prompt="" mount -o remount,exec /run/user
+  echo "$SUDO_PW" | sudo -S --prompt="" \
+    mount -o remount,exec "$XDG_RUNTIME_DIR"
 fi
 
 # ----------------------------------------------
@@ -326,7 +335,3 @@ gvm() {
   }
   gvm "$@"
 }
-
-# >>> Codex installer >>>
-export PATH="$HOME/.local/bin:$PATH"
-# <<< Codex installer <<<
