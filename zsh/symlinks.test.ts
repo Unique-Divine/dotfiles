@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { bash } from "@uniquedivine/bash"
@@ -65,6 +65,10 @@ describe("symlinks.sh", () => {
 
     await runSync(home)
     await expectManagedLinks(home, links)
+
+    await expect(
+      lstat(join(dotfilesRoot, "cursor", "hooks", "hooks")),
+    ).rejects.toMatchObject({ code: "ENOENT" })
 
     const repairedLink = links.at(0)
     if (!repairedLink) throw new Error("Managed-links manifest is empty")

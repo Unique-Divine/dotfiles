@@ -22,9 +22,9 @@ fi
 # Arguments:
 #   - `src`: Canonical file or directory in the dotfiles repository.
 #   - `dst`: Path through which programs discover `src`.
-# A symbolic-link `src` is skipped to avoid chained links. Otherwise, `ln -sf`
-# replaces an existing destination without prompting. If `dst` is a directory,
-# the link is created inside it with the basename of `src`.
+# A symbolic-link `src` is skipped to avoid chained links. Otherwise, `ln -sfn`
+# replaces an existing destination without prompting and does not follow a
+# destination symlink to a directory.
 # Usage: _symlink <source_path> <destination_path>
 _symlink() {
   local src="$1"
@@ -34,7 +34,7 @@ _symlink() {
     return 0
   fi
 
-  ln -sf "$src" "$dst"
+  ln -sfn "$src" "$dst"
 }
 
 while IFS=$'\t' read -r source_relative destination_relative; do

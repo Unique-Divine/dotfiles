@@ -38,7 +38,13 @@ clipboard-install:
 gh-rev-install:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  cargo install --path "$REPO/boku/jiyuu/gh-rev" --locked --root "$HOME/.local"
+  : "${REPO:?REPO must point to the directory containing boku}"
+  gh_rev_dir="$REPO/boku/jiyuu/gh-rev"
+  if [[ ! -f "$gh_rev_dir/Cargo.toml" ]]; then
+    echo "gh-rev source is unavailable at $gh_rev_dir; run just sync from a Boku checkout." >&2
+    exit 1
+  fi
+  cargo install --path "$gh_rev_dir" --locked --root "$HOME/.local"
   "$HOME/.local/bin/gh-rev" --help >/dev/null
 
 # Run the WSL clipboard bridge from the source workspace.
@@ -57,6 +63,7 @@ clipboard-rust-bench *ARGS:
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  just i-jiyuu
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
@@ -85,6 +92,11 @@ codex *ARGS:
 [private]
 i-zinit:
   bash zsh/zinit-install.sh
+
+# Initialize Jiyuu and refresh it to the latest published main branch.
+[private]
+i-jiyuu:
+  bash zsh/sync-jiyuu.sh
 
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
