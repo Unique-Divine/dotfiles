@@ -139,15 +139,22 @@ installation remains an explicit action.
 
 Public skills are distributed from Unique-Divine/jiyuu under `jiyuu/ai-skills`
 and omit `metadata.private`. Private skills are real directories in
-`boku/priv-skills` and require `metadata.private: true`. Team skills can also
-live canonically under a source repository's `ai-skills/` directory.
-`just skills-sync --run` makes `priv-skills` a flat union by linking each
-configured public or repository-owned skill into it, then links both
-`$HOME/.cursor/skills` and `$HOME/.agents/skills` to that union. Repository-owned sources also expose a
-relative `.agents/skills` discovery link for teammates. Edit a skill through
-either agent or its canonical repository path: the same file changes
-immediately. Sync rejects duplicate names and unexpected link targets. The
-first conversion from legacy copied runtime directories requires
+`boku/priv-skills` and require `metadata.private: true`.
+`just skills-sync --run` makes `priv-skills` a flat union by linking public
+skills into it, then links both `$HOME/.cursor/skills` and
+`$HOME/.agents/skills` to that union.
+
+A private skill can set `metadata.gh-repo: Owner/repository` to export a copy
+into a private team checkout. Sync uses `$REPO/<repository>` by default, or
+the relative path in `metadata.repo-dir`, and writes the copy under
+`ai-skills/<skill-name>`. It also maintains relative link
+`.agents/skills -> ../ai-skills` for teammates. The private Boku directory is
+authoritative, and sync replaces the complete repository copy. Missing team
+checkouts are skipped and do not fail health checks. Existing checkouts with
+export drift do fail health checks.
+
+Sync rejects duplicate names and unexpected link targets. The first
+conversion from legacy copied runtime directories requires
 `just skills-sync --run --migrate`; it refuses directories whose skills do not
 match the canonical union.
 

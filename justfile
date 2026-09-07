@@ -106,7 +106,7 @@ i-brew:
 i-bash:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  sudo apt install -y build-essential ripgrep gh libclang-dev wslu \
+  sudo apt install -y build-essential ripgrep gh libclang-dev wslu openssh-server \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
     pass
   if ! command -v tailscale >/dev/null 2>&1; then
