@@ -132,8 +132,9 @@ mapping; `just health` validates the same mappings without writing state.
 `just sync` runs the established shell bootstrap, applies portable Codex
 and Cursor CLI defaults, and synchronizes managed AI skills. `just health`
 does not write: it checks required commands, Mason packages, and Codex,
-Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
-installation remains an explicit action.
+Cursor CLI, or skills-sync drift with a nonzero exit status. It checks the
+`nibi-mm/creds` entry with `pass ls` without decrypting or printing its
+contents. Mason package installation remains an explicit action.
 
 ### AI agent skills
 
@@ -225,6 +226,7 @@ usage and options.
 - Bun and Node.js
 - Cargo/Rust tools
 - Just command runner (`cargo install just`)
+- Password Store CLI (`pass`) with the `nibi-mm/creds` entry
 - `libclang-dev` for building `tree-sitter-cli`
 - `lua5.1` and `luarocks` for Lazy/LuaRocks health checks
 - `tree-sitter-cli` (`cargo install tree-sitter-cli`)

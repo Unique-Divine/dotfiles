@@ -74,11 +74,17 @@ if [[ ! -x "$commit_msg_hook" ]]; then
   failed=1
 fi
 
-for tool in bun just codex nvim rsync; do
+for tool in bun just codex nvim rsync pass; do
   if ! which_ok "$tool"; then
     failed=1
   fi
 done
+
+pass_entry="nibi-mm/creds"
+if which_ok pass && ! pass ls "$pass_entry" >/dev/null 2>&1; then
+  log_error "Pass entry is missing: $pass_entry (create it with: pass insert --multiline $pass_entry)"
+  failed=1
+fi
 
 if which_ok nvim; then
   if ! MASON_LOCK_PATH="$PWD/nvim/mason.lock" \
