@@ -239,6 +239,13 @@ export KEYRING="--keyring-backend=test"
 export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
 
 export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"
+
+# Homebrew keeps the pinned Herdr compiler keg-only. Put it on PATH when present.
+linuxbrew_zig="/home/linuxbrew/.linuxbrew/opt/zig@0.15/bin"
+if [[ -x "$linuxbrew_zig/zig" ]]; then
+  export PATH="$linuxbrew_zig:$PATH"
+fi
+
 export PATH="$PATH:$HOME/.foundry/bin"
 
 # Google Cloud SDK:
