@@ -83,6 +83,27 @@ health:
 
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+    printf 'NVM is not installed at %s\n' "$NVM_DIR/nvm.sh" >&2
+    exit 1
+  fi
+  source "$NVM_DIR/nvm.sh"
+  nvm install --lts=krypton
+  nvm alias default lts/krypton
+  nvm use --silent lts/krypton
+  if ! command -v go >/dev/null 2>&1; then
+    printf 'Go is not installed or is missing from PATH\n' >&2
+    exit 1
+  fi
+  go_root="$(env -u GOROOT go env GOROOT)"
+  if [[ ! -d "$go_root" ]]; then
+    printf 'Go installation root is missing: %s\n' "$go_root" >&2
+    exit 1
+  fi
+  export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
 # Run the portable Codex config CLI. For options, run `just codex`.

@@ -2,7 +2,8 @@
 ---
 --- The lock file is intentionally a plain, reviewable list of package@version
 --- entries. :MasonLock refreshes it from the packages installed on this
---- machine. :MasonRestore installs missing entries without removing extras.
+--- machine. :MasonRestore installs exact locked versions without removing
+--- packages that are absent from the lock file.
 
 local M = {}
 
@@ -284,8 +285,12 @@ local function restore_entry(entry, registry)
   if package:is_installed() then
     local installed_version = package:get_installed_version()
     if installed_version ~= entry.version then
-      return false, ('Mason version mismatch for %s: locked %s, installed %s')
-        :format(entry.name, entry.version, installed_version)
+      return {
+        name = entry.name,
+        version = entry.version,
+        package = package,
+        replace = true,
+      }
     end
     return true
   end
@@ -293,31 +298,56 @@ local function restore_entry(entry, registry)
   return { name = entry.name, version = entry.version, package = package }
 end
 
-local function install_missing_blocking(entries)
+local function restore_package(entry, callback)
+  local function install()
+    local ok, call_error = pcall(function()
+      entry.package:install({ version = entry.version }, callback)
+    end)
+    if not ok then
+      callback(false, call_error)
+    end
+  end
+
+  if not entry.replace then
+    install()
+    return
+  end
+
+  local ok, call_error = pcall(function()
+    entry.package:uninstall({}, function(success, result)
+      if success then
+        install()
+      else
+        callback(false, ('could not uninstall version mismatch: %s')
+          :format(result))
+      end
+    end)
+  end)
+  if not ok then
+    callback(false, call_error)
+  end
+end
+
+local function restore_packages_blocking(entries)
   local async = require('mason-core.async')
   return async.run_blocking(function()
     return async.wait_all(vim.tbl_map(function(entry)
       return function()
         return async.wait(function(resolve, reject)
-          local ok, call_error = pcall(function()
-            entry.package:install({ version = entry.version }, function(success, result)
-              if success then
-                resolve(result)
-              else
-                reject(result)
-              end
-            end)
+          restore_package(entry, function(success, result)
+            if success then
+              resolve(result)
+            else
+              reject(('%s: %s'):format(entry.name, result))
+            end
           end)
-          if not ok then
-            reject(call_error)
-          end
         end)
       end
     end, entries))
   end)
 end
 
-local function install_missing_interactive(entries, on_complete)
+local function restore_packages_interactive(entries, on_complete)
   local remaining = #entries
   local failures = {}
   local completed = false
@@ -330,23 +360,36 @@ local function install_missing_interactive(entries, on_complete)
   end
 
   for _, entry in ipairs(entries) do
-    local ok, call_error = pcall(function()
-      entry.package:install({ version = entry.version }, function(success, result)
-        if not success then
-          failures[#failures + 1] = ('%s: %s'):format(entry.name, result)
-        end
-        remaining = remaining - 1
-        finish_if_done()
-      end)
-    end)
-    if not ok then
-      failures[#failures + 1] = ('%s: %s'):format(entry.name, call_error)
+    restore_package(entry, function(success, result)
+      if not success then
+        failures[#failures + 1] = ('%s: %s'):format(entry.name, result)
+      end
       remaining = remaining - 1
       finish_if_done()
-    end
+    end)
   end
 
   finish_if_done()
+end
+
+local function refresh_registry_blocking(registry)
+  local async = require('mason-core.async')
+  return async.run_blocking(function()
+    return async.wait(function(resolve, reject)
+      local ok, call_error = pcall(function()
+        registry.refresh(function(success, result)
+          if success then
+            resolve(result)
+          else
+            reject(result)
+          end
+        end)
+      end)
+      if not ok then
+        reject(call_error)
+      end
+    end)
+  end)
 end
 
 function M.restore(path)
@@ -358,21 +401,21 @@ function M.restore(path)
   end
 
   local registry = require('mason-registry')
-  local refreshed, refresh_error = registry.refresh()
+  local refreshed, refresh_error = pcall(refresh_registry_blocking, registry)
   if not refreshed then
     notify(('could not refresh the Mason registry: %s'):format(refresh_error),
       vim.log.levels.ERROR)
     return false
   end
 
-  local missing = {}
+  local pending = {}
   local failures = {}
   for _, entry in ipairs(entries) do
     local result, message = restore_entry(entry, registry)
     if result == nil or result == false then
       failures[#failures + 1] = message
     elseif type(result) == 'table' then
-      missing[#missing + 1] = result
+      pending[#pending + 1] = result
     end
   end
 
@@ -380,14 +423,14 @@ function M.restore(path)
     notify(message, vim.log.levels.ERROR)
   end
 
-  if #missing == 0 then
+  if #pending == 0 then
     notify(('Mason restore found %d package(s) already installed'):format(#entries),
       #failures == 0 and vim.log.levels.INFO or vim.log.levels.ERROR)
     return #failures == 0
   end
 
   if is_headless() then
-    local ok, install_error = pcall(install_missing_blocking, missing)
+    local ok, install_error = pcall(restore_packages_blocking, pending)
     if not ok then
       notify(('Mason restore failed: %s'):format(install_error),
         vim.log.levels.ERROR)
@@ -398,9 +441,9 @@ function M.restore(path)
     return #failures == 0 and check_ok
   end
 
-  notify(('Mason restore installing %d missing package(s)'):format(#missing),
+  notify(('Mason restore reconciling %d package(s)'):format(#pending),
     vim.log.levels.INFO)
-  install_missing_interactive(missing, function(install_failures)
+  restore_packages_interactive(pending, function(install_failures)
     for _, message in ipairs(install_failures) do
       notify(('Mason restore failed: %s'):format(message),
         vim.log.levels.ERROR)
