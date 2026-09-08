@@ -34,6 +34,7 @@ const REQUEST_PASTE: u8 = 2;
 const REQUEST_STATUS: u8 = 3;
 const REQUEST_STOP: u8 = 4;
 const REQUEST_STATUS_VERBOSE: u8 = 5;
+const REQUEST_HEALTH: u8 = 6;
 const RESPONSE_OK: u8 = 0;
 const RESPONSE_ERROR: u8 = 1;
 
@@ -45,6 +46,7 @@ enum Request {
     Copy(Vec<u8>),
     Paste,
     Status { verbose: bool },
+    Health,
     Stop,
 }
 
@@ -110,6 +112,7 @@ impl PowerShell {
                 "unexpected PowerShell greeting: {ready}"
             )));
         }
+        power_shell.wait_until_healthy()?;
         Ok(power_shell)
     }
 
@@ -127,6 +130,29 @@ impl PowerShell {
         self.stdin.write_all(b"PASTE\n")?;
         self.stdin.flush()?;
         self.expect_ok()
+    }
+
+    /// Verifies clipboard access without returning or modifying its contents.
+    fn health(&mut self) -> io::Result<()> {
+        self.stdin.write_all(b"HEALTH\n")?;
+        self.stdin.flush()?;
+        self.expect_ok().map(|_| ())
+    }
+
+    /// Tolerates brief clipboard contention, but requires an actual API call
+    /// before the daemon claims that its Windows backend is ready.
+    fn wait_until_healthy(&mut self) -> io::Result<()> {
+        let started_at = Instant::now();
+        loop {
+            match self.health() {
+                Ok(()) => return Ok(()),
+                Err(error) if started_at.elapsed() < STARTUP_TIMEOUT => {
+                    thread::sleep(Duration::from_millis(50));
+                    let _ = error;
+                }
+                Err(error) => return Err(clipboard_access_error(error)),
+            }
+        }
     }
 
     fn expect_ok(&mut self) -> io::Result<Vec<u8>> {
@@ -201,6 +227,10 @@ impl ClipboardBackend {
             ));
         }
         Ok(report.into_bytes())
+    }
+
+    fn health(&mut self) -> io::Result<()> {
+        self.run_with_recovery("health check", PowerShell::health)
     }
 
     fn run_with_recovery<T>(
@@ -292,6 +322,7 @@ fn run() -> io::Result<()> {
                 send_client_request(&paths, Request::Status { verbose }, false)?;
             io::stdout().write_all(&bytes)
         }
+        CliCommand::Health { quiet } => health(&paths, quiet),
         CliCommand::Stop => {
             send_client_request(&paths, Request::Stop, false)?;
             println!("stopped");
@@ -310,6 +341,7 @@ enum CliCommand {
     Copy,
     Paste,
     Status { verbose: bool },
+    Health { quiet: bool },
     Stop,
     Daemon,
     Help,
@@ -349,10 +381,52 @@ fn command_from_invocation(
             [command, flag] if command == "status" && flag == "--verbose" => {
                 Ok(CliCommand::Status { verbose: true })
             }
+            [command] if command == "health" => {
+                Ok(CliCommand::Health { quiet: false })
+            }
+            [command, flag] if command == "health" && flag == "--quiet" => {
+                Ok(CliCommand::Health { quiet: true })
+            }
             [command] if command == "stop" => Ok(CliCommand::Stop),
             [command] if command == "daemon" => Ok(CliCommand::Daemon),
             _ => Err(other(format!("unknown command: {}", requested.join(" ")))),
         },
+    }
+}
+
+/// Reports whether a running daemon can access the Windows clipboard. Unlike
+/// copy and paste, this diagnostic never starts a daemon as a side effect.
+fn health(paths: &Paths, quiet: bool) -> io::Result<()> {
+    let status =
+        send_client_request(paths, Request::Status { verbose: true }, false);
+    let result = send_client_request(paths, Request::Health, false);
+    match (status, result) {
+        (Ok(status), Ok(_)) => {
+            if !quiet {
+                print!("clipboard=ready\n{}", String::from_utf8_lossy(&status));
+            }
+            Ok(())
+        }
+        (Err(_), Ok(_)) => {
+            if !quiet {
+                print!("clipboard=ready\ndaemon=running\n");
+            }
+            Ok(())
+        }
+        (status, Err(error)) => {
+            let daemon = if status.is_ok() { "running" } else { "stopped" };
+            let message = format!(
+                "clipboard health check failed: {error}. If this is an SSH-hosted WSL session, \
+run `wsl-clipboard windows-task install` from a logged-in Windows session"
+            );
+            if quiet {
+                Err(other(message))
+            } else {
+                Err(other(format!(
+                    "daemon={daemon}\nclipboard=unavailable\nerror={message}"
+                )))
+            }
+        }
     }
 }
 
@@ -493,6 +567,11 @@ fn handle_client(
         Request::Status { verbose } => {
             power_shell.lock().map_err(poisoned)?.status(verbose)
         }
+        Request::Health => power_shell
+            .lock()
+            .map_err(poisoned)?
+            .health()
+            .map(|_| b"ready\n".to_vec()),
         Request::Stop => {
             running.store(false, Ordering::SeqCst);
             Ok(b"stopped".to_vec())
@@ -568,6 +647,7 @@ fn write_request<W: Write>(writer: &mut W, request: Request) -> io::Result<()> {
         Request::Paste => (REQUEST_PASTE, &[]),
         Request::Status { verbose: false } => (REQUEST_STATUS, &[]),
         Request::Status { verbose: true } => (REQUEST_STATUS_VERBOSE, &[]),
+        Request::Health => (REQUEST_HEALTH, &[]),
         Request::Stop => (REQUEST_STOP, &[]),
     };
     write_frame(writer, kind, payload)
@@ -584,6 +664,7 @@ fn read_request<R: Read>(reader: &mut R) -> io::Result<Request> {
         REQUEST_STATUS_VERBOSE if payload.is_empty() => {
             Ok(Request::Status { verbose: true })
         }
+        REQUEST_HEALTH if payload.is_empty() => Ok(Request::Health),
         REQUEST_STOP if payload.is_empty() => Ok(Request::Stop),
         _ => Err(other("invalid clipboard request")),
     }
@@ -641,7 +722,7 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<(u8, Vec<u8>)> {
 
 /// Builds the child script rather than accepting a caller-provided command.
 ///
-/// The script recognizes only `COPY`, `PASTE`, and `QUIT`; base64 carries the
+/// The script recognizes only `COPY`, `PASTE`, `HEALTH`, and `QUIT`; base64 carries the
 /// actual text and response bytes without invoking PowerShell expression
 /// evaluation on client input.
 fn build_power_shell_script() -> String {
@@ -658,6 +739,9 @@ fn build_power_shell_script() -> String {
         "if ($null -eq $text) { $text = '' }",
         "$bytes = $utf8.GetBytes([string]$text)",
         "[Console]::Out.WriteLine('OK ' + [Convert]::ToBase64String($bytes))",
+        "} elseif ($line -eq 'HEALTH') {",
+        "$null = Get-Clipboard -Raw",
+        "[Console]::Out.WriteLine('OK ')",
         "} elseif ($line.StartsWith('COPY ')) {",
         "$bytes = [Convert]::FromBase64String($line.Substring(5))",
         "$text = $utf8.GetString($bytes)",
@@ -699,6 +783,13 @@ fn recovery_error(
     ))
 }
 
+fn clipboard_access_error(error: io::Error) -> io::Error {
+    other(format!(
+        "Windows clipboard access failed: {error}. If this is an SSH-hosted WSL session, \
+run `wsl-clipboard windows-task install` from a logged-in Windows session"
+    ))
+}
+
 fn missing_pipe() -> io::Error {
     other("PowerShell pipe was unavailable")
 }
@@ -732,7 +823,8 @@ fn validate_utf8_input(bytes: &[u8]) -> io::Result<()> {
 }
 
 fn print_usage() {
-    println!("Usage: wsl-clipboard <copy|paste|status|stop|daemon>");
+    println!("Usage: wsl-clipboard <copy|paste|status|health|stop|daemon>");
+    println!("  health [--quiet]  Verify clipboard access without copying data");
     println!("Aliases: pbcopy, pbpaste, wsl-pbcopy, wsl-pbpaste");
 }
 
@@ -814,6 +906,32 @@ mod tests {
             .unwrap(),
             CliCommand::Status { verbose: true }
         );
+    }
+
+    #[test]
+    fn health_is_an_explicit_command() {
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-clipboard"),
+                vec!["health".to_owned(), "--quiet".to_owned()]
+            )
+            .unwrap(),
+            CliCommand::Health { quiet: true }
+        );
+    }
+
+    #[test]
+    fn health_request_round_trips_without_payload() {
+        let mut bytes = Vec::new();
+        write_request(&mut bytes, Request::Health).unwrap();
+        assert!(matches!(read_request(&mut Cursor::new(bytes)).unwrap(), Request::Health));
+    }
+
+    #[test]
+    fn power_shell_protocol_probes_without_copying() {
+        let script = build_power_shell_script();
+        assert!(script.contains("$line -eq 'HEALTH'"));
+        assert!(script.contains("$null = Get-Clipboard -Raw"));
     }
 
     #[test]
