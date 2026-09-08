@@ -15,6 +15,23 @@ ud go fmt   # Formats with gofumpt
 ud rs fmt   # Formats with rustfmt
 ```
 
+## Local health checks
+
+Command `ud health` groups diagnostics for local tools. It shows help by
+default, so adding another check does not make the command run unexpectedly.
+
+The GPG check delegates to the standalone doctor in `dotfiles/bin`:
+
+```bash
+ud health gpg         # Diagnose gpg-agent and pinentry
+ud health gpg --fix   # Restart the agent and refresh its terminal binding
+
+gpg-agent-doctor      # Run the same diagnosis without ud
+```
+
+Neither diagnosis command reads the password store. Repair requires the
+explicit `--fix` flag and clears cached passphrases when it restarts the agent.
+
 ## Symbolic links
 
 Command `ud q symlink <src> <dst>` creates the parent directory for destination

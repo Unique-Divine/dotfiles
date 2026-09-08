@@ -22,6 +22,7 @@ COMMANDS:
    nibi           Nibiru-specific commands
    md             Markdown commands
    docker         Docker Desktop commands for WSL
+   health         Diagnose and repair local tools
    plugin         Inspect executable ud plugins
    help, h        Shows a list of commands or help for one command
 
@@ -61,7 +62,7 @@ _ud_plugin_dirs() {
 
 _ud_is_builtin() {
   case "$1" in
-    go|rs|md|nibi|docker|quick|q|cfg|plugin|help|h) return 0 ;;
+    go|rs|md|nibi|docker|health|quick|q|cfg|plugin|help|h) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -193,7 +194,7 @@ _ud_plugin() {
   case "$sub" in
     list)
       printf 'BUILT-IN\n'
-      printf '%s\n' go rs md nibi docker quick plugin
+      printf '%s\n' go rs md nibi docker health quick plugin
       printf '\nPLUGIN\n'
       local name plugin
       while IFS= read -r name; do
@@ -248,6 +249,66 @@ _ud_dispatch_plugin() {
   local plugin
   plugin="$(_ud_find_plugin "$name")" || return $?
   UD_PLUGIN_API_VERSION=1 UD_PLUGIN_NAME="$name" exec "$plugin" "$@"
+}
+
+# ------------ Subcommand: ud health
+
+# Run the standalone GPG agent doctor from the checked-out dotfiles tree.
+_ud_health_gpg() {
+  case "${1:-}" in
+    help|-h|--help)
+      cat <<'EOF'
+USAGE:
+   ud health gpg [--fix]
+
+DESCRIPTION:
+   Diagnose a blocked GPG agent without reading the password store.
+
+FLAGS:
+   --fix        Restart gpg-agent and refresh its terminal binding
+   --help, -h   Show help for this check
+
+STANDALONE:
+   gpg-agent-doctor [--fix]
+EOF
+      return 0
+      ;;
+  esac
+
+  local doctor="$DOTFILES/bin/gpg-agent-doctor"
+  if [[ ! -x "$doctor" ]]; then
+    printf 'GPG agent doctor is not executable: %s\n' "$doctor" >&2
+    return 127
+  fi
+
+  "$doctor" "$@"
+}
+
+# Diagnose one named local tool. Plain `ud health` only displays help.
+_ud_health() {
+  local check="${1:-help}"
+  case "$check" in
+    gpg)
+      _ud_health_gpg "${@:2}"
+      ;;
+    help|-h|--help|"")
+      cat <<'EOF'
+USAGE:
+   ud health <check>
+
+CHECKS:
+   gpg        Diagnose gpg-agent and repair it with --fix
+
+FLAGS:
+   --help, -h   Show help for this command
+EOF
+      ;;
+    *)
+      printf 'Unknown health check: %s\n' "$check" >&2
+      _ud_health help >&2
+      return 1
+      ;;
+  esac
 }
 
 # Command: "ud go"
@@ -1053,6 +1114,7 @@ EOF
     md) _ud_md "${@:2}" ;;
     nibi) _ud_nibi "${@:2}" ;;
     docker) _ud_docker "${@:2}" ;;
+    health) _ud_health "${@:2}" ;;
     plugin) _ud_plugin "${@:2}" ;;
     quick|q|cfg) _ud_quick "${@:2}" ;;
     help|-h|--help|"") _ud_help ;;

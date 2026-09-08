@@ -87,6 +87,56 @@ func TestHelpCommand(t *testing.T) {
 	}
 }
 
+func TestHealthHelp(t *testing.T) {
+	for _, bashCmd := range []string{
+		"ud health",
+		"ud health help",
+		"ud health -h",
+		"ud health --help",
+	} {
+		t.Run(bashCmd, func(t *testing.T) {
+			output := runUdCommand(t, bashCmd)
+			require.Contains(t, output, "USAGE:\n   ud health <check>")
+			require.Contains(t, output, "gpg")
+		})
+	}
+}
+
+func TestHealthGpgHelp(t *testing.T) {
+	output := runUdCommand(t, "ud health gpg --help")
+	require.Contains(t, output, "USAGE:\n   ud health gpg [--fix]")
+	require.Contains(t, output, "gpg-agent-doctor [--fix]")
+}
+
+func TestHealthGpgForwardsFixToDotfilesDoctor(t *testing.T) {
+	tmpDir := t.TempDir()
+	doctorPath := filepath.Join(tmpDir, "bin", "gpg-agent-doctor")
+	zshenvPath := filepath.Join(tmpDir, "zsh", "zshenv")
+	require.NoError(t, os.MkdirAll(filepath.Dir(doctorPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(zshenvPath), 0o755))
+	require.NoError(t, os.WriteFile(zshenvPath, []byte(""), 0o644))
+	require.NoError(t, os.WriteFile(
+		doctorPath,
+		[]byte("#!/usr/bin/env bash\nprintf '<%s>\\n' \"$@\"\n"),
+		0o755,
+	))
+
+	output, err := runUdCommandResult(
+		t,
+		"ud health gpg --fix",
+		"DOTFILES="+tmpDir,
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Equal(t, "<--fix>", output)
+}
+
+func TestHealthRejectsUnknownCheck(t *testing.T) {
+	output, err := runUdCommandResult(t, "ud health unknown")
+	require.Error(t, err)
+	require.Contains(t, output, "Unknown health check: unknown")
+	require.Contains(t, output, "ud health <check>")
+}
+
 func TestRsTestCmd(t *testing.T) {
 	bashCmd := "ud rs test --cmd"
 	output := runUdCommand(t, bashCmd)
@@ -280,6 +330,24 @@ func TestPluginInfoAndList(t *testing.T) {
 	require.Contains(t, list, "example\t"+pluginPath)
 }
 
+func TestHealthIsBuiltInAndCannotBeShadowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "ud-health")
+	plugin := []byte("#!/usr/bin/env bash\nexit 0\n")
+	require.NoError(t, os.WriteFile(pluginPath, plugin, 0o755))
+
+	list := runUdCommand(t, "ud plugin list")
+	require.Contains(t, list, "health")
+
+	output, err := runUdCommandResult(
+		t,
+		"ud plugin doctor",
+		"UD_PLUGIN_PATH="+tmpDir,
+	)
+	require.Error(t, err)
+	require.Contains(t, output, "Plugin command collides with built-in: health")
+}
+
 func TestPluginMetadataCacheRefreshesWhenPluginChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	pluginPath := filepath.Join(tmpDir, "ud-example")
@@ -295,6 +363,7 @@ func TestPluginMetadataCacheRefreshesWhenPluginChanges(t *testing.T) {
 
 	env := []string{
 		"HOME=" + tmpDir,
+		"XDG_CACHE_HOME=" + filepath.Join(tmpDir, ".cache"),
 		"UD_PLUGIN_PATH=" + tmpDir,
 		"PLUGIN_COUNTER=" + counterPath,
 	}
