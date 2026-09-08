@@ -3,6 +3,7 @@
 # tap the bufbuild/buf repo first, then install from it.
 tap "bufbuild/buf"
 brew "bufbuild/buf/buf"
+brew "go"
 brew "kubectl"
 brew "lychee"
 brew "zig@0.15"
