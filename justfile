@@ -13,6 +13,46 @@ test:
 
 alias t := test
 
+# Run the Rust ud CLI from this checkout.
+ud *ARGS:
+  cargo run --package ud -- {{ARGS}}
+
+# Build the Rust ud CLI without installing it.
+ud-build:
+  cargo build --release --package ud
+
+# Install the Rust ud CLI at ~/.local/bin/ud and record its source fingerprint.
+ud-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  ud_bin="$HOME/.local/bin/ud"
+  legacy_ud="$PWD/zsh/ud/ud.sh"
+
+  if [[ -L "$ud_bin" ]]; then
+    installed_target="$(readlink -m -- "$ud_bin")"
+    legacy_target="$(readlink -m -- "$legacy_ud")"
+    if [[ "$installed_target" == "$legacy_target" ]]; then
+      unlink "$ud_bin"
+    else
+      echo "Refusing to replace unexpected ud symlink: $ud_bin" >&2
+      exit 1
+    fi
+  elif [[ -e "$ud_bin" ]]; then
+    if [[ ! -f "$ud_bin" || ! -x "$ud_bin" ]] || \
+      ! "$ud_bin" --version 2>/dev/null | rg -q '^ud [0-9]'; then
+      echo "Refusing to replace unexpected ud executable: $ud_bin" >&2
+      exit 1
+    fi
+  fi
+
+  cargo install --path ud --locked --root "$HOME/.local" --force
+  ud_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/ud"
+  install -d -m 700 "$ud_state_dir"
+  ud_stamp_tmp="$(mktemp "$ud_state_dir/.install.XXXXXX")"
+  bash ud/source-hash.sh > "$ud_stamp_tmp"
+  chmod 600 "$ud_stamp_tmp"
+  mv -f "$ud_stamp_tmp" "$ud_state_dir/install.sha256"
+
 # Benchmark WSL clipboard copy, paste, backends, and round-trip latency.
 clipboard-bench *ARGS:
   bun run zsh/clipboard.bench.ts {{ARGS}}
@@ -108,6 +148,7 @@ sync:
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     just herdr-install
   fi
