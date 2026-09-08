@@ -648,12 +648,12 @@ fn wsl_executable() -> PathBuf {
 }
 
 fn decode_windows_text(bytes: &[u8]) -> String {
-    if bytes.len() % 2 == 0
+    if bytes.len() & 1 == 0
         && bytes.iter().skip(1).step_by(2).any(|byte| *byte == 0)
     {
         String::from_utf16_lossy(
             &bytes
-                .chunks_exact(2)
+                .chunks(2)
                 .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                 .collect::<Vec<_>>(),
         )
