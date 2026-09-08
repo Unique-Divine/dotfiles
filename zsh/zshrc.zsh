@@ -235,6 +235,10 @@ export PATH="$GOROOT/bin:$PATH"
 export PATH="$PATH:$GOPATH/bin"
 
 export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
+windows_powershell_dir="/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
+if [[ -x "$windows_powershell_dir/powershell.exe" ]]; then
+  export PATH="$windows_powershell_dir:$PATH"
+fi
 export PATH="/mnt/c/Users/realu/AppData/Local/Programs/Microsoft VS Code/bin:$PATH"
 
 # Cosmos-sdk 'file' backend
