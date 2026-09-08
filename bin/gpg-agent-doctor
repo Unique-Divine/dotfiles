@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Diagnose a blocked GPG agent and optionally restart the user service.
+
+set -Eeuo pipefail
+
+readonly agent_unit="gpg-agent.service"
+
+usage() {
+  printf '%s\n' \
+    "Usage: gpg-agent-doctor [--fix]" \
+    "" \
+    "With no arguments, report agent, pinentry, TTY, and recent logs." \
+    "With --fix, restart gpg-agent and refresh its terminal binding." \
+    "This never reads from the password store."
+}
+
+require_command() {
+  local -r command_name="$1"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'ERROR: required command not found: %s\n' "$command_name" >&2
+    exit 127
+  fi
+}
+
+current_tty() {
+  if [[ -t 0 ]]; then
+    tty
+  fi
+}
+
+show_processes() {
+  printf '\n[agent and pinentry processes]\n'
+  ps -o pid,ppid,tty,stat,lstart,etime,args \
+    -C gpg-agent -C pinentry -C pinentry-curses || true
+}
+
+# Report pinentry descriptors that refer to terminals that have disappeared.
+show_stale_pinentry_fds() {
+  local fd_path=""
+  local fd_target=""
+  local found=false
+  local pid=""
+
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+
+    for fd_path in "/proc/$pid/fd/"*; do
+      [[ -e "$fd_path" || -L "$fd_path" ]] || continue
+      fd_target="$(readlink "$fd_path" 2>/dev/null || true)"
+      if [[ "$fd_target" == *" (deleted)" ]]; then
+        if [[ "$found" == false ]]; then
+          printf '\n[stale pinentry descriptors]\n'
+          found=true
+        fi
+        printf 'PID %s fd %s -> %s\n' \
+          "$pid" "${fd_path##*/}" "$fd_target"
+      fi
+    done
+  done < <(
+    ps -u "$(id -u)" -o pid=,comm= |
+      awk '$2 ~ /^pinentry/ {print $1}'
+  )
+
+  if [[ "$found" == false ]]; then
+    printf '\n[stale pinentry descriptors]\nnone found\n'
+  fi
+}
+
+show_diagnosis() {
+  local agent_socket=""
+  local shell_tty=""
+
+  shell_tty="$(current_tty)"
+  agent_socket="$(gpgconf --list-dirs agent-socket 2>/dev/null || true)"
+
+  printf '[terminal]\n'
+  printf 'current tty: %s\n' "${shell_tty:-none}"
+  printf 'GPG_TTY: %s\n' "${GPG_TTY:-unset}"
+  if [[ -n "$shell_tty" && "${GPG_TTY:-}" != "$shell_tty" ]]; then
+    printf 'WARNING: GPG_TTY does not match this terminal.\n'
+  fi
+
+  printf '\n[service]\n'
+  systemctl --user --no-pager --full status "$agent_unit" 2>&1 |
+    sed -n '1,24p' || true
+
+  printf '\n[socket]\n'
+  if [[ -n "$agent_socket" && -S "$agent_socket" ]]; then
+    stat -c '%A %U:%G %n' "$agent_socket"
+  else
+    printf 'WARNING: agent socket is missing: %s\n' \
+      "${agent_socket:-unknown}"
+  fi
+
+  show_processes
+  show_stale_pinentry_fds
+
+  printf '\n[recent lock and pinentry errors]\n'
+  journalctl --user -u "$agent_unit" --since '30 minutes ago' --no-pager \
+    2>/dev/null |
+    grep -Ei 'pinentry|lock|timeout|PKDECRYPT|secret key' |
+    tail -n 30 || true
+}
+
+restart_agent() {
+  local shell_tty=""
+
+  shell_tty="$(current_tty)"
+  printf '[repair]\n'
+  printf 'Restarting %s...\n' "$agent_unit"
+
+  if ! timeout 5 systemctl --user restart "$agent_unit"; then
+    printf 'The agent ignored SIGTERM. Sending SIGKILL to this service only.\n'
+    systemctl --user kill --kill-whom=all --signal=KILL "$agent_unit"
+    systemctl --user start "$agent_unit"
+  fi
+
+  if [[ -n "$shell_tty" ]]; then
+    export GPG_TTY="$shell_tty"
+    gpg-connect-agent updatestartuptty /bye >/dev/null
+    printf 'Updated agent terminal binding to %s.\n' "$GPG_TTY"
+  else
+    printf 'WARNING: no terminal on stdin; terminal binding was not updated.\n'
+  fi
+
+  if [[ "$(systemctl --user is-active "$agent_unit")" != "active" ]]; then
+    printf 'ERROR: %s did not become active.\n' "$agent_unit" >&2
+    return 1
+  fi
+
+  printf 'Agent is active. Cached passphrases were cleared.\n'
+}
+
+main() {
+  local fix=false
+
+  case "${1:-}" in
+    "") ;;
+    --fix) fix=true ;;
+    -h|--help)
+      usage
+      return 0
+      ;;
+    *)
+      printf 'ERROR: unknown argument: %s\n' "$1" >&2
+      usage >&2
+      return 2
+      ;;
+  esac
+
+  if (( $# > 1 )); then
+    printf 'ERROR: expected at most one argument.\n' >&2
+    usage >&2
+    return 2
+  fi
+
+  require_command gpg-connect-agent
+  require_command gpgconf
+  require_command journalctl
+  require_command systemctl
+  require_command timeout
+
+  if [[ "$fix" == true ]]; then
+    restart_agent
+    printf '\n'
+  fi
+
+  show_diagnosis
+}
+
+main "$@"

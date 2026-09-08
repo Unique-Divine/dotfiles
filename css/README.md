@@ -25,5 +25,8 @@ Example usage:
 ```bash
 GH_MD_CSS="$DOTFILES/css/github-markdown.min.css"
 GH_PANDOC_CSS="$DOTFILES/css/github-markdown-pandoc.css"
-auto-pandoc calc-liq.md -s --katex --css="$GH_MD_CSS" --css="$GH_PANDOC_CSS" -o index.html
+auto-pandoc calc-liq.md -s --katex \
+  --css "$GH_MD_CSS" \
+  --css "$GH_PANDOC_CSS" \
+  -o index.html
 ```

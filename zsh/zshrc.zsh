@@ -221,9 +221,18 @@ setopt NUMERIC_GLOB_SORT
 unsetopt BEEP
 
 # ----------------------- Go / Golang
-export GOROOT="/usr/local/go"
 export GOPATH="$HOME/go"
-export PATH="$GOPATH/bin:$GOROOT/bin:$PATH"
+export PATH="$GOPATH/bin:$PATH"
+
+# Let Go discover the Homebrew toolchain on hosts without a system install.
+# GOROOT is only needed for the explicit /usr/local/go installation.
+if [[ -d /usr/local/go ]]; then
+  export GOROOT="/usr/local/go"
+  export PATH="$GOROOT/bin:$PATH"
+else
+  unset GOROOT
+fi
+
 export GO111MODULE=on
 
 # Define the Goenv installation and shims before deferred initialization. The
@@ -231,7 +240,6 @@ export GO111MODULE=on
 export GOENV_ROOT="$HOME/.goenv"
 export PATH="$GOENV_ROOT/bin:$PATH"
 export PATH="$PATH:$GOENV_ROOT/shims"
-export PATH="$GOROOT/bin:$PATH"
 export PATH="$PATH:$GOPATH/bin"
 
 export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
