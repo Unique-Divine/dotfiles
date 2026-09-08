@@ -220,7 +220,7 @@ i-bash:
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
   sudo apt install -y build-essential ripgrep gh libclang-dev wslu openssh-server \
     ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass unzip
+    pass unzip jq
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
