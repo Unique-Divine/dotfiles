@@ -69,7 +69,7 @@ clipboard-build:
 clipboard-install:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  cargo install --path clipboard --locked --root "$HOME/.local"
+  cargo install --path clipboard --locked --root "$HOME/.local" --force
   for command_name in pbcopy pbpaste wsl-pbcopy wsl-pbpaste; do
     ln -sfn wsl-clipboard "$HOME/.local/bin/$command_name"
   done

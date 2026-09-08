@@ -26,6 +26,10 @@ const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Bounds client startup waits when PowerShell cannot initialize, while still
 /// accommodating the one-time Windows process startup cost.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
+const WINDOWS_TASK_NAME: &str = "wsl-clipboard-interactive-daemon";
+const WINDOWS_POWERSHELL_PATH: &str =
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+const WINDOWS_WSL_PATH: &str = "/mnt/c/Windows/System32/wsl.exe";
 
 // One-byte operation and status codes for the Unix-socket protocol. The
 // payload framing below carries all arbitrary text, not these control values.
@@ -34,6 +38,7 @@ const REQUEST_PASTE: u8 = 2;
 const REQUEST_STATUS: u8 = 3;
 const REQUEST_STOP: u8 = 4;
 const REQUEST_STATUS_VERBOSE: u8 = 5;
+const REQUEST_HEALTH: u8 = 6;
 const RESPONSE_OK: u8 = 0;
 const RESPONSE_ERROR: u8 = 1;
 
@@ -45,6 +50,7 @@ enum Request {
     Copy(Vec<u8>),
     Paste,
     Status { verbose: bool },
+    Health,
     Stop,
 }
 
@@ -84,7 +90,7 @@ impl PowerShell {
     /// line before accepting socket requests.
     fn start(log: &File) -> io::Result<Self> {
         let script = build_power_shell_script();
-        let mut child = Command::new("powershell.exe")
+        let mut child = Command::new(power_shell_executable())
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -110,6 +116,7 @@ impl PowerShell {
                 "unexpected PowerShell greeting: {ready}"
             )));
         }
+        power_shell.wait_until_healthy()?;
         Ok(power_shell)
     }
 
@@ -127,6 +134,29 @@ impl PowerShell {
         self.stdin.write_all(b"PASTE\n")?;
         self.stdin.flush()?;
         self.expect_ok()
+    }
+
+    /// Verifies clipboard access without returning or modifying its contents.
+    fn health(&mut self) -> io::Result<()> {
+        self.stdin.write_all(b"HEALTH\n")?;
+        self.stdin.flush()?;
+        self.expect_ok().map(|_| ())
+    }
+
+    /// Tolerates brief clipboard contention, but requires an actual API call
+    /// before the daemon claims that its Windows backend is ready.
+    fn wait_until_healthy(&mut self) -> io::Result<()> {
+        let started_at = Instant::now();
+        loop {
+            match self.health() {
+                Ok(()) => return Ok(()),
+                Err(error) if started_at.elapsed() < STARTUP_TIMEOUT => {
+                    thread::sleep(Duration::from_millis(50));
+                    let _ = error;
+                }
+                Err(error) => return Err(clipboard_access_error(error)),
+            }
+        }
     }
 
     fn expect_ok(&mut self) -> io::Result<Vec<u8>> {
@@ -201,6 +231,10 @@ impl ClipboardBackend {
             ));
         }
         Ok(report.into_bytes())
+    }
+
+    fn health(&mut self) -> io::Result<()> {
+        self.run_with_recovery("health check", PowerShell::health)
     }
 
     fn run_with_recovery<T>(
@@ -292,6 +326,8 @@ fn run() -> io::Result<()> {
                 send_client_request(&paths, Request::Status { verbose }, false)?;
             io::stdout().write_all(&bytes)
         }
+        CliCommand::Health { quiet } => health(&paths, quiet),
+        CliCommand::WindowsTask { command } => windows_task(command),
         CliCommand::Stop => {
             send_client_request(&paths, Request::Stop, false)?;
             println!("stopped");
@@ -310,9 +346,18 @@ enum CliCommand {
     Copy,
     Paste,
     Status { verbose: bool },
+    Health { quiet: bool },
+    WindowsTask { command: WindowsTaskCommand },
     Stop,
     Daemon,
     Help,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum WindowsTaskCommand {
+    Install,
+    Status,
+    Remove,
 }
 
 /// Maps installed command aliases to operations without requiring duplicate
@@ -349,11 +394,303 @@ fn command_from_invocation(
             [command, flag] if command == "status" && flag == "--verbose" => {
                 Ok(CliCommand::Status { verbose: true })
             }
+            [command] if command == "health" => {
+                Ok(CliCommand::Health { quiet: false })
+            }
+            [command, flag] if command == "health" && flag == "--quiet" => {
+                Ok(CliCommand::Health { quiet: true })
+            }
+            [command, action] if command == "windows-task" => {
+                match action.as_str() {
+                    "install" => Ok(CliCommand::WindowsTask {
+                        command: WindowsTaskCommand::Install,
+                    }),
+                    "status" => Ok(CliCommand::WindowsTask {
+                        command: WindowsTaskCommand::Status,
+                    }),
+                    "remove" => Ok(CliCommand::WindowsTask {
+                        command: WindowsTaskCommand::Remove,
+                    }),
+                    _ => Err(other(format!(
+                        "unknown windows-task command: {action}"
+                    ))),
+                }
+            }
             [command] if command == "stop" => Ok(CliCommand::Stop),
             [command] if command == "daemon" => Ok(CliCommand::Daemon),
             _ => Err(other(format!("unknown command: {}", requested.join(" ")))),
         },
     }
+}
+
+/// Reports whether a running daemon can access the Windows clipboard. Unlike
+/// copy and paste, this diagnostic never starts a daemon as a side effect.
+fn health(paths: &Paths, quiet: bool) -> io::Result<()> {
+    let status =
+        send_client_request(paths, Request::Status { verbose: true }, false);
+    let result = send_client_request(paths, Request::Health, false);
+    let task = windows_task_status()
+        .unwrap_or_else(|error| format!("task=unknown\ntask_error={error}\n"));
+    match (status, result) {
+        (Ok(status), Ok(_)) => {
+            if !quiet {
+                print!(
+                    "clipboard=ready\n{}{}",
+                    String::from_utf8_lossy(&status),
+                    task
+                );
+            }
+            Ok(())
+        }
+        (Err(_), Ok(_)) => {
+            if !quiet {
+                print!("clipboard=ready\ndaemon=running\n{task}");
+            }
+            Ok(())
+        }
+        (status, Err(error)) => {
+            let daemon = if status.is_ok() { "running" } else { "stopped" };
+            let message = format!(
+                "clipboard health check failed: {error}. If this is an SSH-hosted WSL session, \
+run `wsl-clipboard windows-task install` from a logged-in Windows session"
+            );
+            if quiet {
+                Err(other(message))
+            } else {
+                Err(other(format!(
+                    "daemon={daemon}\nclipboard=unavailable\n{task}error={message}"
+                )))
+            }
+        }
+    }
+}
+
+/// Describes the Windows Task Scheduler entry needed when an SSH-owned WSL
+/// process cannot access the logged-in desktop clipboard.
+struct WindowsTaskConfig {
+    distro: String,
+    executable: String,
+    runtime_dir: Option<String>,
+}
+
+fn windows_task(command: WindowsTaskCommand) -> io::Result<()> {
+    let output = match command {
+        WindowsTaskCommand::Install => {
+            let config = windows_task_config()?;
+            run_windows_powershell(&windows_task_install_script(&config))?
+        }
+        WindowsTaskCommand::Status => windows_task_status()?,
+        WindowsTaskCommand::Remove => {
+            run_windows_powershell(&windows_task_remove_script())?
+        }
+    };
+    print!("{output}");
+    Ok(())
+}
+
+fn windows_task_config() -> io::Result<WindowsTaskConfig> {
+    let distro = wsl_distro_name()?;
+    let executable = env::current_exe()?.to_string_lossy().into_owned();
+    let runtime_dir = env::var("XDG_RUNTIME_DIR").ok();
+    Ok(WindowsTaskConfig {
+        distro,
+        executable,
+        runtime_dir,
+    })
+}
+
+fn wsl_distro_name() -> io::Result<String> {
+    if let Ok(distro) = env::var("WSL_DISTRO_NAME")
+        && !distro.is_empty()
+    {
+        return Ok(distro);
+    }
+
+    let output = Command::new(wsl_executable())
+        .args(["--list", "--quiet", "--running"])
+        .output()?;
+    if !output.status.success() {
+        return Err(other(
+            "could not identify the running WSL distro; set WSL_DISTRO_NAME and retry",
+        ));
+    }
+    let output = decode_windows_text(&output.stdout);
+    let distros = output
+        .lines()
+        .map(str::trim)
+        .filter(|distro| !distro.is_empty())
+        .collect::<Vec<_>>();
+    match distros.as_slice() {
+        [distro] => Ok((*distro).to_owned()),
+        [] => Err(other(
+            "could not identify a running WSL distro; set WSL_DISTRO_NAME and retry",
+        )),
+        _ => Err(other(
+            "more than one WSL distro is running; set WSL_DISTRO_NAME and retry",
+        )),
+    }
+}
+
+fn windows_task_status() -> io::Result<String> {
+    run_windows_powershell(&windows_task_status_script())
+}
+
+fn windows_task_install_script(config: &WindowsTaskConfig) -> String {
+    let mut arguments = vec![
+        "-d".to_owned(),
+        config.distro.clone(),
+        "--".to_owned(),
+        "/usr/bin/env".to_owned(),
+    ];
+    if let Some(runtime_dir) = &config.runtime_dir {
+        arguments.push(format!("XDG_RUNTIME_DIR={runtime_dir}"));
+    }
+    arguments.extend([config.executable.clone(), "daemon".to_owned()]);
+    let arguments = arguments
+        .iter()
+        .map(|argument| quote_windows_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    [
+        "$ErrorActionPreference = 'Stop'".to_owned(),
+        format!("$taskName = {}", powershell_literal(WINDOWS_TASK_NAME)),
+        "$user = [Security.Principal.WindowsIdentity]::GetCurrent().Name".to_owned(),
+        format!(
+            "$action = New-ScheduledTaskAction -Execute 'wsl.exe' -Argument {}",
+            powershell_literal(&arguments)
+        ),
+        "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited".to_owned(),
+        "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user".to_owned(),
+        "Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Force | Out-Null".to_owned(),
+        "Start-ScheduledTask -TaskName $taskName".to_owned(),
+        "Write-Output 'task=installed'".to_owned(),
+        "Write-Output ('task_name=' + $taskName)".to_owned(),
+        "Write-Output ('task_user=' + $user)".to_owned(),
+    ]
+    .join("; ")
+}
+
+fn windows_task_status_script() -> String {
+    [
+        "$ErrorActionPreference = 'Stop'".to_owned(),
+        format!(
+            "$task = Get-ScheduledTask -TaskName {} -ErrorAction SilentlyContinue",
+            powershell_literal(WINDOWS_TASK_NAME)
+        ),
+        "if ($null -eq $task) { Write-Output 'task=absent'; exit 0 }".to_owned(),
+        "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName".to_owned(),
+        "Write-Output 'task=present'".to_owned(),
+        "Write-Output ('task_name=' + $task.TaskName)".to_owned(),
+        "Write-Output ('task_state=' + $task.State)".to_owned(),
+        "Write-Output ('task_user=' + $task.Principal.UserId)".to_owned(),
+        "Write-Output ('task_last_result=' + $info.LastTaskResult)".to_owned(),
+    ]
+    .join("; ")
+}
+
+fn windows_task_remove_script() -> String {
+    [
+        "$ErrorActionPreference = 'Stop'".to_owned(),
+        format!(
+            "$task = Get-ScheduledTask -TaskName {} -ErrorAction SilentlyContinue",
+            powershell_literal(WINDOWS_TASK_NAME)
+        ),
+        "if ($null -eq $task) { Write-Output 'task=absent'; exit 0 }".to_owned(),
+        "Stop-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue".to_owned(),
+        "Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false".to_owned(),
+        "Write-Output 'task=removed'".to_owned(),
+    ]
+    .join("; ")
+}
+
+fn run_windows_powershell(script: &str) -> io::Result<String> {
+    let encoded = STANDARD.encode(
+        script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    let output = Command::new(power_shell_executable())
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            &encoded,
+        ])
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(other(format!(
+            "Windows Task Scheduler command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+fn power_shell_executable() -> PathBuf {
+    let mounted = Path::new(WINDOWS_POWERSHELL_PATH);
+    if mounted.is_file() {
+        mounted.to_path_buf()
+    } else {
+        PathBuf::from("powershell.exe")
+    }
+}
+
+fn wsl_executable() -> PathBuf {
+    let mounted = Path::new(WINDOWS_WSL_PATH);
+    if mounted.is_file() {
+        mounted.to_path_buf()
+    } else {
+        PathBuf::from("wsl.exe")
+    }
+}
+
+fn decode_windows_text(bytes: &[u8]) -> String {
+    if bytes.len() & 1 == 0
+        && bytes.iter().skip(1).step_by(2).any(|byte| *byte == 0)
+    {
+        String::from_utf16_lossy(
+            &bytes
+                .chunks(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Quotes one Windows command-line argument for the task's `wsl.exe` action.
+fn quote_windows_argument(value: &str) -> String {
+    if !value.contains([' ', '\t', '"']) {
+        return value.to_owned();
+    }
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for character in value.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                quoted.push(character);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 /// Sends one request to the daemon. Copy and paste commands may launch it on
@@ -493,6 +830,11 @@ fn handle_client(
         Request::Status { verbose } => {
             power_shell.lock().map_err(poisoned)?.status(verbose)
         }
+        Request::Health => power_shell
+            .lock()
+            .map_err(poisoned)?
+            .health()
+            .map(|_| b"ready\n".to_vec()),
         Request::Stop => {
             running.store(false, Ordering::SeqCst);
             Ok(b"stopped".to_vec())
@@ -568,6 +910,7 @@ fn write_request<W: Write>(writer: &mut W, request: Request) -> io::Result<()> {
         Request::Paste => (REQUEST_PASTE, &[]),
         Request::Status { verbose: false } => (REQUEST_STATUS, &[]),
         Request::Status { verbose: true } => (REQUEST_STATUS_VERBOSE, &[]),
+        Request::Health => (REQUEST_HEALTH, &[]),
         Request::Stop => (REQUEST_STOP, &[]),
     };
     write_frame(writer, kind, payload)
@@ -584,6 +927,7 @@ fn read_request<R: Read>(reader: &mut R) -> io::Result<Request> {
         REQUEST_STATUS_VERBOSE if payload.is_empty() => {
             Ok(Request::Status { verbose: true })
         }
+        REQUEST_HEALTH if payload.is_empty() => Ok(Request::Health),
         REQUEST_STOP if payload.is_empty() => Ok(Request::Stop),
         _ => Err(other("invalid clipboard request")),
     }
@@ -641,7 +985,7 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<(u8, Vec<u8>)> {
 
 /// Builds the child script rather than accepting a caller-provided command.
 ///
-/// The script recognizes only `COPY`, `PASTE`, and `QUIT`; base64 carries the
+/// The script recognizes only `COPY`, `PASTE`, `HEALTH`, and `QUIT`; base64 carries the
 /// actual text and response bytes without invoking PowerShell expression
 /// evaluation on client input.
 fn build_power_shell_script() -> String {
@@ -658,6 +1002,9 @@ fn build_power_shell_script() -> String {
         "if ($null -eq $text) { $text = '' }",
         "$bytes = $utf8.GetBytes([string]$text)",
         "[Console]::Out.WriteLine('OK ' + [Convert]::ToBase64String($bytes))",
+        "} elseif ($line -eq 'HEALTH') {",
+        "$null = Get-Clipboard -Raw",
+        "[Console]::Out.WriteLine('OK ')",
         "} elseif ($line.StartsWith('COPY ')) {",
         "$bytes = [Convert]::FromBase64String($line.Substring(5))",
         "$text = $utf8.GetString($bytes)",
@@ -699,6 +1046,13 @@ fn recovery_error(
     ))
 }
 
+fn clipboard_access_error(error: io::Error) -> io::Error {
+    other(format!(
+        "Windows clipboard access failed: {error}. If this is an SSH-hosted WSL session, \
+run `wsl-clipboard windows-task install` from a logged-in Windows session"
+    ))
+}
+
 fn missing_pipe() -> io::Error {
     other("PowerShell pipe was unavailable")
 }
@@ -732,7 +1086,13 @@ fn validate_utf8_input(bytes: &[u8]) -> io::Result<()> {
 }
 
 fn print_usage() {
-    println!("Usage: wsl-clipboard <copy|paste|status|stop|daemon>");
+    println!(
+        "Usage: wsl-clipboard <copy|paste|status|health|windows-task|stop|daemon>"
+    );
+    println!("  health [--quiet]  Verify clipboard access without copying data");
+    println!(
+        "  windows-task <install|status|remove>  Manage remote WSL clipboard access"
+    );
     println!("Aliases: pbcopy, pbpaste, wsl-pbcopy, wsl-pbpaste");
 }
 
@@ -814,6 +1174,79 @@ mod tests {
             .unwrap(),
             CliCommand::Status { verbose: true }
         );
+    }
+
+    #[test]
+    fn health_is_an_explicit_command() {
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-clipboard"),
+                vec!["health".to_owned(), "--quiet".to_owned()]
+            )
+            .unwrap(),
+            CliCommand::Health { quiet: true }
+        );
+    }
+
+    #[test]
+    fn windows_task_commands_are_explicit() {
+        assert_eq!(
+            command_from_invocation(
+                Path::new("wsl-clipboard"),
+                vec!["windows-task".to_owned(), "install".to_owned()]
+            )
+            .unwrap(),
+            CliCommand::WindowsTask {
+                command: WindowsTaskCommand::Install,
+            }
+        );
+    }
+
+    #[test]
+    fn task_install_script_uses_the_interactive_user_and_wsl_context() {
+        let script = windows_task_install_script(&WindowsTaskConfig {
+            distro: "Ubuntu-24.04".to_owned(),
+            executable: "/home/realu/.local/bin/wsl-clipboard".to_owned(),
+            runtime_dir: Some("/run/user/1000".to_owned()),
+        });
+        assert!(script.contains("-LogonType Interactive"));
+        assert!(script.contains("-AtLogOn -User $user"));
+        assert!(script.contains("-Execute 'wsl.exe'"));
+        assert!(script.contains("XDG_RUNTIME_DIR=/run/user/1000"));
+        assert!(script.contains("/home/realu/.local/bin/wsl-clipboard daemon"));
+    }
+
+    #[test]
+    fn windows_argument_quoting_preserves_spaces_and_quotes() {
+        assert_eq!(quote_windows_argument("plain"), "plain");
+        assert_eq!(quote_windows_argument("with space"), "\"with space\"");
+        assert_eq!(quote_windows_argument("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn windows_text_decoder_handles_wsl_utf16_output() {
+        let bytes = "Ubuntu-24.04\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(decode_windows_text(&bytes), "Ubuntu-24.04\r\n");
+    }
+
+    #[test]
+    fn health_request_round_trips_without_payload() {
+        let mut bytes = Vec::new();
+        write_request(&mut bytes, Request::Health).unwrap();
+        assert!(matches!(
+            read_request(&mut Cursor::new(bytes)).unwrap(),
+            Request::Health
+        ));
+    }
+
+    #[test]
+    fn power_shell_protocol_probes_without_copying() {
+        let script = build_power_shell_script();
+        assert!(script.contains("$line -eq 'HEALTH'"));
+        assert!(script.contains("$null = Get-Clipboard -Raw"));
     }
 
     #[test]

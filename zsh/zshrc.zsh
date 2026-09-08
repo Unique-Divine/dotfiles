@@ -221,26 +221,33 @@ setopt NUMERIC_GLOB_SORT
 unsetopt BEEP
 
 # ----------------------- Go / Golang
-export GOPATH="$HOME/go"
-export PATH="$GOPATH/bin:$PATH"
+# Zsh exposes scalar PATH as the tied `path` array, so changing either value
+# updates both. Array edits preserve entries that contain spaces, and `-U`
+# keeps the first copy when repeated shells add the same directory. GOROOT is
+# set only for an executable in the conventional tarball location; Homebrew's
+# Go binary discovers its versioned libexec root without an override.
+typeset -U path PATH
 
-# Let Go discover the Homebrew toolchain on hosts without a system install.
-# GOROOT is only needed for the explicit /usr/local/go installation.
-if [[ -d /usr/local/go ]]; then
+export GOPATH="${GOPATH:-$HOME/go}"
+path=("$GOPATH/bin" "${path[@]}")
+
+# Drop a stale tarball path inherited from the parent shell before selecting
+# the Go installation for this shell.
+path=("${(@)path:#/usr/local/go/bin}")
+if [[ -x /usr/local/go/bin/go ]]; then
   export GOROOT="/usr/local/go"
-  export PATH="$GOROOT/bin:$PATH"
+  path=("$GOROOT/bin" "${path[@]}")
 else
   unset GOROOT
 fi
 
-export GO111MODULE=on
-
 # Define the Goenv installation and shims before deferred initialization. The
 # shim path lets `go` resolve immediately after the prompt.
 export GOENV_ROOT="$HOME/.goenv"
-export PATH="$GOENV_ROOT/bin:$PATH"
-export PATH="$PATH:$GOENV_ROOT/shims"
-export PATH="$PATH:$GOPATH/bin"
+path=("${(@)path:#${GOENV_ROOT}/bin}")
+path=("$GOENV_ROOT/bin" "${path[@]}")
+path=("${(@)path:#${GOENV_ROOT}/shims}")
+path+=("$GOENV_ROOT/shims")
 
 export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
 windows_powershell_dir="/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
