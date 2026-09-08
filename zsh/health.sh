@@ -13,7 +13,8 @@ bash_files=(
   zsh/quick.sh
   zsh/health.sh
   zsh/zinit-install.sh
-  zsh/ud/ud.sh
+  zsh/ud/shell.sh
+  ud/source-hash.sh
 )
 
 zsh_files=(
@@ -29,6 +30,26 @@ for file in "${bash_files[@]}"; do
     failed=1
   fi
 done
+
+ud_binary="$HOME/.local/bin/ud"
+ud_stamp="${XDG_STATE_HOME:-$HOME/.local/state}/ud/install.sha256"
+if [[ ! -f "$ud_binary" || ! -x "$ud_binary" || -L "$ud_binary" ]]; then
+  log_error "Rust ud binary is missing or is not a regular executable: $ud_binary (repair: just ud-install)"
+  failed=1
+elif ! "$ud_binary" --version 2>/dev/null | rg -q '^ud [0-9]'; then
+  log_error "ud executable does not identify itself as the Rust CLI: $ud_binary"
+  failed=1
+elif [[ ! -r "$ud_stamp" ]]; then
+  log_error "ud installation fingerprint is missing: $ud_stamp (repair: just ud-install)"
+  failed=1
+else
+  current_ud_hash="$(bash ud/source-hash.sh)"
+  installed_ud_hash="$(<"$ud_stamp")"
+  if [[ "$current_ud_hash" != "$installed_ud_hash" ]]; then
+    log_error "installed ud binary is stale (repair: just ud-install)"
+    failed=1
+  fi
+fi
 
 for file in "${zsh_files[@]}"; do
   if ! zsh -n "$file"; then
