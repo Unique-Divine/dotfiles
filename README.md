@@ -216,6 +216,35 @@ usage and options.
 - `legacy-pbcopy` and `legacy-pbpaste` retain the old one-shot commands for
   diagnostics and performance comparison
 
+#### Remote or SSH WSL
+
+The clipboard daemon needs a PowerShell process that can reach the logged-in
+Windows desktop clipboard. An ordinary interactive WSL terminal starts the
+daemon lazily. An SSH-hosted WSL process can start PowerShell without receiving
+desktop clipboard access.
+
+Use command `wsl-clipboard health` to verify the running daemon. It reports
+the daemon, clipboard, runtime, and Windows task state without reading or
+writing clipboard contents. Command `wsl-clipboard health --quiet` emits no
+normal output and exits nonzero when the daemon cannot use the clipboard.
+
+When an SSH-hosted session reports an unavailable clipboard, keep the Windows
+user logged in and run:
+
+```bash
+wsl-clipboard windows-task install
+wsl-clipboard health
+```
+
+The command registers `wsl-clipboard-interactive-daemon` for that Windows user
+at logon and starts it immediately. The task starts the daemon in the active
+WSL distro with the same runtime directory, so SSH clients can use the daemon's
+PowerShell process. Use command `wsl-clipboard windows-task status` to inspect
+it, or command `wsl-clipboard windows-task remove` to stop and unregister it.
+
+The task is never installed automatically. A logged-out Windows user has no
+desktop clipboard for the task to access.
+
 ## Requirements
 
 - Ubuntu 24.04 (or compatible) on WSL2
