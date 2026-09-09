@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,6 +31,8 @@ pub enum Command {
     Health(Nested<HealthCommand>),
     /// Inspect executable ud plugins.
     Plugin(Nested<PluginCommand>),
+    /// Generate shell completion definitions.
+    Completions(CompletionArgs),
     /// Run personal editing, navigation, and workstation shortcuts.
     #[command(alias = "q", alias = "cfg")]
     Quick(Nested<QuickCommand>),
@@ -58,6 +60,18 @@ pub struct CommandPreview {
     /// Print the underlying command without running it.
     #[arg(long)]
     pub cmd: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionArgs {
+    /// Shell for which to generate completions.
+    pub shell: CompletionShell,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CompletionShell {
+    /// Zsh completion function.
+    Zsh,
 }
 
 #[derive(Debug, Subcommand)]

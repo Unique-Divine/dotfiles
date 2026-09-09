@@ -16,6 +16,12 @@ Run the checkout without installing it:
 just ud --help
 ```
 
+Generate Zsh completions from the same Clap command tree:
+
+```bash
+ud completions zsh
+```
+
 Install or refresh `~/.local/bin/ud`:
 
 ```bash
@@ -23,7 +29,9 @@ just ud-install
 ```
 
 `just sync` also installs the current binary. `just health` checks that the
-installed binary matches the current source fingerprint.
+installed binary matches the current source fingerprint and that the generated
+Zsh completion is present. `just sync` writes the completion function to
+`${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions/_ud`.
 
 ## Shell operations
 

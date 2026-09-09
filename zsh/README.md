@@ -54,6 +54,11 @@ completion link is dangling, the module uses a user-owned cache overlay for
 the other vendor completions instead of changing `/usr/share` or printing an
 error.
 
+`just sync` installs the generated `ud` completion function at
+`${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions/_ud`. The completion
+module adds that directory to `fpath` before `compinit`, but Zsh autoloads the
+function only when completing an `ud` command.
+
 Docker itself is not started while completion setup loads. The Zinit
 `trigger-load'!docker'` wrapper runs `ud docker start` only when the first
 Docker command is entered, waits up to 30 seconds for `docker info`, and then

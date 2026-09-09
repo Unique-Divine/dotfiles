@@ -70,6 +70,18 @@ fn root_help_works_for_empty_help_and_aliases() {
 }
 
 #[test]
+fn zsh_completions_cover_the_clap_command_tree() {
+    let output = run(&["completions", "zsh"]);
+    assert_success(&output);
+
+    let completion = stdout(&output);
+    assert!(completion.starts_with("#compdef ud\n"));
+    assert!(completion.contains("(nibi)"));
+    assert!(completion.contains("(completions)"));
+    assert!(completion.contains("--archive["));
+}
+
+#[test]
 fn every_command_has_clap_help() {
     for args in [
         vec!["go", "--help"],

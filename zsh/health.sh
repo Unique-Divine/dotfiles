@@ -33,6 +33,7 @@ done
 
 ud_binary="$HOME/.local/bin/ud"
 ud_stamp="${XDG_STATE_HOME:-$HOME/.local/state}/ud/install.sha256"
+ud_completion="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions/_ud"
 if [[ ! -f "$ud_binary" || ! -x "$ud_binary" || -L "$ud_binary" ]]; then
   log_error "Rust ud binary is missing or is not a regular executable: $ud_binary (repair: just ud-install)"
   failed=1
@@ -49,6 +50,11 @@ else
     log_error "installed ud binary is stale (repair: just ud-install)"
     failed=1
   fi
+fi
+
+if [[ ! -r "$ud_completion" ]]; then
+  log_error "ud Zsh completion is missing: $ud_completion (repair: just ud-install)"
+  failed=1
 fi
 
 for file in "${zsh_files[@]}"; do

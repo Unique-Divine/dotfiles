@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
+use std::io;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -8,10 +9,13 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::CommandFactory;
+use clap_complete::aot::{Shell, generate};
 
 use crate::cli::{
-    CommandPreview, DockerCommand, GoCommand, HealthCommand, MarkdownCommand,
-    NibiCommand, NibiKeysCommand, NibiNetwork, QuickCommand, RustCommand,
+    Cli, CommandPreview, CompletionShell, DockerCommand, GoCommand,
+    HealthCommand, MarkdownCommand, NibiCommand, NibiKeysCommand, NibiNetwork,
+    QuickCommand, RustCommand,
 };
 use crate::process;
 
@@ -177,6 +181,18 @@ pub fn run_markdown(command: MarkdownCommand) -> i32 {
             0
         }
     }
+}
+
+pub fn run_completions(shell: CompletionShell) -> Result<i32> {
+    let mut command = Cli::command();
+    let binary_name = command.get_name().to_owned();
+    let mut stdout = io::stdout();
+    match shell {
+        CompletionShell::Zsh => {
+            generate(Shell::Zsh, &mut command, binary_name, &mut stdout);
+        }
+    }
+    Ok(0)
 }
 
 pub fn run_health(command: HealthCommand) -> Result<i32> {
