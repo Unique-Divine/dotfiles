@@ -125,13 +125,18 @@ pub enum NibiCommand {
 #[derive(Debug, Subcommand, Clone, Copy)]
 pub enum NibiNetwork {
     /// Local Nibiru network.
-    Local,
+    Local(NibiCfgArgs),
     /// Nibiru mainnet.
-    Prod,
+    Prod(NibiCfgArgs),
     /// Nibiru testnet.
-    Test,
-    /// Nibiru devnet.
-    Dev,
+    Test(NibiCfgArgs),
+}
+
+#[derive(Debug, Args, Clone, Copy)]
+pub struct NibiCfgArgs {
+    /// Use the network's archive RPC when available.
+    #[arg(long)]
+    pub archive: bool,
 }
 
 #[derive(Debug, Subcommand)]

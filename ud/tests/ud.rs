@@ -235,29 +235,77 @@ fn quick_shell_helper_runs_the_existing_notes_function() {
 }
 
 #[test]
-fn nibi_cfg_runs_each_expected_nibid_command() {
-    let temp = TempDir::new().unwrap();
-    let nibid = temp.path().join("nibid");
-    let args_file = temp.path().join("args");
-    write_executable(
-        &nibid,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NIBID_ARGS_FILE\"\n",
-    );
+fn nibi_cfg_selects_the_expected_rpc() {
+    for (args, rpc_url, chain_id) in [
+        (
+            &["local"][..],
+            "http://localhost:26657",
+            "nibiru-localnet-0",
+        ),
+        (
+            &["local", "--archive"][..],
+            "http://localhost:26657",
+            "nibiru-localnet-0",
+        ),
+        (&["prod"][..], "https://rpc.nibiru.fi:443", "cataclysm-1"),
+        (
+            &["prod", "--archive"][..],
+            "https://rpc.archive.nibiru.fi:443",
+            "cataclysm-1",
+        ),
+        (
+            &["test"][..],
+            "https://rpc.testnet-2.nibiru.fi:443",
+            "nibiru-testnet-2",
+        ),
+        (
+            &["test", "--archive"][..],
+            "https://rpc.archive.testnet-2.nibiru.fi:443",
+            "nibiru-testnet-2",
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let nibid = temp.path().join("nibid");
+        let args_file = temp.path().join("args");
+        write_executable(
+            &nibid,
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NIBID_ARGS_FILE\"\n",
+        );
 
-    let output = ud()
-        .env("PATH", path_with(temp.path()))
-        .env("NIBID_ARGS_FILE", &args_file)
-        .args(["nibi", "cfg", "prod"])
-        .output()
-        .unwrap();
+        let output = ud()
+            .env("PATH", path_with(temp.path()))
+            .env("NIBID_ARGS_FILE", &args_file)
+            .args(["nibi", "cfg"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap(),
+            format!(
+                "config node {rpc_url}\n\
+                 config chain-id {chain_id}\n\
+                 config broadcast-mode sync\n\
+                 config\n"
+            ),
+            "args: {args:?}",
+        );
+    }
+}
+
+#[test]
+fn nibi_cfg_help_excludes_dev_and_documents_archive() {
+    let output = run(&["nibi", "cfg", "--help"]);
     assert_success(&output);
-    assert_eq!(
-        fs::read_to_string(args_file).unwrap(),
-        "config node https://rpc.archive.nibiru.fi:443\n\
-         config chain-id cataclysm-1\n\
-         config broadcast-mode sync\n\
-         config\n"
-    );
+    assert!(!stdout(&output).contains("dev"));
+
+    let output = run(&["nibi", "cfg", "prod", "--help"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("--archive"));
+
+    let output = run(&["nibi", "cfg", "dev"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unrecognized subcommand 'dev'"));
 }
 
 #[test]
