@@ -84,11 +84,16 @@ fi
 source "$DOTFILES/zsh/zinit.sh"
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
-# If you come from bash you might have to change your $PATH.
-export PATH=$HOME/bin:/usr/local/bin:$DOTFILES/bin:$PATH
-
-vs_code="/mnt/c/Program Files/Microsoft VS Code"
-export PATH=$vs_code/bin:$PATH
+# Zsh ties scalar parameter `PATH` to array parameter `path`. Mark both as
+# unique before editing the array so repeated shell startups keep one copy of
+# each directory while preserving the first copy's command precedence.
+typeset -U path PATH
+path=(
+  "$HOME/bin"
+  /usr/local/bin
+  "$DOTFILES/bin"
+  "${path[@]}"
+)
 
 # User configuration
 
@@ -161,8 +166,6 @@ if [[ -o interactive ]] && (( ${+widgets[expand-or-complete]} )); then
   bindkey -M viins '^I' _dotfiles_lazy_complete
 fi
 
-export PATH=$HOME/bin:$PATH
-
 # Fix this error sometimes produced by `just` on WSL:
 # > error: Recipe `setup` with shebang `#!/usr/bin/env bash` execution error: Permission denied (os error 13)
 #
@@ -221,13 +224,6 @@ setopt NUMERIC_GLOB_SORT
 unsetopt BEEP
 
 # ----------------------- Go / Golang
-# Zsh exposes scalar PATH as the tied `path` array, so changing either value
-# updates both. Array edits preserve entries that contain spaces, and `-U`
-# keeps the first copy when repeated shells add the same directory. GOROOT is
-# set only for an executable in the conventional tarball location; Homebrew's
-# Go binary discovers its versioned libexec root without an override.
-typeset -U path PATH
-
 export GOPATH="${GOPATH:-$HOME/go}"
 path=("$GOPATH/bin" "${path[@]}")
 
@@ -249,12 +245,26 @@ path=("$GOENV_ROOT/bin" "${path[@]}")
 path=("${(@)path:#${GOENV_ROOT}/shims}")
 path+=("$GOENV_ROOT/shims")
 
-export PATH="/mnt/c/Windows:/mnt/c/Windows/system32:$PATH"
-windows_powershell_dir="/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
-if [[ -x "$windows_powershell_dir/powershell.exe" ]]; then
-  export PATH="$windows_powershell_dir:$PATH"
+# WSL terminals usually inherit the Windows PATH, but shells started by Linux
+# `sshd` do not. Append common Windows command directories so tools such as
+# `clip.exe` and `powershell.exe` resolve in either kind of session. Appending
+# keeps Linux commands such as `ssh` ahead of their Windows counterparts.
+if is_wsl >/dev/null; then
+  # These WSL machines use the same account name in Linux and Windows.
+  windows_home="/mnt/c/Users/$USER"
+  # Missing optional application directories do not prevent shell startup.
+  path+=(
+    /mnt/c/Windows/system32
+    /mnt/c/Windows
+    /mnt/c/Windows/System32/Wbem
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0
+    /mnt/c/Windows/System32/OpenSSH
+    "/mnt/c/Program Files/dotnet"
+    "/mnt/c/Program Files/Docker/Docker/resources/bin"
+    "$windows_home/AppData/Local/Microsoft/WindowsApps"
+  )
+  unset windows_home
 fi
-export PATH="/mnt/c/Users/realu/AppData/Local/Programs/Microsoft VS Code/bin:$PATH"
 
 # Cosmos-sdk 'file' backend
 # alias keyd='f(){ "$@" --keyring-backend test;  unset -f f; }; f'
@@ -264,24 +274,28 @@ export KEYRING="--keyring-backend=test"
 # Display the current binary config by running `nibid config`
 
 # Yarn and nvm
-export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
+path=(
+  "$HOME/.yarn/bin"
+  "$HOME/.config/yarn/global/node_modules/.bin"
+  "${path[@]}"
+)
 
-export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"
+path+=(/home/linuxbrew/.linuxbrew/bin)
 
 # Homebrew keeps the pinned Herdr compiler keg-only. Put it on PATH when present.
 linuxbrew_zig="/home/linuxbrew/.linuxbrew/opt/zig@0.15/bin"
 if [[ -x "$linuxbrew_zig/zig" ]]; then
-  export PATH="$linuxbrew_zig:$PATH"
+  path=("$linuxbrew_zig" "${path[@]}")
 fi
 
-export PATH="$PATH:$HOME/.foundry/bin"
+path+=("$HOME/.foundry/bin")
 
 # Google Cloud SDK:
 # The next line updates PATH for the Google Cloud SDK.
 if [ -f "$HOME/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/google-cloud-sdk/path.zsh.inc"; fi
 
-export PATH="$HOME/.local/bin:$PATH"
-export PATH="$HOME/.poetry/bin:$PATH"
+path=("$HOME/.local/bin" "${path[@]}")
+path=("$HOME/.poetry/bin" "${path[@]}")
 
 clean_poetry() {
   # Cleans and resets the enviroment for the Poeatry package manager, which is
@@ -332,12 +346,12 @@ ulimit -n 4096
 
 # bun
 export BUN_INSTALL="$HOME/.bun"
-export PATH="$BUN_INSTALL/bin:$PATH"
+path=("$BUN_INSTALL/bin" "${path[@]}")
 
 # Mason - pkgs used in nvim
 # Load to the right side of `PATH` so that other binaries take precedence over
 # the Mason binaries.
-export PATH="$PATH:$HOME/.local/share/nvim/mason/bin"
+path+=("$HOME/.local/share/nvim/mason/bin")
 
 # GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
 # the regular system `go` command remains available without this setup.
