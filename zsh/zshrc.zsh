@@ -84,7 +84,9 @@ fi
 source "$DOTFILES/zsh/zinit.sh"
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
-# Zsh ties exported PATH to the path array. Keep the first copy of each entry.
+# Zsh ties scalar parameter `PATH` to array parameter `path`. Mark both as
+# unique before editing the array so repeated shell startups keep one copy of
+# each directory while preserving the first copy's command precedence.
 typeset -U path PATH
 path=(
   "$HOME/bin"
@@ -243,8 +245,14 @@ path=("$GOENV_ROOT/bin" "${path[@]}")
 path=("${(@)path:#${GOENV_ROOT}/shims}")
 path+=("$GOENV_ROOT/shims")
 
+# WSL terminals usually inherit the Windows PATH, but shells started by Linux
+# `sshd` do not. Append common Windows command directories so tools such as
+# `clip.exe` and `powershell.exe` resolve in either kind of session. Appending
+# keeps Linux commands such as `ssh` ahead of their Windows counterparts.
 if is_wsl >/dev/null; then
+  # These WSL machines use the same account name in Linux and Windows.
   windows_home="/mnt/c/Users/$USER"
+  # Missing optional application directories do not prevent shell startup.
   path+=(
     /mnt/c/Windows/system32
     /mnt/c/Windows
