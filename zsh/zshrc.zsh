@@ -243,10 +243,19 @@ path=("$GOENV_ROOT/bin" "${path[@]}")
 path=("${(@)path:#${GOENV_ROOT}/shims}")
 path+=("$GOENV_ROOT/shims")
 
-path=(/mnt/c/Windows /mnt/c/Windows/system32 "${path[@]}")
-windows_powershell_dir="/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
-if [[ -x "$windows_powershell_dir/powershell.exe" ]]; then
-  path=("$windows_powershell_dir" "${path[@]}")
+if is_wsl >/dev/null; then
+  windows_home="/mnt/c/Users/$USER"
+  path+=(
+    /mnt/c/Windows/system32
+    /mnt/c/Windows
+    /mnt/c/Windows/System32/Wbem
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0
+    /mnt/c/Windows/System32/OpenSSH
+    "/mnt/c/Program Files/dotnet"
+    "/mnt/c/Program Files/Docker/Docker/resources/bin"
+    "$windows_home/AppData/Local/Microsoft/WindowsApps"
+  )
+  unset windows_home
 fi
 
 # Cosmos-sdk 'file' backend
