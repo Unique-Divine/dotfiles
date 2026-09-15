@@ -61,10 +61,14 @@ git_mf() {
   git merge "$target_branch" "$@"
 }
 
-# git_cipb: Git "commit (ci) with [pb]paste". Commits using a message from the
-# clipboard.
+# git_cipb: Git commit with an explicit message argument.
 git_cipb() {
-  git commit -m "$(pbpaste)"
+  local msg="$1"
+  if [[ -z "$msg" ]]; then
+    echo "usage: git_cipb 'commit message'" >&2
+    return 2
+  fi
+  git commit -m "$msg"
 }
 
 # ----------------- Daily Shortcuts -----------------
