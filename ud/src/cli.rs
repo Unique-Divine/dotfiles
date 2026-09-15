@@ -123,7 +123,7 @@ pub enum MarkdownCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum NibiCommand {
-    /// Set nibid to a known network.
+    /// Set nibid to a known network with JSON output.
     Cfg(Nested<NibiNetwork>),
     /// Print common Nibiru addresses from the environment.
     Addrs,

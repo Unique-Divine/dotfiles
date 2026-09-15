@@ -247,7 +247,7 @@ fn quick_shell_helper_runs_the_existing_notes_function() {
 }
 
 #[test]
-fn nibi_cfg_selects_the_expected_rpc() {
+fn nibi_cfg_sets_the_expected_network_and_json_output() {
     for (args, rpc_url, chain_id) in [
         (
             &["local"][..],
@@ -298,6 +298,7 @@ fn nibi_cfg_selects_the_expected_rpc() {
                 "config node {rpc_url}\n\
                  config chain-id {chain_id}\n\
                  config broadcast-mode sync\n\
+                 config output json\n\
                  config\n"
             ),
             "args: {args:?}",

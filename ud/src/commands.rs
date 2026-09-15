@@ -368,6 +368,7 @@ fn configure_nibi(network: NibiNetwork) -> Result<i32> {
         vec!["config", "node", rpc_url],
         vec!["config", "chain-id", chain_id],
         vec!["config", "broadcast-mode", "sync"],
+        vec!["config", "output", "json"],
         vec!["config"],
     ] {
         let mut command = Command::new("nibid");
