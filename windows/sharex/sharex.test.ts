@@ -97,7 +97,7 @@ sharexDescribe("ShareX audio scripts", () => {
 
     expect(result.exitCode).toBe(0)
     expect(result.stderr.toString()).toBe("")
-    expect(result.stdout.toString()).toContain("PASS: 16 ShareX audio tests")
+    expect(result.stdout.toString()).toContain("PASS: 17 ShareX audio tests")
   })
 
   test("returns structured discovery results", () => {

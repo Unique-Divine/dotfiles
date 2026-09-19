@@ -165,6 +165,24 @@ try {
     Assert-Equal -Expected "virtual-audio-capturer" `
       -Actual $atomic.Hotkeys[0].TaskSettings.CaptureSettings.FFmpegOptions.AudioSource `
       -Message "atomic config replacement preserves valid JSON"
+
+    $powershell = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($null -ne $powershell) {
+      $probeDirectory = Join-Path $tempDirectory "probe"
+      $probeMessage = ""
+      try {
+        Invoke-ShareXAudioProbe `
+          -FFmpegPath $powershell.Source `
+          -MicrophoneName "Test Mic" `
+          -DurationSeconds 1 `
+          -OutputDirectory $probeDirectory | Out-Null
+      } catch {
+        $probeMessage = $_.Exception.Message
+      }
+      Assert-True `
+        -Condition ($probeMessage -like "*system.stderr.log*") `
+        -Message "capture probe reports failed FFmpeg processes with a log path"
+    }
   } finally {
     Remove-Item -LiteralPath $tempDirectory -Recurse -Force
   }

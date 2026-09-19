@@ -724,6 +724,21 @@ function Backup-ShareXConfig {
   return $backupPath
 }
 
+function Assert-ShareXProcessSucceeded {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][psobject]$Result,
+    [Parameter(Mandatory = $true)][string]$Stage
+  )
+
+  if ($Result.ExitCode -ne 0) {
+    throw (
+      "FFmpeg $Stage capture failed with exit code $($Result.ExitCode). " +
+      "See stderr log: $($Result.StderrPath)"
+    )
+  }
+}
+
 function Invoke-ShareXAudioProbe {
   [CmdletBinding()]
   param(
@@ -749,6 +764,7 @@ function Invoke-ShareXAudioProbe {
     ) `
     -OutputDirectory $outputDirectory `
     -LogName "system"
+  Assert-ShareXProcessSucceeded -Result $system -Stage "system"
   $microphone = Invoke-ShareXProcess `
     -FilePath $FFmpegPath `
     -ArgumentList @(
@@ -759,6 +775,7 @@ function Invoke-ShareXAudioProbe {
     ) `
     -OutputDirectory $outputDirectory `
     -LogName "microphone"
+  Assert-ShareXProcessSucceeded -Result $microphone -Stage "microphone"
   $filter = '[0:a:0][1:a:0]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95[mixed]'
   $mixed = Invoke-ShareXProcess `
     -FilePath $FFmpegPath `
@@ -773,6 +790,7 @@ function Invoke-ShareXAudioProbe {
     ) `
     -OutputDirectory $outputDirectory `
     -LogName "mixed"
+  Assert-ShareXProcessSucceeded -Result $mixed -Stage "mixed"
 
   return [pscustomobject]@{
     OutputDirectory = $outputDirectory
