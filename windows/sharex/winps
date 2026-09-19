@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage: winps SCRIPT.ps1 [arguments...]
+
+Run a ShareX PowerShell script through Windows PowerShell 5.1.
+EOF
+}
+
+if (($# < 1)); then
+  usage
+  exit 64
+fi
+
+if ! command -v powershell.exe >/dev/null 2>&1; then
+  echo "winps: powershell.exe is unavailable" >&2
+  exit 69
+fi
+
+if ! command -v wslpath >/dev/null 2>&1; then
+  echo "winps: wslpath is unavailable" >&2
+  exit 69
+fi
+
+script_path="$1"
+shift
+
+if [[ ! -f "$script_path" ]]; then
+  echo "winps: script does not exist: $script_path" >&2
+  exit 66
+fi
+
+script_path="$(realpath -- "$script_path")"
+windows_script_path="$(wslpath -w -- "$script_path")"
+version="$(
+  powershell.exe \
+    -NoLogo \
+    -NoProfile \
+    -NonInteractive \
+    -Command '$PSVersionTable.PSVersion.ToString()' |
+    tr -d '\r'
+)"
+
+if [[ "$version" != 5.1* ]]; then
+  echo "winps: expected Windows PowerShell 5.1, received: $version" >&2
+  exit 69
+fi
+
+set +e
+powershell.exe \
+  -NoLogo \
+  -NoProfile \
+  -NonInteractive \
+  -File "$windows_script_path" \
+  "$@" \
+  2> >(sed 's/\r$//' >&2) |
+  sed 's/\r$//'
+exit_code=${PIPESTATUS[0]}
+set -e
+
+exit "$exit_code"
