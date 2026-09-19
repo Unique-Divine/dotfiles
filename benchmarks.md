@@ -5,6 +5,30 @@ repository. Each entry keeps the benchmark method next to the result. Runs
 with different payloads, sample counts, or readiness definitions are not
 combined into one percentage.
 
+## 2026-09-09: Add static ud Zsh completions
+
+The ud installer now writes a generated `_ud` function to the user-owned XDG
+data directory. The deferred completion module adds that directory to `fpath`
+before `compinit`, but it does not execute ud during shell startup.
+
+The benchmark used 20 measured runs and five warmups per mode. The completion
+change had no synchronous work beyond a conditional directory check. The first
+post-change synchronous run landed 0.96 ms above the 5% median gate, so the
+same measurement ran again. The rerun passed both gates.
+
+| Sample | Synchronous median | Prompt-ready median |
+| --- | ---: | ---: |
+| Before change | 160.88 ms | 276.24 ms |
+| First run after change | 169.88 ms | 284.25 ms |
+| Confirming rerun | 167.44 ms | 282.18 ms |
+
+The confirming run was 4.1% slower synchronously and 2.2% slower to prompt
+readiness, within the 5% median limit. The initial synchronous result shows why
+these host measurements need a rerun near a threshold.
+
+Method: `just bench-zsh --mode init --runs 20 --warmups 5` and the same command
+with `--mode prompt`.
+
 ## 2026-08-25: Defer Zsh completion setup
 
 The completion pass moved Ubuntu's global `compinit`, FZF, gcloud, Go, Bun,

@@ -46,6 +46,12 @@ ud-install:
   fi
 
   cargo install --path ud --locked --root "$HOME/.local" --force
+  ud_completion_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+  install -d -m 700 "$ud_completion_dir"
+  ud_completion_tmp="$(mktemp "$ud_completion_dir/.ud.XXXXXX")"
+  "$ud_bin" completions zsh > "$ud_completion_tmp"
+  chmod 600 "$ud_completion_tmp"
+  mv -f "$ud_completion_tmp" "$ud_completion_dir/_ud"
   ud_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/ud"
   install -d -m 700 "$ud_state_dir"
   ud_stamp_tmp="$(mktemp "$ud_state_dir/.install.XXXXXX")"

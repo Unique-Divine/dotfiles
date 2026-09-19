@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
+use std::io;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -8,10 +9,13 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::CommandFactory;
+use clap_complete::aot::{Shell, generate};
 
 use crate::cli::{
-    CommandPreview, DockerCommand, GoCommand, HealthCommand, MarkdownCommand,
-    NibiCommand, NibiKeysCommand, NibiNetwork, QuickCommand, RustCommand,
+    Cli, CommandPreview, CompletionShell, DockerCommand, GoCommand,
+    HealthCommand, MarkdownCommand, NibiCommand, NibiKeysCommand, NibiNetwork,
+    QuickCommand, RustCommand,
 };
 use crate::process;
 
@@ -179,6 +183,18 @@ pub fn run_markdown(command: MarkdownCommand) -> i32 {
     }
 }
 
+pub fn run_completions(shell: CompletionShell) -> Result<i32> {
+    let mut command = Cli::command();
+    let binary_name = command.get_name().to_owned();
+    let mut stdout = io::stdout();
+    match shell {
+        CompletionShell::Zsh => {
+            generate(Shell::Zsh, &mut command, binary_name, &mut stdout);
+        }
+    }
+    Ok(0)
+}
+
 pub fn run_health(command: HealthCommand) -> Result<i32> {
     match command {
         HealthCommand::Gpg { fix } => {
@@ -323,23 +339,36 @@ pub fn run_nibi(command: NibiCommand) -> Result<i32> {
 }
 
 fn configure_nibi(network: NibiNetwork) -> Result<i32> {
-    let (rpc_url, chain_id) = match network {
-        NibiNetwork::Local => ("http://localhost:26657", "nibiru-localnet-0"),
-        NibiNetwork::Prod => {
-            ("https://rpc.archive.nibiru.fi:443", "cataclysm-1")
-        }
-        NibiNetwork::Test => (
-            "https://rpc.archive.testnet-2.nibiru.fi:443",
-            "nibiru-testnet-2",
+    let (rpc_url, archive_rpc_url, chain_id, archive) = match network {
+        NibiNetwork::Local(args) => (
+            "http://localhost:26657",
+            None,
+            "nibiru-localnet-0",
+            args.archive,
         ),
-        NibiNetwork::Dev => {
-            ("https://rpc.devnet-3.nibiru.fi:443", "nibiru-devnet-3")
-        }
+        NibiNetwork::Prod(args) => (
+            "https://rpc.nibiru.fi:443",
+            Some("https://rpc.archive.nibiru.fi:443"),
+            "cataclysm-1",
+            args.archive,
+        ),
+        NibiNetwork::Test(args) => (
+            "https://rpc.testnet-2.nibiru.fi:443",
+            Some("https://rpc.archive.testnet-2.nibiru.fi:443"),
+            "nibiru-testnet-2",
+            args.archive,
+        ),
+    };
+    let rpc_url = if archive {
+        archive_rpc_url.unwrap_or(rpc_url)
+    } else {
+        rpc_url
     };
     for args in [
         vec!["config", "node", rpc_url],
         vec!["config", "chain-id", chain_id],
         vec!["config", "broadcast-mode", "sync"],
+        vec!["config", "output", "json"],
         vec!["config"],
     ] {
         let mut command = Command::new("nibid");

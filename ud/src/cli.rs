@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,6 +31,8 @@ pub enum Command {
     Health(Nested<HealthCommand>),
     /// Inspect executable ud plugins.
     Plugin(Nested<PluginCommand>),
+    /// Generate shell completion definitions.
+    Completions(CompletionArgs),
     /// Run personal editing, navigation, and workstation shortcuts.
     #[command(alias = "q", alias = "cfg")]
     Quick(Nested<QuickCommand>),
@@ -58,6 +60,18 @@ pub struct CommandPreview {
     /// Print the underlying command without running it.
     #[arg(long)]
     pub cmd: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionArgs {
+    /// Shell for which to generate completions.
+    pub shell: CompletionShell,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CompletionShell {
+    /// Zsh completion function.
+    Zsh,
 }
 
 #[derive(Debug, Subcommand)]
@@ -109,7 +123,7 @@ pub enum MarkdownCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum NibiCommand {
-    /// Set nibid to a known network.
+    /// Set nibid to a known network with JSON output.
     Cfg(Nested<NibiNetwork>),
     /// Print common Nibiru addresses from the environment.
     Addrs,
@@ -125,13 +139,18 @@ pub enum NibiCommand {
 #[derive(Debug, Subcommand, Clone, Copy)]
 pub enum NibiNetwork {
     /// Local Nibiru network.
-    Local,
+    Local(NibiCfgArgs),
     /// Nibiru mainnet.
-    Prod,
+    Prod(NibiCfgArgs),
     /// Nibiru testnet.
-    Test,
-    /// Nibiru devnet.
-    Dev,
+    Test(NibiCfgArgs),
+}
+
+#[derive(Debug, Args, Clone, Copy)]
+pub struct NibiCfgArgs {
+    /// Use the network's archive RPC when available.
+    #[arg(long)]
+    pub archive: bool,
 }
 
 #[derive(Debug, Subcommand)]

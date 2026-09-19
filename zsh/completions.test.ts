@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -7,6 +7,45 @@ const zshDir = import.meta.dir
 const dotfilesDir = join(zshDir, "..")
 
 describe("Zsh completion setup", () => {
+  test("adds installed local completions to fpath before compinit", () => {
+    const testHome = mkdtempSync(join(tmpdir(), "dotfiles-zsh-completion-"))
+    const dataHome = join(testHome, ".local", "share")
+    const completionDir = join(dataHome, "zsh", "site-functions")
+    mkdirSync(completionDir, { recursive: true })
+    writeFileSync(join(completionDir, "_ud"), "#compdef ud\n_ud() {}\n")
+
+    try {
+      const result = Bun.spawnSync(
+        [
+          "zsh",
+          "-f",
+          "-c",
+          'source "$DOTFILES/zsh/completions.zsh"; print -r -- "$fpath[1]"; autoload -Uz _ud; whence -w _ud',
+        ],
+        {
+          env: {
+            ...process.env,
+            DOTFILES: dotfilesDir,
+            HOME: testHome,
+            XDG_CACHE_HOME: join(testHome, ".cache"),
+            XDG_DATA_HOME: dataHome,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        },
+      )
+
+      expect(result.stderr.toString()).toBe("")
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.toString().trim().split("\n")).toEqual([
+        completionDir,
+        "_ud: function",
+      ])
+    } finally {
+      rmSync(testHome, { force: true, recursive: true })
+    }
+  })
+
   test("uses native completion as the fzf fallback", () => {
     const testHome = mkdtempSync(join(tmpdir(), "dotfiles-zsh-completion-"))
 

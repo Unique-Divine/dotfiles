@@ -88,6 +88,9 @@ fn run() -> Result<i32> {
             }
             None => print_nested_help(clap_command, &["plugin"]),
         },
+        Some(Command::Completions(args)) => {
+            commands::run_completions(args.shell)
+        }
         Some(Command::Quick(args)) => match args.command {
             Some(command) => commands::run_quick(command),
             None => print_nested_help(clap_command, &["quick"]),

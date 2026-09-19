@@ -16,6 +16,19 @@
 
 (( ${_dotfiles_completions_loaded:-0} )) && return 0
 
+# Generated completion functions for locally installed commands live here.
+# Adding this directory only changes Zsh's lookup path. The _ud function is
+# loaded by compinit when a user completes an ud command.
+_dotfiles_prepare_user_completions() {
+  local user_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+  [[ -d "$user_dir" ]] || return 0
+
+  typeset -gU fpath
+  fpath=("$user_dir" "${fpath[@]}")
+}
+
+_dotfiles_prepare_user_completions
+
 # Ubuntu's vendor directory can contain a broken Docker Desktop symlink when
 # Docker is closed or WSL integration is unavailable. Keep compinit usable by
 # presenting the other vendor completions through a user-owned overlay. This
