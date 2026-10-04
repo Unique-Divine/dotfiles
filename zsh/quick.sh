@@ -10,56 +10,7 @@ source "$DOTFILES/zsh/bashlib.sh"
 # Some of my most-used commands. I rely on these daily to quickly finish
 # branches, prepare pull requests, and cleanly sync changes with the remote.
 
-# git_cof: Git "[c]heck [o]ut [f]rom": Check out the target, fetch, prune remote,
-# and delete the starting branch.
-git_cof() {
-  echo "Usage: git_cof <target_branch>"
-  if [[ "$#" -ne 1 ]]; then
-    echo "  ERROR The git_cof function accepts exactly 1 arg, not $#"
-    echo "  Checks out <target_branch>, fetches/prunes, deletes the starting branch,"
-    echo "  then pulls the latest changes for <target_branch>."
-    return 1
-  fi
-
-  _run() {
-    echo "RUN $*"
-    "$@"
-  }
-
-  local target_branch="$1"
-  local start_branch="$(git br --show-current)"
-  _run git fetch --all --prune || true
-  _run git checkout "$target_branch"
-  _run git branch -D "$start_branch"
-  _run git pull || true
-}
-
-# git_mf: Git "[m]erge [f]rom". Fetch, prune, check out the target and merge it
-# into the starting branch.
-git_mf() {
-  printf "Usage: git_mf <target_branch> [flags (for git merge)]\n"
-  printf "  If the <target_branch> is empty, git_mf -> git fetch, git pull\n\n"
-
-  if [[ "$#" -eq 0 ]]; then
-    echo "RUN git fetch --all --prune"
-    git fetch --all --prune || true
-    echo "RUN git pull"
-    git pull || true
-    return 0
-  fi
-
-  local target_branch="$1"
-  shift # Everythign after $1 is an arg to git merge
-
-  echo "RUN git fetch --all --prune"
-  git fetch --all --prune || true
-
-  local start_branch="$(git br --show-current)"
-  git checkout "$target_branch"
-  git pull || true
-  git checkout "$start_branch"
-  git merge "$target_branch" "$@"
-}
+# git_cof and git_mf are PATH commands in $DOTFILES/bin, not shell functions.
 
 # git_cipb: Git commit with an explicit message argument.
 git_cipb() {

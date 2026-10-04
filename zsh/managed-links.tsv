@@ -8,5 +8,7 @@ herdr/config.toml	.config/herdr/config.toml
 systemd/ssh-agent.service	.config/systemd/user/ssh-agent.service
 .config/yarn/global/package.json	.config/yarn/global/package.json
 bin/node	.local/bin/node
+bin/git_mf	.local/bin/git_mf
+bin/git_cof	.local/bin/git_cof
 zsh/gitconfig.ini	.gitconfig
 cursor/hooks	.config/git/hooks
