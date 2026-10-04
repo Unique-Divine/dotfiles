@@ -14,9 +14,8 @@ import { parse, stringify, type TomlTable } from "smol-toml"
 export const dotfileConfig = {
   personality: "pragmatic",
   approvals_reviewer: "user",
-  model: "gpt-5.6-luna",
-  model_reasoning_effort: "xhigh",
-  trust_level: "trusted",
+  model: "gpt-6-luna",
+  model_reasoning_effort: "medium",
   approval_policy: "never",
   sandbox_mode: "danger-full-access",
   tui: {
@@ -152,12 +151,16 @@ export const mergeRuntimeConfig = (
   config: TomlTable = dotfileConfig,
   cursorMcpServers: TomlTable = {},
 ): TomlTable => {
+  const cleanedRuntimeConfig = { ...runtimeConfig }
+  // Project trust belongs under projects.<path>; remove the old top-level key.
+  delete cleanedRuntimeConfig.trust_level
+
   const managedConfig = { ...config }
   for (const key of userOwnedConfigKeys) {
-    if (key in runtimeConfig) delete managedConfig[key]
+    if (key in cleanedRuntimeConfig) delete managedConfig[key]
   }
 
-  const merged = mergeTables(runtimeConfig, managedConfig)
+  const merged = mergeTables(cleanedRuntimeConfig, managedConfig)
 
   if (Object.keys(cursorMcpServers).length === 0) {
     return merged

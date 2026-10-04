@@ -11,7 +11,7 @@ automation and tests with `--mcp-source <path>`.
 ## Managed settings
 
 The TypeScript `dotfileConfig` object owns general preferences: personality,
-model, reasoning effort, trust level, approval policy, sandbox mode, and
+model, reasoning effort, approval policy, sandbox mode, and
 `tui.vim_mode_default`. Edit that object to change the backed-up defaults.
 
 Project-specific trust, TUI onboarding state, authentication, history, caches,
