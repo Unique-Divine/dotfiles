@@ -154,11 +154,6 @@ cfg_tmux() {
   cd "$before" || return 1
 }
 
-# sharex: ShareX screenshots CLI. Pass --run (nvim) or --explorer; no args -> help.
-sharex() {
-  bash "$REPO/boku/sharex.sh" "$@"
-}
-
 # ----------------- Nibiru -----------------
 
 # Reminders for config_* functions

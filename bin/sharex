@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# sharex
+#
+# Open NeoVim or Windows File Explorer for this month's ShareX screenshots
+# folder under Windows' Documents/ShareX/Screenshots/YYYY-MM.
+#
+# Usage: sharex --run | --explorer
+# Available through $DOTFILES/bin on PATH.
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_NAME="$(basename -- "${BASH_SOURCE[0]}")"
+
+# Resolve Windows' configured Documents folder when an action needs it.
+SCREENSHOTS_DIR=""
+
+pwd_orig="$(pwd)"
+MODE=""
+YEAR_MONTH=""
+MONTH_DIR=""
+
+# show_help: Print usage and exit 0.
+show_help() {
+  cat <<EOF
+Usage: $SCRIPT_NAME [OPTIONS]
+
+Open NeoVim or File Explorer for this month's ShareX screenshots folder.
+
+Options:
+  --run              Open NeoVim in ShareX/Screenshots/YYYY-MM.
+  --explorer         Open File Explorer to your cwd and ShareX/Screenshots/YYYY-MM.
+  -h, --help         Show this help.
+
+With no arguments, this script prints help and exits.
+
+Examples:
+  $SCRIPT_NAME --run
+  $SCRIPT_NAME --explorer
+EOF
+}
+
+# log_info: Print an informational message to stderr with a [sharex] prefix.
+log_info() {
+  printf '[sharex] %s\n' "$*" >&2
+}
+
+# log_error: Print an error message to stderr with a [sharex] ERROR prefix.
+log_error() {
+  printf '[sharex] ERROR: %s\n' "$*" >&2
+}
+
+# restore_pwd: Return to the directory the shell was in before sharex ran.
+restore_pwd() {
+  cd "$pwd_orig" || true
+}
+
+trap restore_pwd EXIT
+
+# require_exclusive_mode: Fail if more than one action flag was passed.
+require_exclusive_mode() {
+  local -r new_mode="$1"
+
+  if [[ -n "$MODE" && "$MODE" != "$new_mode" ]]; then
+    log_error "Use only one of --run or --explorer."
+    show_help
+    exit 1
+  fi
+
+  MODE="$new_mode"
+}
+
+# parse_args: Handle CLI flags. No args prints help.
+parse_args() {
+  if [[ $# -eq 0 ]]; then
+    show_help
+    exit 0
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run)
+        require_exclusive_mode run
+        shift
+        ;;
+      --explorer)
+        require_exclusive_mode explorer
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      *)
+        log_error "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$MODE" ]]; then
+    show_help
+    exit 0
+  fi
+}
+
+# init_year_month: Set YEAR_MONTH to the current calendar month (YYYY-MM).
+init_year_month() {
+  local date_string
+  date_string="$(date --rfc-3339=date)"
+  YEAR_MONTH="$(printf '%s' "$date_string" | cut -d'-' -f1-2)"
+}
+
+# resolve_screenshots_dir: Follow Windows' Documents location, including redirects.
+resolve_screenshots_dir() {
+  local documents_win documents_wsl command_name
+
+  for command_name in powershell.exe wslpath; do
+    command -v "$command_name" >/dev/null || {
+      log_error "Required command not found: $command_name"
+      return 1
+    }
+  done
+
+  documents_win="$(powershell.exe -NoLogo -NoProfile -NonInteractive \
+    -Command '[Environment]::GetFolderPath("MyDocuments")')" || {
+    log_error "Failed to resolve Windows Documents through PowerShell."
+    return 1
+  }
+  documents_win="${documents_win//$'\r'/}"
+  [[ -n "$documents_win" ]] || {
+    log_error "Windows returned an empty Documents path."
+    return 1
+  }
+
+  documents_wsl="$(wslpath -u "$documents_win")" || {
+    log_error "Failed to convert Windows Documents path: $documents_win"
+    return 1
+  }
+  [[ -n "$documents_wsl" && -d "$documents_wsl" ]] || {
+    log_error "Windows Documents directory is unavailable: $documents_wsl"
+    return 1
+  }
+  SCREENSHOTS_DIR="$documents_wsl/ShareX/Screenshots"
+}
+
+# resolve_month_dir: Set MONTH_DIR to ShareX/Screenshots/YYYY-MM, creating it
+# if ShareX has not written there yet.
+resolve_month_dir() {
+  if [[ -z "$SCREENSHOTS_DIR" ]]; then
+    resolve_screenshots_dir || return 1
+  fi
+  init_year_month
+  MONTH_DIR="$SCREENSHOTS_DIR/$YEAR_MONTH"
+
+  if [[ ! -d "$SCREENSHOTS_DIR" ]]; then
+    log_error "ShareX screenshots directory not found: $SCREENSHOTS_DIR"
+    return 1
+  fi
+
+  if [[ ! -d "$MONTH_DIR" ]]; then
+    log_info "Creating month directory: $MONTH_DIR"
+    mkdir -p "$MONTH_DIR" || {
+      log_error "Failed to create directory: $MONTH_DIR"
+      return 1
+    }
+  fi
+}
+
+# open_explorer: Open Windows File Explorer to target.
+# Change directory before launch so Explorer receives a Windows-compatible target.
+# Explorer may return 1 after handing a request to an existing Windows process.
+# Keep stderr visible and report other statuses; directory failures always fail.
+open_explorer() {
+  local -r target="$1"
+
+  command -v explorer.exe >/dev/null || {
+    log_error "Required command not found: explorer.exe"
+    return 1
+  }
+
+  (
+    cd -- "$target" || {
+      log_error "Cannot open Explorer directory: $target"
+      return 1
+    }
+    explorer_status=0
+    explorer.exe . >/dev/null || explorer_status=$?
+    case "$explorer_status" in
+      0) return 0 ;;
+      1)
+        log_info "Explorer returned status 1 for $target; the window may have opened."
+        return 0
+        ;;
+      *)
+        log_error "Explorer failed with status $explorer_status for $target"
+        return "$explorer_status"
+        ;;
+    esac
+  )
+}
+
+# open_nvim_at_sharex: Open NeoVim with the month folder as the working dir.
+open_nvim_at_sharex() {
+  resolve_month_dir || return 1
+  log_info "Opening nvim in ShareX: $MONTH_DIR"
+  cd "$MONTH_DIR"
+  nvim .
+}
+
+# open_explorer_at_pwd: Open File Explorer to the directory you were in when
+# sharex was invoked — useful for dragging screenshots into a project folder.
+open_explorer_at_pwd() {
+  log_info "Opening explorer to current directory: $pwd_orig"
+  open_explorer "$pwd_orig"
+}
+
+# open_explorer_at_sharex: Open File Explorer to this month's ShareX folder.
+open_explorer_at_sharex() {
+  resolve_month_dir || return 1
+  log_info "Opening explorer to ShareX: $MONTH_DIR"
+  open_explorer "$MONTH_DIR"
+}
+
+# run_explorer_mode: Open Explorer at cwd and ShareX/Screenshots/YYYY-MM.
+run_explorer_mode() {
+  resolve_month_dir || return 1
+  open_explorer_at_pwd || return 1
+  open_explorer_at_sharex
+}
+
+# main: Parse flags and run the selected mode.
+main() {
+  parse_args "$@"
+
+  case "$MODE" in
+    run)
+      open_nvim_at_sharex
+      ;;
+    explorer)
+      run_explorer_mode
+      ;;
+    *)
+      show_help
+      exit 0
+      ;;
+  esac
+}
+
+main "$@"
