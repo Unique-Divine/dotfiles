@@ -20,6 +20,8 @@ export const dotfileConfig = {
   sandbox_mode: "danger-full-access",
   tui: {
     vim_mode_default: true,
+    // Use the normal terminal screen so Herdr copy mode can scroll chat output.
+    alternate_screen: "never",
     // Keep rendered output enabled by default. Toggle raw scrollback during a
     // session with `/raw` or Alt-R when terminal-native selection is needed.
     raw_output_mode: false,

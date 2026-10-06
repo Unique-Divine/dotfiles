@@ -53,6 +53,7 @@ describe("codex config", () => {
     })
     expect(merged.tui).toEqual({
       vim_mode_default: true,
+      alternate_screen: "never",
       raw_output_mode: false,
       model_availability_nux: { "gpt-5.6-sol": 4 },
     })
@@ -143,6 +144,7 @@ describe("codex config", () => {
       })
       expect(config.tui).toEqual({
         vim_mode_default: true,
+        alternate_screen: "never",
         raw_output_mode: false,
         model_availability_nux: { "gpt-5.6-sol": 4 },
       })
@@ -240,6 +242,7 @@ describe("codex config", () => {
         "",
         "[tui]",
         "vim_mode_default = true",
+        'alternate_screen = "never"',
         "raw_output_mode = false",
       ].join("\n")}\n`
       await mkdir(join(root, ".codex"), { recursive: true })
