@@ -1,89 +1,85 @@
-# Herdr configuration
+# herdr
 
-`config.toml` is the managed Herdr configuration. The dotfiles link script
-places it at `~/.config/herdr/config.toml`; Herdr session state and logs remain
-outside this directory.
 
-## Codex history and restore
+<p align="center">
+  <img src="assets/logo.png" alt="herdr" width="100" />
+</p>
 
-The TypeScript defaults in `../codex/config.ts` set
-`tui.alternate_screen = "never"`. Codex renders on the normal terminal screen,
-so `Ctrl-b [` can scroll earlier output. Apply those defaults with
-`just codex --run` from the dotfiles root. Existing Codex processes need to be
-reopened for the display setting to apply.
+<p align="center">
+  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="https://herdr.dev/docs/quick-start/">quick start</a> · <a href="https://herdr.dev/docs/">docs</a>
+</p>
 
-Herdr saves recent terminal output with `experimental.pane_history = true`
-and reopens recorded conversations with `session.resume_agents_on_restore = true`.
-Saved screen history and conversation resume are separate features.
+<p align="center">
+  English · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-Codex 0.160.1 can reuse a shared daemon that retains the environment of its
-first Herdr pane. Session hooks can then target the wrong pane or an old socket.
-The Zsh wrapper and custom Herdr start/restore commands pass `--no-daemon`
-inside Herdr. Explicit remote connections and the `codex agents` overview keep
-their required daemon behavior. A new chat gets its session ID when the first
-prompt starts; an untouched welcome screen has no conversation to restore.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
+  <a href="https://github.com/herdrdev/herdr/releases"><img src="https://img.shields.io/github/downloads/herdrdev/herdr/total?labelColor=333333&color=666666" alt="total GitHub release downloads" /></a>
+  <a href="https://github.com/herdrdev/herdr/stargazers"><img src="https://img.shields.io/github/stars/herdrdev/herdr?labelColor=333333&color=666666&logo=github" alt="GitHub stars" /></a>
+  <a href="https://github.com/herdrdev/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/herdrdev/herdr?label=release&labelColor=333333&color=666666" alt="latest stable release" /></a>
+  <a href="https://formulae.brew.sh/formula/herdr"><img src="https://img.shields.io/homebrew/v/herdr?label=homebrew&labelColor=333333&color=666666" alt="Homebrew version" /></a>
+  <a href="https://x.com/herdrdev"><img src="https://img.shields.io/badge/follow-%40herdrdev-000000?logo=x&logoColor=white" alt="follow @herdrdev on X" /></a>
+</p>
 
-Build and install the vendored v0.9.3 fork with `just herdr-install` from the
-dotfiles root. It requires Zig 0.16.0, available through `brew install zig@0.16`
-or the `ZIG` environment variable. Avoid `herdr update`, which replaces the
-custom binary with an upstream release.
+---
 
-## Replace a running 0.8.0 server
+https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
-Installing the binary does not replace an already running server. The
-0.8.0 client uses protocol 20; v0.9.3 uses protocol 22. A live handoff keeps
-pane processes and conversations running, but disconnects the old TUI.
-Run this from a separate terminal, then reopen Herdr with `herdr`:
+**the runtime your coding agents live on.**
 
-```bash
-~/.local/bin/herdr server live-handoff \
-  --import-exe "$HOME/.local/bin/herdr" \
-  --expected-protocol 22 --expected-version 0.9.3
-```
+- **detach without stopping work** — herdr keeps terminals running in a background server when you close the client or lose your SSH connection. after a server or machine restart, herdr restores the saved layout and can resume supported agent sessions; the original processes do not survive. [session state →](https://herdr.dev/docs/session-state/)
+- **several machines, one window** — keep local work and saved ssh machines together, with a combined agent list and independent reconnects. [remote machines →](https://herdr.dev/docs/connecting-machines/)
+- **never hunt for the stuck one** — every pane is marked working, blocked, or idle. when an agent stops and needs an answer, herdr says so.
+- **agent-native** — agents drive herdr through the cli and socket api: they can spawn panes, prompt each other, and wait until another agent is genuinely blocked. [agent skill →](https://herdr.dev/docs/agent-skill/)
+- **runs what you already run** — claude code, codex, cursor, opencode, grok and the rest. herdr doesn't wrap or replace them; it owns their terminals.
+- **keyboard and mouse, both first-class** — tmux-style prefix keys *and* click, drag, split. pick per moment, not per tool.
+- **plugins** — extend panes and workflows. [browse the marketplace →](https://herdr.dev/plugins/)
+- **one rust binary, no electron** — runs in whatever terminal you already use.
 
-Existing Codex processes retain their original daemon and display settings.
-After their work finishes, exit each Codex process and resume its conversation
-with `codex resume <conversation-id>`. Fresh Zsh shells already load the
-wrapper; use `source "$DOTFILES/zsh/aliases.sh"` in an older shell first.
-Earlier output from an alternate screen cannot be recovered as host scrollback.
+---
 
-## Apply a configuration change
-
-Validate the managed configuration, then reload the running Herdr server:
+## install
 
 ```bash
-HERDR_CONFIG_PATH="$DOTFILES/herdr/config.toml" herdr config check
-herdr server reload-config
+curl -fsSL https://herdr.dev/install.sh | sh
 ```
 
-The configuration key `keys.detach` uses `prefix+d`, matching tmux. Binding
-`prefix+q` runs `herdr-tmux focus-pane`, and `prefix+a` runs
-`herdr-tmux focus-agent`.
+or `brew install herdr` · `mise use -g herdr` · windows: `powershell -ExecutionPolicy Bypass -c "irm https://herdr.dev/install.ps1 | iex"` · [endpoint-protected Windows](https://herdr.dev/docs/windows-beta/) · [binaries](https://github.com/herdrdev/herdr/releases)
 
-## Pane layouts and focus commands
-
-The tmux layout bindings are available in Herdr too:
-
-- `prefix =` unzooms the active tab and stacks its panes evenly top-to-bottom.
-- `prefix _` unzooms the active tab and spreads its panes evenly left-to-right.
-- `prefix q` opens a popup that lists the active tab's panes in geometric
-  reading order. Press `0`–`9` without Enter to focus a pane.
-- `prefix a` opens a popup that lists all live agents across the session.
-  Each row shows the agent kind and state, workspace and tab IDs, and terminal
-  title. Press `0`–`9` without Enter to focus an agent.
-
-The layout commands preserve existing pane processes and scrollback. The pane
-focus command supports up to ten panes, marks the active pane, cancels after 1.5
-seconds or on invalid input, and validates the selected pane before focusing
-it. The agent focus command supports the same number of rows and cancellation
-behavior, and validates the selected agent before focusing it. Install the
-`herdr-tmux` command from its sibling source directory:
+then start it where the work lives:
 
 ```bash
-cd "$DOTFILES/herdr-tmux"
-just install
+herdr
 ```
 
-This installs `~/.local/bin/herdr-tmux`, which the managed configuration calls
-directly. For local development, `--socket-path`, `--tab-id`, and `--pane-id`
-override Herdr's injected environment.
+run your agents, split panes, walk away. `ctrl+b q` detaches, `herdr` reattaches. [quick start →](https://herdr.dev/docs/quick-start/)
+
+## docs
+
+everything lives at [herdr.dev/docs](https://herdr.dev/docs/): [quick start](https://herdr.dev/docs/quick-start/) · [concepts](https://herdr.dev/docs/concepts/) · [supported agents](https://herdr.dev/docs/agents/) · [keyboard](https://herdr.dev/docs/keyboard/) · [configuration](https://herdr.dev/docs/configuration/) · [session state](https://herdr.dev/docs/session-state/) · [connecting machines](https://herdr.dev/docs/connecting-machines/) · [remote](https://herdr.dev/docs/persistence-remote/) · [integrations](https://herdr.dev/docs/integrations/) · [plugins](https://herdr.dev/docs/plugins/) · [socket api](https://herdr.dev/docs/socket-api/)
+
+## thanks
+
+every past sponsor and backer is listed in [SPONSORS.md](./SPONSORS.md) — thank you 🐑
+
+enterprise / partnership: hey@herdr.dev
+
+## agent instructions
+
+if you are an ai agent helping with this repository, read [`AGENTS.md`](./AGENTS.md) before making changes and read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening issues or PRs.
+
+## development
+
+```bash
+git clone https://github.com/herdrdev/herdr
+cd herdr
+cargo build --release
+
+just test        # unit tests
+just check       # formatting, tests, and maintenance checks
+```
+
+## license
+
+Herdr is licensed under the [Apache License 2.0](LICENSE).

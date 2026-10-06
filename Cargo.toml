@@ -1,8 +1,8 @@
 [workspace]
 members = ["clipboard", "ud"]
-# Keep the upstream Herdr submodule independent with its own Cargo.lock,
+# Keep the vendored Herdr source independent with its own Cargo.lock,
 # toolchain, build configuration, and release lifecycle.
-exclude = ["lib-herdr"]
+exclude = ["herdr"]
 resolver = "2"
 
 [workspace.package]

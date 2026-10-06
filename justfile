@@ -121,7 +121,7 @@ herdr-install:
     echo "Zig 0.16.0 is required; run brew install zig@0.16 or set ZIG" >&2
     exit 1
   fi
-  ZIG="$herdr_zig" cargo install --path lib-herdr --locked --root "$HOME/.local" --force
+  ZIG="$herdr_zig" cargo install --path herdr --locked --root "$HOME/.local" --force
 
 # Run the WSL clipboard bridge from the source workspace.
 clipboard *ARGS:
