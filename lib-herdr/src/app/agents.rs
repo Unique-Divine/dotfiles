@@ -6,8 +6,10 @@ use super::{terminal_targets::TerminalTargetError, App};
 use crate::api::schema::AgentStartParams;
 
 const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
-const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
+pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
+const INVALID_AGENT_TIMEOUT_MESSAGE: &str =
+    "agent start timeout must be greater than 3000ms and at most 300000ms";
 const INVALID_AGENT_NAME_MESSAGE: &str = "agent name must start with a lowercase letter and contain only lowercase letters, digits, '-' or '_' (1-32 characters)";
 
 fn valid_agent_name(name: &str) -> bool {
@@ -15,6 +17,20 @@ fn valid_agent_name(name: &str) -> bool {
     matches!(chars.next(), Some('a'..='z'))
         && name.len() <= 32
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
+}
+
+fn interactive_agent_argv(kind: crate::detect::Agent, args: Vec<String>) -> Vec<String> {
+    let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+    if kind == crate::detect::Agent::Codex
+        && !args
+            .iter()
+            .any(|arg| arg == "--no-daemon" || arg == "--remote" || arg.starts_with("--remote="))
+    {
+        // Codex's shared daemon keeps the first pane's hook environment.
+        argv.push("--no-daemon".into());
+    }
+    argv.extend(args);
+    argv
 }
 
 impl App {
@@ -78,7 +94,7 @@ impl App {
         self.state
             .focus_pane_in_workspace(resolved.ws_idx, resolved.pane_id);
         self.state.mark_active_tab_seen();
-        self.state.settle_terminal_mode_after_focus();
+        self.state.mode = crate::app::Mode::Terminal;
         self.agent_info(resolved.ws_idx, resolved.pane_id)
             .ok_or_else(|| TerminalTargetError::NotFound {
                 target: target.to_string(),
@@ -158,6 +174,8 @@ impl App {
         {
             return Err(AgentStartError::InvalidArgument);
         }
+        let persisted_agent_session =
+            crate::agent_resume::persisted_session_from_launch_args(kind, &params.args);
         let conflicts = self.agent_name_conflicts(&name, "");
         if !conflicts.is_empty() {
             return Err(AgentStartError::DuplicateName {
@@ -190,8 +208,7 @@ impl App {
         let shell_name = available_shell_name(runtime)
             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
 
-        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
-        argv.extend(params.args);
+        let argv = interactive_agent_argv(kind, params.args);
         let command = crate::platform::interactive_shell_command(&argv, &shell_name)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
@@ -214,6 +231,9 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             terminal.clear_agent_name();
             return Err(AgentStartError::InputFailed(err.to_string()));
+        }
+        if let Some(session) = persisted_agent_session {
+            terminal.set_managed_agent_launch_session(session);
         }
         self.state.mark_session_dirty();
         self.schedule_session_save();
@@ -243,8 +263,7 @@ impl App {
             },
             AgentStartError::InvalidTimeout => crate::api::schema::ErrorBody {
                 code: "invalid_agent_timeout".into(),
-                message: "agent start timeout must be greater than 3000ms and at most 300000ms"
-                    .into(),
+                message: INVALID_AGENT_TIMEOUT_MESSAGE.into(),
             },
             AgentStartError::TargetNotFound(target) => crate::api::schema::ErrorBody {
                 code: "agent_pane_not_found".into(),
@@ -389,6 +408,7 @@ impl App {
             launch_pending: terminal.managed_agent_launch_pending(),
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
+            completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
             revision: pane.revision,
@@ -467,7 +487,8 @@ pub(super) enum AgentRenameError {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_agent_name;
+    use super::{interactive_agent_argv, valid_agent_name};
+    use crate::detect::Agent;
 
     #[test]
     fn agent_names_use_a_small_cli_safe_grammar() {
@@ -486,5 +507,24 @@ mod tests {
         ] {
             assert!(!valid_agent_name(name), "expected {name:?} to be invalid");
         }
+    }
+    #[test]
+    fn codex_launch_keeps_hook_environment_local_without_duplicate_flags() {
+        assert_eq!(
+            interactive_agent_argv(Agent::Codex, vec!["resume".into(), "session".into()]),
+            vec!["codex", "--no-daemon", "resume", "session"]
+        );
+        assert_eq!(
+            interactive_agent_argv(Agent::Codex, vec!["--no-daemon".into()]),
+            vec!["codex", "--no-daemon"]
+        );
+        assert_eq!(
+            interactive_agent_argv(Agent::Codex, vec!["--remote=ws://host".into()]),
+            vec!["codex", "--remote=ws://host"]
+        );
+        assert_eq!(
+            interactive_agent_argv(Agent::Claude, vec!["--resume".into(), "session".into()]),
+            vec!["claude", "--resume", "session"]
+        );
     }
 }
