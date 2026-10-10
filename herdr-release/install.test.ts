@@ -301,3 +301,9 @@ test("just release flags use the XDG cache and install into a temporary home", a
   }
   expect(await readFile(join(root, ".local/bin/herdr"), "utf8")).toBe(binary)
 })
+
+test("publisher resolves draft assets by release ID rather than tag", async () => {
+  const source = await readFile("herdr-release/publish.ts", "utf8")
+  expect(source).toContain("releases/${draft.id}")
+  expect(source).not.toContain("releases/tags/")
+})

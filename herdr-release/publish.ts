@@ -96,7 +96,7 @@ export async function publish(dir: string, tag: string): Promise<void> {
   // gh API distinguishes a missing release from authentication/network errors.
   const releases = JSON.parse(
     await run(`gh api repos/${REPO}/releases --paginate --slurp`),
-  ).flat() as Array<{ tag_name: string; draft: boolean }>
+  ).flat() as Array<{ id: number; tag_name: string; draft: boolean }>
   const existing = releases.find((r) => r.tag_name === tag)
   requireUnpublished(existing)
   if (!existing)
@@ -113,10 +113,15 @@ export async function publish(dir: string, tag: string): Promise<void> {
   await run(
     `gh release upload ${args} --clobber ${files.map((f) => quote(join(dir, f))).join(" ")}`,
   )
+  // Drafts are discoverable in the release list, not by the public tag API.
+  const updated = JSON.parse(
+    await run(`gh api repos/${REPO}/releases --paginate --slurp`),
+  ).flat() as Array<{ id: number; tag_name: string; draft: boolean }>
+  const draft = updated.find((release) => release.tag_name === tag)
+  if (!draft) throw new Error("Uploaded draft release is missing")
+  requireUnpublished(draft)
   const remote = JSON.parse(
-    await run(
-      `gh api ${quote(`repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`)}`,
-    ),
+    await run(`gh api repos/${REPO}/releases/${draft.id}`),
   )
   await checkUploadedAssets(dir, remote.assets)
   await run(`gh release edit ${args} --draft=false --latest=false`)
