@@ -301,3 +301,16 @@ test("just release flags use the XDG cache and install into a temporary home", a
   }
   expect(await readFile(join(root, ".local/bin/herdr"), "utf8")).toBe(binary)
 })
+
+test("draft lookup selects the requested release and rejects publication races", async () => {
+  const { draftReleaseId } = await import("./publish")
+  const tag = "herdr-ud/v0.9.4"
+  const releases = [
+    { id: 10, tag_name: "unrelated", draft: false },
+    { id: 20, tag_name: tag, draft: true },
+  ]
+  expect(draftReleaseId(releases, tag)).toBe(20)
+  expect(() => draftReleaseId([], tag)).toThrow("missing")
+  releases[1]!.draft = false
+  expect(() => draftReleaseId(releases, tag)).toThrow("published")
+})
