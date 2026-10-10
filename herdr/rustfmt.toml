@@ -1,0 +1,2 @@
+# Match upstream formatting instead of inheriting dotfiles/rustfmt.toml.
+max_width = 100

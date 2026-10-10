@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# git_mf: Git "[m]erge [f]rom". Fetch, prune, check out the target and merge it
+# into the starting branch.
+#   If the <target_branch> is empty, git_mf -> git fetch, git pull
+
+set -Eeuo pipefail
+
+usage() {
+  cat <<EOF
+Usage: git_mf [target_branch] [git merge flags...]
+
+Git "[m]erge [f]rom". Fetch, prune, check out the target, and merge it into
+the starting branch.
+
+With no arguments, fetch and pull the current branch.
+
+Options:
+  -h, --help    Show this help.
+EOF
+}
+
+require_command() {
+  local -r command_name="$1"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'ERROR: required command not found: %s\n' "$command_name" >&2
+    exit 127
+  fi
+}
+
+run() {
+  echo "RUN $*"
+  "$@"
+}
+
+if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+  usage
+  exit 0
+fi
+
+require_command git
+
+if [[ $# -eq 0 ]]; then
+  run git fetch --all --prune || true
+  run git pull || true
+  exit 0
+fi
+
+target_branch="$1"
+shift
+
+run git fetch --all --prune || true
+
+start_branch="$(git branch --show-current)"
+git checkout "$target_branch"
+git pull || true
+git checkout "$start_branch"
+git merge "$target_branch" "$@"

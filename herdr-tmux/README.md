@@ -53,7 +53,7 @@ overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
 ## Dotfiles integration
 
-The source repository's [Herdr configuration](https://github.com/Unique-Divine/dotfiles/tree/main/herdr)
+The source repository's [Herdr configuration](https://github.com/Unique-Divine/dotfiles/tree/main/herdr-cfg)
 binds `prefix =` to `even-vertical`, `prefix _` to `even-horizontal`, and
 `prefix q` to `focus-pane`. It binds `prefix a` to the session-wide
 `focus-agent` command. Both are local, early features and are not packaged as

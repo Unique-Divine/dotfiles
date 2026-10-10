@@ -127,7 +127,7 @@ if ! bun run cursor/cli-config.ts --check; then
 fi
 
 if which_ok herdr; then
-  herdr_config="$PWD/herdr/config.toml"
+  herdr_config="$PWD/herdr-cfg/config.toml"
   runtime_herdr_config="$HOME/.config/herdr/config.toml"
 
   if ! HERDR_CONFIG_PATH="$herdr_config" herdr config check; then

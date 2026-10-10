@@ -53,6 +53,7 @@ describe("codex config", () => {
     })
     expect(merged.tui).toEqual({
       vim_mode_default: true,
+      alternate_screen: "never",
       raw_output_mode: false,
       model_availability_nux: { "gpt-5.6-sol": 4 },
     })
@@ -143,6 +144,7 @@ describe("codex config", () => {
       })
       expect(config.tui).toEqual({
         vim_mode_default: true,
+        alternate_screen: "never",
         raw_output_mode: false,
         model_availability_nux: { "gpt-5.6-sol": 4 },
       })
@@ -233,14 +235,14 @@ describe("codex config", () => {
       const text = `# Portable preferences\n${[
         'personality = "pragmatic"',
         'approvals_reviewer = "user"',
-        'model = "gpt-5.6-luna"',
-        'model_reasoning_effort = "xhigh"',
-        'trust_level = "trusted"',
+        'model = "gpt-6-luna"',
+        'model_reasoning_effort = "medium"',
         'approval_policy = "never"',
         'sandbox_mode = "danger-full-access"',
         "",
         "[tui]",
         "vim_mode_default = true",
+        'alternate_screen = "never"',
         "raw_output_mode = false",
       ].join("\n")}\n`
       await mkdir(join(root, ".codex"), { recursive: true })
@@ -334,9 +336,9 @@ describe("codex config", () => {
       await writeFile(
         runtimePath,
         text
-          .replace('model = "gpt-5.6-luna"', 'model = "other-model"')
+          .replace('model = "gpt-6-luna"', 'model = "other-model"')
           .replace(
-            'model_reasoning_effort = "xhigh"',
+            'model_reasoning_effort = "medium"',
             'model_reasoning_effort = "high"',
           ),
       )

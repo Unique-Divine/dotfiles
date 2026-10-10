@@ -47,7 +47,25 @@ alias start="cmd.exe /C start"
 
 alias ft="focustime" # 2026-03-04
 alias npx="bunx"
-alias codex="FORCE_COLOR=1 codex"
+# The shared Codex daemon keeps the environment of its first pane. Use a local
+# process inside Herdr so SessionStart hooks report to the launching pane.
+unalias codex 2>/dev/null || true
+function codex {
+  local codex_arg
+  local codex_use_daemon=0
+  for codex_arg in "$@"; do
+    case "$codex_arg" in
+      --no-daemon|--remote|--remote=*|agents)
+        codex_use_daemon=1
+        ;;
+    esac
+  done
+  if [[ "${HERDR_ENV:-}" == 1 && "$codex_use_daemon" == 0 ]]; then
+    FORCE_COLOR=1 command codex --no-daemon "$@"
+  else
+    FORCE_COLOR=1 command codex "$@"
+  fi
+}
 
 # Keep `cursor` on the CLI. `agent update` rewrites ~/.local/bin/cursor
 # as an IDE-forwarding shim.

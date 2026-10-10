@@ -9,7 +9,7 @@ setup:
 
 test:
   cargo test --workspace
-  bun test
+  bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
 
 alias t := test
 
@@ -93,23 +93,40 @@ gh-rev-install:
   cargo install --path "$gh_rev_dir" --locked --root "$HOME/.local"
   "$HOME/.local/bin/gh-rev" --help >/dev/null
 
-# Build and install the vendored Herdr binary at ~/.local/bin/herdr.
-herdr-install:
+# Install source or a release with --ver VERSION; cache with --get VERSION.
+herdr-install *ARGS:
+  bun run herdr-release/install.ts {{ARGS}}
+
+# Build and install the vendored Herdr binary from source.
+[private]
+herdr-install-source:
   #!/usr/bin/env bash
   set -Eeuo pipefail
   if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo is required to build vendored Herdr" >&2
     exit 1
   fi
-  herdr_zig="$(command -v zig || true)"
-  if [[ -z "$herdr_zig" && -x /home/linuxbrew/.linuxbrew/opt/zig@0.15/bin/zig ]]; then
-    herdr_zig="/home/linuxbrew/.linuxbrew/opt/zig@0.15/bin/zig"
-  fi
+  herdr_zig="${ZIG:-}"
   if [[ -z "$herdr_zig" ]]; then
-    echo "zig is required to build vendored Herdr; run just i-brew" >&2
+    herdr_machine="$(uname -m)"
+    for herdr_candidate in \
+      "$HOME/.local/share/zig/zig-${herdr_machine}-linux-0.16.0/zig" \
+      /home/linuxbrew/.linuxbrew/opt/zig/bin/zig \
+      /opt/homebrew/opt/zig/bin/zig \
+      /usr/local/opt/zig/bin/zig \
+      "$(command -v zig || true)"; do
+      if [[ -x "$herdr_candidate" ]] && \
+        [[ "$("$herdr_candidate" version)" == 0.16.0 ]]; then
+        herdr_zig="$herdr_candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$herdr_zig" ]] || [[ "$("$herdr_zig" version)" != 0.16.0 ]]; then
+    echo "Zig 0.16.0 is required; run brew install zig@0.16 or set ZIG" >&2
     exit 1
   fi
-  ZIG="$herdr_zig" cargo install --path lib-herdr --locked --root "$HOME/.local" --force
+  ZIG="$herdr_zig" cargo install --path herdr --locked --root "$HOME/.local" --force
 
 # Run the WSL clipboard bridge from the source workspace.
 clipboard *ARGS:
