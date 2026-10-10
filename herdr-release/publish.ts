@@ -72,6 +72,15 @@ export function requireUnpublished(release?: { draft: boolean }): void {
   if (release && !release.draft)
     throw new Error("Refusing to overwrite a published release")
 }
+export function draftReleaseId(
+  releases: Array<{ id: number; tag_name: string; draft: boolean }>,
+  tag: string,
+): number {
+  const release = releases.find((release) => release.tag_name === tag)
+  if (!release) throw new Error("Uploaded draft release is missing")
+  requireUnpublished(release)
+  return release.id
+}
 export async function checkUploadedAssets(
   dir: string,
   assets: Array<{ name: string; digest?: string }>,
@@ -117,11 +126,9 @@ export async function publish(dir: string, tag: string): Promise<void> {
   const updated = JSON.parse(
     await run(`gh api repos/${REPO}/releases --paginate --slurp`),
   ).flat() as Array<{ id: number; tag_name: string; draft: boolean }>
-  const draft = updated.find((release) => release.tag_name === tag)
-  if (!draft) throw new Error("Uploaded draft release is missing")
-  requireUnpublished(draft)
+  const releaseId = draftReleaseId(updated, tag)
   const remote = JSON.parse(
-    await run(`gh api repos/${REPO}/releases/${draft.id}`),
+    await run(`gh api repos/${REPO}/releases/${releaseId}`),
   )
   await checkUploadedAssets(dir, remote.assets)
   await run(`gh release edit ${args} --draft=false --latest=false`)
