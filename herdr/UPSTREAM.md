@@ -27,7 +27,8 @@ The previous snapshot came from fork commit
 The tree keeps the Rust application, workspace crates, tests, embedded assets,
 API schema, draft documentation, maintenance tools, and vendored terminal
 libraries. It excludes the Astro website, release CI, distribution installers,
-packaging, Nix files, preview and published website docs, and plugin-worker app.
+non-Windows packaging, Nix files, preview and published website docs, and the
+plugin-worker app.
 The embedded Windows installer and release metadata remain under `distribution/`
 because the application and its tests compile them into the binary. The local
 `rustfmt.toml` keeps upstream formatting instead of inheriting dotfiles settings.
@@ -51,3 +52,10 @@ env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH \
   -u HERDR_SESSION -u HERDR_STARTUP_CWD -u HERDR_PANE_ID \
   -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID NEXTEST_TEST_THREADS=4 just ci
 ```
+
+## Fork releases
+
+The fork package is version 0.9.4; the recorded upstream base stays v0.9.3.
+Dotfiles owns release builds and downloads.
+See [Herdr releases](../herdr-release/README.md) for commands and checks.
+Windows packaging metadata and license notices are retained for release ZIPs.

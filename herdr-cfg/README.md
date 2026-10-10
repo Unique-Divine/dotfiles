@@ -23,22 +23,24 @@ inside Herdr. Explicit remote connections and the `codex agents` overview keep
 their required daemon behavior. A new chat gets its session ID when the first
 prompt starts; an untouched welcome screen has no conversation to restore.
 
-Build and install the vendored v0.9.3 fork with `just herdr-install` from the
+Build and install the vendored v0.9.4 fork with `just herdr-install` from the
 dotfiles root. It requires Zig 0.16.0, available through `brew install zig@0.16`
 or the `ZIG` environment variable. Avoid `herdr update`, which replaces the
 custom binary with an upstream release.
+For cached downloads and versioned installation, see
+[Herdr releases](../herdr-release/README.md).
 
 ## Replace a running 0.8.0 server
 
 Installing the binary does not replace an already running server. The
-0.8.0 client uses protocol 20; v0.9.3 uses protocol 22. A live handoff keeps
+0.8.0 client uses protocol 20; the fork uses protocol 22. A live handoff keeps
 pane processes and conversations running, but disconnects the old TUI.
 Run this from a separate terminal, then reopen Herdr with `herdr`:
 
 ```bash
 ~/.local/bin/herdr server live-handoff \
   --import-exe "$HOME/.local/bin/herdr" \
-  --expected-protocol 22 --expected-version 0.9.3
+  --expected-protocol 22 --expected-version 0.9.4
 ```
 
 Existing Codex processes retain their original daemon and display settings.

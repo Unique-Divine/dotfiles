@@ -183,7 +183,7 @@ Like the existing dotfiles links, sync replaces the runtime config with this
 managed source. Backup/preservation or force-mode policies are deferred.
 
 The checked-in configuration starts from Herdr 0.8.0's annotated defaults and
-is validated against the vendored v0.9.3 fork. It enables saved pane history
+is validated against the vendored v0.9.4 fork. It enables saved pane history
 and conversation restoration, and preserves the local keybindings and layout
 commands. Print the installed binary's defaults with command:
 
@@ -191,9 +191,10 @@ commands. Print the installed binary's defaults with command:
 herdr --default-config
 ```
 
-Directory [`herdr`](herdr) contains the vendored v0.9.3 source and local
+Directory [`herdr`](herdr) contains the vendored v0.9.4 fork source and local
 changes. It has its own Cargo workspace and lockfile. Build and install it
 with command `just herdr-install`; no Herdr submodule initialization is needed.
+See [Herdr releases](herdr-release/README.md) for downloads and release tags.
 See file [`herdr/UPSTREAM.md`](herdr/UPSTREAM.md) for provenance and upgrade
 instructions, and file [`herdr-cfg/README.md`](herdr-cfg/README.md) for the
 managed configuration and Codex scrolling settings.

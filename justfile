@@ -93,8 +93,13 @@ gh-rev-install:
   cargo install --path "$gh_rev_dir" --locked --root "$HOME/.local"
   "$HOME/.local/bin/gh-rev" --help >/dev/null
 
-# Build and install the vendored Herdr binary at ~/.local/bin/herdr.
-herdr-install:
+# Install source or a release with --ver VERSION; cache with --get VERSION.
+herdr-install *ARGS:
+  bun run herdr-release/install.ts {{ARGS}}
+
+# Build and install the vendored Herdr binary from source.
+[private]
+herdr-install-source:
   #!/usr/bin/env bash
   set -Eeuo pipefail
   if ! command -v cargo >/dev/null 2>&1; then

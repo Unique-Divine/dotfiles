@@ -1,0 +1,140 @@
+name: Herdr UD release
+on:
+  push:
+    tags: ["herdr-ud/*"]
+permissions:
+  contents: read
+concurrency:
+  group: herdr-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'Unique-Divine/dotfiles'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@just
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Validate release tag and Cargo versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun run herdr-release/publish.ts validate "$RELEASE_TAG"
+      - run: bun test herdr-release
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            asset: herdr-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            asset: herdr-linux-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            asset: herdr-macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            asset: herdr-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            asset: herdr-windows-x86_64.zip
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: herdr
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: "true"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+          targets: ${{ matrix.target }}
+      - uses: vercel-labs/setup-zig@v1.0.2
+        with:
+          version: 0.16.0
+      - name: Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools
+      - name: macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: herdr
+          key: herdr-release-${{ matrix.target }}
+      - name: Build locked Rust source
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$BUILD_TARGET"
+        shell: bash
+      - name: Package and smoke-test Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cp "target/$BUILD_TARGET/release/herdr" "$ASSET"
+          expected="herdr ${RELEASE_TAG#herdr-ud/v}"
+          test "$(./"$ASSET" --version)" = "$expected"
+          ./"$ASSET" --help >/dev/null
+      - name: Package and smoke-test Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows"
+          ./scripts/package_windows_conpty.ps1 `
+            -HerdrExe "target/$env:BUILD_TARGET/release/herdr.exe" `
+            -PackagePath (Join-Path $env:RUNNER_TEMP "conpty.nupkg") `
+            -StageDir $stage -OutputPath $env:ASSET
+          $exe = Join-Path $stage "herdr.exe"
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne "herdr $($env:RELEASE_TAG -replace '^herdr-ud/v', '')") {
+            throw "Unexpected executable version: $version"
+          }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "Windows help smoke test failed" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: herdr/${{ matrix.asset }}
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun run herdr-release/publish.ts publish "$RELEASE_TAG"
