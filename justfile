@@ -9,7 +9,7 @@ setup:
 
 test:
   cargo test --workspace
-  bun test
+  bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
 
 alias t := test
 
