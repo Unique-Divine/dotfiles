@@ -25,7 +25,7 @@ herdr plugin install Unique-Divine/dotfiles/herdr-tmux
 ```
 
 Herdr builds the plugin with locked dependencies and registers its actions.
-For a pinned release, add `--ref herdr-tmux-v0.1.0`. Installation does not add
+For a pinned release, add `--ref herdr-tmux/v0.1.0`. Installation does not add
 key bindings; copy the bindings below into your Herdr configuration.
 
 ### Cargo binary

@@ -41,8 +41,8 @@ Unlink the temporary registration before deleting its files.
 After reviewing the branch and green CI, merge it and create the release tag:
 
 ```bash
-git tag herdr-tmux-v0.1.0
-git push origin herdr-tmux-v0.1.0
+git tag -a herdr-tmux/v0.1.0 -m "herdr-tmux 0.1.0"
+git push origin herdr-tmux/v0.1.0
 cargo publish --locked
 ```
 
