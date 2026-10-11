@@ -429,6 +429,88 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
 }
 
 #[test]
+fn new_tab_suggestions_follow_display_base_and_target_workspace() {
+    for (keys, index_base) in [
+        ("", 1),
+        ("[keys]\nswitch_tab = \"prefix+0..8\"", 0),
+        ("[keys]\nswitch_tab = [\"prefix+0..8\", \"alt+1..9\"]", 1),
+    ] {
+        for context_menu in [false, true] {
+            for tab_count in [1, 5, 6] {
+                for custom_name in [false, true] {
+                    let config: Config = toml::from_str(keys).expect("tab config");
+                    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+                    let mut projected = snapshot();
+                    let workspace_id = if context_menu { "ws_2" } else { "ws_1" };
+                    let other_workspace_id = if context_menu { "ws_1" } else { "ws_2" };
+                    let mut workspace = projected.workspaces[0].clone();
+                    workspace.workspace_id = "ws_2".into();
+                    workspace.number = 2;
+                    workspace.focused = false;
+                    workspace.active_tab_id = "ws_2_tab_1".into();
+                    projected.workspaces.push(workspace);
+                    projected.tabs = [(workspace_id, tab_count), (other_workspace_id, 3)]
+                        .into_iter()
+                        .flat_map(|(workspace_id, count)| {
+                            (1..=count).map(move |number| ClientShellTab {
+                                tab_id: format!("{workspace_id}_tab_{number}"),
+                                workspace_id: workspace_id.into(),
+                                number,
+                                label: number.to_string(),
+                                custom_label: false,
+                                zoomed: false,
+                                focused: workspace_id == "ws_1" && number == 1,
+                                agent_status: AgentStatus::Idle,
+                            })
+                        })
+                        .collect();
+                    projected.focused_tab_id = Some("ws_1_tab_1".into());
+                    projected.workspaces[0].active_tab_id = "ws_1_tab_1".into();
+                    projected.panes[0].tab_id = "ws_1_tab_1".into();
+                    state.set_snapshot(Box::new(projected));
+                    let mut open = ClientShellInput::default();
+                    if context_menu {
+                        state.open_tab_context_menu("ws_2_tab_1".into(), 0, 0);
+                        state.activate_context_menu_item(0, &mut open);
+                    } else {
+                        state.record_binding(
+                            crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+                            &mut open,
+                        );
+                    }
+                    let Some(ClientShellOverlay::Rename(rename)) = &state.overlay else {
+                        panic!("new tab dialog");
+                    };
+                    let expected = (tab_count + index_base).to_string();
+                    assert_eq!(rename.input.as_str(), expected);
+                    assert!(matches!(
+                        &rename.target,
+                        ClientRenameTarget::NewTab { workspace_id: target, default_name }
+                            if target == workspace_id && default_name == &expected
+                    ));
+
+                    if custom_name {
+                        state.handle_input_bytes(b"logs");
+                    }
+                    let create = state.handle_input_bytes(b"\r");
+                    let [ClientShellAction::Endpoint { request, .. }] = &create.actions[..] else {
+                        panic!("new tab save should use endpoint API");
+                    };
+                    assert!(matches!(
+                        &request.method,
+                        Method::TabCreate(params)
+                            if params.workspace_id.as_deref() == Some(workspace_id)
+                                && params.label.as_deref()
+                                    == if custom_name { Some("logs") } else { None }
+                    ));
+                    assert!(state.overlay.is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
