@@ -178,6 +178,7 @@ sync:
   if ! command -v herdr-tmux >/dev/null 2>&1; then
     just --justfile herdr-tmux/justfile install
   fi
+  just --justfile herdr-tmux/justfile plugin-link
   just i-zinit
   just gh-rev-install
   if is_wsl >/dev/null; then
