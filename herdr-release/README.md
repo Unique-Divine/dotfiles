@@ -1,18 +1,21 @@
 # Herdr fork releases
 
-Run these commands from the dotfiles root. Fork version 0.9.4 is based on
+Run these commands from the dotfiles root. Fork version 0.9.5 is based on
 upstream v0.9.3.
+
+Version 0.9.5 fixes zero-based name suggestions in the keyboard and context-menu
+tab-creation dialogs. See [issue #57](https://github.com/Unique-Divine/dotfiles/issues/57).
 
 ## Install or download
 
 ```bash
 just herdr-install                     # Build and install source
 just herdr-install --ver source        # Explicit source installation
-just herdr-install --get 0.9.4         # Cache a runnable release; print its path
-just herdr-install --ver 0.9.4         # Install a verified release
+just herdr-install --get 0.9.5         # Cache a runnable release; print its path
+just herdr-install --ver 0.9.5         # Install a verified release
 ```
 
-Release commands accept `0.9.4`, `v0.9.4`, or `herdr-ud/v0.9.4`. They require
+Release commands accept `0.9.5`, `v0.9.5`, or `herdr-ud/v0.9.5`. They require
 Bun and dependencies from `bun install`. Configured GitHub CLI authentication
 is used when available. Public releases also support downloads without login.
 Private repository access requires GitHub CLI and `gh auth login`. Cargo and
@@ -41,8 +44,8 @@ Update the Herdr package version in `herdr/Cargo.toml` and `herdr/Cargo.lock`,
 commit the change, and tag that commit:
 
 ```bash
-git tag -a herdr-ud/v0.9.4 -m "Herdr UD 0.9.4"
-git push origin herdr-ud/v0.9.4
+git tag -a herdr-ud/v0.9.5 -m "Herdr UD 0.9.5"
+git push origin herdr-ud/v0.9.5
 ```
 
 Workflow `Herdr UD release` requires matching tag and Cargo versions. It builds
@@ -60,7 +63,7 @@ become the dotfiles repository's general latest release.
 
 ```bash
 bun test herdr-release
-bun run herdr-release/publish.ts validate herdr-ud/v0.9.4
+bun run herdr-release/publish.ts validate herdr-ud/v0.9.5
 just test
 bunx github-actionlint .github/workflows/herdr-release.yml
 ```

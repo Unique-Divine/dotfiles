@@ -56,7 +56,7 @@ env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH \
 
 ## Fork releases
 
-The fork package is version 0.9.4; the recorded upstream base stays v0.9.3.
+The fork package is version 0.9.5; the recorded upstream base stays v0.9.3.
 Dotfiles owns release builds and downloads.
 See [Herdr releases](../herdr-release/README.md) for commands and checks.
 Windows packaging metadata and license notices are retained for release ZIPs.

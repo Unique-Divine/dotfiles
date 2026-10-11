@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -148,10 +148,24 @@ test("metadata and checksum manifest agree", async () => {
   await expect(verify(root, "0.9.4", asset)).rejects.toThrow("manifest")
 })
 test("Cargo validation and complete metadata", async () => {
-  expect(await validateTag("herdr-ud/v0.9.4")).toBe("0.9.4")
-  await expect(validateTag("herdr-ud/v0.9.3")).rejects.toThrow("match")
-  await expect(validateTag("v0.9.4")).rejects.toThrow("Tag must")
   const root = await temp()
+  await mkdir(join(root, "herdr"))
+  await writeFile(
+    join(root, "herdr/Cargo.toml"),
+    '[package]\nname = "herdr"\nversion = "0.9.4"\n',
+  )
+  await writeFile(
+    join(root, "herdr/Cargo.lock"),
+    '[[package]]\nname = "herdr"\nversion = "0.9.4"\n',
+  )
+  expect(await validateTag("herdr-ud/v0.9.4", root)).toBe("0.9.4")
+  await expect(validateTag("herdr-ud/v0.9.3", root)).rejects.toThrow("match")
+  await expect(validateTag("v0.9.4", root)).rejects.toThrow("Tag must")
+  await writeFile(
+    join(root, "herdr/Cargo.lock"),
+    '[[package]]\nname = "herdr"\nversion = "0.9.3"\n',
+  )
+  await expect(validateTag("herdr-ud/v0.9.4", root)).rejects.toThrow("match")
   for (const name of ASSETS) await writeFile(join(root, name), name)
   await writeMetadata(root, "herdr-ud/v0.9.4", "b".repeat(40), "v0.9.3")
   const m = JSON.parse(
