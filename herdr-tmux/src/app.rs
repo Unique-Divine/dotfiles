@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -12,10 +12,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::queue;
+use crossterm::style::{
+    Attribute, Color, ResetColor, SetAttribute, SetForegroundColor,
+};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Default time a pane or agent picker waits for a selection before cancelling.
@@ -585,18 +590,44 @@ fn agent_description(agent: &AgentInfo) -> String {
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| agent.pane_id.clone());
-    let mut chars = description.trim().chars().map(|character| {
-        if character.is_control() {
-            ' '
-        } else {
-            character
+    sanitize_cell(&description)
+}
+
+fn sanitize_cell(text: &str) -> String {
+    text.trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+fn fit_cell(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let cells = c.width().unwrap_or(0);
+        if used + cells > width - 1 {
+            break;
         }
-    });
-    let prefix = chars.by_ref().take(36).collect::<String>();
-    if chars.next().is_some() {
-        format!("{prefix}…")
-    } else {
-        prefix
+        result.push(c);
+        used += cells;
+    }
+    result.push('…');
+    result
+}
+
+fn agent_status_style(status: &str) -> (&'static str, Option<Color>, bool) {
+    match status {
+        "working" => ("↻", None, false),
+        "idle" => (".", Some(Color::Cyan), true),
+        "done" => ("✓", Some(Color::Cyan), true),
+        "blocked" => ("!", Some(Color::Yellow), true),
+        _ => ("?", Some(Color::Cyan), true),
     }
 }
 
@@ -626,8 +657,10 @@ fn write_agent_selector<W: Write>(
     writer: &mut W,
     agents: &[AgentInfo],
     tab_labels: &HashMap<String, String>,
+    width: usize,
+    styled: bool,
 ) -> Result<(), HerdrError> {
-    writeln!(writer, "Select agent (0-9, Esc cancels)\n")?;
+    let mut rows = Vec::new();
     for (index, agent) in agents.iter().enumerate() {
         let marker = if agent.focused { "*" } else { " " };
         let kind = agent.agent.as_deref().unwrap_or("unknown");
@@ -637,12 +670,63 @@ fn write_agent_selector<W: Write>(
                 agent.pane_id, agent.tab_id
             ))
         })?;
-        writeln!(
-            writer,
-            " {index} {marker} {kind:<8} {:<8} {location:<8}  {}",
-            agent.agent_status,
+        let (icon, _, _) = agent_status_style(&agent.agent_status);
+        rows.push([
+            format!("{index} {marker}"),
+            sanitize_cell(kind),
+            format!("{icon} {}", sanitize_cell(&agent.agent_status)),
+            sanitize_cell(location),
             agent_description(agent),
-        )?;
+        ]);
+    }
+    let headings =
+        ["Agent", "Harness", "Status", "Tab", "Title"].map(str::to_owned);
+    let widths: [usize; 4] = std::array::from_fn(|col| {
+        rows.iter()
+            .map(|row| row[col].width())
+            .chain([headings[col].width()])
+            .max()
+            .unwrap()
+    });
+    for (row_index, row) in
+        std::iter::once(&headings).chain(rows.iter()).enumerate()
+    {
+        let mut remaining = width;
+        for (col, text) in row.iter().enumerate() {
+            let field_width = if col < 4 {
+                widths[col].min(remaining)
+            } else {
+                remaining
+            };
+            let fitted = fit_cell(text, field_width);
+            if styled {
+                if row_index == 0 {
+                    queue!(writer, SetAttribute(Attribute::Bold))?;
+                } else {
+                    let (_, color, actionable) =
+                        agent_status_style(&agents[row_index - 1].agent_status);
+                    if col == 0 || col == 2 {
+                        if let Some(color) = color {
+                            queue!(writer, SetForegroundColor(color))?;
+                        }
+                        if col == 2 || actionable {
+                            queue!(writer, SetAttribute(Attribute::Bold))?;
+                        }
+                    }
+                }
+            }
+            write!(writer, "{fitted}")?;
+            if styled {
+                queue!(writer, SetAttribute(Attribute::Reset), ResetColor)?;
+            }
+            remaining -= fitted.width();
+            if col < 4 {
+                let padding = (field_width - fitted.width() + 2).min(remaining);
+                write!(writer, "{}", " ".repeat(padding))?;
+                remaining -= padding;
+            }
+        }
+        writeln!(writer)?;
     }
     writer.flush()?;
     Ok(())
@@ -681,7 +765,16 @@ where
     }
 
     let tab_labels = agent_tab_labels(&client, &agents, tab_display_index_base)?;
-    write_agent_selector(writer, &agents, &tab_labels)?;
+    let width = crossterm::terminal::size()
+        .map(|(cols, _)| usize::from(cols).saturating_sub(1))
+        .unwrap_or(70);
+    write_agent_selector(
+        writer,
+        &agents,
+        &tab_labels,
+        width,
+        io::stdout().is_terminal(),
+    )?;
     let PickerChoice::Select(index) = choose(agents.len())? else {
         return Ok(());
     };
@@ -726,13 +819,18 @@ fn agent_tab_labels(
     }
 
     let mut labels = HashMap::new();
+    let multiple_workspaces = workspace_ids.len() > 1;
     for workspace_id in workspace_ids {
         for (index, tab) in
             client.tab_list(&workspace_id)?.into_iter().enumerate()
         {
             labels.insert(
                 tab.tab_id,
-                format!("t{} / {workspace_id}", index + tab_display_index_base),
+                if multiple_workspaces {
+                    format!("t{}_{workspace_id}", index + tab_display_index_base)
+                } else {
+                    format!("t{}", index + tab_display_index_base)
+                },
             );
         }
     }
@@ -1378,8 +1476,162 @@ mod tests {
             json!({"target": "w1:p2"})
         );
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("0 * cursor   working  t0 / w1   current task"));
-        assert!(output.contains("1   cursor   working  t1 / w1   review task"));
+        let lines: Vec<_> = output
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>())
+            .collect();
+        assert_eq!(lines[0], ["Agent", "Harness", "Status", "Tab", "Title"]);
+        assert_eq!(
+            lines[1],
+            ["0", "*", "cursor", "↻", "working", "t0", "current", "task"]
+        );
+        assert_eq!(
+            lines[2],
+            ["1", "cursor", "↻", "working", "t1", "review", "task"]
+        );
+    }
+
+    fn strip_sgr(text: &str) -> String {
+        let mut result = String::new();
+        let mut escape = false;
+        for c in text.chars() {
+            if c == '\x1b' {
+                escape = true;
+            } else if escape {
+                if c == 'm' {
+                    escape = false;
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn agent_table_styles_attention_states_and_resets_each_field() {
+        let statuses = ["working", "idle", "done", "blocked", "unknown"];
+        let agents: Vec<AgentInfo> = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| {
+                let mut agent: AgentInfo =
+                    serde_json::from_value(selector_agent(
+                        &format!("w1:p{i}"),
+                        &format!("term-{i}"),
+                        i == 0,
+                        "task",
+                    ))
+                    .unwrap();
+                agent.agent_status = (*status).into();
+                agent
+            })
+            .collect();
+        let tabs = HashMap::from([("w1:t2".into(), "t0".into())]);
+        let mut styled = Vec::new();
+        write_agent_selector(&mut styled, &agents, &tabs, 70, true).unwrap();
+        let styled = String::from_utf8(styled).unwrap();
+        let lines: Vec<_> = styled.lines().collect();
+        assert!(lines[1].starts_with("0 *"));
+        assert!(lines[1].contains("\x1b[1m↻ working"));
+        assert!(!lines[1].contains("\x1b[38;"));
+        for (i, status) in statuses.iter().enumerate().skip(1) {
+            let color = if *status == "blocked" {
+                Color::Yellow
+            } else {
+                Color::Cyan
+            };
+            let foreground = SetForegroundColor(color).to_string();
+            assert!(lines[i + 1].starts_with(&format!("{foreground}\x1b[1m{i}")));
+            assert_eq!(lines[i + 1].matches(&foreground).count(), 2);
+            let reset =
+                format!("{}{}", SetAttribute(Attribute::Reset), ResetColor);
+            assert!(lines[i + 1].contains(&format!("{status}{reset}")));
+        }
+        let mut plain = Vec::new();
+        write_agent_selector(&mut plain, &agents, &tabs, 70, false).unwrap();
+        let plain = String::from_utf8(plain).unwrap();
+        assert!(!plain.contains('\x1b'));
+        assert_eq!(strip_sgr(&styled), plain);
+    }
+
+    #[test]
+    fn agent_table_fits_ten_unicode_rows_and_narrow_widths() {
+        let agents: Vec<AgentInfo> = (0..10)
+            .map(|i| {
+                serde_json::from_value(selector_agent(
+                    &format!("w1:p{i}"),
+                    &format!("term-{i}"),
+                    i == 0,
+                    &format!("界e\u{301}{}\nend", "very long title ".repeat(10)),
+                ))
+                .unwrap()
+            })
+            .collect();
+        let tabs = HashMap::from([("w1:t2".into(), "t0_w6".into())]);
+        for width in [0, 1, 12, 30, 69, 70] {
+            let mut output = Vec::new();
+            write_agent_selector(&mut output, &agents, &tabs, width, false)
+                .unwrap();
+            let output = String::from_utf8(output).unwrap();
+            let lines: Vec<_> = output.lines().collect();
+            assert_eq!(lines.len(), 11);
+            assert!(lines.iter().all(|line| line.width() <= width));
+            if width == 69 {
+                assert!(lines[1].ends_with('…'));
+                let title_col = lines[0].find("Title").unwrap();
+                for line in &lines[1..] {
+                    let prefix = line.split('界').next().unwrap();
+                    assert_eq!(prefix.width(), title_col);
+                }
+            }
+        }
+        assert_eq!(fit_cell("界界", 3), "界…");
+        assert_eq!(fit_cell("e\u{301}界", 2), "e\u{301}…");
+    }
+
+    #[test]
+    fn agent_tab_labels_include_workspace_only_for_multiple_workspaces() {
+        for base in [0, 1] {
+            for multiple in [false, true] {
+                let first: AgentInfo = serde_json::from_value(selector_agent(
+                    "w1:p1", "term-1", false, "task",
+                ))
+                .unwrap();
+                let mut agents = vec![first];
+                let mut responses = vec![json!({"tabs": [{"tab_id": "w1:t2"}]})];
+                if multiple {
+                    let mut second = agents[0].clone();
+                    second.workspace_id = "w6".into();
+                    second.tab_id = "w6:t2".into();
+                    agents.push(second);
+                    responses.push(json!({"tabs": [{"tab_id": "w6:t2"}]}));
+                }
+                let (_directory, target, receiver) =
+                    scripted_server(responses, "w1:p1");
+                let labels = agent_tab_labels(
+                    &Client::new(target.socket_path),
+                    &agents,
+                    base,
+                )
+                .unwrap();
+                assert_eq!(
+                    labels["w1:t2"],
+                    if multiple {
+                        format!("t{base}_w1")
+                    } else {
+                        format!("t{base}")
+                    }
+                );
+                if multiple {
+                    assert_eq!(labels["w6:t2"], format!("t{base}_w6"));
+                }
+                assert_eq!(
+                    receiver.iter().count(),
+                    if multiple { 2 } else { 1 }
+                );
+            }
+        }
     }
 
     #[test]

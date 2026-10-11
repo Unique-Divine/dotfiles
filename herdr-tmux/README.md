@@ -36,17 +36,34 @@ and restore the original layout if a recoverable mutation fails.
 Command `herdr-tmux focus-pane` lists panes in the active tab from top to bottom,
 then left to right. Press one digit without Enter to focus that pane. The
 command supports up to ten panes and cancels on Escape, invalid input, or a
-1.5-second timeout. A one-pane tab and selecting the active pane are successful
+five-second timeout. A one-pane tab and selecting the active pane are successful
 no-ops. Before changing focus, the command verifies that the selected pane still
 belongs to the originating tab.
 
 Command `herdr-tmux focus-agent` lists every live agent in the session.
-Each row shows its detected kind, lifecycle status, tab position and workspace
-ID, and terminal title. The tab position follows `keys.switch_tab`: `0..8`
+The columns are Agent, Harness, Status, Tab, and Title. Agent shows the jump
+number and an asterisk for the focused agent; Harness shows its detected kind.
+Titles fit the popup width and end with an ellipsis when truncated.
+The tab position follows `keys.switch_tab`: `0..8`
 renders `t0` through `t8`, while `1..9` renders `t1` through `t9`. Press
 `0`–`9` without Enter to focus an agent, even when it is in another workspace
 or tab. It shares the pane focus command's cancellation and timeout behavior,
 and confirms the selected agent still occupies its pane before focus.
+
+The Tab column shows `t0` when all listed agents share a workspace and `t0_w6`
+when agents span multiple workspaces. Status icons and colors are:
+
+| Status | Icon | Foreground | Jump number |
+| --- | --- | --- | --- |
+| Working | ↻ | Default terminal color | Normal |
+| Idle | . | Cyan | Bold |
+| Done | ✓ | Cyan | Bold |
+| Blocked | ! | Amber | Bold |
+| Unknown | ? | Cyan | Bold |
+
+Headings and status text are bold. Jump numbers match their status foreground.
+Redirected output has no ANSI styling. The picker uses simple
+Unicode symbols without requiring an icon font.
 
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.
