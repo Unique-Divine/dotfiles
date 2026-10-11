@@ -6,7 +6,16 @@ lint:
     cargo clippy --all-targets --locked -- -D warnings
 
 build:
-    cargo build --release --locked
+    cargo build --release --locked --target-dir target
 
 install:
-    cargo install --path . --root "$HOME/.local" --force
+    cargo install --path . --locked --root "$HOME/.local" --force
+
+# Build and register the source checkout with Herdr.
+plugin-link: build
+    herdr plugin link "{{justfile_directory()}}"
+
+# Check the crate and verify the publishable package without publishing.
+release-check: test lint
+    cargo package --locked
+    cargo publish --dry-run --locked

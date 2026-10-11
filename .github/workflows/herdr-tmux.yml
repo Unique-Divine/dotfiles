@@ -1,0 +1,39 @@
+name: Herdr tmux
+
+on:
+  pull_request:
+    paths:
+      - 'herdr-tmux/**'
+      - '.github/workflows/herdr-tmux.yml'
+  push:
+    branches: [main, ud/herdr-tmux]
+    paths:
+      - 'herdr-tmux/**'
+      - '.github/workflows/herdr-tmux.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: herdr-tmux
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Verify package
+        run: cargo package --locked

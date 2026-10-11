@@ -1,4 +1,5 @@
 mod app;
+mod plugin;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,7 +11,11 @@ use app::{
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "herdr-tmux", about = "tmux-style layout commands for Herdr")]
+#[command(
+    name = "herdr-tmux",
+    version,
+    about = "tmux-style layouts and agent pickers for Herdr"
+)]
 struct Cli {
     /// Override HERDR_SOCKET_PATH (primarily for development and tests).
     #[arg(long, global = true)]
@@ -27,6 +32,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Register the installed binary or open a plugin picker.
+    Plugin {
+        #[command(subcommand)]
+        command: plugin::PluginCommand,
+    },
     Layout {
         #[command(subcommand)]
         layout: Layout,
@@ -54,6 +64,22 @@ impl From<Layout> for Direction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Plugin { command } = &cli.command {
+        return match plugin::run(
+            command,
+            CliTarget {
+                socket_path: cli.socket_path,
+                tab_id: cli.tab_id,
+                pane_id: cli.pane_id,
+            },
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("herdr-tmux: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let target = match resolve_target(CliTarget {
         socket_path: cli.socket_path,
         tab_id: cli.tab_id,
@@ -63,6 +89,7 @@ fn main() -> ExitCode {
         Err(error) => return fail(None, error),
     };
     let result = match cli.command {
+        Command::Plugin { .. } => unreachable!(),
         Command::Layout { layout } => arrange(&target, layout.into()),
         Command::FocusPane => pick_pane(&target),
         Command::FocusAgent => pick_agent(&target),

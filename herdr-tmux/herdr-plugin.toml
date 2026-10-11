@@ -1,0 +1,49 @@
+id = "unique-divine.herdr-tmux"
+name = "Herdr tmux tools"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Even pane layouts and numbered pane and agent pickers"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked", "--target-dir", "target"]
+
+[[actions]]
+id = "even-vertical"
+title = "Stack panes evenly"
+contexts = ["pane"]
+command = ["./target/release/herdr-tmux", "layout", "even-vertical"]
+
+[[actions]]
+id = "even-horizontal"
+title = "Spread panes evenly"
+contexts = ["pane"]
+command = ["./target/release/herdr-tmux", "layout", "even-horizontal"]
+
+[[actions]]
+id = "focus-pane"
+title = "Select pane by number"
+contexts = ["pane"]
+command = ["./target/release/herdr-tmux", "plugin", "open", "pane"]
+
+[[actions]]
+id = "focus-agent"
+title = "Select agent by number"
+contexts = ["pane"]
+command = ["./target/release/herdr-tmux", "plugin", "open", "agent"]
+
+[[panes]]
+id = "pane-picker"
+title = "Panes"
+placement = "popup"
+width = 60
+height = 14
+command = ["./target/release/herdr-tmux", "focus-pane"]
+
+[[panes]]
+id = "agent-picker"
+title = "Agents"
+placement = "popup"
+width = 72
+height = 14
+command = ["./target/release/herdr-tmux", "focus-agent"]
