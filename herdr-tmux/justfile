@@ -6,7 +6,7 @@ lint:
     cargo clippy --all-targets --locked -- -D warnings
 
 build:
-    cargo build --release --locked
+    cargo build --release --locked --target-dir target
 
 install:
     cargo install --path . --locked --root "$HOME/.local" --force

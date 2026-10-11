@@ -6,7 +6,7 @@ description = "Even pane layouts and numbered pane and agent pickers"
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["cargo", "build", "--release", "--locked"]
+command = ["cargo", "build", "--release", "--locked", "--target-dir", "target"]
 
 [[actions]]
 id = "even-vertical"

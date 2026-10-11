@@ -139,7 +139,11 @@ fn register(herdr: &Path, executable: &Path, root: &Path) -> Result<()> {
     check_registration(&serde_json::from_slice(&listing.stdout)?, root)?;
     fs::create_dir_all(root)?;
     let manifest_path = root.join("herdr-plugin.toml");
-    let previous = fs::read(&manifest_path).ok();
+    let previous = match fs::read(&manifest_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
     fs::write(&manifest_path, installed_manifest(executable)?)?;
     let linked = Command::new(herdr)
         .args(["plugin", "link"])
