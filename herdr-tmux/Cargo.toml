@@ -1,13 +1,12 @@
 [package]
 name = "herdr-tmux"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
-description = "tmux-style even-layout commands for Herdr"
+description = "tmux-style layouts and agent pickers for Herdr, as a CLI and plugin"
 license = "BSD-2-Clause"
 readme = "README.md"
 repository = "https://github.com/Unique-Divine/dotfiles"
 homepage = "https://github.com/Unique-Divine/dotfiles/tree/main/herdr-tmux"
-documentation = "https://docs.rs/herdr-tmux"
 keywords = ["herdr", "tmux", "terminal", "multiplexer"]
 categories = ["command-line-utilities"]
 include = [
@@ -15,6 +14,9 @@ include = [
     "Cargo.toml",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
+    "RELEASING.md",
+    "herdr-plugin.toml",
     "src/**",
     "tests/**",
 ]

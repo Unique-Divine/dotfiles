@@ -57,21 +57,51 @@ pub(crate) struct CliTarget {
     pub pane_id: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct PluginContext {
+    tab_id: Option<String>,
+    focused_pane_id: Option<String>,
+}
+
 pub(crate) fn resolve_target(cli: CliTarget) -> Result<Target, HerdrError> {
+    resolve_target_with(cli, env_var)
+}
+
+fn resolve_target_with(
+    cli: CliTarget,
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Target, HerdrError> {
     let socket_path = cli
         .socket_path
-        .or_else(|| env_var_path("HERDR_SOCKET_PATH"));
+        .or_else(|| get("HERDR_SOCKET_PATH").map(PathBuf::from));
+    // Plugin context identifies the underlying pane. Inherited shell identity
+    // can be stale, especially when a popup has no pane identity of its own.
+    let context: PluginContext = if cli.tab_id.is_none() || cli.pane_id.is_none()
+    {
+        match get("HERDR_PLUGIN_CONTEXT_JSON") {
+            Some(json) => serde_json::from_str(&json).map_err(|error| {
+                HerdrError::Target(format!(
+                    "invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"
+                ))
+            })?,
+            None => PluginContext::default(),
+        }
+    } else {
+        PluginContext::default()
+    };
     let tab_id = cli
         .tab_id
-        .or_else(|| env_var("HERDR_TAB_ID"))
-        .or_else(|| env_var("HERDR_ACTIVE_TAB_ID"));
+        .or(context.tab_id.filter(|id| !id.is_empty()))
+        .or_else(|| get("HERDR_TAB_ID"))
+        .or_else(|| get("HERDR_ACTIVE_TAB_ID"));
     let pane_id = cli
         .pane_id
-        .or_else(|| env_var("HERDR_PANE_ID"))
-        .or_else(|| env_var("HERDR_ACTIVE_PANE_ID"));
+        .or(context.focused_pane_id.filter(|id| !id.is_empty()))
+        .or_else(|| get("HERDR_PANE_ID"))
+        .or_else(|| get("HERDR_ACTIVE_PANE_ID"));
     match (socket_path, tab_id, pane_id) {
         (Some(socket_path), Some(tab_id), Some(pane_id)) => Ok(Target { socket_path, tab_id, pane_id }),
-        _ => Err(HerdrError::Target("run from a Herdr key binding or pass --socket-path, --tab-id, and --pane-id".into())),
+        _ => Err(HerdrError::Target("run from a Herdr key binding, plugin, or managed pane, or pass --socket-path, --tab-id, and --pane-id".into())),
     }
 }
 
@@ -1139,6 +1169,59 @@ pub(crate) fn notify_failure(target: &Target, error: &HerdrError) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plugin_context_supplies_popup_origin_without_pane_environment() {
+        let env = HashMap::from([
+            ("HERDR_SOCKET_PATH", "/tmp/plugin.sock"),
+            ("HERDR_TAB_ID", "w9:t9"),
+            ("HERDR_ACTIVE_PANE_ID", "w9:p9"),
+            (
+                "HERDR_PLUGIN_CONTEXT_JSON",
+                r#"{"tab_id":"w6:t2","focused_pane_id":"w6:p4","extra":"ignored"}"#,
+            ),
+        ]);
+        let target = resolve_target_with(CliTarget::default(), |key| {
+            env.get(key).map(|v| (*v).into())
+        })
+        .unwrap();
+        assert_eq!(target.tab_id, "w6:t2");
+        assert_eq!(target.pane_id, "w6:p4");
+        let target = resolve_target_with(
+            CliTarget {
+                pane_id: Some("w6:p9".into()),
+                ..Default::default()
+            },
+            |key| env.get(key).map(|v| (*v).into()),
+        )
+        .unwrap();
+        assert_eq!(target.pane_id, "w6:p9");
+    }
+
+    #[test]
+    fn malformed_context_errors_only_when_context_is_needed() {
+        let get = |key: &str| match key {
+            "HERDR_PLUGIN_CONTEXT_JSON" => Some("not JSON".into()),
+            _ => None,
+        };
+        assert!(resolve_target_with(CliTarget::default(), get)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid HERDR_PLUGIN_CONTEXT_JSON"));
+        assert!(resolve_target_with(
+            CliTarget {
+                socket_path: Some("/tmp/test.sock".into()),
+                tab_id: Some("w1:t1".into()),
+                pane_id: Some("w1:p1".into()),
+            },
+            get
+        )
+        .is_ok());
+        assert!(resolve_target_with(CliTarget::default(), |key| {
+            (key == "HERDR_PLUGIN_CONTEXT_JSON").then(|| "{}".into())
+        })
+        .is_err());
+    }
+
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
     use std::os::unix::net::UnixListener;
