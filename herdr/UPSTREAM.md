@@ -12,8 +12,9 @@ The previous snapshot came from fork commit
 ## Local changes
 
 - The keybinding range `prefix+0..8` selects tabs starting at zero. Generated
-  labels in the tab bar, mobile UI, navigator, and keybinding help use that
-  display base. Named tabs and public API IDs keep their upstream meaning.
+  labels in the tab bar, mobile UI, navigator, keybinding help, and tab-creation
+  dialogs use that display base. Named tabs and public API IDs keep their
+  upstream meaning.
 - Codex managed starts and restores pass `--no-daemon` so session hooks use
   the launching pane's environment. The Zsh wrapper covers manual launches
   inside Herdr. The shared daemon can otherwise report another pane's session.

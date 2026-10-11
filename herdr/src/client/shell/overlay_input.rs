@@ -406,7 +406,7 @@ impl ClientShellState {
             .iter()
             .filter(|tab| tab.workspace_id == workspace_id)
             .count()
-            + 1)
+            + self.config.keybinds.keybinds.tab_display_index_base())
         .to_string();
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new tab",

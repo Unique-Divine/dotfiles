@@ -317,7 +317,7 @@ impl ClientShellState {
                                 .count()
                         })
                         .unwrap_or(0)
-                        + 1)
+                        + self.config.keybinds.keybinds.tab_display_index_base())
                     .to_string();
                     self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
                         title: "new tab",
