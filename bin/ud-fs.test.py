@@ -151,10 +151,10 @@ class PublisherTests(unittest.TestCase):
                     "size": 54, "contentType": "application/octet-stream"}
         self.assertEqual(record, expected)
         self.assertEqual(publisher.listing_output([record]),
-                         'files[1]{key,url,size,contentType}:\n'
-                         '  26/ui/261013-twitter.svg,"https://uniquedivine.com/f/26/ui/261013-twitter.svg",54,application/octet-stream')
+                         'files[1]{url,size,contentType}:\n'
+                         '  "https://uniquedivine.com/f/26/ui/261013-twitter.svg",54,application/octet-stream')
         self.assertEqual(json.loads(publisher.listing_output([record], "json")),
-                         {"files": [expected]})
+                         {"files": [{k: expected[k] for k in publisher.LIST_FIELDS}]})
         self.assertEqual(publisher.listing_output([record], "urls"), expected["url"])
         self.assertEqual(publisher.listing_output([record], "paths"), expected["key"])
         self.assertEqual(publisher.listing_output([]), "files: []")
@@ -168,6 +168,44 @@ class PublisherTests(unittest.TestCase):
         metadata["size"] = "invalid"
         with self.assertRaises(ValueError):
             publisher.normalize_object(metadata, "https://uniquedivine.com")
+
+    def test_time_filters(self):
+        for value, expected in [("26", "26"), ("2609", "2609"),
+                                ("26-09", "2609"), ("261014", "261014"),
+                                ("26-10-14", "261014"), ("24-02-29", "240229")]:
+            self.assertEqual(publisher.time_filter(value), expected)
+        for value in ["", "2", "2026-10-14", "26-1", "2613", "2600",
+                      "26-02-29", "261032", "26/09", "26--09", " 26"]:
+            with self.assertRaises(ValueError): publisher.time_filter(value)
+
+    def test_publication_dates_across_layouts(self):
+        for key in ["26/ui/social/261014-twitter.svg", "26/10-14-twitter.svg",
+                    "26-10-14-twitter.svg"]:
+            self.assertEqual(publisher.publication_date(key), "261014")
+        for key in ["26/ui/twitter.svg", "27/ui/261014-icon.svg",
+                    "26/260229-bad.png", "26/02-30-bad.png", "notes.pdf"]:
+            self.assertIsNone(publisher.publication_date(key))
+
+    def test_listing_scope_and_bangkok_boundaries(self):
+        for instant, expected in [("2026-12-31T17:00:00+00:00", "2701"),
+                                  ("2026-09-30T16:59:59+00:00", "2609"),
+                                  ("2026-09-30T17:00:00+00:00", "2610")]:
+            self.assertEqual(publisher.listing_selection(
+                now=datetime.datetime.fromisoformat(instant)), ("", expected, True))
+        self.assertEqual(publisher.listing_selection("26/ui/"), ("26/ui/", None, False))
+        self.assertEqual(publisher.listing_selection(all_dates=True), ("", None, False))
+        self.assertEqual(publisher.listing_selection("26/ui", "26-09"),
+                         ("26/ui/", "2609", False))
+        with self.assertRaises(ValueError):
+            publisher.listing_selection(selected_time="26", all_dates=True)
+        keys = ["26/ui/260901-a.png", "26/ui/261014-b.png", "26/09-01-c.png",
+                "26-09-01-d.png", "26/ui/undated.png", "26/uix/260901-e.png"]
+        records = [{"key": key} for key in keys]
+        self.assertEqual([r["key"] for r in publisher.filter_listing(
+            records, "26/ui/", "2609")], keys[:1])
+        self.assertEqual(len(publisher.filter_listing(records, "", "2609")), 4)
+        self.assertEqual(len(publisher.filter_listing(records, "", None)), 6)
+        self.assertEqual(len(publisher.filter_listing(records, "26/ui/", None)), 3)
 
     def test_toon_string_quoting_and_control_escapes(self):
         for value in ["plain", "image/png", "26/ui/icon.png", "internal spaces", "café"]:
@@ -188,7 +226,8 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(bare.returncode, 0, bare.stderr)
         self.assertIn("publish", bare.stdout)
         for args in [("ls", "--json", "--urls"), ("ls", "../26"),
-                     ("publish",), ("unknown",)]:
+                     ("publish",), ("unknown",), ("ls", "--time", "261332"),
+                     ("ls", "--time", "26", "--all"), ("ls", "--al")]:
             result = self.command("fs", *args)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
