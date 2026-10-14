@@ -5,6 +5,7 @@ import { Command } from "commander"
 /** Directory names that `set` may rewrite when they appear in the path. */
 export const NVMRC_SET_ALLOW = [
   "nibi-chain",
+  "nibi-web",
   "nibi-home-site",
   "docs-v2",
   "ecosystem",
