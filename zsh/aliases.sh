@@ -41,9 +41,9 @@ alias start="cmd.exe /C start"
 # Git aliases and editor live in zsh/gitconfig.ini.
 
 # Broadcast tx and open it in vim.
-# alias tx="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibid q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' | vv}"
+# alias tx="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibiru q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' | vv}"
 # Broadcast tx and save it to "txout.json"
-# alias txout="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibid q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' >> txout.json}"
+# alias txout="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibiru q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' >> txout.json}"
 
 alias ft="focustime" # 2026-03-04
 alias npx="bunx"

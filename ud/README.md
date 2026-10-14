@@ -42,7 +42,7 @@ personal shell setup or WSL:
 - personal shortcuts from `zsh/quick.sh`
 - Docker Desktop and Docker Compose operations
 - local Nibiru mnemonic import
-- the pinned `nibid` installer pipeline
+- the published `nibiru` installer through Bun
 
 The shell file is internal. Run these operations through `ud`, which validates
 the command before invoking the helper.

@@ -110,7 +110,7 @@ cfg_tmux() {
 # Reminders for config_* functions
 # - Update any relevant .env files in py-sdk, ts-sdk, etc.
 
-# Ex: nibid tx bank send ... -y | tx
+# Ex: nibiru tx bank send ... -y | tx
 # unalias tx
 tx() {
   # Check if there is input from stdin
@@ -125,7 +125,7 @@ tx() {
 
   local txhash=$(echo "$args" | jq -rcs '.[0].txhash')
   sleep 3
-  local tx_resp=$(nibid q tx "$txhash" | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}')
+  local tx_resp=$(nibiru q tx "$txhash" | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}')
 
   local txoutjson="txout.json"
   if [ ! -f $txoutjson ]; then
@@ -167,7 +167,7 @@ msig_vote() {
 }
 EOF
 
-  nibid tx wasm execute "$MULTISIG" "$(cat vote.json)" \
+  nibiru tx wasm execute "$MULTISIG" "$(cat vote.json)" \
     --from "$FROM" \
     --gas auto \
     --gas-adjustment 1.5 \

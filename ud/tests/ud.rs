@@ -277,16 +277,16 @@ fn nibi_cfg_sets_the_expected_network_and_json_output() {
         ),
     ] {
         let temp = TempDir::new().unwrap();
-        let nibid = temp.path().join("nibid");
+        let nibiru = temp.path().join("nibiru");
         let args_file = temp.path().join("args");
         write_executable(
-            &nibid,
-            "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NIBID_ARGS_FILE\"\n",
+            &nibiru,
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NIBIRU_ARGS_FILE\"\n",
         );
 
         let output = ud()
             .env("PATH", path_with(temp.path()))
-            .env("NIBID_ARGS_FILE", &args_file)
+            .env("NIBIRU_ARGS_FILE", &args_file)
             .args(["nibi", "cfg"])
             .args(args)
             .output()
@@ -367,14 +367,14 @@ fn mnemonic_import_rejects_invalid_arguments() {
 }
 
 #[test]
-fn mnemonic_shell_helper_pipes_the_secret_to_nibid() {
+fn mnemonic_shell_helper_pipes_the_secret_to_nibiru() {
     let temp = TempDir::new().unwrap();
-    let nibid = temp.path().join("nibid");
+    let nibiru = temp.path().join("nibiru");
     let args_file = temp.path().join("args");
     let stdin_file = temp.path().join("stdin");
     write_executable(
-        &nibid,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$NIBID_ARGS_FILE\"\ncat > \"$NIBID_STDIN_FILE\"\n",
+        &nibiru,
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$NIBIRU_ARGS_FILE\"\ncat > \"$NIBIRU_STDIN_FILE\"\n",
     );
     let helper =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../zsh/ud/shell.sh");
@@ -383,8 +383,8 @@ fn mnemonic_shell_helper_pipes_the_secret_to_nibid() {
     let output = ud()
         .env("UD_SHELL_HELPER", helper)
         .env("PATH", path_with(temp.path()))
-        .env("NIBID_ARGS_FILE", &args_file)
-        .env("NIBID_STDIN_FILE", &stdin_file)
+        .env("NIBIRU_ARGS_FILE", &args_file)
+        .env("NIBIRU_STDIN_FILE", &stdin_file)
         .args([
             "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", mnemonic,
         ])

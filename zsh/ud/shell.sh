@@ -58,7 +58,7 @@ ud_shell_nibi_keys_add_mnem() {
 
   local -a pipeline_status
   printf '%s\n' "$mnemonic" | \
-    nibid keys add "$name" --recover --keyring-backend=test
+    nibiru keys add "$name" --recover --keyring-backend=test
   pipeline_status=("${PIPESTATUS[@]}")
   return "${pipeline_status[1]}"
 }
@@ -191,8 +191,8 @@ case "${1:-}" in
     shift
     ud_shell_nibi_keys_add_mnem "$@"
     ;;
-  nibi-get-nibid)
-    curl -s 'https://get.nibiru.fi/@v2.9.0!' | bash
+  nibi-get-nibiru)
+    bun install --global @nibiruchain/nibiru
     ;;
   *)
     printf 'Unknown ud shell operation: %s\n' "${1:-}" >&2
