@@ -6,7 +6,6 @@ import { Command } from "commander"
 export const NVMRC_SET_ALLOW = [
   "nibi-chain",
   "nibi-web",
-  "nibi-home-site",
   "docs-v2",
   "ecosystem",
   "sai-perps",
