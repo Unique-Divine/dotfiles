@@ -1,27 +1,44 @@
 name: Herdr UD release
 on:
+  pull_request:
+    paths:
+      - "herdr/**"
+      - "herdr-release/**"
+      - ".github/workflows/herdr-release.yml"
+      - "package.json"
+      - "bun.lock"
   push:
     tags: ["herdr-ud/*"]
 permissions:
   contents: read
 concurrency:
   group: herdr-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate:
     if: github.repository == 'Unique-Divine/dotfiles'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: taiki-e/install-action@just
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - name: Validate release tag and Cargo versions
+      - name: Validate release candidate and Cargo versions
+        id: candidate
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: bun run herdr-release/publish.ts validate "$RELEASE_TAG"
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          version="$(bun run herdr-release/publish.ts validate "$RELEASE_TAG")"
+          printf 'version=%s\ntag=herdr-ud/v%s\nsource_sha=%s\n' \
+            "$version" "$version" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - run: bun test herdr-release
   build:
     needs: validate
@@ -55,6 +72,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ needs.validate.outputs.source_sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.1
@@ -85,7 +103,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
           cp "target/$BUILD_TARGET/release/herdr" "$ASSET"
@@ -98,7 +116,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           $ErrorActionPreference = "Stop"
           $stage = Join-Path $env:RUNNER_TEMP "herdr-windows"
@@ -118,8 +136,33 @@ jobs:
           name: ${{ matrix.asset }}
           path: herdr/${{ matrix.asset }}
           if-no-files-found: error
+  prepare:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: herdr-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare checksums and source metadata without publishing
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: bun run herdr-release/publish.ts prepare "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: herdr-ud-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.source_sha }}
+          path: release-assets/
+          if-no-files-found: error
   publish:
-    needs: build
+    if: github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-ud/')
+    needs: [validate, prepare]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,14 +170,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ needs.validate.outputs.source_sha }}
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v8
         with:
+          name: herdr-ud-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.source_sha }}
           path: release-assets
-          merge-multiple: true
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: bun run herdr-release/publish.ts publish "$RELEASE_TAG"

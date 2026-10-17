@@ -4,6 +4,14 @@ import { parse } from "smol-toml"
 
 import { ASSETS, digest, normalizeVersion, quote, REPO, run } from "./install"
 
+export async function candidateVersion(root = "."): Promise<string> {
+  const manifest = parse(await readFile(join(root, "herdr/Cargo.toml"), "utf8"))
+  const version = normalizeVersion(
+    (manifest.package as { version: string }).version,
+  )
+  return validateTag(`herdr-ud/v${version}`, root)
+}
+
 export async function validateTag(tag: string, root = "."): Promise<string> {
   const version = normalizeVersion(tag)
   if (tag !== `herdr-ud/v${version}`)
@@ -65,7 +73,7 @@ export async function writeMetadata(
   await writeFile(
     join(dir, "build-info.md"),
     `# Herdr UD ${version}\n\nTag: \`${tag}\`\n\nDotfiles commit: \`${commit}\`\n\n` +
-      `Upstream base:\n\n${upstream}\n\nBuilt from the tagged vendored Rust source.\n`,
+      `Upstream base:\n\n${upstream}\n\nBuilt from the recorded vendored Rust source commit.\n`,
   )
 }
 export function requireUnpublished(release?: { draft: boolean }): void {
@@ -136,10 +144,14 @@ export async function publish(dir: string, tag: string): Promise<void> {
 if (import.meta.main) {
   const [command, tag, dir = "release-assets"] = process.argv.slice(2)
   ;(async () => {
+    if (command === "validate") {
+      console.log(tag ? await validateTag(tag) : await candidateVersion())
+      return
+    }
+    if (command !== "prepare" && command !== "publish")
+      throw new Error("Expected validate, prepare, or publish")
     if (!tag) throw new Error("Expected a release tag")
     await validateTag(tag)
-    if (command === "validate") return
-    if (command !== "publish") throw new Error("Expected validate or publish")
     const commit = await run("git rev-parse HEAD")
     const upstream = await readFile("herdr/UPSTREAM.md", "utf8")
     await writeMetadata(
@@ -148,7 +160,7 @@ if (import.meta.main) {
       commit,
       upstream.split("## Local changes")[0]!.trim(),
     )
-    await publish(dir, tag)
+    if (command === "publish") await publish(dir, tag)
   })().catch((error) => {
     console.error(error.message)
     process.exitCode = 1

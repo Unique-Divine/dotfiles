@@ -13,7 +13,7 @@ import {
   platformAsset,
   verify,
 } from "./install"
-import { validateTag, writeMetadata } from "./publish"
+import { candidateVersion, validateTag, writeMetadata } from "./publish"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -159,6 +159,7 @@ test("Cargo validation and complete metadata", async () => {
     '[[package]]\nname = "herdr"\nversion = "0.9.4"\n',
   )
   expect(await validateTag("herdr-ud/v0.9.4", root)).toBe("0.9.4")
+  expect(await candidateVersion(root)).toBe("0.9.4")
   await expect(validateTag("herdr-ud/v0.9.3", root)).rejects.toThrow("match")
   await expect(validateTag("v0.9.4", root)).rejects.toThrow("Tag must")
   await writeFile(
@@ -166,6 +167,7 @@ test("Cargo validation and complete metadata", async () => {
     '[[package]]\nname = "herdr"\nversion = "0.9.3"\n',
   )
   await expect(validateTag("herdr-ud/v0.9.4", root)).rejects.toThrow("match")
+  await expect(candidateVersion(root)).rejects.toThrow("match")
   for (const name of ASSETS) await writeFile(join(root, name), name)
   await writeMetadata(root, "herdr-ud/v0.9.4", "b".repeat(40), "v0.9.3")
   const m = JSON.parse(
@@ -177,6 +179,39 @@ test("Cargo validation and complete metadata", async () => {
   await expect(
     writeMetadata(root, "herdr-ud/v0.9.4", "b".repeat(40), "v0.9.3"),
   ).rejects.toThrow()
+})
+test("prepare CLI records the candidate commit without publishing", async () => {
+  const root = await temp()
+  for (const name of ASSETS) await writeFile(join(root, name), name)
+  const tools = join(root, "bin")
+  await mkdir(tools)
+  await writeFile(join(tools, "gh"), "#!/bin/sh\nexit 77\n", { mode: 0o755 })
+  const version = await candidateVersion()
+  const child = Bun.spawn(
+    [
+      "bun", "run", "herdr-release/publish.ts", "prepare",
+      `herdr-ud/v${version}`, root,
+    ],
+    {
+      env: { ...process.env, PATH: `${tools}:${process.env.PATH}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
+  const stderr = await new Response(child.stderr).text()
+  expect(await child.exited, stderr).toBe(0)
+  const metadata = JSON.parse(
+    await readFile(join(root, "release-metadata.json"), "utf8"),
+  )
+  expect(metadata.version).toBe(version)
+  const commit = Bun.spawnSync(["git", "rev-parse", "HEAD"])
+  expect(commit.exitCode).toBe(0)
+  expect(metadata.commit).toBe(commit.stdout.toString().trim())
+  expect(Object.keys(metadata.assets)).toEqual(ASSETS)
+  await verify(root, version, asset)
+  expect(await readFile(join(root, "build-info.md"), "utf8")).toContain(
+    metadata.commit,
+  )
 })
 test("just forwards flags", async () => {
   for (const args of [[], ["--ver", "source"], ["--get", "0.9.4"]]) {
@@ -216,25 +251,56 @@ test("draft retries and uploaded digest checks", async () => {
   )
   await expect(checkUploadedAssets(root, [])).rejects.toThrow("Missing")
 })
-test("workflow publishes only after all builds with five expected assets", async () => {
+test("PR release checks prepare all five assets while only tag pushes publish", async () => {
   const yaml = (Bun as typeof Bun & { YAML: { parse(input: string): unknown } })
     .YAML
   const workflow = yaml.parse(
     await readFile(".github/workflows/herdr-release.yml", "utf8"),
   ) as any
   expect(workflow.on.push.tags).toEqual(["herdr-ud/*"])
+  expect(workflow.on.pull_request.paths).toContain("herdr/**")
   expect(
     workflow.jobs.validate.steps.some(
       (step: { uses?: string }) => step.uses === "taiki-e/install-action@just",
     ),
   ).toBe(true)
   expect(workflow.jobs.build.needs).toBe("validate")
-  expect(workflow.jobs.publish.needs).toBe("build")
+  expect(workflow.jobs.prepare.needs).toEqual(["validate", "build"])
+  expect(workflow.jobs.publish.needs).toEqual(["validate", "prepare"])
+  expect(workflow.jobs.publish.if).toBe(
+    "github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-ud/')",
+  )
   expect(
     workflow.jobs.build.strategy.matrix.include.map((item: any) => item.asset),
   ).toEqual(ASSETS)
   expect(workflow.permissions.contents).toBe("read")
   expect(workflow.jobs.publish.permissions.contents).toBe("write")
+  for (const name of ["validate", "build", "prepare"]) {
+    expect(workflow.jobs[name].permissions?.contents).not.toBe("write")
+    expect(
+      workflow.jobs[name].steps.some((step: any) => step.env?.GH_TOKEN),
+    ).toBe(false)
+  }
+  expect(workflow.jobs.validate.steps[0].with.ref).toBe(
+    "${{ github.event.pull_request.head.sha || github.sha }}",
+  )
+  for (const name of ["build", "prepare", "publish"]) {
+    expect(workflow.jobs[name].steps[0].with.ref).toBe(
+      "${{ needs.validate.outputs.source_sha }}",
+    )
+  }
+  const prepareSteps = workflow.jobs.prepare.steps
+  expect(prepareSteps.some((step: any) =>
+    step.run?.includes('publish.ts prepare "$RELEASE_TAG"'),
+  )).toBe(true)
+  const upload = prepareSteps.find(
+    (step: any) => step.uses === "actions/upload-artifact@v7",
+  )
+  const download = workflow.jobs.publish.steps.find(
+    (step: any) => step.uses === "actions/download-artifact@v8",
+  )
+  expect(download.with.name).toBe(upload.with.name)
+  expect(upload.with.name).toContain("needs.validate.outputs.source_sha")
 })
 
 test("public release API download uses encoded tag and real asset responses", async () => {
