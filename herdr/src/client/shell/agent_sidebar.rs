@@ -259,7 +259,12 @@ pub(super) fn agent_row(
         .workspaces
         .iter()
         .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
+    let tab = snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == agent.workspace_id)
+        .enumerate()
+        .find(|(_, tab)| tab.tab_id == agent.tab_id);
     let pane = snapshot
         .panes
         .iter()
@@ -270,8 +275,8 @@ pub(super) fn agent_row(
         .filter(|candidate| candidate.workspace_id == agent.workspace_id)
         .count();
     let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
+        .filter(|(_, tab)| tab_count > 1 || tab.custom_label)
+        .map(|(tab_idx, tab)| config.tab_display_label(tab, tab_idx));
     let agent_label = agent
         .display_agent
         .as_deref()
@@ -297,7 +302,7 @@ pub(super) fn agent_row(
         crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,
-            tab: tab_label,
+            tab: tab_label.as_deref(),
             pane: agent
                 .title
                 .as_deref()

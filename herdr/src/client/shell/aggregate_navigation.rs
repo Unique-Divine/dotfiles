@@ -339,13 +339,14 @@ pub(super) fn navigator_rows(
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let multiple_tabs = workspace_tabs.len() > 1;
-                for tab in workspace_tabs {
-                    let tab_matches = workspace_matches || text(&tab.label);
+                for (tab_idx, tab) in workspace_tabs.iter().enumerate() {
+                    let tab_display_label =
+                        super::config::tab_display_label(tab, index_base, tab_idx);
+                    let tab_matches = workspace_matches || text(&tab_display_label);
                     let tab_panes = panes_by_tab
                         .get(tab.tab_id.as_str())
                         .map(Vec::as_slice)
                         .unwrap_or_default();
-                    let tab_display_label = super::config::tab_display_label(tab, index_base);
                     for (index, pane) in tab_panes.iter().enumerate() {
                         let agent = agents.get(pane.pane_id.as_str()).copied();
                         let status = agent
@@ -366,7 +367,7 @@ pub(super) fn navigator_rows(
                                 .or(agent.terminal_title_stripped.as_deref())
                         });
                         let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())
-                            .then_some(tab.label.as_str());
+                            .then_some(tab_display_label.as_ref());
                         let label = if tab_panes.len() == 1 {
                             match name.or(tab_name).or(title) {
                                 Some(label) => label.to_owned(),

@@ -228,7 +228,7 @@ fn compact_tab_status(
         .unwrap_or(0);
     let label = tabs
         .get(active)
-        .map(|tab| config.tab_display_label(tab))
+        .map(|tab| config.tab_display_label(tab, active))
         .unwrap_or_else(|| {
             config
                 .keybinds
@@ -657,7 +657,9 @@ fn mobile_items(
                 .snapshot
                 .tabs
                 .iter()
-                .find(|tab| tab.tab_id == agent.tab_id);
+                .filter(|tab| tab.workspace_id == agent.workspace_id)
+                .enumerate()
+                .find(|(_, tab)| tab.tab_id == agent.tab_id);
             let agent_label = agent
                 .display_agent
                 .as_deref()
@@ -674,8 +676,10 @@ fn mobile_items(
                 .iter()
                 .filter(|candidate| candidate.workspace_id == agent.workspace_id)
                 .count();
-            if let Some(tab) = tab.filter(|tab| tab.custom_label || workspace_tab_count > 1) {
-                detail.push(config.tab_display_label(tab).into_owned());
+            if let Some((tab_idx, tab)) =
+                tab.filter(|(_, tab)| tab.custom_label || workspace_tab_count > 1)
+            {
+                detail.push(config.tab_display_label(tab, tab_idx).into_owned());
             }
             let status_key = status_text(agent.agent_status);
             detail.push(
@@ -912,10 +916,10 @@ fn mobile_items(
                 format!(
                     "{} · {}",
                     index + config.keybinds.keybinds.tab_display_index_base(),
-                    tab.label
+                    config.tab_display_label(tab, index)
                 )
             } else {
-                format!("tab {}", config.tab_display_label(tab))
+                format!("tab {}", config.tab_display_label(tab, index))
             };
             let label = format!(
                 "  {}",

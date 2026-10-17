@@ -23,8 +23,9 @@ pub(crate) fn render_tab_bar(
         .collect::<Vec<_>>();
     let desired_widths = tabs
         .iter()
-        .map(|tab| {
-            let label = tab_label(tab, config);
+        .enumerate()
+        .map(|(index, tab)| {
+            let label = tab_label(tab, config, index);
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
@@ -92,7 +93,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab, config);
+        let name = tab_label(tab, config, index);
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -371,8 +372,8 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
-fn tab_label(tab: &ClientShellTab, config: &ClientShellConfig) -> String {
-    let label = config.tab_display_label(tab);
+fn tab_label(tab: &ClientShellTab, config: &ClientShellConfig, tab_idx: usize) -> String {
+    let label = config.tab_display_label(tab, tab_idx);
     if tab.zoomed {
         format!("{label} Z")
     } else {
@@ -417,6 +418,6 @@ mod tests {
             focused: true,
             agent_status: crate::api::schema::AgentStatus::Idle,
         };
-        assert_eq!(tab_label(&tab, &shell), "0 Z");
+        assert_eq!(tab_label(&tab, &shell, 0), "0 Z");
     }
 }

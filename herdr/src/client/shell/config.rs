@@ -113,8 +113,13 @@ impl ClientShellConfig {
     pub(super) fn tab_display_label<'a>(
         &self,
         tab: &'a ClientShellTab,
+        tab_idx: usize,
     ) -> std::borrow::Cow<'a, str> {
-        tab_display_label(tab, self.keybinds.keybinds.tab_display_index_base())
+        tab_display_label(
+            tab,
+            self.keybinds.keybinds.tab_display_index_base(),
+            tab_idx,
+        )
     }
 
     pub(crate) fn from_config(config: &Config) -> Self {
@@ -454,8 +459,14 @@ impl ClientShellConfig {
 pub(super) fn tab_display_label(
     tab: &ClientShellTab,
     index_base: usize,
+    tab_idx: usize,
 ) -> std::borrow::Cow<'_, str> {
-    if tab.custom_label || index_base == 1 {
+    if tab.custom_label {
+        if let Some(suffix) = crate::workspace::numbered_tab_suffix(&tab.label) {
+            return std::borrow::Cow::Owned(format!("{}{suffix}", tab_idx + index_base));
+        }
+        std::borrow::Cow::Borrowed(&tab.label)
+    } else if index_base == 1 {
         std::borrow::Cow::Borrowed(&tab.label)
     } else if let Ok(position) = tab.label.parse::<usize>() {
         // Public tab numbers survive moves and deletion; the generated label

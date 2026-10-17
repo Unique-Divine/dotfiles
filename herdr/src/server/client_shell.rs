@@ -114,7 +114,9 @@ pub(super) fn snapshot_with_completions(
                 tab_id,
                 workspace_id: tab.workspace_id,
                 number: tab.number,
-                label: tab.label,
+                // Keep the original custom prefix so each client can classify
+                // it and apply its own display base at the current position.
+                label: state.custom_name.clone().unwrap_or(tab.label),
                 custom_label: !state.is_auto_named(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
@@ -628,6 +630,34 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_keeps_original_numbered_names_for_client_display_bases() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        workspace.tabs[0].set_custom_name("0-blog".into());
+        workspace.test_add_tab(Some("1-chain"));
+        workspace.test_add_tab(Some("2-nibi-web"));
+        workspace.test_add_tab(Some("2026-notes"));
+        assert!(workspace.close_tab(1));
+        assert!(workspace.close_tab(0));
+        assert_eq!(workspace.tab_display_name(0).as_deref(), Some("1-nibi-web"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+
+        let snapshot = snapshot(&app, "boot", 1, None, None);
+        assert_eq!(snapshot.tabs[0].label, "2-nibi-web");
+        assert!(snapshot.tabs[0].custom_label);
+        assert_eq!(snapshot.tabs[0].number, 3);
+        assert_eq!(snapshot.tabs[1].label, "2026-notes");
+    }
 
     #[test]
     fn snapshot_projects_cached_release_and_update_facts() {

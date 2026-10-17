@@ -29,6 +29,16 @@ pub use self::{
     tab::{NewPane, Tab},
 };
 
+/// Returns the suffix of a tab name beginning with exactly one ASCII digit.
+pub(crate) fn numbered_tab_suffix(name: &str) -> Option<&str> {
+    let mut bytes = name.bytes();
+    if bytes.next()?.is_ascii_digit() && !bytes.next().is_some_and(|byte| byte.is_ascii_digit()) {
+        Some(&name[1..])
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeSpaceMembership {
     pub key: String,
@@ -443,7 +453,7 @@ impl Workspace {
         self.tab_display_name_with_index_base(tab_idx, 1)
     }
 
-    /// Returns a custom tab name or its position with the requested display base.
+    /// Returns the tab label, replacing a single-digit prefix with its position.
     ///
     /// This affects presentation only; stable public tab numbers remain one-based.
     pub fn tab_display_name_with_index_base(
@@ -452,11 +462,14 @@ impl Workspace {
         index_base: usize,
     ) -> Option<String> {
         let tab = self.tabs.get(tab_idx)?;
-        Some(
-            tab.custom_name
-                .clone()
-                .unwrap_or_else(|| (tab_idx + index_base).to_string()),
-        )
+        let position = tab_idx + index_base;
+        Some(match tab.custom_name.as_deref() {
+            Some(name) => match numbered_tab_suffix(name) {
+                Some(suffix) => format!("{position}{suffix}"),
+                _ => name.to_owned(),
+            },
+            None => position.to_string(),
+        })
     }
 
     pub fn switch_tab(&mut self, idx: usize) {
@@ -1653,6 +1666,65 @@ mod tests {
             ws.resolved_identity_cwd_from(&terminals, &terminal_runtimes),
             Some(PathBuf::from("/herdr-test/pion"))
         );
+    }
+
+    #[test]
+    fn numbered_tab_names_follow_position_after_close_and_move() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("0-blog".into());
+        ws.test_add_tab(Some("1-sai-web"));
+        ws.test_add_tab(Some("2-chain"));
+        ws.test_add_tab(Some("3-nibi-web"));
+        let surviving_number = ws.tabs[3].number;
+        let surviving_root = ws.tabs[3].root_pane;
+
+        assert!(ws.close_tab(2));
+        let labels: Vec<_> = (0..ws.tabs.len())
+            .map(|idx| ws.tab_display_name_with_index_base(idx, 0).unwrap())
+            .collect();
+        assert_eq!(labels, ["0-blog", "1-sai-web", "2-nibi-web"]);
+        assert_eq!(ws.tabs[2].number, surviving_number);
+        assert_eq!(ws.tabs[2].root_pane, surviving_root);
+        assert_eq!(ws.tabs[2].custom_name.as_deref(), Some("3-nibi-web"));
+
+        assert!(ws.move_tab(2, 0));
+        let labels: Vec<_> = (0..ws.tabs.len())
+            .map(|idx| ws.tab_display_name_with_index_base(idx, 0).unwrap())
+            .collect();
+        assert_eq!(labels, ["0-nibi-web", "1-blog", "2-sai-web"]);
+        assert_eq!(ws.tabs[0].number, surviving_number);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn numbered_tab_names_preserve_suffixes_and_unnumbered_names() {
+        let mut ws = Workspace::test_new("test");
+        for (name, zero_based, one_based) in [
+            ("4", "0", "1"),
+            ("42", "42", "42"),
+            ("2026-notes", "2026-notes", "2026-notes"),
+            ("009-api-v2", "009-api-v2", "009-api-v2"),
+            ("2: logs", "0: logs", "1: logs"),
+            ("9chain", "0chain", "1chain"),
+            ("3-链", "0-链", "1-链"),
+            (
+                "999999999999999999999999999999-task",
+                "999999999999999999999999999999-task",
+                "999999999999999999999999999999-task",
+            ),
+            ("web2", "web2", "web2"),
+            (" 2-web", " 2-web", " 2-web"),
+            ("-2-web", "-2-web", "-2-web"),
+            ("２-web", "２-web", "２-web"),
+            ("", "", ""),
+        ] {
+            ws.tabs[0].set_custom_name(name.into());
+            assert_eq!(
+                ws.tab_display_name_with_index_base(0, 0).as_deref(),
+                Some(zero_based)
+            );
+            assert_eq!(ws.tab_display_name(0).as_deref(), Some(one_based));
+        }
     }
 
     #[test]
