@@ -103,9 +103,28 @@ fn invalid_inputs() {
         "https://example.com/f",
         "https://user@example.com",
         "https://example.com?x=1",
+        "https://example.com/..",
+        "https://example.com/.",
+        "https://example.com/a/..",
+        "https://example.com/%2e%2e",
     ] {
         assert!(naming::plan(&file, "ok", None, origin, now()).is_err());
     }
+    let invalid_year = fixture(&temp, "00000101-000000.png");
+    assert!(
+        naming::plan(&invalid_year, "ok", None, "https://example.com", now())
+            .is_err()
+    );
+    assert!(
+        naming::plan(
+            &invalid_year,
+            "ok",
+            Some("2026-10-12"),
+            "https://example.com",
+            now()
+        )
+        .is_ok()
+    );
     assert!(
         naming::plan(temp.path(), "ok", None, "https://example.com", now())
             .is_err()

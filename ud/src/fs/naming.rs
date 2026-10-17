@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::Asia::Bangkok;
 use regex::Regex;
 use reqwest::Url;
@@ -43,6 +43,18 @@ pub(super) fn safe_key(key: &str) -> bool {
 
 /// Restrict serving origins before appending the fixed `/f/` route.
 pub(super) fn public_url(key: &str, origin: &str) -> Result<String> {
+    // URL parsers normalize dot segments. Validate the original spelling too,
+    // otherwise /a/.. would become an apparent origin and bypass this contract.
+    let (_, authority) = origin
+        .split_once("://")
+        .context("Base URL must be an HTTPS origin")?;
+    ensure!(
+        authority
+            .split_once('/')
+            .is_none_or(|(_, path)| path.is_empty())
+            && !origin.contains('\\'),
+        "Base URL must be an HTTPS origin"
+    );
     let url = Url::parse(origin).context("Base URL must be an HTTPS origin")?;
     ensure!(
         url.scheme() == "https"
@@ -122,6 +134,7 @@ pub(super) fn plan(
     } else {
         now.with_timezone(&Bangkok).date_naive()
     };
+    ensure!(day.year() >= 1, "Date year must be at least one");
     let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", &name));
     let directory = if parent.is_empty() {
         String::new()
