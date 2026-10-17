@@ -1,3 +1,5 @@
+//! End-to-end router checks; isolated homes prevent user plugin discovery.
+
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -7,22 +9,28 @@ use std::process::Output;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+/// Locate the compiled executable through Cargo, independent of the
+/// installed ud.
 fn ud() -> Command {
     assert_cmd::cargo::cargo_bin_cmd!("ud")
 }
 
+/// Run a command without routing through a login shell.
 fn run(args: &[&str]) -> Output {
     ud().args(args).output().unwrap()
 }
 
+/// Normalize trailing whitespace for assertions about user-facing stdout.
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// Keep diagnostics separate from data intended for pipes.
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_owned()
 }
 
+/// Include both output streams when a child command fails.
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -32,6 +40,7 @@ fn assert_success(output: &Output) {
     );
 }
 
+/// Use a disposable home and plugin search path rather than workstation state.
 fn isolated_ud(temp: &TempDir) -> Command {
     let mut command = ud();
     command
@@ -42,11 +51,13 @@ fn isolated_ud(temp: &TempDir) -> Command {
     command
 }
 
+/// Create an actual child executable for controlled process-boundary fixtures.
 fn write_executable(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Prepend a fixture command directory while retaining required system tools.
 fn path_with(directory: &Path) -> String {
     let current = env::var_os("PATH").unwrap_or_default();
     env::join_paths(
@@ -58,6 +69,8 @@ fn path_with(directory: &Path) -> String {
     .into_owned()
 }
 
+/// An empty invocation and legacy help aliases must show help without side
+/// effects.
 #[test]
 fn root_help_works_for_empty_help_and_aliases() {
     let temp = TempDir::new().unwrap();
@@ -69,6 +82,7 @@ fn root_help_works_for_empty_help_and_aliases() {
     }
 }
 
+/// Completions must follow Clap so aliases and nested flags stay discoverable.
 #[test]
 fn zsh_completions_cover_the_clap_command_tree() {
     let output = run(&["completions", "zsh"]);
@@ -81,10 +95,14 @@ fn zsh_completions_cover_the_clap_command_tree() {
     assert!(completion.contains("--archive["));
 }
 
+/// Every command branch must expose help without invoking workstation tools.
 #[test]
 fn every_command_has_clap_help() {
     for args in [
         vec!["go", "--help"],
+        vec!["fs", "--help"],
+        vec!["fs", "publish", "--help"],
+        vec!["fs", "ls", "--help"],
         vec!["rs", "--help"],
         vec!["md", "--help"],
         vec!["nibi", "--help"],
@@ -103,6 +121,7 @@ fn every_command_has_clap_help() {
     }
 }
 
+/// Legacy trailing help words must remain usable after the Rust migration.
 #[test]
 fn legacy_help_words_still_work_below_the_root() {
     for args in [
@@ -117,6 +136,7 @@ fn legacy_help_words_still_work_below_the_root() {
     }
 }
 
+/// Root help must resolve a nested command without executing that operation.
 #[test]
 fn help_command_accepts_a_nested_path() {
     let temp = TempDir::new().unwrap();
@@ -129,6 +149,7 @@ fn help_command_accepts_a_nested_path() {
     assert!(stdout(&output).contains("shell history"));
 }
 
+/// Preview mode must expose commands without running Cargo or Go.
 #[test]
 fn command_previews_do_not_execute() {
     let output = run(&["rs", "test", "--cmd"]);
@@ -140,6 +161,7 @@ fn command_previews_do_not_execute() {
     assert!(stdout(&output).contains("go test ./... -short"));
 }
 
+/// Package-scoped tests must use the invoked checkout, not the ud crate.
 #[test]
 fn rust_short_test_detects_the_current_package() {
     let temp = TempDir::new().unwrap();
@@ -160,6 +182,7 @@ fn rust_short_test_detects_the_current_package() {
     );
 }
 
+/// Explicit repair intent must reach the doctor without being silently dropped.
 #[test]
 fn health_gpg_forwards_fix_to_the_doctor() {
     let temp = TempDir::new().unwrap();
@@ -176,6 +199,7 @@ fn health_gpg_forwards_fix_to_the_doctor() {
     assert_eq!(stdout(&output), "<--fix>");
 }
 
+/// Relative symlink targets must retain destination-relative semantics.
 #[test]
 fn quick_symlink_creates_a_missing_parent() {
     let temp = TempDir::new().unwrap();
@@ -196,6 +220,7 @@ fn quick_symlink_creates_a_missing_parent() {
     assert_eq!(fs::canonicalize(destination).unwrap(), source);
 }
 
+/// Shell delegation must receive only the parsed operation and its arguments.
 #[test]
 fn shell_backed_commands_receive_only_the_selected_operation() {
     let temp = TempDir::new().unwrap();
@@ -211,6 +236,7 @@ fn shell_backed_commands_receive_only_the_selected_operation() {
     assert_eq!(stdout(&output), "<docker>\n<start>");
 }
 
+/// Notes must resolve the configured repository before launching the editor.
 #[test]
 fn quick_shell_helper_runs_the_existing_notes_function() {
     let temp = TempDir::new().unwrap();
@@ -246,6 +272,8 @@ fn quick_shell_helper_runs_the_existing_notes_function() {
     );
 }
 
+/// Network presets must configure the expected endpoint and
+/// machine-readable output.
 #[test]
 fn nibi_cfg_sets_the_expected_network_and_json_output() {
     for (args, rpc_url, chain_id) in [
@@ -306,6 +334,7 @@ fn nibi_cfg_sets_the_expected_network_and_json_output() {
     }
 }
 
+/// Help must describe supported network presets and the archive switch.
 #[test]
 fn nibi_cfg_help_excludes_dev_and_documents_archive() {
     let output = run(&["nibi", "cfg", "--help"]);
@@ -321,6 +350,7 @@ fn nibi_cfg_help_excludes_dev_and_documents_archive() {
     assert!(stderr(&output).contains("unrecognized subcommand 'dev'"));
 }
 
+/// Mnemonic import must preserve the selected network, wallet name and input.
 #[test]
 fn mnemonic_import_forwards_to_the_shell_helper() {
     let temp = TempDir::new().unwrap();
@@ -347,6 +377,7 @@ fn mnemonic_import_forwards_to_the_shell_helper() {
     );
 }
 
+/// Invalid mnemonic arguments must fail before launching an importing process.
 #[test]
 fn mnemonic_import_rejects_invalid_arguments() {
     for args in [
@@ -366,6 +397,7 @@ fn mnemonic_import_rejects_invalid_arguments() {
     }
 }
 
+/// Mnemonic material belongs on stdin rather than the child command line.
 #[test]
 fn mnemonic_shell_helper_pipes_the_secret_to_nibiru() {
     let temp = TempDir::new().unwrap();
@@ -401,6 +433,7 @@ fn mnemonic_shell_helper_pipes_the_secret_to_nibiru() {
     );
 }
 
+/// Create a discoverable executable plugin inside the fixture directory.
 fn write_plugin(directory: &Path, name: &str, body: &str) -> PathBuf {
     fs::create_dir_all(directory).unwrap();
     let path = directory.join(format!("ud-{name}"));
@@ -408,6 +441,7 @@ fn write_plugin(directory: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
+/// External plugins must receive literal argv and the dispatcher API context.
 #[test]
 fn executable_plugin_dispatches_arguments_and_environment() {
     let temp = TempDir::new().unwrap();
@@ -433,6 +467,7 @@ printf '%s|%s|%s\n' "$UD_PLUGIN_API_VERSION" "$UD_PLUGIN_NAME" "$*"
     assert_eq!(stdout(&output), "1|example|alpha beta");
 }
 
+/// Discovery and help must use the same validated plugin metadata contract.
 #[test]
 fn plugin_info_list_and_help_use_validated_metadata() {
     let temp = TempDir::new().unwrap();
@@ -468,6 +503,7 @@ fn plugin_info_list_and_help_use_validated_metadata() {
     assert!(stdout(&help).contains("example        Test plugin"));
 }
 
+/// Replacing a plugin must invalidate metadata cached for the old executable.
 #[test]
 fn plugin_metadata_cache_refreshes_after_the_plugin_changes() {
     let temp = TempDir::new().unwrap();
@@ -513,6 +549,7 @@ printf '%s\n' '{"apiVersion":1,"name":"example","description":"Cached plugin"}'
     assert_eq!(fs::read_to_string(counter).unwrap(), "2\n");
 }
 
+/// Plugins must not claim command names already owned by the built-in router.
 #[test]
 fn plugin_doctor_rejects_built_in_collisions() {
     let temp = TempDir::new().unwrap();
@@ -531,6 +568,7 @@ fn plugin_doctor_rejects_built_in_collisions() {
     assert!(stderr(&output).contains("collides with built-in: health"));
 }
 
+/// Ambiguous plugin paths must fail instead of silently choosing an executable.
 #[test]
 fn duplicate_plugins_are_rejected() {
     let temp = TempDir::new().unwrap();
@@ -550,6 +588,7 @@ fn duplicate_plugins_are_rejected() {
     assert!(stderr(&output).contains("Duplicate ud plugin: example"));
 }
 
+/// Entering an untrusted checkout must never enable a local executable plugin.
 #[test]
 fn a_plugin_in_the_current_directory_is_ignored() {
     let temp = TempDir::new().unwrap();
@@ -566,4 +605,205 @@ fn a_plugin_in_the_current_directory_is_ignored() {
         .unwrap();
     assert!(!output.status.success());
     assert!(stderr(&output).contains("Unknown command: not-discovered"));
+}
+
+/// Help and completions must expose fs without requiring an installed plugin.
+#[test]
+fn fs_builtin_help_and_completion() {
+    let temp = TempDir::new().unwrap();
+    for args in [
+        vec!["fs"],
+        vec!["fs", "--help"],
+        vec!["help", "fs"],
+        vec!["fs", "help"],
+    ] {
+        let output = isolated_ud(&temp).args(args).output().unwrap();
+        assert_success(&output);
+        assert!(stdout(&output).contains("publish"));
+        assert!(stdout(&output).contains("ls"));
+    }
+    let output = isolated_ud(&temp)
+        .args(["completions", "zsh"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stdout(&output).contains("--no-clipboard"));
+    let output = isolated_ud(&temp)
+        .args(["plugin", "list"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stdout(&output).lines().any(|line| line == "fs"));
+}
+
+/// Dry runs traverse the compiled router but cannot authenticate or upload.
+#[test]
+fn fs_outputs_and_date_override_through_ud() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("20261012-104530.png");
+    fs::write(&file, b"image").unwrap();
+    let output = isolated_ud(&temp)
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("UD_FS_BASE_URL", "https://uniquedivine.com")
+        .args([
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "trade-modal",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "https://uniquedivine.com/f/26/261012-trade-modal.png"
+    );
+    let output = isolated_ud(&temp)
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("UD_FS_BASE_URL", "https://uniquedivine.com")
+        .args([
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "ui/trade-modal.webp",
+            "--dry-run",
+            "--md",
+            "--date",
+            "2026-09-01",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "<img src=\"https://uniquedivine.com/f/26/ui/260901-trade-modal.webp\" alt=\"trade modal\" />"
+    );
+}
+
+/// Invalid input must fail before cloud invocation and emit no data on stdout.
+#[test]
+fn fs_command_errors_do_not_authenticate_or_print_data() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let marker = temp.path().join("gcloud-called");
+    write_executable(
+        &bin.join("gcloud"),
+        "#!/bin/sh\ntouch \"$GCLOUD_MARKER\"\nexit 99\n",
+    );
+    let file = temp.path().join("file.png");
+    fs::write(&file, b"image").unwrap();
+    for args in [
+        vec!["fs", "ls", "--json", "--urls"],
+        vec!["fs", "ls", "../26"],
+        vec!["fs", "publish"],
+        vec!["fs", "unknown"],
+        vec!["fs", "ls", "--time", "261332"],
+        vec!["fs", "ls", "--time", "26", "--all"],
+        vec!["fs", "ls", "--al"],
+        vec!["fs", file.to_str().unwrap(), "name", "--dry-run"],
+        vec![
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "../bad",
+            "--dry-run",
+        ],
+    ] {
+        let output = isolated_ud(&temp)
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("UD_FS_BASE_URL", "https://example.com")
+            .env("PATH", path_with(&bin))
+            .env("GCLOUD_MARKER", &marker)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        assert_eq!(stdout(&output), "");
+        assert!(
+            !marker.exists(),
+            "Invalid input invoked cloud login: {args:?}"
+        );
+    }
+}
+
+/// A failed upload cannot produce a success URL and must retain integrity
+/// flags.
+#[test]
+fn fs_upload_refusal_has_no_success_output() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let arguments = temp.path().join("args");
+    write_executable(
+        &bin.join("gcloud"),
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GCLOUD_ARGS\"\nexit 1\n",
+    );
+    let file = temp.path().join("data.png");
+    fs::write(&file, b"image").unwrap();
+    let output = isolated_ud(&temp)
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("UD_FS_BASE_URL", "https://example.com")
+        .env("PATH", path_with(&bin))
+        .env("GCLOUD_ARGS", &arguments)
+        .args([
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "image",
+            "--date",
+            "2026-10-12",
+            "--no-clipboard",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("Existing names are never overwritten"));
+    let args = fs::read_to_string(arguments).unwrap();
+    assert!(args.contains("--if-generation-match=0"));
+    assert!(args.contains("--content-md5="));
+}
+
+/// Installing the built-in removes only this checkout's retired symlinks.
+#[test]
+fn fs_migration_preserves_unrelated_files_and_links() {
+    let temp = TempDir::new().unwrap();
+    let dotfiles = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let plugin = temp.path().join("data/ud/plugins/ud-fs");
+    let legacy = temp.path().join(".local/bin/pub");
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    let migrate = |mode: &str| {
+        std::process::Command::new("bash")
+            .arg(dotfiles.join("ud/migrate-fs.sh"))
+            .arg(mode)
+            .env("HOME", temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .output()
+            .unwrap()
+    };
+    std::os::unix::fs::symlink(dotfiles.join("bin/ud-fs"), &plugin).unwrap();
+    std::os::unix::fs::symlink(dotfiles.join("bin/pub"), &legacy).unwrap();
+    assert_success(&migrate("--check"));
+    assert!(plugin.is_symlink());
+    assert_success(&migrate("--apply"));
+    assert!(!plugin.is_symlink());
+    assert!(!legacy.is_symlink());
+    assert_success(&migrate("--apply"));
+    fs::write(&plugin, b"unrelated executable").unwrap();
+    assert!(!migrate("--apply").status.success());
+    assert_eq!(fs::read(&plugin).unwrap(), b"unrelated executable");
+    fs::remove_file(&plugin).unwrap();
+    std::os::unix::fs::symlink("/unrelated/plugin", &plugin).unwrap();
+    std::os::unix::fs::symlink("/unrelated/pub", &legacy).unwrap();
+    assert!(!migrate("--apply").status.success());
+    assert_eq!(
+        fs::read_link(&plugin).unwrap(),
+        Path::new("/unrelated/plugin")
+    );
+    fs::remove_file(&plugin).unwrap();
+    assert_success(&migrate("--apply"));
+    assert!(legacy.is_symlink());
 }

@@ -7,33 +7,13 @@ setup:
   #!/usr/bin/env bash
   just -l
 
-# Install the public-file publishing and listing plugin.
-fs-install:
-  #!/usr/bin/env bash
-  set -Eeuo pipefail
-  fs_plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/ud/plugins"
-  fs_plugin="$fs_plugin_dir/ud-fs"
-  fs_source="$PWD/bin/ud-fs"
-  install -d -m 700 "$fs_plugin_dir"
-  if [[ -e "$fs_plugin" && ! -L "$fs_plugin" ]]; then
-    echo "Refusing to replace an existing ud-fs executable" >&2
-    exit 1
-  fi
-  if [[ -L "$fs_plugin" && "$(readlink -m -- "$fs_plugin")" != "$fs_source" ]]; then
-    echo "Refusing to replace an unrelated ud-fs symlink" >&2
-    exit 1
-  fi
-  chmod +x "$fs_source"
-  ln -sfn "$fs_source" "$fs_plugin"
-  if [[ -L "$HOME/.local/bin/pub" && "$(readlink -m -- "$HOME/.local/bin/pub")" == "$PWD/bin/pub" ]]; then
-    unlink "$HOME/.local/bin/pub"
-  fi
+# Install ud, including its built-in public-file commands.
+fs-install: ud-install
 
-# Test publishing, listing formats, naming, and ud dispatch without cloud writes.
+# Test file publishing and listing without cloud writes.
 fs-test:
-  #!/usr/bin/env bash
-  set -Eeuo pipefail
-  python3 bin/ud-fs.test.py
+  cargo test --package ud --bin ud fs::
+  cargo test --package ud --test ud_cli fs_
 
 test:
   cargo test --workspace
@@ -50,11 +30,12 @@ ud-build:
   cargo build --release --package ud
 
 # Install the Rust ud CLI at ~/.local/bin/ud and record its source fingerprint.
-ud-install: fs-install
+ud-install:
   #!/usr/bin/env bash
   set -Eeuo pipefail
   ud_bin="$HOME/.local/bin/ud"
   legacy_ud="$PWD/zsh/ud/ud.sh"
+  bash ud/migrate-fs.sh --check
 
   if [[ -L "$ud_bin" ]]; then
     installed_target="$(readlink -m -- "$ud_bin")"
@@ -73,7 +54,8 @@ ud-install: fs-install
     fi
   fi
 
-  cargo install --path ud --locked --root "$HOME/.local" --force
+  cargo install --path ud --bin ud --locked --root "$HOME/.local" --force
+  bash ud/migrate-fs.sh --apply
   ud_completion_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
   install -d -m 700 "$ud_completion_dir"
   ud_completion_tmp="$(mktemp "$ud_completion_dir/.ud.XXXXXX")"

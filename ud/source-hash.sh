@@ -8,6 +8,7 @@ files=(
   "$repo_root/Cargo.toml"
   "$repo_root/Cargo.lock"
   "$repo_root/ud/Cargo.toml"
+  "$repo_root/ud/migrate-fs.sh"
   "$repo_root/zsh/ud/shell.sh"
 )
 while IFS= read -r -d '' source_file; do

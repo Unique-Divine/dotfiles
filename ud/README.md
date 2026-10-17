@@ -49,6 +49,10 @@ the command before invoking the helper.
 
 ## Executable plugins
 
+Plugins let private or independently maintained commands keep their own
+source and installation lifecycle. Built-in commands such as `fs` ship with
+`ud` and need no plugin discovery.
+
 A plugin is an executable named `ud-<command>`. It may be a native binary or a
 script with a valid shebang. The dispatcher searches
 `${XDG_DATA_HOME:-$HOME/.local/share}/ud/plugins`, followed by the directories
@@ -60,18 +64,22 @@ ud plugin list
 ud plugin info evm
 ud plugin doctor
 ud evm --help
-ud fs --help
 ```
 
 Each plugin implements `--plugin-info` and prints JSON with `apiVersion`,
 `name`, and `description`. API version 1 is the current contract. Rust validates
 and caches this metadata without requiring `jq`.
 
-### Public files
+## Public files
 
-Install the plugin with `just fs-install`. Commands `just ud-install` and
-`just sync` also install it. Run `just fs-test` to check publishing, listing
-formats, naming, configuration, and real `ud` dispatch without cloud writes.
+Public-file commands are built into the Rust `ud` binary. Install or refresh
+with `just ud-install`; `just sync` does the same. The compatibility recipe
+`just fs-install` also installs `ud`. No separate plugin or Python runtime is
+needed. Installation removes the old publisher symlink only when it belongs
+to this checkout, and refuses an unrelated `ud-fs` plugin.
+
+Run `just fs-test` to check publishing, listing formats, naming, configuration,
+and compiled CLI behavior without cloud writes.
 
 ```bash
 ud fs publish ./screenshot.png ui/trade-modal --md
@@ -94,9 +102,8 @@ the clipboard when supported; `--no-clipboard` disables that step.
 
 Bare `ls` selects the current Bangkok calendar month; `--all` includes the
 whole collection. A positional directory recursively includes all dates beneath
-it, with an optional trailing slash. Flag `--time` narrows the selection. Each call fetches fresh GCS metadata through
-the
-existing Google login and follows all pages before emitting output. It sorts
+it, with an optional trailing slash. Flag `--time` narrows the selection.
+Each call fetches fresh GCS metadata through the existing Google login and follows all pages before emitting output. It sorts
 by key and defaults to TOON with `url`, `size`, and `contentType`.
 Use mutually exclusive `--json`, `--urls`, or `--paths` for other formats.
 Listing does not download file contents. Local caching and tab completion
@@ -137,3 +144,11 @@ to the destination link.
 ```bash
 ud q symlink ../ai-skills .agents/skills
 ```
+
+## Rust tests
+
+CLI integration tests live beside the entry point in `src/main_test.rs`.
+Cargo registers this file explicitly as the `ud_cli` test target, so it still
+runs the compiled executable and is included in `cargo test --workspace`.
+File-command unit tests live in neighboring `fs/fs_test.rs` under `#[cfg(test)]`.
+Test comments explain the compatibility rule or failure each fixture protects.

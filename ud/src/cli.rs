@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Publish and list public files.
+    Fs(crate::fs::FsArgs),
     /// Run common Go workflows.
     Go(Nested<GoCommand>),
     /// Run common Rust and Cargo workflows.
