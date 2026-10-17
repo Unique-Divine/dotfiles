@@ -122,6 +122,7 @@ fn status_field(status: &str, name: &str) -> String {
 
 fn stop_daemon() {
     let _ = run_rust_command(&["stop"]);
+    wait_for_daemon_stop();
 }
 
 fn wait_for_daemon_stop() {
@@ -225,7 +226,6 @@ fn preserves_legacy_cases_and_unicode() {
     assert_eq!(paste(&rust), expected.as_bytes());
 
     stop_daemon();
-    wait_for_daemon_stop();
     assert_eq!(paste(&rust), expected.as_bytes());
     stop_daemon();
 }
@@ -256,7 +256,6 @@ fn recovers_after_the_powershell_backend_exits() {
     );
 
     stop_daemon();
-    wait_for_daemon_stop();
 }
 
 #[test]
