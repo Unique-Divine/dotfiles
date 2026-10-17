@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Publish and list public files.
+    Fs(crate::fs::FsArgs),
     /// Run common Go workflows.
     Go(Nested<GoCommand>),
     /// Run common Rust and Cargo workflows.
@@ -123,14 +125,14 @@ pub enum MarkdownCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum NibiCommand {
-    /// Set nibid to a known network with JSON output.
+    /// Set nibiru to a known network with JSON output.
     Cfg(Nested<NibiNetwork>),
     /// Print common Nibiru addresses from the environment.
     Addrs,
-    /// Install the pinned nibid release.
-    #[command(name = "get-nibid", alias = "gn")]
-    GetNibid,
-    /// Stop running nibid processes.
+    /// Install the published Nibiru CLI through Bun.
+    #[command(name = "get-nibiru", alias = "gn")]
+    GetNibiru,
+    /// Stop running nibiru processes.
     Stop,
     /// Manage local Nibiru test keys.
     Keys(Nested<NibiKeysCommand>),

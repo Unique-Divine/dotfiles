@@ -269,9 +269,9 @@ fi
 # Cosmos-sdk 'file' backend
 # alias keyd='f(){ "$@" --keyring-backend test;  unset -f f; }; f'
 export KEYRING="--keyring-backend=test"
-# nibid flag for outputting in JSON format
-# you can also edit the config directly with `nibid config [key] [value]`
-# Display the current binary config by running `nibid config`
+# nibiru flag for outputting in JSON format
+# you can also edit the config directly with `nibiru config [key] [value]`
+# Display the current binary config by running `nibiru config`
 
 # Yarn and nvm
 path=(
@@ -335,7 +335,7 @@ nibi_keys() {
   # This is the main validator on a fresh local test instance of Nibiru
   KEY_NAME="validator"
   local MNEM="guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" 
-  echo "$MNEM" | nibid keys add $KEY_NAME --recover --keyring-backend test
+  echo "$MNEM" | nibiru keys add $KEY_NAME --recover --keyring-backend test
 }
 
 

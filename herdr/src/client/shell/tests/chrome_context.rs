@@ -612,22 +612,37 @@ fn zero_indexed_tab_labels_preserve_named_tabs_and_public_numbers() {
     let config: Config = toml::from_str("[keys]\nswitch_tab = \"prefix+0..8\"\n").unwrap();
     let shell = ClientShellConfig::from_config(&config);
     let mut tab = snapshot().tabs.remove(0);
-    assert_eq!(shell.tab_display_label(&tab), "0");
+    assert_eq!(shell.tab_display_label(&tab, 2), "0");
     assert_eq!(tab.number, 1);
     assert_eq!(tab.tab_id, "tab_1");
     tab.number = 9;
     tab.label = "9".into();
-    assert_eq!(shell.tab_display_label(&tab), "8");
+    assert_eq!(shell.tab_display_label(&tab, 2), "8");
     tab.label = "2".into();
-    assert_eq!(shell.tab_display_label(&tab), "1");
+    assert_eq!(shell.tab_display_label(&tab, 2), "1");
     assert_eq!(tab.number, 9);
     tab.custom_label = true;
+    tab.label = "3-nibi-web".into();
+    assert_eq!(shell.tab_display_label(&tab, 2), "2-nibi-web");
+    assert_eq!(tab.number, 9);
+    tab.label = "9: 链".into();
+    assert_eq!(shell.tab_display_label(&tab, 2), "2: 链");
+    tab.label = "3".into();
+    assert_eq!(shell.tab_display_label(&tab, 2), "2");
+    let default_shell = ClientShellConfig::from_config(&Config::default());
+    tab.label = "3-nibi-web".into();
+    assert_eq!(default_shell.tab_display_label(&tab, 2), "3-nibi-web");
+    tab.label = "2026-notes".into();
+    assert_eq!(shell.tab_display_label(&tab, 2), "2026-notes");
+    assert_eq!(default_shell.tab_display_label(&tab, 2), "2026-notes");
+    tab.label = "3-nibi-web".into();
+    assert_eq!(shell.tab_display_label(&tab, 12), "12-nibi-web");
     tab.label = "work".into();
-    assert_eq!(shell.tab_display_label(&tab), "work");
+    assert_eq!(shell.tab_display_label(&tab, 2), "work");
     tab.custom_label = false;
     tab.label = "9".into();
     let default_shell = ClientShellConfig::from_config(&Config::default());
-    assert_eq!(default_shell.tab_display_label(&tab), "9");
+    assert_eq!(default_shell.tab_display_label(&tab, 2), "9");
 }
 
 #[test]

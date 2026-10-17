@@ -327,10 +327,10 @@ pub fn run_nibi(command: NibiCommand) -> Result<i32> {
             }
             Ok(0)
         }
-        NibiCommand::GetNibid => {
-            run_shell_helper([OsStr::new("nibi-get-nibid")])
+        NibiCommand::GetNibiru => {
+            run_shell_helper([OsStr::new("nibi-get-nibiru")])
         }
-        NibiCommand::Stop => stop_nibid(),
+        NibiCommand::Stop => stop_nibiru(),
         NibiCommand::Keys(keys) => match keys.command {
             Some(command) => run_nibi_keys(command),
             None => bail!("missing Nibiru keys command"),
@@ -371,7 +371,7 @@ fn configure_nibi(network: NibiNetwork) -> Result<i32> {
         vec!["config", "output", "json"],
         vec!["config"],
     ] {
-        let mut command = Command::new("nibid");
+        let mut command = Command::new("nibiru");
         command.args(args);
         let code = process::run_quiet(command)?;
         if code != 0 {
@@ -392,37 +392,37 @@ fn run_nibi_keys(command: NibiKeysCommand) -> Result<i32> {
     ])
 }
 
-fn stop_nibid() -> Result<i32> {
+fn stop_nibiru() -> Result<i32> {
     let output = Command::new("pgrep")
-        .args(["-x", "nibid"])
+        .args(["-x", "nibid|nibiru"])
         .output()
-        .context("failed to inspect nibid processes")?;
+        .context("failed to inspect nibiru processes")?;
     if !output.status.success() {
-        println!("No nibid processes are running.");
-        println!("Done stopping nibid processes.");
+        println!("No nibiru processes are running.");
+        println!("Done stopping nibiru processes.");
         return Ok(0);
     }
 
     for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
         let status = Command::new("kill").arg(pid).status()?;
         if status.success() {
-            println!("Killed process {pid} (nibid)");
+            println!("Killed process {pid} (nibiru)");
         }
     }
     for _ in 0..50 {
         let running = Command::new("pgrep")
-            .args(["-x", "nibid"])
+            .args(["-x", "nibid|nibiru"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success());
         if !running {
-            println!("Done stopping nibid processes.");
+            println!("Done stopping nibiru processes.");
             return Ok(0);
         }
         thread::sleep(Duration::from_millis(200));
     }
-    bail!("nibid processes did not stop within 10 seconds")
+    bail!("nibiru processes did not stop within 10 seconds")
 }
 
 pub fn run_docker(command: DockerCommand) -> Result<i32> {

@@ -13,8 +13,14 @@ The previous snapshot came from fork commit
 
 - The keybinding range `prefix+0..8` selects tabs starting at zero. Generated
   labels in the tab bar, mobile UI, navigator, keybinding help, and tab-creation
-  dialogs use that display base. Named tabs and public API IDs keep their
-  upstream meaning.
+  dialogs use that display base. Tab names beginning with one ASCII digit use
+  their current position as the prefix and keep the remaining text exactly.
+  Closing or moving tabs updates these labels, including names such as
+  `3-nibi-web`. Stored custom names and stable public API IDs stay unchanged.
+  API labels use one-based positions; the client applies its configured base.
+  Multi-digit prefixes such as `2026-notes` stay unchanged, as do names
+  beginning with whitespace, a sign, or non-ASCII digits. The client snapshot
+  retains original custom names so each client can apply its display base.
 - Codex managed starts and restores pass `--no-daemon` so session hooks use
   the launching pane's environment. The Zsh wrapper covers manual launches
   inside Herdr. The shared daemon can otherwise report another pane's session.
@@ -56,7 +62,7 @@ env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH \
 
 ## Fork releases
 
-The fork package is version 0.9.5; the recorded upstream base stays v0.9.3.
+The fork package is version 0.9.6; the recorded upstream base stays v0.9.3.
 Dotfiles owns release builds and downloads.
 See [Herdr releases](../herdr-release/README.md) for commands and checks.
 Windows packaging metadata and license notices are retained for release ZIPs.

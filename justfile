@@ -7,6 +7,14 @@ setup:
   #!/usr/bin/env bash
   just -l
 
+# Install ud, including its built-in public-file commands.
+fs-install: ud-install
+
+# Test file publishing and listing without cloud writes.
+fs-test:
+  cargo test --package ud --bin ud fs::
+  cargo test --package ud --test ud_cli fs_
+
 test:
   cargo test --workspace
   bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
@@ -27,6 +35,7 @@ ud-install:
   set -Eeuo pipefail
   ud_bin="$HOME/.local/bin/ud"
   legacy_ud="$PWD/zsh/ud/ud.sh"
+  bash ud/migrate-fs.sh --check
 
   if [[ -L "$ud_bin" ]]; then
     installed_target="$(readlink -m -- "$ud_bin")"
@@ -45,7 +54,8 @@ ud-install:
     fi
   fi
 
-  cargo install --path ud --locked --root "$HOME/.local" --force
+  cargo install --path ud --bin ud --locked --root "$HOME/.local" --force
+  bash ud/migrate-fs.sh --apply
   ud_completion_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
   install -d -m 700 "$ud_completion_dir"
   ud_completion_tmp="$(mktemp "$ud_completion_dir/.ud.XXXXXX")"

@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod fs;
 mod plugin;
 mod process;
 
@@ -95,6 +96,14 @@ fn run() -> Result<i32> {
             Some(command) => commands::run_quick(command),
             None => print_nested_help(clap_command, &["quick"]),
         },
+        Some(Command::Fs(args)) => {
+            if args.command.is_none() {
+                print_nested_help(clap_command, &["fs"])
+            } else {
+                fs::run(args)?;
+                Ok(0)
+            }
+        }
         Some(Command::External(args)) => dispatch_external(args),
     }
 }
@@ -129,6 +138,7 @@ fn normalize_legacy_help(args: &mut [OsString]) {
     let supports_help_word = matches!(
         path.as_slice(),
         ["go"]
+            | ["fs"]
             | ["rs"]
             | ["md"]
             | ["nibi"]

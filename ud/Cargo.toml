@@ -2,6 +2,9 @@
 name = "ud"
 version = "0.1.0"
 edition.workspace = true
+[[test]]
+name = "ud_cli"
+path = "src/main_test.rs"
 
 [dependencies]
 anyhow.workspace = true
@@ -10,6 +13,13 @@ clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+
+base64 = "0.22"
+chrono = "0.4"
+chrono-tz = "0.10"
+md-5 = "0.10"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true
