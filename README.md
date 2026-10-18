@@ -53,6 +53,28 @@ bun test zsh/clipboard.test.ts
 ```
 
 
+The [root CI workflow](.github/workflows/ci.yml) detects changes once using
+[shared path filters](.github/filters.yml) for four components:
+
+| Component | Checks |
+| --- | --- |
+| Bun and shell scripts | `just typecheck`, `just test-bun` |
+| Root Cargo workspace | `just test-rust`, Clippy |
+| Herdr native inputs | Five platform builds, smoke tests, release preparation |
+| herdr-tmux package | Linux and macOS format, tests, Clippy, package checks |
+
+`just test` runs both local test suites. The routing summary explains which
+components run. `CI result` requires every selected job to pass and accepts
+intentional skips. The publish check passes without setup or publication on
+non-release events, using step-level conditions.
+
+Manual CI runs force all component checks without publishing. PRs and main
+pushes use changed paths; pushes to `ud/herdr-tmux` check only affected plugin
+inputs. Herdr tag pushes run the release pipeline. Changes to the orchestrator
+or shared filters verify every component. See [Herdr release verification](herdr-release/README.md#verify-a-release-candidate-before-merge)
+for native build and publishing rules.
+
+
 ## Quick Setup
 
 ```bash

@@ -66,16 +66,27 @@ become the dotfiles repository's general latest release.
 
 ## Verify a release candidate before merge
 
-For PRs changing Herdr, release tooling, or shared Bun dependencies, the release
-workflow builds the exact PR head commit on all five platforms and runs the same
-packaging and executable smoke tests used for tag releases. The preparation job
-adds checksums and source metadata to a combined artifact named
+PRs and main pushes use `.github/filters.yml` to select affected components.
+Herdr Rust, vendored code, embedded assets, packaging inputs, and the native
+build workflow trigger all five native platforms. Shared Bun dependencies,
+documentation scripts, and release scripts run script checks without compiling
+Herdr. Ordinary documentation changes skip native compilation. Changes to the
+root CI orchestrator or shared filters verify every component.
+
+Native builds use the exact PR head or pushed commit and run the same packaging
+and executable smoke tests used for tag releases. The preparation job adds
+checksums and source metadata to a combined artifact named
 `herdr-ud-VERSION-COMMIT`. Download it from the workflow run's Artifacts section.
 The native Unix asset may need `chmod +x` after extraction.
 
-PR runs do not publish releases. Only a `herdr-ud/*` tag push can run the
-publishing job, which downloads the prepared bundle and checks uploaded hashes
-before making the release public. Tag releases rebuild from the tagged commit.
+Use **Run workflow** on CI to force all component checks, including all five
+native builds and preparation, for a selected branch. Manual runs never publish.
+
+The publish check passes with a no-op on PRs, branch pushes, and manual runs.
+Step-level conditions allow actual publication only for a `herdr-ud/*` tag push
+in this repository after successful preparation. Publication downloads the
+prepared bundle and checks uploaded hashes before making the release public.
+Tag releases rebuild from the tagged commit and omit unrelated component checks.
 
 To prepare a local directory containing all five built packages without calling
 GitHub, run these commands from the source checkout:
@@ -95,7 +106,7 @@ It fails if the version does not match or any expected package is missing.
 bun test herdr-release
 bun run herdr-release/publish.ts validate herdr-ud/v0.9.6
 just test
-bunx github-actionlint .github/workflows/herdr-release.yml
+bunx github-actionlint .github/workflows/ci.yml
 ```
 
 Tests use generated files, a local HTTP server, and temporary destinations.

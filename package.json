@@ -4,7 +4,9 @@
   "type": "module",
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/picomatch": "^2",
     "@uniquedivine/bash": "^0.0.2",
+    "picomatch": "^2.3.1",
     "smol-toml": "^1.7.0"
   },
   "peerDependencies": {
