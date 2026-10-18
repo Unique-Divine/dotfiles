@@ -60,7 +60,7 @@ const toWindowsPath = (path: string): string => {
 const runPowerShellFile = (
   path: string,
   args: string[] = [],
-): ReturnType<typeof Bun.spawnSync> => {
+) => {
   return Bun.spawnSync(
     [
       "powershell.exe",
