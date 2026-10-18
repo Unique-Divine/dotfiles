@@ -5,7 +5,7 @@
 - **Test single file:** `bun test path/to/test.ts`
 - **Run TS files directly:** `bun run file.ts`
 - **Formatter:** Use VSCode/Neovim built-in formatter
-- **Typecheck:** `tsc --noEmit` or `bun run tsc --noEmit`
+- **Typecheck:** `bun check`
 - **Install packages:** `bun install package-name`
 
 ## Code Style
@@ -50,3 +50,5 @@
 - Do not mock dependencies for testing - use real data structures
 - For shell commands, use @uniquedivine/bash package and handle errors with try/catch
 - When adding new capabilities, create modular, testable functions
+
+Use native `bun check` for TypeScript type checking; retain compilers for emitted output and framework-specific validation.

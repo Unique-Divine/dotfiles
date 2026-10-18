@@ -76,7 +76,7 @@ describe('documentation release publishing', () => {
     runScript(root, ['publish', 'v0.9.0']);
     const archivedManifest = JSON.parse(await read(root, 'docs/versions/manifest.json'));
     expect(archivedManifest.current).toBe('1.0.0');
-    expect(archivedManifest.versions.map(({ version }) => version)).toEqual(['1.0.0', '0.9.0']);
+    expect(archivedManifest.versions.map(({ version }: { version: string }) => version)).toEqual(['1.0.0', '0.9.0']);
     expect(await read(root, 'README.md')).toBe('post-release correction\n');
     runScript(root, ['check']);
 
