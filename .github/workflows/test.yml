@@ -1,9 +1,14 @@
 name: Test
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 # Allow concurrent runs on main but cancel stale branch runs.
 concurrency:
@@ -11,36 +16,34 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
   test:
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Bun
-        # For running TypeScript tests and installing package dependencies.
-        uses: oven-sh/setup-bun@v2
+      - name: No affected tests
+        if: needs.changes.outputs.bun != 'true' && needs.changes.outputs.rust != 'true'
+        run: echo "No Bun or root Cargo workspace inputs changed."
+      - uses: taiki-e/install-action@just
+        if: needs.changes.outputs.bun == 'true' || needs.changes.outputs.rust == 'true'
+      - uses: oven-sh/setup-bun@v2
+        if: needs.changes.outputs.bun == 'true'
         with:
-          bun-version: 1.4.3 # Values: latest, <sha>, 1.2.3, canary
-        # Outputs:
-        # - cache-hit    : Whether the executable was read from cache. Ex. "true"
-        # - bun-version  : The output from running `bun-version`. Ex. "1.0.0"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install just
-        # casey/just: https://just.systems/man/en/chapter_6.html
-        # taiki-e/install-action: https://github.com/taiki-e/install-action
-        uses: taiki-e/install-action@just
-
+          bun-version-file: .bun-version
       - name: Install shell dependencies
+        if: needs.changes.outputs.bun == 'true'
         run: just i-bash-ci
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Typecheck TypeScript
-        run: just typecheck
-
-      - name: Run tests
-        run: just test
+      - name: Install dependencies and check TypeScript
+        if: needs.changes.outputs.bun == 'true'
+        run: |
+          bun install --frozen-lockfile
+          just typecheck
+          just test-bun
+      - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.rust == 'true'
+      - name: Test root Cargo workspace
+        if: needs.changes.outputs.rust == 'true'
+        run: just test-rust

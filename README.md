@@ -53,6 +53,21 @@ bun test zsh/clipboard.test.ts
 ```
 
 
+CI uses [shared path filters](.github/filters.yml) for four components:
+
+| Component | Checks |
+| --- | --- |
+| Bun and shell scripts | `just typecheck`, `just test-bun` |
+| Root Cargo workspace | `just test-rust`, Clippy |
+| Herdr native inputs | Five platform builds, smoke tests, release preparation |
+| herdr-tmux package | Linux and macOS format, tests, Clippy, package checks |
+
+`just test` runs both local test suites. CI keeps `Test/test` and `Rust/clippy`
+present and reports when their inputs have not changed. Manual workflow runs
+force their checks. See [Herdr release verification](herdr-release/README.md#verify-a-release-candidate-before-merge)
+for native build and publishing rules.
+
+
 ## Quick Setup
 
 ```bash

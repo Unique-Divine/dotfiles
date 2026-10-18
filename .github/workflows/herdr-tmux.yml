@@ -1,21 +1,21 @@
 name: Herdr tmux
 
 on:
+  workflow_dispatch:
   pull_request:
-    paths:
-      - 'herdr-tmux/**'
-      - '.github/workflows/herdr-tmux.yml'
   push:
     branches: [main, ud/herdr-tmux]
-    paths:
-      - 'herdr-tmux/**'
-      - '.github/workflows/herdr-tmux.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
   check:
+    needs: changes
+    if: needs.changes.outputs.herdr_tmux == 'true'
     strategy:
       fail-fast: false
       matrix:

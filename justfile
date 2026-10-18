@@ -15,8 +15,12 @@ fs-test:
   cargo test --package ud --bin ud fs::
   cargo test --package ud --test ud_cli fs_
 
-test:
-  cargo test --workspace
+test: test-rust test-bun
+
+test-rust:
+  cargo test --workspace --locked
+
+test-bun:
   bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
 
 alias t := test

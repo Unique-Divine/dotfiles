@@ -66,12 +66,20 @@ become the dotfiles repository's general latest release.
 
 ## Verify a release candidate before merge
 
-For PRs changing Herdr, release tooling, or shared Bun dependencies, the release
-workflow builds the exact PR head commit on all five platforms and runs the same
-packaging and executable smoke tests used for tag releases. The preparation job
-adds checksums and source metadata to a combined artifact named
+PRs and main pushes use `.github/filters.yml` to select affected components.
+Herdr Rust, vendored code, embedded assets, packaging inputs, and the native
+build workflow trigger all five native platforms. Shared Bun dependencies,
+documentation scripts, and release orchestration run script checks without
+compiling Herdr. Ordinary documentation changes skip native compilation.
+
+Native builds use the exact PR head or pushed commit and run the same packaging
+and executable smoke tests used for tag releases. The preparation job adds
+checksums and source metadata to a combined artifact named
 `herdr-ud-VERSION-COMMIT`. Download it from the workflow run's Artifacts section.
 The native Unix asset may need `chmod +x` after extraction.
+
+Use **Run workflow** on Herdr UD release to force all five builds and preparation
+for a selected branch. Manual runs never publish.
 
 PR runs do not publish releases. Only a `herdr-ud/*` tag push can run the
 publishing job, which downloads the prepared bundle and checks uploaded hashes

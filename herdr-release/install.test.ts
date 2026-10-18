@@ -251,31 +251,48 @@ test("draft retries and uploaded digest checks", async () => {
   )
   await expect(checkUploadedAssets(root, [])).rejects.toThrow("Missing")
 })
-test("PR release checks prepare all five assets while only tag pushes publish", async () => {
+test("native release checks prepare all five assets while only tag pushes publish", async () => {
   const yaml = (Bun as typeof Bun & { YAML: { parse(input: string): unknown } })
     .YAML
   const workflow = yaml.parse(
     await readFile(".github/workflows/herdr-release.yml", "utf8"),
   ) as any
   expect(workflow.on.push.tags).toEqual(["herdr-ud/*"])
-  expect(workflow.on.pull_request.paths).toContain("herdr/**")
+  const native = yaml.parse(
+    await readFile(".github/workflows/herdr-native-build.yml", "utf8"),
+  ) as any
+  expect(workflow.on.pull_request).toBeNull()
+  expect(workflow.on.workflow_dispatch).toBeNull()
+  expect(native.on.workflow_call.inputs.source_sha.required).toBe(true)
+  expect(native.on.workflow_call.inputs.release_tag.required).toBe(true)
+  expect(Object.keys(native.on)).toEqual(["workflow_call"])
+  expect(native.permissions.contents).toBe("read")
   expect(
     workflow.jobs.validate.steps.some(
       (step: { uses?: string }) => step.uses === "taiki-e/install-action@just",
     ),
   ).toBe(true)
-  expect(workflow.jobs.build.needs).toBe("validate")
+  expect(workflow.jobs.validate.needs).toBe("changes")
+  expect(workflow.jobs.validate.if).toContain("needs.changes.outputs.herdr_native == 'true'")
+  expect(workflow.jobs.build.needs).toEqual(["changes", "validate"])
+  expect(workflow.jobs.build.if).toBe("needs.changes.outputs.herdr_native == 'true'")
+  expect(workflow.jobs.build.uses).toBe("./.github/workflows/herdr-native-build.yml")
+  expect(workflow.jobs.build.with).toEqual({
+    source_sha: "${{ needs.validate.outputs.source_sha }}",
+    release_tag: "${{ needs.validate.outputs.tag }}",
+  })
+  expect(workflow.jobs.build.secrets).toBeUndefined()
   expect(workflow.jobs.prepare.needs).toEqual(["validate", "build"])
   expect(workflow.jobs.publish.needs).toEqual(["validate", "prepare"])
   expect(workflow.jobs.publish.if).toBe(
     "github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-ud/')",
   )
   expect(
-    workflow.jobs.build.strategy.matrix.include.map((item: any) => item.asset),
+    native.jobs.build.strategy.matrix.include.map((item: any) => item.asset),
   ).toEqual(ASSETS)
   expect(workflow.permissions.contents).toBe("read")
   expect(workflow.jobs.publish.permissions.contents).toBe("write")
-  for (const name of ["validate", "build", "prepare"]) {
+  for (const name of ["validate", "prepare"]) {
     expect(workflow.jobs[name].permissions?.contents).not.toBe("write")
     expect(
       workflow.jobs[name].steps.some((step: any) => step.env?.GH_TOKEN),
@@ -284,7 +301,12 @@ test("PR release checks prepare all five assets while only tag pushes publish", 
   expect(workflow.jobs.validate.steps[0].with.ref).toBe(
     "${{ github.event.pull_request.head.sha || github.sha }}",
   )
-  for (const name of ["build", "prepare", "publish"]) {
+  expect(native.jobs.build.steps[0].with.ref).toBe("${{ inputs.source_sha }}")
+  expect(native.jobs.build.steps[0].with["persist-credentials"]).toBe(false)
+  expect(native.jobs.build.steps.some((step: any) => step.env?.GH_TOKEN)).toBe(false)
+  expect(native.jobs.build.steps.find((step: any) => step.uses === "dtolnay/rust-toolchain@stable").with.toolchain).toBe("1.96.1")
+  expect(native.jobs.build.steps.find((step: any) => step.uses === "vercel-labs/setup-zig@v1.0.2").with.version).toBe("0.16.0")
+  for (const name of ["prepare", "publish"]) {
     expect(workflow.jobs[name].steps[0].with.ref).toBe(
       "${{ needs.validate.outputs.source_sha }}",
     )
