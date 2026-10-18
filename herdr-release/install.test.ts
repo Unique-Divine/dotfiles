@@ -255,7 +255,7 @@ test("native release checks prepare all five assets while only tag pushes publis
   const yaml = (Bun as typeof Bun & { YAML: { parse(input: string): unknown } })
     .YAML
   const workflow = yaml.parse(
-    await readFile(".github/workflows/herdr-release.yml", "utf8"),
+    await readFile(".github/workflows/ci.yml", "utf8"),
   ) as any
   expect(workflow.on.push.tags).toEqual(["herdr-ud/*"])
   const native = yaml.parse(
@@ -273,7 +273,7 @@ test("native release checks prepare all five assets while only tag pushes publis
     ),
   ).toBe(true)
   expect(workflow.jobs.validate.needs).toBe("changes")
-  expect(workflow.jobs.validate.if).toContain("needs.changes.outputs.herdr_native == 'true'")
+  expect(workflow.jobs.validate.if).toBe("needs.changes.outputs.validate == 'true'")
   expect(workflow.jobs.build.needs).toEqual(["changes", "validate"])
   expect(workflow.jobs.build.if).toBe("needs.changes.outputs.herdr_native == 'true'")
   expect(workflow.jobs.build.uses).toBe("./.github/workflows/herdr-native-build.yml")
@@ -283,10 +283,16 @@ test("native release checks prepare all five assets while only tag pushes publis
   })
   expect(workflow.jobs.build.secrets).toBeUndefined()
   expect(workflow.jobs.prepare.needs).toEqual(["validate", "build"])
-  expect(workflow.jobs.publish.needs).toEqual(["validate", "prepare"])
-  expect(workflow.jobs.publish.if).toBe(
-    "github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-ud/')",
-  )
+  expect(workflow.jobs.publish.needs).toEqual(["changes", "validate", "prepare"])
+  expect(workflow.jobs.publish.if).toContain("!cancelled()")
+  expect(workflow.jobs.publish.if).toContain("needs.changes.result == 'success'")
+  expect(workflow.jobs.publish.if).toContain("needs.prepare.result == 'success'")
+  const [noop, ...publication] = workflow.jobs.publish.steps
+  expect(noop.if).toBe("needs.changes.outputs.publish != 'true'")
+  expect(noop.run).toContain("Publication only runs")
+  for (const step of publication) {
+    expect(step.if).toBe("needs.changes.outputs.publish == 'true'")
+  }
   expect(
     native.jobs.build.strategy.matrix.include.map((item: any) => item.asset),
   ).toEqual(ASSETS)
@@ -307,7 +313,7 @@ test("native release checks prepare all five assets while only tag pushes publis
   expect(native.jobs.build.steps.find((step: any) => step.uses === "dtolnay/rust-toolchain@stable").with.toolchain).toBe("1.96.1")
   expect(native.jobs.build.steps.find((step: any) => step.uses === "vercel-labs/setup-zig@v1.0.2").with.version).toBe("0.16.0")
   for (const name of ["prepare", "publish"]) {
-    expect(workflow.jobs[name].steps[0].with.ref).toBe(
+    expect(workflow.jobs[name].steps.find((step: any) => step.uses === "actions/checkout@v6").with.ref).toBe(
       "${{ needs.validate.outputs.source_sha }}",
     )
   }

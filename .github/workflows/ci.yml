@@ -1,0 +1,317 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, ud/herdr-tmux]
+    tags: ["herdr-ud/*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  changes:
+    name: Select checks
+    runs-on: ubuntu-latest
+    outputs:
+      bun: ${{ steps.decision.outputs.bun }}
+      rust: ${{ steps.decision.outputs.rust }}
+      herdr_native: ${{ steps.decision.outputs.herdr_native }}
+      herdr_tmux: ${{ steps.decision.outputs.herdr_tmux }}
+      validate: ${{ steps.decision.outputs.validate }}
+      publish: ${{ steps.decision.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@v3
+        id: paths
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/herdr-ud/')
+        with:
+          filters: .github/filters.yml
+          # PRs use the PR API; branch pushes compare with the previous commit.
+          base: ${{ github.event_name == 'push' && github.event.before || github.event.repository.default_branch }}
+      - name: Decide checks and explain selections
+        id: decision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          PATHS_BUN: ${{ steps.paths.outputs.bun }}
+          PATHS_RUST: ${{ steps.paths.outputs.rust }}
+          PATHS_HERDR_NATIVE: ${{ steps.paths.outputs.herdr_native }}
+          PATHS_HERDR_TMUX: ${{ steps.paths.outputs.herdr_tmux }}
+        run: |
+          set -euo pipefail
+          bun=false
+          rust=false
+          herdr_native=false
+          herdr_tmux=false
+          publish=false
+          mode="Changed paths"
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            bun=true
+            rust=true
+            herdr_native=true
+            herdr_tmux=true
+            mode="Manual full verification"
+          elif [[ "$EVENT_NAME" == push && "$REF" == refs/tags/herdr-ud/* ]]; then
+            herdr_native=true
+            if [[ "$REPOSITORY" == Unique-Divine/dotfiles ]]; then
+              publish=true
+            fi
+            mode="Herdr release tag"
+          elif [[ "$EVENT_NAME" == push && "$REF" == refs/heads/ud/herdr-tmux ]]; then
+            herdr_tmux="$PATHS_HERDR_TMUX"
+            mode="Plugin branch changed paths"
+          else
+            bun="$PATHS_BUN"
+            rust="$PATHS_RUST"
+            herdr_native="$PATHS_HERDR_NATIVE"
+            herdr_tmux="$PATHS_HERDR_TMUX"
+          fi
+          validate=false
+          if [[ "$bun" == true || "$herdr_native" == true ]]; then
+            validate=true
+          fi
+          {
+            echo '## Selected checks'
+            echo
+            echo "Mode: $mode"
+            echo
+            echo '| Component | Run | Reason |'
+            echo '| --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for decision in "bun=$bun" "rust=$rust" "herdr_native=$herdr_native" \
+            "herdr_tmux=$herdr_tmux" "validate=$validate" "publish=$publish"; do
+            component="${decision%%=*}"
+            value="${decision#*=}"
+            [[ "$value" == true || "$value" == false ]]
+            echo "$component=$value" >> "$GITHUB_OUTPUT"
+            reason="$mode"
+            if [[ "$value" == false ]]; then
+              reason="Not selected for this event and its changed inputs"
+            fi
+            echo "| $component | $value | $reason |" >> "$GITHUB_STEP_SUMMARY"
+          done
+  bun:
+    name: Bun and scripts
+    needs: changes
+    if: needs.changes.outputs.bun == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@just
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install shell dependencies
+        run: just i-bash-ci
+      - run: bun install --frozen-lockfile
+      - run: just typecheck
+      - run: just test-bun
+  rust-test:
+    name: Root Rust tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - run: just test-rust
+  clippy:
+    name: Root Rust Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    env:
+      CARGO_TERM_COLOR: always
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  tmux:
+    name: Herdr tmux (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.herdr_tmux == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: herdr-tmux
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Verify package
+        run: cargo package --locked
+  validate:
+    needs: changes
+    if: needs.changes.outputs.validate == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: taiki-e/install-action@just
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+      - run: bun install --frozen-lockfile
+      - name: Validate release candidate and Cargo versions
+        id: candidate
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/herdr-ud/') && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          version="$(bun run herdr-release/publish.ts validate "$RELEASE_TAG")"
+          printf 'version=%s\ntag=herdr-ud/v%s\nsource_sha=%s\n' \
+            "$version" "$version" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: bun test herdr-release
+  build:
+    needs: [changes, validate]
+    if: needs.changes.outputs.herdr_native == 'true'
+    uses: ./.github/workflows/herdr-native-build.yml
+    with:
+      source_sha: ${{ needs.validate.outputs.source_sha }}
+      release_tag: ${{ needs.validate.outputs.tag }}
+  prepare:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: herdr-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare checksums and source metadata without publishing
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: bun run herdr-release/publish.ts prepare "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: herdr-ud-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.source_sha }}
+          path: release-assets/
+          if-no-files-found: error
+  publish:
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.changes.outputs.publish != 'true' || needs.prepare.result == 'success') }}
+    needs: [changes, validate, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: No release to publish
+        if: needs.changes.outputs.publish != 'true'
+        run: echo "Publication only runs for a matching herdr-ud tag push."
+      - if: needs.changes.outputs.publish == 'true'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - if: needs.changes.outputs.publish == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+      - if: needs.changes.outputs.publish == 'true'
+        run: bun install --frozen-lockfile
+      - if: needs.changes.outputs.publish == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: herdr-ud-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.source_sha }}
+          path: release-assets
+      - name: Publish complete release
+        if: needs.changes.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: bun run herdr-release/publish.ts publish "$RELEASE_TAG"
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, bun, rust-test, clippy, tmux, validate, build, prepare, publish]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require successful selected checks
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          failed=false
+          if [[ "$(jq -r '.changes.result' <<< "$NEEDS")" != success ]]; then
+            echo '::error::Change detection did not succeed.'
+            failed=true
+          fi
+          {
+            echo '## CI result'
+            echo
+            echo '| Job | Selected | Result |'
+            echo '| --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r job component; do
+            selected="$(jq -r --arg key "$component" '.changes.outputs[$key]' <<< "$NEEDS")"
+            result="$(jq -r --arg key "$job" '.[$key].result' <<< "$NEEDS")"
+            echo "| $job | $selected | $result |" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$selected" != true && "$selected" != false ]] ||
+               [[ "$result" != success && "$result" != skipped ]] ||
+               [[ "$selected" == true && "$result" != success ]] ||
+               [[ "$job" == publish && "$result" != success ]]; then
+              echo "::error::Job $job returned $result with selected=$selected."
+              failed=true
+            fi
+          done <<'JOBS'
+          bun bun
+          rust-test rust
+          clippy rust
+          tmux herdr_tmux
+          validate validate
+          build herdr_native
+          prepare herdr_native
+          publish publish
+          JOBS
+          [[ "$failed" == false ]]

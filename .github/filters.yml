@@ -16,7 +16,7 @@ bun:
   - 'justfile'
   - 'herdr-release/**'
   - '.github/filters.yml'
-  - '.github/workflows/{changes,test,herdr-release}.yml'
+  - '.github/workflows/ci.yml'
 rust:
   - 'Cargo.{toml,lock}'
   - 'rust-toolchain{,.toml}'
@@ -27,7 +27,7 @@ rust:
   - 'zsh/{bashlib.sh,quick.sh,ud/shell.sh}'
   - 'justfile'
   - '.github/filters.yml'
-  - '.github/workflows/{changes,test,rust}.yml'
+  - '.github/workflows/ci.yml'
 herdr_native:
   - 'herdr/Cargo.{toml,lock}'
   - 'herdr/rust-toolchain{,.toml}'
@@ -40,8 +40,9 @@ herdr_native:
   - 'herdr/distribution/install.ps1'
   - 'herdr/{README.md,LICENSE}'
   - 'herdr/scripts/package_windows_conpty.ps1'
+  - '.github/workflows/herdr-native-build.yml'
   - '.github/filters.yml'
-  - '.github/workflows/{changes,herdr-native-build}.yml'
+  - '.github/workflows/ci.yml'
 herdr_tmux:
   - 'herdr-tmux/{src,tests,fixtures,assets}/**'
   - 'herdr-tmux/Cargo.{toml,lock}'
@@ -49,4 +50,4 @@ herdr_tmux:
   - 'herdr-tmux/.cargo/**'
   - 'herdr-tmux/{README.md,LICENSE,CHANGELOG.md,RELEASING.md,herdr-plugin.toml,justfile}'
   - '.github/filters.yml'
-  - '.github/workflows/{changes,herdr-tmux}.yml'
+  - '.github/workflows/ci.yml'
