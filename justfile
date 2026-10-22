@@ -2,10 +2,11 @@
 # (1) installing with "cargo install just"
 # (2) running the "just" command.
 
-# Displays available recipes by running `just -l`.
-setup:
+# Displays available recipes when running `just` or `just list`.
+[private]
+list:
   #!/usr/bin/env bash
-  just -l
+  just --list
 
 # Install ud, including its built-in public-file commands.
 fs-install: ud-install
@@ -110,6 +111,11 @@ gh-rev-install:
 # Install source or a release with --ver VERSION; cache with --get VERSION.
 herdr-install *ARGS:
   bun run herdr-release/install.ts {{ARGS}}
+
+# Preview one agent per tab in the current workspace; use --run to move.
+[positional-arguments]
+herdr-flatten *ARGS:
+  bun run herdr-cfg/flatten.ts "$@"
 
 # Build and install the vendored Herdr binary from source.
 [private]
