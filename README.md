@@ -107,7 +107,7 @@ bun install
 # Create and repair configuration links. Command `just sync` refreshes Jiyuu
 # from `origin/main` before building `gh-rev`; it stops if Jiyuu has local changes.
 just sync
-just setup
+just list
 ```
 
 - [ ] Make the `kubectl` installation reproducible in dotfiles.
