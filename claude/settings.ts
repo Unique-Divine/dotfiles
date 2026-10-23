@@ -24,6 +24,19 @@ export interface ClaudeAttributionConfig {
   sessionUrl: boolean
 }
 
+/** Status line command. See https://code.claude.com/docs/en/statusline.md. */
+export interface ClaudeStatusLineConfig {
+  type: "command"
+  /** Shell command that reads the session JSON on stdin. */
+  command: string
+}
+
+/**
+ * Status line script in this checkout. Like the MCP launcher, the runtime
+ * entry holds an absolute path, so rerun `just sync` after moving the checkout.
+ */
+export const statusLinePath = resolve(import.meta.dir, "statusline.sh")
+
 /**
  * Portable Claude Code settings owned by this dotfiles repository.
  *
@@ -33,6 +46,8 @@ export interface ClaudeAttributionConfig {
 export interface ClaudeManagedSettings {
   /** Commit and pull-request attribution preferences. */
   attribution: ClaudeAttributionConfig
+  /** Status line styled after the lualine setup in `nvim/init.lua`. */
+  statusLine: ClaudeStatusLineConfig
 }
 
 export const dotfileSettings = {
@@ -41,6 +56,10 @@ export const dotfileSettings = {
     pr: "",
     sessionUrl: false,
   },
+  statusLine: {
+    type: "command",
+    command: `bash ${statusLinePath}`,
+  },
 } satisfies ClaudeManagedSettings
 
 /**
@@ -48,7 +67,11 @@ export const dotfileSettings = {
  * `dotfileSettings` is removed from the runtime file. `includeCoAuthoredBy`
  * is the deprecated predecessor of `attribution`.
  */
-const ownedTopLevelFields = ["attribution", "includeCoAuthoredBy"] as const
+const ownedTopLevelFields = [
+  "attribution",
+  "includeCoAuthoredBy",
+  "statusLine",
+] as const
 
 export const runtimeSettingsPath = (
   env: NodeJS.ProcessEnv = process.env,

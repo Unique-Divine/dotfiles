@@ -16,6 +16,19 @@ claude.ai session link. Sync also removes the deprecated
 `includeCoAuthoredBy` key. See the
 [settings reference](https://code.claude.com/docs/en/settings-reference.md).
 
+Object `dotfileSettings` also sets `statusLine` to run script
+`statusline.sh` from this checkout. The script mirrors the lualine setup in
+`nvim/init.lua`. It shows the vim mode as 普通 (NORMAL) or 入れる (INSERT) on
+onedark colors, the working directory with `$HOME` shortened to `~`, and the
+git branch. The entry holds an absolute path, so run `just sync` after moving
+the checkout. See the
+[status line docs](https://code.claude.com/docs/en/statusline.md).
+
+```bash
+echo '{"workspace":{"current_dir":"'"$PWD"'"},"vim":{"mode":"INSERT"}}' \
+  | bash claude/statusline.sh
+```
+
 The diff shows owned keys only, so unmanaged values such as an `env` block
 never print.
 

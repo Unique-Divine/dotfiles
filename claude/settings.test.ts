@@ -8,6 +8,7 @@ import {
   dotfileSettings,
   mergeRuntimeSettings,
   ownedView,
+  statusLinePath,
 } from "./settings.ts"
 
 const scriptPath = join(import.meta.dir, "settings.ts")
@@ -73,7 +74,16 @@ describe("claude settings", () => {
       editorMode: "vim",
       permissions: { allow: ["Bash(ls)"] },
       attribution: dotfileSettings.attribution,
+      statusLine: dotfileSettings.statusLine,
     })
+  })
+
+  test("points the status line at this checkout's script", () => {
+    expect(dotfileSettings.statusLine).toEqual({
+      type: "command",
+      command: `bash ${statusLinePath}`,
+    })
+    expect(statusLinePath).toBe(join(import.meta.dir, "statusline.sh"))
   })
 
   test("adds owned keys to an empty runtime file", () => {
@@ -150,5 +160,59 @@ describe("claude settings", () => {
         expect(dryRun.stdout).toContain("+    \"sessionUrl\": false")
       },
     )
+  })
+})
+
+/** Run the status line script with session JSON on stdin; strip colors. */
+const renderStatusLine = async (
+  session: object,
+  homeDir: string,
+): Promise<string> => {
+  const proc = Bun.spawn(["bash", statusLinePath], {
+    env: { ...process.env, HOME: homeDir },
+    stdin: new TextEncoder().encode(JSON.stringify(session)),
+    stdout: "pipe",
+  })
+  const out = await new Response(proc.stdout).text()
+  expect(await proc.exited).toBe(0)
+  return out.replace(/\x1b\[[0-9;]*m/g, "")
+}
+
+describe("claude status line", () => {
+  test("shows the lualine mode label, ~ path, and git branch", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "claude-statusline-"))
+    const repo = join(homeDir, "code", "repo")
+
+    try {
+      await mkdir(repo, { recursive: true })
+      const git = (...args: string[]) =>
+        Bun.spawnSync(["git", "-C", repo, ...args], {
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
+        })
+      git("init", "-q", "-b", "ud/sync")
+      git("commit", "-q", "--allow-empty", "-m", "init")
+
+      const workspace = { current_dir: repo }
+      expect(
+        await renderStatusLine({ workspace, vim: { mode: "INSERT" } }, homeDir),
+      ).toBe(" 入れる  ~/code/repo  \u{e0a0} ud/sync")
+      expect(
+        await renderStatusLine({ workspace, vim: { mode: "NORMAL" } }, homeDir),
+      ).toBe(" 普通  ~/code/repo  \u{e0a0} ud/sync")
+      expect(
+        await renderStatusLine(
+          { workspace: { current_dir: homeDir } },
+          homeDir,
+        ),
+      ).toBe("~")
+    } finally {
+      await rm(homeDir, { recursive: true, force: true })
+    }
   })
 })
