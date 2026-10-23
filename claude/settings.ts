@@ -48,6 +48,12 @@ export interface ClaudeManagedSettings {
   attribution: ClaudeAttributionConfig
   /** Status line styled after the lualine setup in `nvim/init.lua`. */
   statusLine: ClaudeStatusLineConfig
+  /**
+   * Terminal UI renderer. `"default"` draws on the normal terminal screen, so
+   * tmux and Herdr copy mode can scroll earlier output. `"fullscreen"` uses the
+   * alternate screen, which keeps output out of the multiplexer's scrollback.
+   */
+  tui: "default" | "fullscreen"
 }
 
 export const dotfileSettings = {
@@ -60,6 +66,9 @@ export const dotfileSettings = {
     type: "command",
     command: `bash ${statusLinePath}`,
   },
+  // Like Codex's `alternate_screen = "never"`: keep chat output in the
+  // multiplexer's scrollback.
+  tui: "default",
 } satisfies ClaudeManagedSettings
 
 /**
@@ -71,6 +80,7 @@ const ownedTopLevelFields = [
   "attribution",
   "includeCoAuthoredBy",
   "statusLine",
+  "tui",
 ] as const
 
 export const runtimeSettingsPath = (

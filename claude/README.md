@@ -29,6 +29,14 @@ echo '{"workspace":{"current_dir":"'"$PWD"'"},"vim":{"mode":"INSERT"}}' \
   | bash claude/statusline.sh
 ```
 
+Key `tui` is pinned to `"default"`, the classic renderer on the normal
+terminal screen. The `"fullscreen"` renderer draws on the alternate screen, so
+earlier output never reaches tmux or Herdr scrollback and copy mode shows only
+the current screen. This matches `tui.alternate_screen = "never"` for Codex in
+`codex/config.ts`. Setting `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` forces the
+same renderer for a single session. Restart Claude Code after a sync to apply
+the change.
+
 The diff shows owned keys only, so unmanaged values such as an `env` block
 never print.
 

@@ -75,7 +75,12 @@ describe("claude settings", () => {
       permissions: { allow: ["Bash(ls)"] },
       attribution: dotfileSettings.attribution,
       statusLine: dotfileSettings.statusLine,
+      tui: "default",
     })
+  })
+
+  test("renders on the main screen so multiplexers keep scrollback", () => {
+    expect(mergeRuntimeSettings({ tui: "fullscreen" }).tui).toBe("default")
   })
 
   test("points the status line at this checkout's script", () => {
