@@ -8,6 +8,10 @@
 - **Typecheck:** `bun check`
 - **Install packages:** `bun install package-name`
 
+## Maintainer Prefs
+- Prefer writing the dotfiles dir as the commit prefix. For example, write
+"codex: Commit body" rather than "chore(codex): Commit body". I hate "chore".
+
 ## Code Style
 ### TypeScript
 - 2 space indentation

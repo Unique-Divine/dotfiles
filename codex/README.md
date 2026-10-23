@@ -20,6 +20,13 @@ local except for same-named entries managed through Cursor's MCP config.
 
 See the [Codex config reference](https://developers.openai.com/codex/config-reference).
 
+## Output
+
+The runtime file holds MCP tokens. Drift reports from `--dry-run`, `--check`,
+and `--run` list changed key paths, such as
+`~ mcp_servers.notion-mcp.env.NOTION_TOKEN`, and never values. `--print`
+writes the full generated file, secrets included.
+
 ## Usage
 
 ```bash

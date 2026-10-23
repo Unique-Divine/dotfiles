@@ -25,6 +25,14 @@ export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR%/}/ssh-agent.socket"
 
 export HUSKY="0" # Husky hooks can get out of hand.
 
+# Keep Claude Code on its classic renderer, which prints to the main screen, so
+# tmux and Herdr copy mode can scroll chat history. The fullscreen renderer
+# draws on the alternate screen and leaves no scrollback. This mirrors
+# `tui.alternate_screen = "never"` for Codex in codex/config.ts. It lives in
+# zshenv because Herdr restores type `claude --resume <id>` into a fresh zsh.
+# https://github.com/Unique-Divine/dotfiles/issues/70
+export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1
+
 # Ubuntu calls compinit from /etc/zsh/zshrc before ~/.zshrc. Completion setup
 # is deferred and owned by zsh/completions.zsh instead.
 skip_global_compinit=1

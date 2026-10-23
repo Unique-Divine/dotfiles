@@ -26,6 +26,7 @@ const cases: [string, string[], string[]][] = [
   ], ["bun", "rust"]],
   ["Bun dependency", ["bun.lock"], ["bun"]],
   ["release scripts", ["herdr-release/publish.ts"], ["bun"]],
+  ["Claude config docs", ["claude/README.md"], ["bun"]],
   ["docs tests", ["herdr/scripts/docs/versions.test.ts"], ["bun"]],
   ["ordinary docs", ["README.md", "AGENTS.md", "herdr/docs/guide.md"], []],
   ["root Rust", ["ud/src/main.rs", "Cargo.lock"], ["rust"]],

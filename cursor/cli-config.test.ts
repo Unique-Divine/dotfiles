@@ -7,7 +7,6 @@ import {
   applyCliConfig,
   dotfileConfig,
   mergeRuntimeConfig,
-  unifiedDiff,
 } from "./cli-config.ts"
 
 const scriptPath = join(import.meta.dir, "cli-config.ts")
@@ -145,16 +144,44 @@ describe("cursor cli config", () => {
     }
   })
 
-  test("produces a compact diff for changed runtime JSON", () => {
-    const diff = unifiedDiff(
-      '{\n  "editor": { "vimMode": true }\n}\n',
-      '{\n  "editor": { "vimMode": false }\n}\n',
-    )
+  test("reports changed key paths without printing tokens", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cursor-cli-config-leak-test-"))
+    const secret = `secret-${crypto.randomUUID()}`
 
-    expect(diff).toContain("--- runtime cli-config.json")
-    expect(diff).toContain("+++ generated cli-config.json")
-    expect(diff).toContain('-  "editor": { "vimMode": true }')
-    expect(diff).toContain('+  "editor": { "vimMode": false }')
+    try {
+      const runtimePath = join(root, ".cursor/cli-config.json")
+      await mkdir(join(root, ".cursor"), { recursive: true })
+      // The token sits next to a drifted field, inside old diff context.
+      await writeFile(
+        runtimePath,
+        `${JSON.stringify(
+          {
+            ...dotfileConfig,
+            authInfo: { accessToken: secret },
+            editor: { vimMode: false },
+          },
+          null,
+          2,
+        )}\n`,
+      )
+
+      for (const args of [["--dry-run"], ["--check"], ["--run"]]) {
+        const result = await runCliConfig(root, args)
+
+        expect(result.stdout).not.toContain(secret)
+        expect(result.stderr).not.toContain(secret)
+
+        if (args[0] !== "--run") {
+          expect(result.stdout).toContain("~ editor.vimMode")
+        }
+      }
+
+      expect(JSON.parse(await Bun.file(runtimePath).text()).authInfo).toEqual(
+        { accessToken: secret },
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("prints help by default and writes only with --run", async () => {

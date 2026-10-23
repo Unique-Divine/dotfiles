@@ -30,7 +30,9 @@ The runtime file can also hold Cursor-managed fields such as `authInfo`,
 `modelParameters`, and prompt or cache counters. The merge keeps those
 values and does not copy them into `dotfileConfig`.
 
-Do not symlink the runtime JSON. It holds tokens.
+Do not symlink the runtime JSON. It holds tokens. For the same reason, drift
+reports list changed key paths, such as `~ editor.vimMode`, and never values.
+`--print` writes the full generated file, tokens included.
 
 ## Usage
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parse, type TomlTable } from "smol-toml"
+import { parse, stringify, type TomlTable } from "smol-toml"
 
 import {
   applyConfig,
@@ -55,6 +55,13 @@ describe("codex config", () => {
       vim_mode_default: true,
       alternate_screen: "never",
       raw_output_mode: false,
+      status_line: [
+        "current-dir",
+        "model-with-reasoning",
+        "git-branch",
+        "context-used",
+      ],
+      status_line_use_colors: true,
       model_availability_nux: { "gpt-5.6-sol": 4 },
     })
     expect(merged.projects).toEqual({
@@ -146,6 +153,13 @@ describe("codex config", () => {
         vim_mode_default: true,
         alternate_screen: "never",
         raw_output_mode: false,
+        status_line: [
+          "current-dir",
+          "model-with-reasoning",
+          "git-branch",
+          "context-used",
+        ],
+        status_line_use_colors: true,
         model_availability_nux: { "gpt-5.6-sol": 4 },
       })
     } finally {
@@ -244,6 +258,8 @@ describe("codex config", () => {
         "vim_mode_default = true",
         'alternate_screen = "never"',
         "raw_output_mode = false",
+        'status_line = ["current-dir", "model-with-reasoning", "git-branch", "context-used"]',
+        "status_line_use_colors = true",
       ].join("\n")}\n`
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(runtimePath, text)
@@ -319,6 +335,49 @@ describe("codex config", () => {
 
       const run = await runConfig(root, ["--run", "--quiet"])
       expect(run).toEqual({ exitCode: 0, stdout: "", stderr: "" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("reports MCP token changes without printing tokens", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-config-leak-test-"))
+    const oldSecret = `old-${crypto.randomUUID()}`
+    const newSecret = `new-${crypto.randomUUID()}`
+
+    try {
+      const runtimePath = join(root, ".codex/config.toml")
+      const sourcePath = join(root, "cursor-mcp.json")
+      const server = (token: string) => ({
+        command: "fixture-command",
+        env: { FIXTURE_TOKEN: token },
+      })
+      await writeFile(
+        sourcePath,
+        JSON.stringify({ mcpServers: { fixture: server(newSecret) } }),
+      )
+      await mkdir(join(root, ".codex"), { recursive: true })
+      await writeFile(
+        runtimePath,
+        stringify({ ...dotfileConfig, mcp_servers: { fixture: server(oldSecret) } }),
+      )
+
+      for (const flag of ["--dry-run", "--check", "--run"]) {
+        const result = await runConfig(root, [flag, "--mcp-source", sourcePath])
+
+        for (const secret of [oldSecret, newSecret]) {
+          expect(result.stdout).not.toContain(secret)
+          expect(result.stderr).not.toContain(secret)
+        }
+
+        if (flag !== "--run") {
+          expect(result.stdout).toContain(
+            "~ mcp_servers.fixture.env.FIXTURE_TOKEN",
+          )
+        }
+      }
+
+      expect(await Bun.file(runtimePath).text()).toContain(newSecret)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -17,6 +17,7 @@ machines.
   - [Terminal Environment: tmux, zsh, bun](#terminal-environment-tmux-zsh-bun)
   - [Herdr configuration](#herdr-configuration)
   - [Codex config](#codex-config)
+  - [Claude Code config](#claude-code-config)
   - [WSL Clipboard Integration](#wsl-clipboard-integration)
 - [Requirements](#requirements)
 - [Benchmarks and Testing](#benchmarks-and-testing)
@@ -164,7 +165,10 @@ and omit `metadata.private`. Private skills are real directories in
 `boku/priv-skills` and require `metadata.private: true`.
 `just skills-sync --run` makes `priv-skills` a flat union by linking public
 skills into it, then links both `$HOME/.cursor/skills` and
-`$HOME/.agents/skills` to that union.
+`$HOME/.agents/skills` to that union. Claude Code keeps its own `synced/`
+tree in `$HOME/.claude/skills`, so that directory stays real and sync links
+each union skill into it as `$HOME/.claude/skills/<skill-name>`. Sync removes
+stale links into the union and leaves other entries alone.
 
 A private skill can set `metadata.gh-repo: Owner/repository` to export a copy
 into a private team checkout. Sync uses `$REPO/<repository>` by default, or
@@ -228,6 +232,15 @@ managed configuration and Codex scrolling settings.
 state. When present, `$HOME/.cursor/mcp.json` supplies same-named MCP servers;
 other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
 usage and options.
+
+### Claude Code config
+
+Directory [`claude`](claude/README.md) manages Claude Code settings and MCP
+servers. [`claude/settings.ts`](claude/settings.ts) merges owned keys, such as
+empty commit and PR `attribution`, into `$HOME/.claude/settings.json`.
+[`claude/mcp.ts`](claude/mcp.ts) registers each `$HOME/.cursor/mcp.json` stdio
+server in Claude's user scope through a launcher, so server secrets stay in
+the Cursor file.
 
 ### WSL Clipboard Integration
 

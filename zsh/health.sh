@@ -126,6 +126,14 @@ if ! bun run cursor/cli-config.ts --check; then
   failed=1
 fi
 
+if ! bun run claude/settings.ts --check; then
+  failed=1
+fi
+
+if command -v claude >/dev/null 2>&1 && ! bun run claude/mcp.ts --check; then
+  failed=1
+fi
+
 if which_ok herdr; then
   herdr_config="$PWD/herdr-cfg/config.toml"
   runtime_herdr_config="$HOME/.config/herdr/config.toml"

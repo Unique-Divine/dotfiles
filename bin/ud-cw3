@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Run the Boku Rust CW3 utility from source, preserving arguments and cwd.
-set -Eeuo pipefail
-
-manifest_path="$HOME/ki/boku/Cargo.toml"
-exec cargo run --quiet --locked --manifest-path "$manifest_path" \
-  --package ud-cw3 -- "$@"
