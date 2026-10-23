@@ -17,6 +17,7 @@ machines.
   - [Terminal Environment: tmux, zsh, bun](#terminal-environment-tmux-zsh-bun)
   - [Herdr configuration](#herdr-configuration)
   - [Codex config](#codex-config)
+  - [Claude Code config](#claude-code-config)
   - [WSL Clipboard Integration](#wsl-clipboard-integration)
 - [Requirements](#requirements)
 - [Benchmarks and Testing](#benchmarks-and-testing)
@@ -228,6 +229,15 @@ managed configuration and Codex scrolling settings.
 state. When present, `$HOME/.cursor/mcp.json` supplies same-named MCP servers;
 other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
 usage and options.
+
+### Claude Code config
+
+Directory [`claude`](claude/README.md) manages Claude Code settings and MCP
+servers. [`claude/settings.ts`](claude/settings.ts) merges owned keys, such as
+empty commit and PR `attribution`, into `$HOME/.claude/settings.json`.
+[`claude/mcp.ts`](claude/mcp.ts) registers each `$HOME/.cursor/mcp.json` stdio
+server in Claude's user scope through a launcher, so server secrets stay in
+the Cursor file.
 
 ### WSL Clipboard Integration
 

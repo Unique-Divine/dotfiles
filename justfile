@@ -160,7 +160,8 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, portable Codex and Cursor CLI config, and managed AI skills.
+# Apply shell bootstrap, portable Codex, Cursor CLI, and Claude Code config, and
+# managed AI skills.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -206,6 +207,10 @@ sync:
   fi
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
+  bun run claude/settings.ts --run
+  if command -v claude >/dev/null 2>&1; then
+    bun run claude/mcp.ts --run
+  fi
   bun run skillsSync.ts --run
 
 # Check required tools and drift without changing dotfile-managed state.
@@ -236,6 +241,11 @@ nvim-mason-restore:
   fi
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
+
+# Run the Claude Code settings or MCP sync CLI, such as `just claude mcp
+# --dry-run`. For options, run `just claude settings` or `just claude mcp`.
+claude TOOL *ARGS:
+  bun run claude/{{TOOL}}.ts {{ARGS}}
 
 # Run the portable Codex config CLI. For options, run `just codex`.
 codex *ARGS:
