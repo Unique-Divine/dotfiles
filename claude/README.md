@@ -29,13 +29,27 @@ echo '{"workspace":{"current_dir":"'"$PWD"'"},"vim":{"mode":"INSERT"}}' \
   | bash claude/statusline.sh
 ```
 
-Key `tui` is pinned to `"default"`, the classic renderer on the normal
-terminal screen. The `"fullscreen"` renderer draws on the alternate screen, so
-earlier output never reaches tmux or Herdr scrollback and copy mode shows only
-the current screen. This matches `tui.alternate_screen = "never"` for Codex in
-`codex/config.ts`. Setting `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` forces the
-same renderer for a single session. Restart Claude Code after a sync to apply
-the change.
+Claude Code runs its classic renderer, which prints to the normal terminal
+screen, so tmux and Herdr copy mode can scroll chat history. The
+`"fullscreen"` renderer draws on the alternate screen, so earlier output never
+reaches scrollback and copy mode shows only the current screen. This matches
+`tui.alternate_screen = "never"` for Codex in `codex/config.ts`. Background:
+[#70](https://github.com/Unique-Divine/dotfiles/issues/70).
+
+- `zsh/zshenv` exports `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, the primary
+  switch, which overrides `tui`. Herdr restores type `claude --resume <id>` into
+  a fresh zsh, so restored panes get it too.
+- Key `tui` is pinned to `"default"` as a backup for launches that skip zsh.
+
+To test, resume a chat as a copy in a new pane, then scroll in copy mode:
+
+```bash
+CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --resume <session-id> --fork-session
+```
+
+Don't sync a renderer change under running sessions. A live switch from
+fullscreen blanks the pane. Run `/tui default` in each session, or quit and
+resume.
 
 The diff shows owned keys only, so unmanaged values such as an `env` block
 never print.
