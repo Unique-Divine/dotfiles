@@ -161,7 +161,7 @@ clipboard-rust-bench *ARGS:
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
 # Apply shell bootstrap, portable Codex, Cursor CLI, and Claude Code config, and
-# managed AI skills.
+# managed AI skills for Cursor, Codex, and Claude Code.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -296,7 +296,8 @@ i-bash:
 i-bash-ci:
   sudo apt install -y build-essential ripgrep gh zsh
 
-# Repair or check the repository-backed Cursor and Codex skill links.
+# Repair or check the repository-backed Cursor, Codex, and Claude Code skill
+# links.
 skills-sync *ARGS:
   bun run skillsSync.ts {{ARGS}}
 

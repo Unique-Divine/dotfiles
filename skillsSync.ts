@@ -27,6 +27,7 @@ import { Command } from "commander"
 import matter from "gray-matter"
 
 interface SkillsConfig {
+  claudeSkillsDir: string
   cursorSkillsDir: string
   codexSkillsDir: string
   repoRootDir: string
@@ -65,6 +66,7 @@ const defaultConfig = (env: NodeJS.ProcessEnv): SkillsConfig => {
 
   const bokuDir = resolve(env.REPO, "boku")
   return {
+    claudeSkillsDir: resolve(env.HOME, ".claude/skills"),
     cursorSkillsDir: resolve(env.HOME, ".cursor/skills"),
     codexSkillsDir: resolve(env.HOME, ".agents/skills"),
     repoRootDir: resolve(env.REPO),
@@ -604,6 +606,76 @@ const syncRuntimeLink = async (
   return false
 }
 
+const isWithin = (path: string, dir: string): boolean => {
+  const pathRelative = relative(dir, path)
+  return (
+    pathRelative !== "" &&
+    pathRelative !== ".." &&
+    !pathRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(pathRelative)
+  )
+}
+
+// Links each union skill into a runtime directory that the runtime also
+// writes to, such as Claude Code's synced/ tree. Entries that are not links
+// into the union are left untouched.
+const syncRuntimeEntryLinks = async (
+  runtimeDir: string,
+  cfg: SkillsConfig,
+  expectedNames: Set<string>,
+  apply: boolean,
+): Promise<boolean> => {
+  if (await pathExists(runtimeDir)) {
+    const info = await lstat(runtimeDir)
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(
+        `Runtime skills path is not a real directory: ${runtimeDir}`,
+      )
+    }
+  } else {
+    console.log(`Missing runtime skills directory: ${runtimeDir}`)
+    if (!apply) return false
+    await mkdir(runtimeDir, { recursive: true })
+  }
+
+  let healthy = true
+  for (const name of sorted(expectedNames)) {
+    const linkPath = join(runtimeDir, name)
+    const target = join(cfg.unionSkillsDir, name)
+    if (await pathExists(linkPath)) {
+      const info = await lstat(linkPath)
+      if (!info.isSymbolicLink()) {
+        throw new Error(
+          `Runtime/union skill name collision: ${name} is not the expected ` +
+            `symlink in ${runtimeDir}`,
+        )
+      }
+      if (!(await resolvesTo(linkPath, target))) {
+        throw new Error(`Runtime skill link has unexpected target: ${linkPath}`)
+      }
+      continue
+    }
+
+    healthy = false
+    console.log(`Missing runtime skill link: ${linkPath}`)
+    if (apply) await symlink(target, linkPath, "dir")
+  }
+
+  const entries = await readdir(runtimeDir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isSymbolicLink() || expectedNames.has(entry.name)) continue
+    const linkPath = join(runtimeDir, entry.name)
+    const target = resolve(runtimeDir, await readlink(linkPath))
+    if (!isWithin(target, cfg.unionSkillsDir)) continue
+
+    healthy = false
+    console.log(`Stale runtime skill link: ${linkPath}`)
+    if (apply) await rm(linkPath)
+  }
+
+  return healthy
+}
+
 const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
   const cfg = defaultConfig(process.env)
   const health = options.health ?? false
@@ -656,6 +728,12 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
     apply,
     migrate,
   )
+  const claudeHealthy = await syncRuntimeEntryLinks(
+    cfg.claudeSkillsDir,
+    cfg,
+    names,
+    apply,
+  )
 
   if (health) {
     if (
@@ -663,7 +741,8 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
       discoveryHealthy &&
       unionHealthy &&
       cursorHealthy &&
-      codexHealthy
+      codexHealthy &&
+      claudeHealthy
     ) {
       console.log("Skills links are healthy.")
     } else {
@@ -680,7 +759,10 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
 export const createProgram = (): Command =>
   new Command()
     .name("skills-sync")
-    .description("Manage skill links and optional team repository exports.")
+    .description(
+      "Manage Cursor, Codex, and Claude Code skill links and optional team " +
+        "repository exports.",
+    )
     .option("-r, --run", "apply changes")
     .option(
       "--migrate",

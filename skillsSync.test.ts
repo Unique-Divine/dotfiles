@@ -105,6 +105,7 @@ describe("skills-sync", () => {
   let keeperDiscoveryDir: string
   let cursorDir: string
   let codexDir: string
+  let claudeDir: string
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "skills-links-test-"))
@@ -118,6 +119,7 @@ describe("skills-sync", () => {
     keeperDiscoveryDir = join(keeperDir, ".agents/skills")
     cursorDir = join(homeDir, ".cursor/skills")
     codexDir = join(homeDir, ".agents/skills")
+    claudeDir = join(homeDir, ".claude/skills")
 
     await makeSkill(publicDir, "public-skill")
     await makeSkill(privateDir, "private-skill", { private: true })
@@ -341,5 +343,51 @@ describe("skills-sync", () => {
       stderr: "",
     })
     expect((await lstat(codexDir)).isSymbolicLink()).toBe(true)
+  })
+
+  test("links each skill into Claude Code and keeps synced skills", async () => {
+    const syncedSkill = join(claudeDir, "synced", "bucket", "docx")
+    await makeSkill(join(claudeDir, "synced", "bucket"), "docx")
+
+    expect(await run(homeDir, repoDir, ["--health"])).toMatchObject({
+      exitCode: 1,
+    })
+    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    })
+
+    for (const name of ["public-skill", "private-skill", "keeper-skill"]) {
+      expect(await readlink(join(claudeDir, name))).toBe(join(privateDir, name))
+    }
+    expect((await lstat(join(syncedSkill, "SKILL.md"))).isFile()).toBe(true)
+    expect(await run(homeDir, repoDir, ["--health"])).toMatchObject({
+      exitCode: 0,
+    })
+  })
+
+  test("removes stale Claude Code links and keeps foreign links", async () => {
+    await run(homeDir, repoDir, ["--run"])
+    const stalePath = join(claudeDir, "old-skill")
+    const foreignPath = join(claudeDir, "foreign-skill")
+    await symlink(join(privateDir, "old-skill"), stalePath)
+    await makeSkill(join(root, "elsewhere"), "foreign-skill")
+    await symlink(join(root, "elsewhere", "foreign-skill"), foreignPath)
+
+    const health = await run(homeDir, repoDir, ["--health"])
+    expect(health.exitCode).toBe(1)
+    expect(health.stdout).toContain(`Stale runtime skill link: ${stalePath}`)
+
+    await run(homeDir, repoDir, ["--run"])
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" })
+    expect((await lstat(foreignPath)).isSymbolicLink()).toBe(true)
+  })
+
+  test("refuses a real Claude Code skill named like a union skill", async () => {
+    await makeSkill(claudeDir, "private-skill")
+
+    const result = await run(homeDir, repoDir, ["--run"])
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain("Runtime/union skill name collision")
   })
 })
