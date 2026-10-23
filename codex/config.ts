@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path"
 import { Command } from "commander"
 import { parse, stringify, type TomlTable } from "smol-toml"
 
+import { changedKeyPaths, formatKeyChanges } from "../configDiff.ts"
+
 /**
  * Portable Codex defaults maintained by this dotfiles repository.
  *
@@ -202,54 +204,6 @@ const readRuntimeConfig = async (
   return { config: parseTomlTable(text, path), text }
 }
 
-export const unifiedDiff = (
-  beforeText: string,
-  afterText: string,
-  beforeLabel = "runtime config.toml",
-  afterLabel = "generated config.toml",
-): string => {
-  if (beforeText === afterText) {
-    return ""
-  }
-
-  const beforeLines = beforeText === "" ? [] : beforeText.split("\n")
-  const afterLines = afterText === "" ? [] : afterText.split("\n")
-  let prefix = 0
-
-  while (
-    prefix < beforeLines.length &&
-    prefix < afterLines.length &&
-    beforeLines[prefix] === afterLines[prefix]
-  ) {
-    prefix += 1
-  }
-
-  let suffix = 0
-
-  while (
-    suffix < beforeLines.length - prefix &&
-    suffix < afterLines.length - prefix &&
-    beforeLines[beforeLines.length - 1 - suffix] ===
-      afterLines[afterLines.length - 1 - suffix]
-  ) {
-    suffix += 1
-  }
-
-  const beforeEnd = beforeLines.length - suffix
-  const afterEnd = afterLines.length - suffix
-  const out = [`--- ${beforeLabel}`, `+++ ${afterLabel}`, "@@"]
-
-  for (const line of beforeLines.slice(prefix, beforeEnd)) {
-    out.push(`-${line}`)
-  }
-
-  for (const line of afterLines.slice(prefix, afterEnd)) {
-    out.push(`+${line}`)
-  }
-
-  return `${out.join("\n")}\n`
-}
-
 export interface ApplyOptions {
   runtimePath?: string
   mcpSourcePath?: string
@@ -289,7 +243,10 @@ export const applyConfig = async ({
 
   if (!quiet) {
     console.log(`Codex runtime config differs: ${runtimePath}`)
-    process.stdout.write(unifiedDiff(beforeText, nextText))
+    // The runtime file holds MCP tokens, so report key paths, not values.
+    process.stdout.write(
+      formatKeyChanges(changedKeyPaths(runtimeConfig, nextConfig)),
+    )
   }
 
   if (!dryRun) {
@@ -350,7 +307,10 @@ export const createProgram = (): Command => {
     .option("--run", "write the runtime config if it differs")
     .option("--dry-run", "print the diff without writing")
     .option("--check", "exit with code 1 if the runtime config would change")
-    .option("--print", "print the generated runtime config TOML")
+    .option(
+      "--print",
+      "print the generated runtime config TOML, including secrets",
+    )
     .option(
       "--mcp-source <path>",
       "read Cursor MCP servers from this JSON file",

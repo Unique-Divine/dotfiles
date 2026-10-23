@@ -1,6 +1,8 @@
 import { mkdir, rename, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 
+import { changedKeyPaths, formatKeyChanges } from "../configDiff.ts"
+
 type JsonPrimitive = string | number | boolean | null
 type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
 type JsonObject = { [key: string]: JsonValue | undefined }
@@ -225,80 +227,6 @@ const readRuntimeConfig = async (
   return { config: parseJsonObject(text, path), text }
 }
 
-export const changedTopLevelFields = (
-  before: JsonObject,
-  after: JsonObject,
-): string[] => {
-  const keys = new Set([...Object.keys(before), ...Object.keys(after)])
-  const changed: string[] = []
-
-  for (const key of [...keys].sort()) {
-    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
-      changed.push(key)
-    }
-  }
-
-  return changed
-}
-
-export const unifiedDiff = (
-  beforeText: string,
-  afterText: string,
-  beforeLabel = "runtime cli-config.json",
-  afterLabel = "generated cli-config.json",
-): string => {
-  if (beforeText === afterText) {
-    return ""
-  }
-
-  const beforeLines = beforeText === "" ? [] : beforeText.split("\n")
-  const afterLines = afterText === "" ? [] : afterText.split("\n")
-  let prefix = 0
-
-  while (
-    prefix < beforeLines.length &&
-    prefix < afterLines.length &&
-    beforeLines[prefix] === afterLines[prefix]
-  ) {
-    prefix += 1
-  }
-
-  let suffix = 0
-
-  while (
-    suffix < beforeLines.length - prefix &&
-    suffix < afterLines.length - prefix &&
-    beforeLines[beforeLines.length - 1 - suffix] ===
-      afterLines[afterLines.length - 1 - suffix]
-  ) {
-    suffix += 1
-  }
-
-  const contextBeforeStart = Math.max(0, prefix - 3)
-  const beforeChangeEnd = beforeLines.length - suffix
-  const afterChangeEnd = afterLines.length - suffix
-  const contextAfterEnd = Math.min(beforeLines.length, beforeChangeEnd + 3)
-  const out = [`--- ${beforeLabel}`, `+++ ${afterLabel}`, "@@"]
-
-  for (const line of beforeLines.slice(contextBeforeStart, prefix)) {
-    out.push(` ${line}`)
-  }
-
-  for (const line of beforeLines.slice(prefix, beforeChangeEnd)) {
-    out.push(`-${line}`)
-  }
-
-  for (const line of afterLines.slice(prefix, afterChangeEnd)) {
-    out.push(`+${line}`)
-  }
-
-  for (const line of beforeLines.slice(beforeChangeEnd, contextAfterEnd)) {
-    out.push(` ${line}`)
-  }
-
-  return `${out.join("\n")}\n`
-}
-
 interface ApplyOptions {
   runtimePath?: string
   dryRun?: boolean
@@ -326,10 +254,11 @@ export const applyCliConfig = async ({
   }
 
   if (!quiet) {
-    const changed = changedTopLevelFields(runtimeConfig, nextConfig)
     console.log(`Cursor CLI runtime config differs: ${runtimePath}`)
-    console.log(`Changed top-level fields: ${changed.join(", ")}`)
-    process.stdout.write(unifiedDiff(beforeText, afterText))
+    // The runtime file holds authInfo tokens, so report key paths, not values.
+    process.stdout.write(
+      formatKeyChanges(changedKeyPaths(runtimeConfig, nextConfig)),
+    )
   }
 
   if (!dryRun) {
@@ -352,7 +281,7 @@ Options:
   --run      Write the runtime config if it differs
   --dry-run  Print the diff without writing
   --check    Exit with code 1 if the runtime config would change
-  --print    Print the generated runtime config JSON
+  --print    Print the generated runtime config JSON, including secrets
   --quiet    Suppress normal output with --run
   -h, --help Show this help text`)
 }

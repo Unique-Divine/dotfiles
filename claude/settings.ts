@@ -2,7 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { Command } from "commander"
 
-import { unifiedDiff } from "../cursor/cli-config.ts"
+import { unifiedDiff } from "../configDiff.ts"
 
 type JsonPrimitive = string | number | boolean | null
 type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
