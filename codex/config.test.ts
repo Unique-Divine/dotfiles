@@ -55,6 +55,13 @@ describe("codex config", () => {
       vim_mode_default: true,
       alternate_screen: "never",
       raw_output_mode: false,
+      status_line: [
+        "current-dir",
+        "model-with-reasoning",
+        "git-branch",
+        "context-used",
+      ],
+      status_line_use_colors: true,
       model_availability_nux: { "gpt-5.6-sol": 4 },
     })
     expect(merged.projects).toEqual({
@@ -146,6 +153,13 @@ describe("codex config", () => {
         vim_mode_default: true,
         alternate_screen: "never",
         raw_output_mode: false,
+        status_line: [
+          "current-dir",
+          "model-with-reasoning",
+          "git-branch",
+          "context-used",
+        ],
+        status_line_use_colors: true,
         model_availability_nux: { "gpt-5.6-sol": 4 },
       })
     } finally {
@@ -244,6 +258,8 @@ describe("codex config", () => {
         "vim_mode_default = true",
         'alternate_screen = "never"',
         "raw_output_mode = false",
+        'status_line = ["current-dir", "model-with-reasoning", "git-branch", "context-used"]',
+        "status_line_use_colors = true",
       ].join("\n")}\n`
       await mkdir(join(root, ".codex"), { recursive: true })
       await writeFile(runtimePath, text)

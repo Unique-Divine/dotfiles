@@ -27,6 +27,13 @@ export const dotfileConfig = {
     // Keep rendered output enabled by default. Toggle raw scrollback during a
     // session with `/raw` or Alt-R when terminal-native selection is needed.
     raw_output_mode: false,
+    status_line: [
+      "current-dir",
+      "model-with-reasoning",
+      "git-branch",
+      "context-used",
+    ],
+    status_line_use_colors: true,
   },
 } satisfies TomlTable
 
