@@ -129,7 +129,10 @@ alias -g ...='../..'
 alias -g ....='../../..'
 alias -g .....='../../../..'
 alias -g ......='../../../../..'
-setopt AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_MINUS
+# AUTO_CD treats a directory name as `cd` when no command matches it.
+# Disable it so changing directories requires an explicit `cd`.
+unsetopt AUTO_CD
+setopt AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_MINUS
 
 # Restore Oh My Zsh's typed-prefix history search for the arrow keys.
 autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
