@@ -511,6 +511,113 @@ fn new_tab_suggestions_follow_display_base_and_target_workspace() {
 }
 
 #[test]
+fn rename_tab_suggestions_follow_display_base_and_target_workspace() {
+    for (keys, index_base) in [("", 1), ("[keys]\nswitch_tab = \"prefix+0..8\"", 0)] {
+        for context_menu in [false, true] {
+            for tab_idx in [0, 2, 12] {
+                for (label, custom_label, suffix) in [
+                    ("5-sai-pulse", true, Some("-sai-pulse")),
+                    ("9: 链", true, Some(": 链")),
+                    ("7", true, Some("")),
+                    ("work", true, None),
+                    ("2026-notes", true, None),
+                    ("", false, None),
+                ] {
+                    let config: Config = toml::from_str(keys).expect("tab config");
+                    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+                    let mut projected = snapshot();
+                    let workspace_id = if context_menu { "ws_2" } else { "ws_1" };
+                    let mut workspace = projected.workspaces[0].clone();
+                    workspace.workspace_id = "ws_2".into();
+                    workspace.number = 2;
+                    workspace.focused = false;
+                    workspace.active_tab_id = "target".into();
+                    projected.workspaces.push(workspace);
+                    // Interleaved foreign tabs must not count toward the position.
+                    let foreign_tab = projected.tabs[0].clone();
+                    projected.tabs = (0..=tab_idx)
+                        .flat_map(|index| {
+                            let mut tab = foreign_tab.clone();
+                            tab.workspace_id = workspace_id.into();
+                            tab.tab_id = format!("target_{index}");
+                            tab.number = 40 + index;
+                            tab.label = (index + 1).to_string();
+                            let mut foreign = foreign_tab.clone();
+                            foreign.workspace_id = "other_workspace".into();
+                            foreign.tab_id = format!("foreign_{index}");
+                            [foreign, tab]
+                        })
+                        .collect();
+                    let target = projected.tabs.last_mut().expect("target tab");
+                    target.tab_id = "target".into();
+                    target.custom_label = custom_label;
+                    target.zoomed = true;
+                    if custom_label {
+                        target.label = label.into();
+                    }
+                    let original_label = target.label.clone();
+                    let original_number = target.number;
+                    let expected = match suffix {
+                        Some(suffix) => format!("{}{suffix}", tab_idx + index_base),
+                        None if !custom_label => (tab_idx + index_base).to_string(),
+                        None => label.to_owned(),
+                    };
+                    if !context_menu {
+                        projected.focused_tab_id = Some("target".into());
+                    }
+                    state.set_snapshot(Box::new(projected));
+                    let mut open = ClientShellInput::default();
+                    if context_menu {
+                        state.open_tab_context_menu("target".into(), 0, 0);
+                        state.activate_context_menu_item(1, &mut open);
+                    } else {
+                        state.record_binding(
+                            crate::input::KeybindMatch::Action(
+                                crate::input::KeybindAction::RenameTab,
+                            ),
+                            &mut open,
+                        );
+                    }
+                    let Some(ClientShellOverlay::Rename(rename)) = &state.overlay else {
+                        panic!("rename tab dialog");
+                    };
+                    assert_eq!(rename.input.as_str(), expected);
+                    assert!(matches!(
+                        &rename.target,
+                        ClientRenameTarget::Tab { tab_id, original_name, .. }
+                            if tab_id == "target" && original_name == &expected
+                    ));
+                    let saved = state.handle_input_bytes(b"\r");
+                    assert!(saved.actions.is_empty(), "keep unchanged naming");
+                    state.open_rename_tab_overlay_for("target");
+                    state.handle_input_bytes(b"\x03");
+                    state.handle_input_bytes(b"logs");
+                    let edited = state.handle_input_bytes(b"\r");
+                    let [ClientShellAction::Endpoint { request, .. }] = &edited.actions[..] else {
+                        panic!("edited tab rename request");
+                    };
+                    assert!(matches!(
+                        &request.method,
+                        Method::TabRename(params)
+                            if params.tab_id == "target" && params.label == "logs"
+                    ));
+                    let target = state
+                        .snapshot
+                        .as_deref()
+                        .expect("snapshot")
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.tab_id == "target")
+                        .expect("target");
+                    assert_eq!(target.label, original_label);
+                    assert_eq!(target.number, original_number);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

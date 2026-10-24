@@ -309,7 +309,6 @@ pub(super) enum ClientRenameTarget {
     },
     Tab {
         tab_id: String,
-        auto_name: bool,
         original_name: String,
     },
     Pane {
