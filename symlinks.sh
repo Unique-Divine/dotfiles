@@ -5,14 +5,14 @@
 #
 # Dependencies:
 #   - $DOTFILES: Path to the dotfiles repository root.
-#   - zsh/managed-links.tsv: Source and destination mappings to reconcile.
+#   - zsh/managed-links.txt: Source and destination mappings to reconcile.
 
 if [[ -z "${DOTFILES:-}" ]]; then
   echo "ERROR: \$DOTFILES is not set. Run this script through just sync." >&2
   exit 1
 fi
 
-manifest_path="$DOTFILES/zsh/managed-links.tsv"
+manifest_path="$DOTFILES/zsh/managed-links.txt"
 if [[ ! -r "$manifest_path" ]]; then
   echo "ERROR: managed-links manifest is not readable: $manifest_path" >&2
   exit 1
@@ -37,7 +37,7 @@ _symlink() {
   ln -sfn "$src" "$dst"
 }
 
-while IFS=$'\t' read -r source_relative destination_relative; do
+while IFS=' ' read -r source_relative destination_relative; do
   [[ -z "$source_relative" || "$source_relative" == \#* ]] && continue
 
   source_path="$DOTFILES/$source_relative"

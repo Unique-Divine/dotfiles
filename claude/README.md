@@ -7,7 +7,7 @@ Background: [#67](https://github.com/Unique-Divine/dotfiles/issues/67).
 ## Global instructions
 
 File `CLAUDE.md` is linked to `$HOME/.claude/CLAUDE.md` by
-`zsh/managed-links.tsv`, so Claude Code loads it in every project. It says
+`zsh/managed-links.txt`, so Claude Code loads it in every project. It says
 that the Bash tool runs commands in zsh, so commands must use zsh syntax, and
 that `rg` is preferred over `grep`. It also says to typecheck TypeScript with
 `bun check`, not `tsc`. Keep it short, because it loads into every

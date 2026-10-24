@@ -5,7 +5,7 @@
 # loads available private keys into the agent with `ssh-add`.
 #
 # This file is linked to ~/.config/systemd/user/ssh-agent.service by
-# zsh/managed-links.tsv. Enable and start it with:
+# zsh/managed-links.txt. Enable and start it with:
 #
 #   systemctl --user enable --now ssh-agent.service
 

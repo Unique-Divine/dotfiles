@@ -3,7 +3,7 @@ set -Eeuo pipefail
 source zsh/bashlib.sh
 
 failed=0
-manifest_path="$PWD/zsh/managed-links.tsv"
+manifest_path="$PWD/zsh/managed-links.txt"
 
 bash_files=(
   symlinks.sh
@@ -85,7 +85,7 @@ if [[ ! -r "$manifest_path" ]]; then
   log_error "managed-links manifest is not readable: $manifest_path"
   failed=1
 else
-  while IFS=$'\t' read -r source_relative destination_relative; do
+  while IFS=' ' read -r source_relative destination_relative; do
     [[ -z "$source_relative" || "$source_relative" == \#* ]] && continue
 
     if ! check_managed_link \

@@ -144,9 +144,12 @@ This dotfiles repo uses symbolic links to maintain a single source of truth for 
 - **Safety**: Original system files aren't modified, only linked to
 - **Maintenance**: Updates to the repo instantly apply to all linked machines
 
-[`zsh/managed-links.tsv`](zsh/managed-links.tsv) is the source of truth for
-managed symbolic links. `just sync` runs `symlinks.sh` to create or repair each
-mapping; `just health` validates the same mappings without writing state.
+[`zsh/managed-links.txt`](zsh/managed-links.txt) is the source of truth for
+managed symbolic links. Each mapping is `source destination`, separated by
+one ordinary space. Paths cannot contain whitespace; blank lines and lines
+starting with `#` are ignored. `just sync` runs `symlinks.sh` to create or
+repair each mapping; `just health` validates the same mappings without
+writing state.
 
 ## Features
 
