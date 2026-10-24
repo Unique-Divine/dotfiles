@@ -419,22 +419,38 @@ impl ClientShellState {
     }
 
     pub(super) fn open_rename_tab_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
+        let Some(tab_id) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_tab_id.clone())
+        else {
             return;
         };
-        let Some(tab_id) = snapshot.focused_tab_id.as_deref() else {
+        self.open_rename_tab_overlay_for(&tab_id);
+    }
+
+    pub(super) fn open_rename_tab_overlay_for(&mut self, tab_id: &str) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
         let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id) else {
             return;
         };
+        let Some(tab_idx) = snapshot
+            .tabs
+            .iter()
+            .filter(|candidate| candidate.workspace_id == tab.workspace_id)
+            .position(|candidate| candidate.tab_id == tab_id)
+        else {
+            return;
+        };
+        let display_name = self.config.tab_display_label(tab, tab_idx).into_owned();
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "rename tab",
-            input: TextEditor::new(&tab.label, false),
+            input: TextEditor::new(&display_name, false),
             target: ClientRenameTarget::Tab {
                 tab_id: tab.tab_id.clone(),
-                auto_name: !tab.custom_label,
-                original_name: tab.label.clone(),
+                original_name: display_name,
             },
         }));
     }
@@ -982,11 +998,12 @@ impl ClientShellState {
                     env: Default::default(),
                 },
             )),
+            // Keep the stored prefix on unchanged saves. A displayed multi-digit
+            // prefix would no longer match the position-following name format.
             ClientRenameTarget::Tab {
                 tab_id,
-                auto_name,
                 original_name,
-            } => (!(trimmed.is_empty() || auto_name && trimmed == original_name)).then(|| {
+            } => (!(trimmed.is_empty() || trimmed == original_name)).then(|| {
                 crate::api::schema::Method::TabRename(crate::api::schema::TabRenameParams {
                     tab_id,
                     label: trimmed.to_owned(),

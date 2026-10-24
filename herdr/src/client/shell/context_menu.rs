@@ -341,21 +341,7 @@ impl ClientShellState {
                 }
             }
             ClientContextMenuAction::Rename => {
-                let tab = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id));
-                if let Some(tab) = tab {
-                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                        title: "rename tab",
-                        input: TextEditor::new(&tab.label, false),
-                        target: ClientRenameTarget::Tab {
-                            tab_id,
-                            auto_name: !tab.custom_label,
-                            original_name: tab.label.clone(),
-                        },
-                    }));
-                }
+                self.open_rename_tab_overlay_for(&tab_id);
             }
             ClientContextMenuAction::Close => {
                 self.request_tab_close(tab_id, outcome);

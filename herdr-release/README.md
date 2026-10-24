@@ -1,7 +1,11 @@
 # Herdr fork releases
 
-Run these commands from the dotfiles root. Fork version 0.9.6 is based on
+Run these commands from the dotfiles root. Fork version 0.9.7 is based on
 upstream v0.9.3.
+
+Version 0.9.7 makes rename suggestions match the displayed tab number in both
+keyboard and context-menu dialogs. Saving an unchanged suggestion preserves
+the stored name. See [issue #72](https://github.com/Unique-Divine/dotfiles/issues/72).
 
 Version 0.9.6 renumbers tab names beginning with one ASCII digit when tabs
 close or move. It preserves suffixes and stable tab IDs. Multi-digit prefixes
@@ -15,11 +19,11 @@ tab-creation dialogs. See [issue #57](https://github.com/Unique-Divine/dotfiles/
 ```bash
 just herdr-install                     # Build and install source
 just herdr-install --ver source        # Explicit source installation
-just herdr-install --get 0.9.6         # Cache a runnable release; print its path
-just herdr-install --ver 0.9.6         # Install a verified release
+just herdr-install --get 0.9.7         # Cache a runnable release; print its path
+just herdr-install --ver 0.9.7         # Install a verified release
 ```
 
-Release commands accept `0.9.6`, `v0.9.6`, or `herdr-ud/v0.9.6`. They require
+Release commands accept `0.9.7`, `v0.9.7`, or `herdr-ud/v0.9.7`. They require
 Bun and dependencies from `bun install`. Configured GitHub CLI authentication
 is used when available. Public releases also support downloads without login.
 Private repository access requires GitHub CLI and `gh auth login`. Cargo and
@@ -49,8 +53,8 @@ commit the change, and open a release PR. After merging it, wait for the merged
 `main` checks, then tag that merged commit from an up-to-date `main` checkout:
 
 ```bash
-git tag -a herdr-ud/v0.9.6 -m "Herdr UD 0.9.6"
-git push origin herdr-ud/v0.9.6
+git tag -a herdr-ud/v0.9.7 -m "Herdr UD 0.9.7"
+git push origin herdr-ud/v0.9.7
 ```
 
 Workflow `Herdr UD release` requires matching tag and Cargo versions. It builds
@@ -93,7 +97,7 @@ GitHub, run these commands from the source checkout:
 
 ```bash
 bun run herdr-release/publish.ts validate
-bun run herdr-release/publish.ts prepare herdr-ud/v0.9.6 release-assets
+bun run herdr-release/publish.ts prepare herdr-ud/v0.9.7 release-assets
 ```
 
 The first command prints the validated Cargo version. The second writes
@@ -104,7 +108,7 @@ It fails if the version does not match or any expected package is missing.
 
 ```bash
 bun test herdr-release
-bun run herdr-release/publish.ts validate herdr-ud/v0.9.6
+bun run herdr-release/publish.ts validate herdr-ud/v0.9.7
 just test
 bunx github-actionlint .github/workflows/ci.yml
 ```
