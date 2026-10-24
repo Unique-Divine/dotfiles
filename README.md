@@ -237,7 +237,9 @@ usage and options.
 
 Directory [`claude`](claude/README.md) manages Claude Code settings and MCP
 servers. [`claude/settings.ts`](claude/settings.ts) merges owned keys, such as
-empty commit and PR `attribution`, into `$HOME/.claude/settings.json`.
+empty commit and PR `attribution`, into `$HOME/.claude/settings.json`, and
+adds the `rg` allow rule. [`claude/CLAUDE.md`](claude/CLAUDE.md) is linked to
+`$HOME/.claude/CLAUDE.md` as global instructions.
 [`claude/mcp.ts`](claude/mcp.ts) registers each `$HOME/.cursor/mcp.json` stdio
 server in Claude's user scope through a launcher, so server secrets stay in
 the Cursor file.

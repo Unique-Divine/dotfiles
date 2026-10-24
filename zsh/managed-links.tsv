@@ -12,3 +12,4 @@ bin/git_mf	.local/bin/git_mf
 bin/git_cof	.local/bin/git_cof
 zsh/gitconfig.ini	.gitconfig
 cursor/hooks	.config/git/hooks
+claude/CLAUDE.md	.claude/CLAUDE.md

@@ -6,10 +6,18 @@ import { join } from "node:path"
 import {
   applySettings,
   dotfileSettings,
+  managedAllowRules,
+  mergePermissions,
   mergeRuntimeSettings,
   ownedView,
   statusLinePath,
 } from "./settings.ts"
+
+/** Settings sync writes to a runtime file that has no permissions yet. */
+const freshSettings = {
+  ...dotfileSettings,
+  permissions: { allow: [...managedAllowRules] },
+}
 
 const scriptPath = join(import.meta.dir, "settings.ts")
 
@@ -72,7 +80,7 @@ describe("claude settings", () => {
     expect(merged).toEqual({
       model: "opus",
       editorMode: "vim",
-      permissions: { allow: ["Bash(ls)"] },
+      permissions: { allow: ["Bash(ls)", ...managedAllowRules] },
       attribution: dotfileSettings.attribution,
       statusLine: dotfileSettings.statusLine,
       tui: "default",
@@ -92,7 +100,44 @@ describe("claude settings", () => {
   })
 
   test("adds owned keys to an empty runtime file", () => {
-    expect(mergeRuntimeSettings({})).toEqual(dotfileSettings)
+    expect(mergeRuntimeSettings({})).toEqual(freshSettings)
+  })
+
+  test("allows ripgrep without a permission prompt", () => {
+    expect(managedAllowRules).toContain("Bash(rg:*)")
+  })
+
+  test("adds managed allow rules and keeps runtime permissions", () => {
+    expect(
+      mergePermissions(
+        {
+          allow: ["Bash(ls)"],
+          deny: ["Bash(rm:*)"],
+          defaultMode: "acceptEdits",
+        },
+        ["Bash(rg:*)"],
+      ),
+    ).toEqual({
+      allow: ["Bash(ls)", "Bash(rg:*)"],
+      deny: ["Bash(rm:*)"],
+      defaultMode: "acceptEdits",
+    })
+  })
+
+  test("does not duplicate a managed rule already allowed", () => {
+    const once = mergePermissions({}, ["Bash(rg:*)"])
+
+    expect(once).toEqual({ allow: ["Bash(rg:*)"] })
+    expect(mergePermissions(once, ["Bash(rg:*)"])).toEqual(once)
+  })
+
+  test("replaces malformed permissions with managed rules", () => {
+    expect(mergePermissions("oops", ["Bash(rg:*)"])).toEqual({
+      allow: ["Bash(rg:*)"],
+    })
+    expect(mergePermissions({ allow: "oops" }, ["Bash(rg:*)"])).toEqual({
+      allow: ["Bash(rg:*)"],
+    })
   })
 
   test("owned view excludes unmanaged keys", () => {
@@ -107,7 +152,7 @@ describe("claude settings", () => {
         .toBe(true)
       expect(await Bun.file(settingsPath).json()).toEqual({
         editorMode: "vim",
-        ...dotfileSettings,
+        ...freshSettings,
       })
       expect((await stat(settingsPath)).mode & 0o777).toBe(0o600)
       expect(await applySettings({ runtimePath: settingsPath, quiet: true }))
@@ -135,7 +180,7 @@ describe("claude settings", () => {
       const result = await runSettings(homeDir, ["--run", "--quiet"])
 
       expect(result.exitCode).toBe(0)
-      expect(await Bun.file(settingsPath).json()).toEqual(dotfileSettings)
+      expect(await Bun.file(settingsPath).json()).toEqual(freshSettings)
     })
   })
 
