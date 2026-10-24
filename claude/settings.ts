@@ -83,6 +83,29 @@ const ownedTopLevelFields = [
   "tui",
 ] as const
 
+/**
+ * Rules sync adds to `permissions.allow`. Unlike owned keys, the runtime rules
+ * stay, because `/permissions` and permission prompts also write that list.
+ */
+export const managedAllowRules: readonly string[] = ["Bash(rg:*)"]
+
+/**
+ * Returns runtime `permissions` with every managed allow rule present. Other
+ * fields, such as `deny` and `defaultMode`, and existing rule order are kept.
+ */
+export const mergePermissions = (
+  runtimePermissions: JsonValue | undefined,
+  rules: readonly string[] = managedAllowRules,
+): JsonObject => {
+  const permissions = isJsonObject(runtimePermissions)
+    ? runtimePermissions
+    : {}
+  const allow = Array.isArray(permissions.allow) ? permissions.allow : []
+  const missing = rules.filter((rule) => !allow.includes(rule))
+
+  return { ...permissions, allow: [...allow, ...missing] }
+}
+
 export const runtimeSettingsPath = (
   env: NodeJS.ProcessEnv = process.env,
 ): string => {
@@ -157,17 +180,20 @@ export const mergeRuntimeSettings = (
     }
   }
 
+  out.permissions = mergePermissions(runtimeSettings.permissions)
+
   return out
 }
 
 /**
- * Returns only the owned keys of a settings object. Diffs use this view so
- * unmanaged values, such as an `env` block holding tokens, never print.
+ * Returns only the owned keys and `permissions` of a settings object. Diffs
+ * use this view so unmanaged values, such as an `env` block holding tokens,
+ * never print.
  */
 export const ownedView = (settings: JsonObject): JsonObject => {
   const out: JsonObject = {}
 
-  for (const key of ownedTopLevelFields) {
+  for (const key of [...ownedTopLevelFields, "permissions"]) {
     if (Object.hasOwn(settings, key)) {
       out[key] = settings[key]
     }

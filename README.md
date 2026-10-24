@@ -144,9 +144,12 @@ This dotfiles repo uses symbolic links to maintain a single source of truth for 
 - **Safety**: Original system files aren't modified, only linked to
 - **Maintenance**: Updates to the repo instantly apply to all linked machines
 
-[`zsh/managed-links.tsv`](zsh/managed-links.tsv) is the source of truth for
-managed symbolic links. `just sync` runs `symlinks.sh` to create or repair each
-mapping; `just health` validates the same mappings without writing state.
+[`zsh/managed-links.txt`](zsh/managed-links.txt) is the source of truth for
+managed symbolic links. Each mapping is `source destination`, separated by
+one ordinary space. Paths cannot contain whitespace; blank lines and lines
+starting with `#` are ignored. `just sync` runs `symlinks.sh` to create or
+repair each mapping; `just health` validates the same mappings without
+writing state.
 
 ## Features
 
@@ -237,7 +240,9 @@ usage and options.
 
 Directory [`claude`](claude/README.md) manages Claude Code settings and MCP
 servers. [`claude/settings.ts`](claude/settings.ts) merges owned keys, such as
-empty commit and PR `attribution`, into `$HOME/.claude/settings.json`.
+empty commit and PR `attribution`, into `$HOME/.claude/settings.json`, and
+adds the `rg` allow rule. [`claude/CLAUDE.md`](claude/CLAUDE.md) is linked to
+`$HOME/.claude/CLAUDE.md` as global instructions.
 [`claude/mcp.ts`](claude/mcp.ts) registers each `$HOME/.cursor/mcp.json` stdio
 server in Claude's user scope through a launcher, so server secrets stay in
 the Cursor file.

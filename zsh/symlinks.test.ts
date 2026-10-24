@@ -10,7 +10,7 @@ type ManagedLink = {
 }
 
 const dotfilesRoot = resolve(import.meta.dir, "..")
-const manifestPath = join(dotfilesRoot, "zsh", "managed-links.tsv")
+const manifestPath = join(dotfilesRoot, "zsh", "managed-links.txt")
 const temporaryHomes: string[] = []
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`
@@ -21,8 +21,8 @@ const readManagedLinks = async (): Promise<ManagedLink[]> => {
     .split("\n")
     .filter((line) => line && !line.startsWith("#"))
     .map((line) => {
-      const [sourceRelative, destinationRelative] = line.split("\t")
-      if (!sourceRelative || !destinationRelative) {
+      const [sourceRelative, destinationRelative] = line.split(" ")
+      if (!/^[^\s]+ [^\s]+$/.test(line)) {
         throw new Error(`Invalid managed-links entry: ${line}`)
       }
       return { destinationRelative, sourceRelative }

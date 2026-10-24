@@ -4,6 +4,15 @@ This directory manages the parts of Claude Code config that should match on
 every machine. `just sync` applies them and `just health` fails on drift.
 Background: [#67](https://github.com/Unique-Divine/dotfiles/issues/67).
 
+## Global instructions
+
+File `CLAUDE.md` is linked to `$HOME/.claude/CLAUDE.md` by
+`zsh/managed-links.txt`, so Claude Code loads it in every project. It says
+that the Bash tool runs commands in zsh, so commands must use zsh syntax, and
+that `rg` is preferred over `grep`. It also says to typecheck TypeScript with
+`bun check`, not `tsc`. Keep it short, because it loads into every
+session.
+
 ## Settings
 
 File `settings.ts` owns top-level keys in `$HOME/.claude/settings.json` and
@@ -51,8 +60,14 @@ Don't sync a renderer change under running sessions. A live switch from
 fullscreen blanks the pane. Run `/tui default` in each session, or quit and
 resume.
 
-The diff shows owned keys only, so unmanaged values such as an `env` block
-never print.
+Sync adds each rule in `managedAllowRules`, currently `Bash(rg:*)`, to
+`permissions.allow`. It doesn't own `permissions`: rules added through
+`/permissions` or prompts, along with `deny`, `ask`, and `defaultMode`, stay.
+Removing a rule from `managedAllowRules` doesn't remove it from the runtime
+file.
+
+The diff shows only owned keys and `permissions`, so unmanaged values such as
+an `env` block never print.
 
 ```bash
 bun run claude/settings.ts --dry-run
