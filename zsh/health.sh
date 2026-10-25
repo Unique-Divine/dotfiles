@@ -148,6 +148,12 @@ if which_ok herdr; then
     log_error "Herdr config link is missing or points outside dotfiles: $runtime_herdr_config"
     failed=1
   fi
+else
+  failed=1
+fi
+
+if ! bun run herdr-cfg/integrations.ts --check; then
+  failed=1
 fi
 
 if ! which_ok herdr-tmux; then

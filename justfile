@@ -112,6 +112,10 @@ gh-rev-install:
 herdr-install *ARGS:
   bun run herdr-release/install.ts {{ARGS}}
 
+# Install or repair required Codex, Claude Code, and Cursor Herdr hooks.
+herdr-integrations:
+  bun run herdr-cfg/integrations.ts --run
+
 # Preview one agent per tab in the current workspace; use --run to move.
 [positional-arguments]
 herdr-flatten *ARGS:
@@ -208,6 +212,7 @@ sync:
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
   bun run claude/settings.ts --run
+  just herdr-integrations
   if command -v claude >/dev/null 2>&1; then
     bun run claude/mcp.ts --run
   fi
