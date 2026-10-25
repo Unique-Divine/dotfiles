@@ -69,6 +69,8 @@ Start a fresh harness session after repair to register its session reference
 with Herdr. Existing panes can still be detected without hooks, but resuming
 their conversations after a server restart needs a recorded session reference.
 Harness authentication and first-launch onboarding remain machine-local.
+Codex may ask once to review newly installed hooks before running them. Health
+checks installation; a fresh session confirms hook delivery after onboarding.
 
 ## Apply a configuration change
 
