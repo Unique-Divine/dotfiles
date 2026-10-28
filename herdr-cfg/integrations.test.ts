@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { applySettings } from "../claude/config"
+import { applySettings, claudePaths } from "../claude/config"
 import { applyConfig } from "../codex/config"
 import { applyCliConfig } from "../cursor/cli-config"
 
@@ -54,6 +54,10 @@ test("config directories honor defaults and tilde overrides", () => {
   expect(configDirectory(codex, {
     HOME: "/test", CODEX_HOME: "~/custom codex",
   })).toBe("/test/custom codex")
+  for (const override of [undefined, "", "/test/alternate profile"]) {
+    const env = { HOME: "/test", CLAUDE_CONFIG_DIR: override }
+    expect(configDirectory(harnesses[1]!, env)).toBe(claudePaths(env).directory)
+  }
 })
 
 test("registration rejects disabled hooks and restrictive matchers", () => {

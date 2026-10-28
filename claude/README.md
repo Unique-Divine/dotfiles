@@ -14,6 +14,11 @@ just claude config --dry-run
 just claude config --run
 ```
 
+With `CLAUDE_CONFIG_DIR` set to a nonempty path, settings, global state, MCP
+configuration reads, and Herdr hooks use that directory. Settings live at
+`settings.json` and global state at `.claude.json` inside it. An unset or empty
+override keeps the default paths above; other profiles are left alone.
+
 ## Global instructions
 
 File `CLAUDE.md` is linked to `$HOME/.claude/CLAUDE.md` by

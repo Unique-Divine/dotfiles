@@ -4,7 +4,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { join, resolve } from "node:path"
 
-import { stringify } from "../claude/config"
+import { claudePaths, stringify } from "../claude/config"
 
 export interface Harness {
   name: string
@@ -37,6 +37,7 @@ const quote = (value: string): string =>
 export function configDirectory(
   harness: Harness, env: Environment,
 ): string {
+  if (harness.name === "claude") return claudePaths(env).directory
   if (!env.HOME) throw new Error("HOME is required")
   const value = env[harness.homeVariable] || join(env.HOME, harness.directory)
   return resolve(value.startsWith("~")
@@ -54,7 +55,12 @@ async function run(args: string[], env: Environment): Promise<string> {
   const keys = ["HOME", "PATH", ...harnesses.map((h) => h.homeVariable)]
   const unset = keys.flatMap((key) => ["-u", key])
   const values = keys.filter((key) => env[key] !== undefined)
-    .map((key) => `${key}=${env[key]}`)
+    .map((key) => {
+      // Give Herdr the same absolute Claude root used by config and MCP reads.
+      const value = key === "CLAUDE_CONFIG_DIR" && env[key]
+        ? claudePaths(env).directory : env[key]
+      return `${key}=${value}`
+    })
   const command = ["env", ...unset, ...values, ...args]
     .map(quote).join(" ")
   const result = await bash(`${command} 2>&1`)

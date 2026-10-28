@@ -107,17 +107,29 @@ export const mergePermissions = (
   return { ...permissions, allow: [...allow, ...missing] }
 }
 
+export interface ClaudePaths {
+  directory: string
+  settings: string
+  state: string
+}
+
+/** Claude stores default state beside .claude, but override state inside it. */
+export const claudePaths = (
+  env: NodeJS.ProcessEnv = process.env,
+): ClaudePaths => {
+  if (!env.HOME) throw new Error("HOME is not set")
+  const override = env.CLAUDE_CONFIG_DIR
+  const directory = resolve(override || resolve(env.HOME, ".claude"))
+  return {
+    directory,
+    settings: resolve(directory, "settings.json"),
+    state: resolve(override ? directory : env.HOME, ".claude.json"),
+  }
+}
+
 export const runtimeSettingsPath = (
   env: NodeJS.ProcessEnv = process.env,
-): string => {
-  const home = env.HOME
-
-  if (!home) {
-    throw new Error("HOME is not set")
-  }
-
-  return resolve(home, ".claude/settings.json")
-}
+): string => claudePaths(env).settings
 
 export const isJsonObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -260,10 +272,9 @@ export const dotfileState = {
   hasCompletedOnboarding: true,
 } as const
 
-export const runtimeStatePath = (env: NodeJS.ProcessEnv = process.env): string => {
-  if (!env.HOME) throw new Error("HOME is not set")
-  return resolve(env.HOME, ".claude.json")
-}
+export const runtimeStatePath = (
+  env: NodeJS.ProcessEnv = process.env,
+): string => claudePaths(env).state
 
 export const mergeRuntimeState = (state: JsonObject): JsonObject => ({
   ...state,

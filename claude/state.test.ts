@@ -86,7 +86,8 @@ describe("managed Claude state", () => {
       for (const flag of ["--check", "--dry-run"]) {
         const proc = Bun.spawn([process.execPath,
           join(import.meta.dir, "config.ts"), flag], {
-          env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
+          env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: "" },
+          stdout: "pipe", stderr: "pipe",
         })
         const [stdout, stderr, code] = await Promise.all([
           new Response(proc.stdout).text(), new Response(proc.stderr).text(),

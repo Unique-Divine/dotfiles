@@ -6,12 +6,15 @@ import { join } from "node:path"
 import {
   applyConfig,
   applySettings,
+  claudePaths,
   dotfileState,
   dotfileSettings,
   managedAllowRules,
   mergePermissions,
   mergeRuntimeSettings,
   ownedView,
+  runtimeSettingsPath,
+  runtimeStatePath,
   statusLinePath,
 } from "./config.ts"
 
@@ -26,10 +29,11 @@ const scriptPath = join(import.meta.dir, "config.ts")
 const runSettings = async (
   homeDir: string,
   args: string[] = [],
+  overrides: NodeJS.ProcessEnv = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
   const proc = Bun.spawn(["bun", scriptPath, ...args], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, HOME: homeDir },
+    env: { ...process.env, HOME: homeDir, CLAUDE_CONFIG_DIR: "", ...overrides },
     stderr: "pipe",
     stdout: "pipe",
   })
@@ -64,6 +68,63 @@ const withHome = async (
 }
 
 describe("claude settings", () => {
+  test("settings and state share the active Claude configuration root", () => {
+    for (const override of [undefined, "", "/test/alternate profile"]) {
+      const env = { HOME: "/test", CLAUDE_CONFIG_DIR: override }
+      const directory = override || "/test/.claude"
+      const state = override
+        ? "/test/alternate profile/.claude.json" : "/test/.claude.json"
+      expect(claudePaths(env)).toEqual({
+        directory, settings: join(directory, "settings.json"), state,
+      })
+      expect(runtimeSettingsPath(env)).toBe(join(directory, "settings.json"))
+      expect(runtimeStatePath(env)).toBe(state)
+    }
+  })
+
+  test("shared CLI checks and repairs only the selected alternate profile",
+    async () => {
+      await withHome(freshSettings, async (home, settingsPath) => {
+        const directory = join(home, "alternate profile")
+        await mkdir(directory)
+        const alternateStatePath = join(directory, ".claude.json")
+        const alternateSettingsPath = join(directory, "settings.json")
+        const privateState = { oauthAccount: { id: crypto.randomUUID() } }
+        await writeFile(alternateStatePath, JSON.stringify({
+          ...privateState, editorMode: "emacs", hasCompletedOnboarding: false,
+        }))
+        await writeFile(alternateSettingsPath,
+          `${JSON.stringify(freshSettings, null, 2)}\n`)
+        const beforeSettings = await Bun.file(settingsPath).text()
+        const beforeState = await Bun.file(join(home, ".claude.json")).text()
+        const overrides = { CLAUDE_CONFIG_DIR: directory }
+        const checked = await runSettings(home, ["--check", "--quiet"], overrides)
+        expect(checked.exitCode).toBe(1)
+        expect(await Bun.file(alternateStatePath).json()).toEqual({
+          ...privateState, editorMode: "emacs", hasCompletedOnboarding: false,
+        })
+        const printed = await runSettings(home, ["--print"], overrides)
+        expect(JSON.parse(printed.stdout)).toEqual({
+          settings: freshSettings, state: dotfileState,
+        })
+        // Existing sessions can run under another profile. Keep the state
+        // current before exercising the CLI's settings write in this fixture.
+        await writeFile(alternateStatePath, JSON.stringify({
+          ...privateState, ...dotfileState,
+        }))
+        await writeFile(alternateSettingsPath, "{}")
+        const repaired = await runSettings(home, ["--run", "--quiet"], overrides)
+        expect(repaired.exitCode).toBe(0)
+        expect(await Bun.file(alternateSettingsPath).json()).toEqual(freshSettings)
+        expect(await Bun.file(alternateStatePath).json()).toEqual({
+          ...privateState, ...dotfileState,
+        })
+        expect((await runSettings(home, ["--check"], overrides)).exitCode).toBe(0)
+        expect(await Bun.file(settingsPath).text()).toBe(beforeSettings)
+        expect(await Bun.file(join(home, ".claude.json")).text()).toBe(beforeState)
+      })
+    })
+
   test("hides commit, PR, and session-link attribution", () => {
     expect(dotfileSettings.attribution).toEqual({
       commit: "",
