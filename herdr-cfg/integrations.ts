@@ -1,10 +1,11 @@
 import { bash } from "@uniquedivine/bash"
-import { parse, stringify as stringifyToml } from "smol-toml"
+import { parse, type TomlTable } from "smol-toml"
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { claudePaths, stringify } from "../claude/config"
+import { serialize as serializeCodexConfig } from "../codex/config"
 
 export interface Harness {
   name: string
@@ -169,11 +170,12 @@ export async function readCodexConfig(
   return (await readCodexConfigFile(env))?.config
 }
 
-/** Own global hook enablement and an explicit false selected-profile override. */
+/** Own global hooks and an explicit false override in the selected profile. */
 export function enableCodexHooks(config: JsonObject): JsonObject {
   const features = object(config.features ?? {}, "Codex features")
   const profiles = object(config.profiles ?? {}, "Codex profiles")
-  const selected = typeof config.profile === "string" ? config.profile : undefined
+  const selected = typeof config.profile === "string"
+    ? config.profile : undefined
   const profile = selected && profiles[selected] !== undefined
     ? object(profiles[selected], "Selected Codex profile") : undefined
   const overrides = object(profile?.features ?? {}, "Codex profile features")
@@ -200,8 +202,10 @@ export async function repairCodexHooks(env: Environment): Promise<void> {
   const config = enableCodexHooks(file.config)
   if (config === file.config) return
   let nextText: string
-  try { nextText = stringifyToml(config) }
-  catch { throw new Error(`Unable to serialize TOML configuration at ${file.path}`) }
+  try { nextText = serializeCodexConfig(config as TomlTable) }
+  catch {
+    throw new Error(`Unable to serialize TOML configuration at ${file.path}`)
+  }
   const temporary = `${file.path}.${crypto.randomUUID()}.tmp`
   try {
     await writeFile(temporary, nextText, { mode: 0o600, flag: "wx" })

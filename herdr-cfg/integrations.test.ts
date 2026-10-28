@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile }
   from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parse, stringify as stringifyToml } from "smol-toml"
+import { parse, stringify as stringifyToml, type TomlTable } from "smol-toml"
 
 import { applySettings, claudePaths } from "../claude/config"
-import { applyConfig } from "../codex/config"
+import { applyConfig, serialize as serializeCodexConfig } from "../codex/config"
 import { applyCliConfig } from "../cursor/cli-config"
 
 import {
@@ -133,12 +133,27 @@ test("Codex hook repair changes only global and selected-profile flags",
     await repairCodexHooks(env)
     const once = await readFile(path, "utf8")
     expect(parse(once)).toEqual(desired)
+    expect(once).toBe(serializeCodexConfig(desired))
     expect((await stat(path)).mode & 0o777).toBe(0o600)
     await repairCodexHooks(env)
     expect(await readFile(path, "utf8")).toBe(once)
     expect(await readdir(directory)).toEqual(["config.toml"])
     const current = { features: { hooks: true } }
     expect(enableCodexHooks(current)).toBe(current)
+
+    // Reproduce the sync ordering: portable defaults precede hook repair.
+    // Repair must retain the exact format checked by Codex config health.
+    const options = { runtimePath: path,
+      mcpSourcePath: join(env.HOME!, "missing-mcp.json"), quiet: true }
+    await applyConfig(options)
+    const managed = parse(await readFile(path, "utf8"))
+    const profiles = managed.profiles as TomlTable
+    const work = profiles.work as TomlTable
+    const features = work.features as TomlTable
+    features.hooks = false
+    await writeFile(path, serializeCodexConfig(managed))
+    await repairCodexHooks(env)
+    expect(await applyConfig({ ...options, dryRun: true })).toBe(false)
   })
 
 // Real installers and CLI version probes are required; no substitute binaries.

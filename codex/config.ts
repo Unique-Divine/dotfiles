@@ -190,7 +190,8 @@ export const mergeRuntimeConfig = (
 const schemaDirective =
   "#:schema https://developers.openai.com/codex/config-schema.json"
 
-const serialize = (config: TomlTable): string =>
+/** Canonical on-disk format, including the schema directive used by health. */
+export const serialize = (config: TomlTable): string =>
   `${schemaDirective}\n${stringify(config)}\n`
 
 const readRuntimeConfig = async (
