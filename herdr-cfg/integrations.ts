@@ -1,6 +1,6 @@
 import { bash } from "@uniquedivine/bash"
-import { parse } from "smol-toml"
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { parse, stringify as stringifyToml } from "smol-toml"
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { join, resolve } from "node:path"
 
@@ -144,16 +144,73 @@ export function registered(
   })
 }
 
-export async function readCodexConfig(
+interface CodexConfigFile {
+  path: string
+  text: string
+  config: JsonObject
+}
+
+async function readCodexConfigFile(
   env: Environment,
-): Promise<JsonObject | undefined> {
+): Promise<CodexConfigFile | undefined> {
   const path = join(configDirectory(harnesses[0]!, env), "config.toml")
   const text = await optionalText(path)
   if (text === undefined) return undefined
   try {
-    return parse(text) as JsonObject
+    return { path, text, config: parse(text) as JsonObject }
   } catch {
     throw new Error(`Unable to parse TOML configuration at ${path}`)
+  }
+}
+
+export async function readCodexConfig(
+  env: Environment,
+): Promise<JsonObject | undefined> {
+  return (await readCodexConfigFile(env))?.config
+}
+
+/** Own global hook enablement and an explicit false selected-profile override. */
+export function enableCodexHooks(config: JsonObject): JsonObject {
+  const features = object(config.features ?? {}, "Codex features")
+  const profiles = object(config.profiles ?? {}, "Codex profiles")
+  const selected = typeof config.profile === "string" ? config.profile : undefined
+  const profile = selected && profiles[selected] !== undefined
+    ? object(profiles[selected], "Selected Codex profile") : undefined
+  const overrides = object(profile?.features ?? {}, "Codex profile features")
+  const repairProfile = selected !== undefined && overrides.hooks === false
+  if (features.hooks === true && !repairProfile) return config
+  return {
+    ...config,
+    features: { ...features, hooks: true },
+    ...(repairProfile ? {
+      profiles: {
+        ...profiles,
+        [selected!]: {
+          ...profile,
+          features: { ...overrides, hooks: true },
+        },
+      },
+    } : {}),
+  }
+}
+
+export async function repairCodexHooks(env: Environment): Promise<void> {
+  const file = await readCodexConfigFile(env)
+  if (!file) return
+  const config = enableCodexHooks(file.config)
+  if (config === file.config) return
+  let nextText: string
+  try { nextText = stringifyToml(config) }
+  catch { throw new Error(`Unable to serialize TOML configuration at ${file.path}`) }
+  const temporary = `${file.path}.${crypto.randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, nextText, { mode: 0o600, flag: "wx" })
+    if (await readFile(file.path, "utf8") !== file.text) {
+      throw new Error("Codex configuration changed during repair; rerun setup")
+    }
+    await rename(temporary, file.path)
+  } finally {
+    await rm(temporary, { force: true })
   }
 }
 
@@ -213,6 +270,7 @@ export async function installIntegrations(
   for (const harness of harnesses) {
     await mkdir(configDirectory(harness, env), { recursive: true })
     await run(["herdr", "integration", "install", harness.name], env)
+    if (harness.name === "codex") await repairCodexHooks(env)
     if (harness.name === "claude") {
       // Herdr rewrites JSON without our settings sync's trailing newline.
       // Normalize formatting so health does not report false settings drift.

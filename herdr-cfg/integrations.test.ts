@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile }
+  from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parse, stringify as stringifyToml } from "smol-toml"
 
 import { applySettings, claudePaths } from "../claude/config"
 import { applyConfig } from "../codex/config"
@@ -9,7 +11,8 @@ import { applyCliConfig } from "../cursor/cli-config"
 
 import {
   checkIntegrations, configDirectory, harnesses, installIntegrations,
-  missingTools, readCodexConfig, readConfig, registered, type Environment,
+  enableCodexHooks, missingTools, readCodexConfig, readConfig, registered,
+  repairCodexHooks, type Environment,
 } from "./integrations"
 
 const homes: string[] = []
@@ -100,9 +103,77 @@ test("malformed JSON and TOML diagnostics never contain source values",
     }
   })
 
+test("Codex hook repair changes only global and selected-profile flags",
+  async () => {
+    const env = await environment()
+    const directory = configDirectory(harnesses[0]!, env)
+    await mkdir(directory, { recursive: true })
+    const path = join(directory, "config.toml")
+    const original = {
+      profile: "work",
+      features: { hooks: false, other: true },
+      profiles: {
+        work: {
+          model: "test-model", features: { hooks: false, unrelated: true },
+        },
+        personal: { features: { hooks: false } },
+      },
+      mcp_servers: { private: { env: { TOKEN: crypto.randomUUID() } } },
+    }
+    const desired = {
+      ...original,
+      features: { ...original.features, hooks: true },
+      profiles: { ...original.profiles,
+        work: { ...original.profiles.work,
+          features: { ...original.profiles.work.features, hooks: true } } },
+    }
+    expect(enableCodexHooks(original)).toEqual(desired)
+    expect(original.profiles.work.features.hooks).toBe(false)
+    await writeFile(path, stringifyToml(original))
+    await repairCodexHooks(env)
+    const once = await readFile(path, "utf8")
+    expect(parse(once)).toEqual(desired)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    await repairCodexHooks(env)
+    expect(await readFile(path, "utf8")).toBe(once)
+    expect(await readdir(directory)).toEqual(["config.toml"])
+    const current = { features: { hooks: true } }
+    expect(enableCodexHooks(current)).toBe(current)
+  })
+
 // Real installers and CLI version probes are required; no substitute binaries.
 // Minimal CI environments still run the pure and preflight tests above.
 describe.skipIf(missingTools(process.env).length > 0)("real Herdr installer", () => {
+  test("selected Codex profile repair converges and check mode is read-only",
+    async () => {
+      const env = await environment()
+      await installIntegrations(env)
+      const path = join(configDirectory(harnesses[0]!, env), "config.toml")
+      const config = {
+        profile: "work",
+        features: { hooks: true },
+        profiles: {
+          work: { features: { hooks: false }, model: "test-model" },
+          personal: { features: { hooks: false } },
+        },
+        mcp_servers: { private: { env: { TOKEN: crypto.randomUUID() } } },
+      }
+      const before = stringifyToml(config)
+      await writeFile(path, before)
+      expect((await checkIntegrations(env)).join()).toContain("must be enabled")
+      expect(await readFile(path, "utf8")).toBe(before)
+      await installIntegrations(env)
+      expect(await checkIntegrations(env)).toEqual([])
+      expect(parse(await readFile(path, "utf8"))).toEqual({
+        ...config,
+        profiles: { ...config.profiles,
+          work: { ...config.profiles.work, features: { hooks: true } } },
+      })
+      const once = await snapshot(env)
+      await installIntegrations(env)
+      expect(await snapshot(env)).toEqual(once)
+    }, 60000)
+
   test("both CLI modes sanitize parser failures without changing files",
     async () => {
       const env = await environment()

@@ -65,6 +65,12 @@ registration, and Codex's hook feature flag without changing configuration.
 The setup respects `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `CURSOR_CONFIG_DIR`.
 It preserves unrelated hooks and settings. Neither command restarts agents.
 
+Codex hook enablement is managed globally and for an explicit disabled override
+in the profile selected by `config.toml`. Repair enables that selected profile's
+hooks while preserving other profile settings and unselected profiles. A
+changed TOML file is rewritten using the same serializer as Codex settings sync;
+configuration values are preserved, but comments and formatting may change.
+
 Start a fresh harness session after repair to register its session reference
 with Herdr. Existing panes can still be detected without hooks, but resuming
 their conversations after a server restart needs a recorded session reference.
