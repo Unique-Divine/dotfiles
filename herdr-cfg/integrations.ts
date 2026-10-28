@@ -59,8 +59,11 @@ async function run(args: string[], env: Environment): Promise<string> {
     .map(quote).join(" ")
   const result = await bash(`${command} 2>&1`)
   if (result.exitCode !== 0) {
-    throw new Error(result.stdout.trim() || result.stderr.trim() ||
-      `${args[0]} failed with exit ${result.exitCode}`)
+    // Installer diagnostics may contain configuration excerpts. Keep only the
+    // operation and exit code, never subprocess output from private files.
+    const operation = args[0] === "herdr"
+      ? args.slice(0, 4).join(" ") : "hook syntax check"
+    throw new Error(`${operation} failed with exit ${result.exitCode}`)
   }
   return result.stdout
 }
@@ -87,7 +90,12 @@ export async function readConfig(
   const path = join(configDirectory(harness, env), harness.config)
   const text = await optionalText(path)
   if (text === undefined) return undefined
-  const config = object(JSON.parse(text), path)
+  let config: JsonObject
+  try {
+    config = object(JSON.parse(text), path)
+  } catch {
+    throw new Error(`Unable to parse JSON configuration at ${path}`)
+  }
   if (config.hooks !== undefined) {
     const hooks = object(config.hooks, `${path}: hooks`)
     for (const [event, entries] of Object.entries(hooks)) {
@@ -130,11 +138,22 @@ export function registered(
   })
 }
 
-async function codexEnabled(env: Environment): Promise<boolean> {
+export async function readCodexConfig(
+  env: Environment,
+): Promise<JsonObject | undefined> {
   const path = join(configDirectory(harnesses[0]!, env), "config.toml")
   const text = await optionalText(path)
-  if (text === undefined) return false
-  const config = parse(text) as JsonObject
+  if (text === undefined) return undefined
+  try {
+    return parse(text) as JsonObject
+  } catch {
+    throw new Error(`Unable to parse TOML configuration at ${path}`)
+  }
+}
+
+async function codexEnabled(env: Environment): Promise<boolean> {
+  const config = await readCodexConfig(env)
+  if (!config) return false
   const features = config.features as JsonObject | undefined
   const profiles = config.profiles as Record<string, JsonObject> | undefined
   const profile = typeof config.profile === "string"

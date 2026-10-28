@@ -9,7 +9,7 @@ import { applyCliConfig } from "../cursor/cli-config"
 
 import {
   checkIntegrations, configDirectory, harnesses, installIntegrations,
-  missingTools, registered, type Environment,
+  missingTools, readCodexConfig, readConfig, registered, type Environment,
 } from "./integrations"
 
 const homes: string[] = []
@@ -69,9 +69,72 @@ test("registration rejects disabled hooks and restrictive matchers", () => {
   expect(registered(claude, config, "/test/hook.sh")).toBe(false)
 })
 
+test("malformed JSON and TOML diagnostics never contain source values",
+  async () => {
+    const env = await environment()
+    const sentinel = `secret_${crypto.randomUUID().replaceAll("-", "")}`
+    const cases = [
+      { harness: harnesses[1]!, format: "JSON", file: "settings.json",
+        text: `{"env":{"TOKEN":${sentinel}}}`,
+        read: () => readConfig(harnesses[1]!, env) },
+      { harness: harnesses[0]!, format: "TOML", file: "config.toml",
+        text: `[mcp_servers.private.env]\nTOKEN = "${sentinel}" trailing\n`,
+        read: () => readCodexConfig(env) },
+    ]
+    for (const entry of cases) {
+      const directory = configDirectory(entry.harness, env)
+      await mkdir(directory, { recursive: true })
+      const path = join(directory, entry.file)
+      await writeFile(path, entry.text)
+      let diagnostic = ""
+      try { await entry.read() }
+      catch (error) { diagnostic = String(error) }
+      expect(diagnostic).toContain(`Unable to parse ${entry.format}`)
+      expect(diagnostic).toContain(path)
+      expect(diagnostic).not.toContain(sentinel)
+      expect(await readFile(path, "utf8")).toBe(entry.text)
+    }
+  })
+
 // Real installers and CLI version probes are required; no substitute binaries.
 // Minimal CI environments still run the pure and preflight tests above.
 describe.skipIf(missingTools(process.env).length > 0)("real Herdr installer", () => {
+  test("both CLI modes sanitize parser failures without changing files",
+    async () => {
+      const env = await environment()
+      await installIntegrations(env)
+      const codexPath = join(configDirectory(harnesses[0]!, env), "config.toml")
+      const claudePath = join(configDirectory(harnesses[1]!, env), "settings.json")
+      const originalToml = await readFile(codexPath, "utf8")
+      const originalJson = await readFile(claudePath, "utf8")
+      const sentinel = `secret_${crypto.randomUUID().replaceAll("-", "")}`
+      for (const format of ["JSON", "TOML"]) {
+        const path = format === "JSON" ? claudePath : codexPath
+        await writeFile(claudePath, originalJson)
+        await writeFile(codexPath, originalToml)
+        await writeFile(path, format === "JSON"
+          ? `{"env":{"TOKEN":${sentinel}}}`
+          : `[features]\nhooks = true\n` +
+            `[mcp_servers.private.env]\nTOKEN = "${sentinel}" trailing\n`)
+        const before = await snapshot(env)
+        for (const mode of ["--check", "--run"]) {
+          const proc = Bun.spawn([process.execPath,
+            join(import.meta.dir, "integrations.ts"), mode], {
+            env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe",
+          })
+          const [stdout, stderr, code] = await Promise.all([
+            new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+            proc.exited,
+          ])
+          expect(code).toBe(1)
+          expect(stdout + stderr).toContain(`Unable to parse ${format}`)
+          expect(stdout + stderr).toContain(path)
+          expect(stdout + stderr).not.toContain(sentinel)
+          expect(await snapshot(env)).toEqual(before)
+        }
+      }
+    }, 60000)
+
   test("repair preserves unrelated settings and is repeatable/read-only", async () => {
     const env = await environment()
     for (const harness of harnesses) {
