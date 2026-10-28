@@ -75,6 +75,35 @@ bun run claude/settings.ts --run
 bun run claude/settings.ts --check
 ```
 
+## Portable preferences and onboarding
+
+`just sync` enforces these fields in `$HOME/.claude.json` on every machine:
+
+```json
+{
+  "editorMode": "vim",
+  "showExpandedTodos": true,
+  "hasCompletedOnboarding": true
+}
+```
+
+The source of truth is `state.ts`. Other fields, including MCP definitions,
+authentication, account identity, and project trust, are preserved. Login
+remains a separate step on each machine. These are internal Claude fields;
+the onboarding marker was verified with Claude Code 2.1.310 on Homebox.
+
+`just health` checks the fields without writing. Repair refuses to change
+state while Claude processes are running under your user, because Claude can
+rewrite this file. An already-current file needs no write and does not block
+sync. Changes use a private backup and an atomic replacement. Output shows only
+the three managed fields.
+
+```bash
+just claude state --check
+just claude state --dry-run
+just claude state --run
+```
+
 ## MCP servers
 
 File `$HOME/.cursor/mcp.json` is the MCP source for Cursor, Codex, and

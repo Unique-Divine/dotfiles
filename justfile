@@ -212,6 +212,7 @@ sync:
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
   bun run claude/settings.ts --run
+  bun run claude/state.ts --run
   just herdr-integrations
   if command -v claude >/dev/null 2>&1; then
     bun run claude/mcp.ts --run

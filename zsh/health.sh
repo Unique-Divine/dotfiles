@@ -130,6 +130,10 @@ if ! bun run claude/settings.ts --check; then
   failed=1
 fi
 
+if ! bun run claude/state.ts --check; then
+  failed=1
+fi
+
 if command -v claude >/dev/null 2>&1 && ! bun run claude/mcp.ts --check; then
   failed=1
 fi
