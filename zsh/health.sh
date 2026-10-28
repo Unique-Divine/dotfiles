@@ -126,11 +126,7 @@ if ! bun run cursor/cli-config.ts --check; then
   failed=1
 fi
 
-if ! bun run claude/settings.ts --check; then
-  failed=1
-fi
-
-if ! bun run claude/state.ts --check; then
+if ! bun run claude/config.ts --check; then
   failed=1
 fi
 

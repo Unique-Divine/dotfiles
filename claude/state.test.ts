@@ -5,9 +5,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  applyState, dotfileState, mergeRuntimeState, ownedState,
+  applyConfig, applyState, dotfileState, mergeRuntimeState, ownedState,
   runtimeStatePath, stateHasDrift, writeState,
-} from "./state"
+} from "./config"
 
 async function withState(
   run: (home: string, path: string) => Promise<void>,
@@ -85,7 +85,7 @@ describe("managed Claude state", () => {
       await writeFile(path, before)
       for (const flag of ["--check", "--dry-run"]) {
         const proc = Bun.spawn([process.execPath,
-          join(import.meta.dir, "state.ts"), flag], {
+          join(import.meta.dir, "config.ts"), flag], {
           env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
         })
         const [stdout, stderr, code] = await Promise.all([
@@ -120,10 +120,27 @@ describe("managed Claude state", () => {
       await withState(async (home, path) => {
         const before = '{"editorMode":"emacs"}'
         await writeFile(path, before)
-        await expect(applyState({ runtimePath: path, quiet: true }))
+        const settingsPath = join(home, "settings.json")
+        await writeFile(settingsPath, "{}")
+        await expect(applyConfig({ settingsPath, statePath: path, quiet: true }))
           .rejects.toThrow("Claude is running")
         expect(await readFile(path, "utf8")).toBe(before)
-        expect(await readdir(home)).toEqual([".claude.json"])
+        expect(await readFile(settingsPath, "utf8")).toBe("{}")
+        expect((await readdir(home)).sort())
+          .toEqual([".claude.json", "settings.json"])
+      })
+    })
+
+  test.skipIf(runningClaude)("shared setup creates both runtime files",
+    async () => {
+      await withState(async (home, path) => {
+        const settingsPath = join(home, "settings.json")
+        const options = { settingsPath, statePath: path, quiet: true }
+        expect(await applyConfig(options)).toBe(true)
+        expect(JSON.parse(await readFile(path, "utf8"))).toEqual(dotfileState)
+        const settings = JSON.parse(await readFile(settingsPath, "utf8"))
+        expect(settings.tui).toBe("default")
+        expect(await applyConfig(options)).toBe(false)
       })
     })
 })

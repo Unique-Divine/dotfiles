@@ -1,4 +1,5 @@
-import { mkdir, rename, writeFile } from "node:fs/promises"
+import { bash } from "@uniquedivine/bash"
+import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { Command } from "commander"
 
@@ -251,7 +252,126 @@ export const applySettings = async ({
   return true
 }
 
-interface SettingsOptions {
+// These internal Claude fields were verified with Claude Code 2.1.310.
+// Authentication, MCPs, project trust, and machine identity stay host-local.
+export const dotfileState = {
+  editorMode: "vim",
+  showExpandedTodos: true,
+  hasCompletedOnboarding: true,
+} as const
+
+export const runtimeStatePath = (env: NodeJS.ProcessEnv = process.env): string => {
+  if (!env.HOME) throw new Error("HOME is not set")
+  return resolve(env.HOME, ".claude.json")
+}
+
+export const mergeRuntimeState = (state: JsonObject): JsonObject => ({
+  ...state,
+  ...dotfileState,
+})
+
+export const ownedState = (state: JsonObject): JsonObject =>
+  Object.fromEntries(Object.keys(dotfileState)
+    .filter((key) => Object.hasOwn(state, key))
+    .map((key) => [key, state[key]]))
+
+export const stateHasDrift = (state: JsonObject): boolean =>
+  Object.entries(dotfileState).some(([key, value]) => state[key] !== value)
+
+export async function assertClaudeStopped(): Promise<void> {
+  const uid = process.getuid?.()
+  if (uid === undefined) throw new Error("Claude state sync requires Unix")
+  const result = await bash(`pgrep -u ${uid} -x claude`)
+  if (result.exitCode === 0) {
+    throw new Error("Claude is running. Exit Claude sessions before repairing " +
+      "state with just claude config --run; existing sessions were left alone.")
+  }
+  if (result.exitCode !== 1) {
+    throw new Error("Unable to check running Claude processes; no state written")
+  }
+}
+
+/** Write an already-planned merge after the caller checks for running Claude. */
+export async function writeState(
+  path: string, before: string, merged: JsonObject,
+): Promise<void> {
+  const latest = await readJsonObject(path)
+  if (latest.text !== before) {
+    throw new Error("Claude state changed during sync; rerun after exiting Claude")
+  }
+  await mkdir(dirname(path), { recursive: true })
+  const suffix = crypto.randomUUID()
+  const temporary = `${path}.${suffix}.tmp`
+  try {
+    if (before) {
+      await writeFile(`${path}.before-dotfiles-${suffix}`, before,
+        { mode: 0o600, flag: "wx" })
+    }
+    await writeFile(temporary, stringify(merged), { mode: 0o600, flag: "wx" })
+    // Check again before replacing a file Claude can rewrite independently.
+    if ((await readJsonObject(path)).text !== before) {
+      throw new Error("Claude state changed during sync; refusing to replace it")
+    }
+    await rename(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+export interface StateOptions {
+  runtimePath?: string
+  dryRun?: boolean
+  quiet?: boolean
+}
+
+export async function applyState({
+  runtimePath = runtimeStatePath(), dryRun = false, quiet = false,
+}: StateOptions = {}): Promise<boolean> {
+  const { config, text } = await readJsonObject(runtimePath)
+  if (!stateHasDrift(config)) {
+    if (!quiet) console.log(`Claude state is already current: ${runtimePath}`)
+    return false
+  }
+  const merged = mergeRuntimeState(config)
+  if (!quiet) {
+    console.log(`Claude state differs: ${runtimePath}`)
+    process.stdout.write(unifiedDiff(
+      stringify(ownedState(config)), stringify(ownedState(merged)),
+      "runtime Claude state (managed keys)", "desired Claude state (managed keys)",
+    ))
+  }
+  if (!dryRun) {
+    await assertClaudeStopped()
+    await writeState(runtimePath, text, merged)
+  }
+  return true
+}
+
+export interface ConfigOptions {
+  settingsPath?: string
+  statePath?: string
+  dryRun?: boolean
+  quiet?: boolean
+}
+
+/** Preflight both files before applying either part of Claude configuration. */
+export async function applyConfig({
+  settingsPath = runtimeSettingsPath(), statePath = runtimeStatePath(),
+  dryRun = false, quiet = false,
+}: ConfigOptions = {}): Promise<boolean> {
+  await Promise.all([readJsonObject(settingsPath), readJsonObject(statePath)])
+  // State repair can be blocked by running Claude. Check it before settings
+  // writes so that a blocked setup leaves both files untouched.
+  const stateChanged = await applyState({
+    runtimePath: statePath, dryRun, quiet,
+  })
+  const settingsChanged = await applySettings({
+    runtimePath: settingsPath, dryRun, quiet,
+  })
+  return stateChanged || settingsChanged
+}
+
+interface CliOptions {
   check?: boolean
   dryRun?: boolean
   print?: boolean
@@ -261,48 +381,44 @@ interface SettingsOptions {
 
 export const createProgram = (): Command => {
   const program = new Command()
-
   program
-    .name("claude-settings")
-    .description(
-      "Merge managed keys into ~/.claude/settings.json and keep the rest.",
-    )
-    .option("--run", "write the runtime settings if they differ")
-    .option("--dry-run", "print the managed-key diff without writing")
-    .option("--check", "exit with code 1 if the runtime settings would change")
-    .option("--print", "print the managed keys of the generated settings")
-    .option("--quiet", "suppress normal output with --run")
-    .action(async (options: SettingsOptions) => {
-      const hasAction =
-        options.run || options.dryRun || options.check || options.print
-
-      if (!hasAction) {
+    .name("claude-config")
+    .description("Manage Claude settings, portable preferences, and onboarding")
+    .option("--run", "repair managed configuration in both runtime files")
+    .option("--dry-run", "show managed-key diffs without writing")
+    .option("--check", "exit with code 1 if either file has managed drift")
+    .option("--print", "print the desired managed keys for both files")
+    .option("--quiet", "suppress normal output")
+    .action(async (options: CliOptions) => {
+      if (!options.run && !options.dryRun && !options.check && !options.print) {
         program.outputHelp()
         return
       }
-
-      const runtimePath = runtimeSettingsPath()
-
-      if (options.print) {
-        const { config } = await readJsonObject(runtimePath)
-        process.stdout.write(stringify(ownedView(mergeRuntimeSettings(config))))
-        return
-      }
-
-      const changed = await applySettings({
-        runtimePath,
-        dryRun: !options.run || options.dryRun || options.check,
-        quiet: options.quiet,
-      })
-
-      if (options.check && changed) {
+      try {
+        const settingsPath = runtimeSettingsPath()
+        const statePath = runtimeStatePath()
+        if (options.print) {
+          const [settings, state] = await Promise.all([
+            readJsonObject(settingsPath), readJsonObject(statePath),
+          ])
+          process.stdout.write(stringify({
+            settings: ownedView(mergeRuntimeSettings(settings.config)),
+            state: ownedState(mergeRuntimeState(state.config)),
+          }))
+          return
+        }
+        const changed = await applyConfig({
+          settingsPath, statePath,
+          dryRun: !options.run || options.dryRun || options.check,
+          quiet: options.quiet,
+        })
+        if (options.check && changed) process.exitCode = 1
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : "Config sync failed")
         process.exitCode = 1
       }
     })
-
   return program
 }
 
-if (import.meta.main) {
-  await createProgram().parseAsync()
-}
+if (import.meta.main) await createProgram().parseAsync()

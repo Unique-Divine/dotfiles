@@ -4,7 +4,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { join, resolve } from "node:path"
 
-import { stringify } from "../claude/settings"
+import { stringify } from "../claude/config"
 
 export interface Harness {
   name: string

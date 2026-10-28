@@ -239,7 +239,7 @@ usage and options.
 ### Claude Code config
 
 Directory [`claude`](claude/README.md) manages Claude Code settings and MCP
-servers. [`claude/settings.ts`](claude/settings.ts) merges owned keys, such as
+servers. [`claude/config.ts`](claude/config.ts) merges owned keys, such as
 empty commit and PR `attribution`, into `$HOME/.claude/settings.json`, and
 adds the `rg` allow rule. [`claude/CLAUDE.md`](claude/CLAUDE.md) is linked to
 `$HOME/.claude/CLAUDE.md` as global instructions.

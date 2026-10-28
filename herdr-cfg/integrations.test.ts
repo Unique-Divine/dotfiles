@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { applySettings } from "../claude/settings"
+import { applySettings } from "../claude/config"
 import { applyConfig } from "../codex/config"
 import { applyCliConfig } from "../cursor/cli-config"
 

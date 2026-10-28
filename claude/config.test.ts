@@ -4,14 +4,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  applyConfig,
   applySettings,
+  dotfileState,
   dotfileSettings,
   managedAllowRules,
   mergePermissions,
   mergeRuntimeSettings,
   ownedView,
   statusLinePath,
-} from "./settings.ts"
+} from "./config.ts"
 
 /** Settings sync writes to a runtime file that has no permissions yet. */
 const freshSettings = {
@@ -19,7 +21,7 @@ const freshSettings = {
   permissions: { allow: [...managedAllowRules] },
 }
 
-const scriptPath = join(import.meta.dir, "settings.ts")
+const scriptPath = join(import.meta.dir, "config.ts")
 
 const runSettings = async (
   homeDir: string,
@@ -48,6 +50,8 @@ const withHome = async (
   const settingsPath = join(homeDir, ".claude/settings.json")
 
   try {
+    // These cases isolate settings behavior through the shared config CLI.
+    await writeFile(join(homeDir, ".claude.json"), JSON.stringify(dotfileState))
     if (settings !== undefined) {
       await mkdir(join(homeDir, ".claude"), { recursive: true })
       await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
@@ -210,6 +214,53 @@ describe("claude settings", () => {
         expect(dryRun.stdout).toContain("+    \"sessionUrl\": false")
       },
     )
+  })
+
+  test("shared CLI checks both files and prints only managed configuration",
+    async () => {
+      await withHome(freshSettings, async (home, settingsPath) => {
+        expect((await runSettings(home, ["--check"])).exitCode).toBe(0)
+        const statePath = join(home, ".claude.json")
+        const secret = crypto.randomUUID()
+        const state = JSON.stringify({
+          ...dotfileState, editorMode: "emacs", oauthAccount: { secret },
+        })
+        await writeFile(statePath, state)
+        const settings = await Bun.file(settingsPath).text()
+        expect((await runSettings(home, ["--check"])).exitCode).toBe(1)
+        const printed = await runSettings(home, ["--print"])
+        expect(JSON.parse(printed.stdout)).toEqual({
+          settings: freshSettings, state: dotfileState,
+        })
+        expect(printed.stdout + printed.stderr).not.toContain(secret)
+        expect(await Bun.file(statePath).text()).toBe(state)
+        expect(await Bun.file(settingsPath).text()).toBe(settings)
+      })
+    })
+
+  test("malformed settings prevent either file from being repaired", async () => {
+    await withHome(undefined, async (home, settingsPath) => {
+      await mkdir(join(home, ".claude"), { recursive: true })
+      await writeFile(settingsPath, "{broken")
+      const statePath = join(home, ".claude.json")
+      await writeFile(statePath, "{}")
+      await expect(applyConfig({ settingsPath, statePath, quiet: true }))
+        .rejects.toThrow("Unable to parse JSON")
+      expect(await Bun.file(settingsPath).text()).toBe("{broken")
+      expect(await Bun.file(statePath).text()).toBe("{}")
+    })
+  })
+
+  test("malformed state prevents settings from being repaired", async () => {
+    await withHome({}, async (home, settingsPath) => {
+      const statePath = join(home, ".claude.json")
+      await writeFile(statePath, "{broken")
+      const before = await Bun.file(settingsPath).text()
+      await expect(applyConfig({ settingsPath, statePath, quiet: true }))
+        .rejects.toThrow("Unable to parse JSON")
+      expect(await Bun.file(settingsPath).text()).toBe(before)
+      expect(await Bun.file(statePath).text()).toBe("{broken")
+    })
   })
 })
 

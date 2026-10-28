@@ -2,7 +2,7 @@ import { basename, dirname, resolve } from "node:path"
 import { Command } from "commander"
 
 import { cursorMcpConfigPath, readCursorMcpServers } from "../codex/config.ts"
-import { isJsonObject, readJsonObject, type JsonObject } from "./settings.ts"
+import { isJsonObject, readJsonObject, type JsonObject } from "./config.ts"
 
 /**
  * Syncs Cursor MCP servers into Claude Code's user scope.
