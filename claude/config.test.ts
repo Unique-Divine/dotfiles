@@ -4,14 +4,19 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  applyConfig,
   applySettings,
+  claudePaths,
+  dotfileState,
   dotfileSettings,
   managedAllowRules,
   mergePermissions,
   mergeRuntimeSettings,
   ownedView,
+  runtimeSettingsPath,
+  runtimeStatePath,
   statusLinePath,
-} from "./settings.ts"
+} from "./config.ts"
 
 /** Settings sync writes to a runtime file that has no permissions yet. */
 const freshSettings = {
@@ -19,15 +24,16 @@ const freshSettings = {
   permissions: { allow: [...managedAllowRules] },
 }
 
-const scriptPath = join(import.meta.dir, "settings.ts")
+const scriptPath = join(import.meta.dir, "config.ts")
 
 const runSettings = async (
   homeDir: string,
   args: string[] = [],
+  overrides: NodeJS.ProcessEnv = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
   const proc = Bun.spawn(["bun", scriptPath, ...args], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, HOME: homeDir },
+    env: { ...process.env, HOME: homeDir, CLAUDE_CONFIG_DIR: "", ...overrides },
     stderr: "pipe",
     stdout: "pipe",
   })
@@ -48,6 +54,8 @@ const withHome = async (
   const settingsPath = join(homeDir, ".claude/settings.json")
 
   try {
+    // These cases isolate settings behavior through the shared config CLI.
+    await writeFile(join(homeDir, ".claude.json"), JSON.stringify(dotfileState))
     if (settings !== undefined) {
       await mkdir(join(homeDir, ".claude"), { recursive: true })
       await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
@@ -60,6 +68,63 @@ const withHome = async (
 }
 
 describe("claude settings", () => {
+  test("settings and state share the active Claude configuration root", () => {
+    for (const override of [undefined, "", "/test/alternate profile"]) {
+      const env = { HOME: "/test", CLAUDE_CONFIG_DIR: override }
+      const directory = override || "/test/.claude"
+      const state = override
+        ? "/test/alternate profile/.claude.json" : "/test/.claude.json"
+      expect(claudePaths(env)).toEqual({
+        directory, settings: join(directory, "settings.json"), state,
+      })
+      expect(runtimeSettingsPath(env)).toBe(join(directory, "settings.json"))
+      expect(runtimeStatePath(env)).toBe(state)
+    }
+  })
+
+  test("shared CLI checks and repairs only the selected alternate profile",
+    async () => {
+      await withHome(freshSettings, async (home, settingsPath) => {
+        const directory = join(home, "alternate profile")
+        await mkdir(directory)
+        const alternateStatePath = join(directory, ".claude.json")
+        const alternateSettingsPath = join(directory, "settings.json")
+        const privateState = { oauthAccount: { id: crypto.randomUUID() } }
+        await writeFile(alternateStatePath, JSON.stringify({
+          ...privateState, editorMode: "emacs", hasCompletedOnboarding: false,
+        }))
+        await writeFile(alternateSettingsPath,
+          `${JSON.stringify(freshSettings, null, 2)}\n`)
+        const beforeSettings = await Bun.file(settingsPath).text()
+        const beforeState = await Bun.file(join(home, ".claude.json")).text()
+        const overrides = { CLAUDE_CONFIG_DIR: directory }
+        const checked = await runSettings(home, ["--check", "--quiet"], overrides)
+        expect(checked.exitCode).toBe(1)
+        expect(await Bun.file(alternateStatePath).json()).toEqual({
+          ...privateState, editorMode: "emacs", hasCompletedOnboarding: false,
+        })
+        const printed = await runSettings(home, ["--print"], overrides)
+        expect(JSON.parse(printed.stdout)).toEqual({
+          settings: freshSettings, state: dotfileState,
+        })
+        // Existing sessions can run under another profile. Keep the state
+        // current before exercising the CLI's settings write in this fixture.
+        await writeFile(alternateStatePath, JSON.stringify({
+          ...privateState, ...dotfileState,
+        }))
+        await writeFile(alternateSettingsPath, "{}")
+        const repaired = await runSettings(home, ["--run", "--quiet"], overrides)
+        expect(repaired.exitCode).toBe(0)
+        expect(await Bun.file(alternateSettingsPath).json()).toEqual(freshSettings)
+        expect(await Bun.file(alternateStatePath).json()).toEqual({
+          ...privateState, ...dotfileState,
+        })
+        expect((await runSettings(home, ["--check"], overrides)).exitCode).toBe(0)
+        expect(await Bun.file(settingsPath).text()).toBe(beforeSettings)
+        expect(await Bun.file(join(home, ".claude.json")).text()).toBe(beforeState)
+      })
+    })
+
   test("hides commit, PR, and session-link attribution", () => {
     expect(dotfileSettings.attribution).toEqual({
       commit: "",
@@ -210,6 +275,53 @@ describe("claude settings", () => {
         expect(dryRun.stdout).toContain("+    \"sessionUrl\": false")
       },
     )
+  })
+
+  test("shared CLI checks both files and prints only managed configuration",
+    async () => {
+      await withHome(freshSettings, async (home, settingsPath) => {
+        expect((await runSettings(home, ["--check"])).exitCode).toBe(0)
+        const statePath = join(home, ".claude.json")
+        const secret = crypto.randomUUID()
+        const state = JSON.stringify({
+          ...dotfileState, editorMode: "emacs", oauthAccount: { secret },
+        })
+        await writeFile(statePath, state)
+        const settings = await Bun.file(settingsPath).text()
+        expect((await runSettings(home, ["--check"])).exitCode).toBe(1)
+        const printed = await runSettings(home, ["--print"])
+        expect(JSON.parse(printed.stdout)).toEqual({
+          settings: freshSettings, state: dotfileState,
+        })
+        expect(printed.stdout + printed.stderr).not.toContain(secret)
+        expect(await Bun.file(statePath).text()).toBe(state)
+        expect(await Bun.file(settingsPath).text()).toBe(settings)
+      })
+    })
+
+  test("malformed settings prevent either file from being repaired", async () => {
+    await withHome(undefined, async (home, settingsPath) => {
+      await mkdir(join(home, ".claude"), { recursive: true })
+      await writeFile(settingsPath, "{broken")
+      const statePath = join(home, ".claude.json")
+      await writeFile(statePath, "{}")
+      await expect(applyConfig({ settingsPath, statePath, quiet: true }))
+        .rejects.toThrow("Unable to parse JSON")
+      expect(await Bun.file(settingsPath).text()).toBe("{broken")
+      expect(await Bun.file(statePath).text()).toBe("{}")
+    })
+  })
+
+  test("malformed state prevents settings from being repaired", async () => {
+    await withHome({}, async (home, settingsPath) => {
+      const statePath = join(home, ".claude.json")
+      await writeFile(statePath, "{broken")
+      const before = await Bun.file(settingsPath).text()
+      await expect(applyConfig({ settingsPath, statePath, quiet: true }))
+        .rejects.toThrow("Unable to parse JSON")
+      expect(await Bun.file(settingsPath).text()).toBe(before)
+      expect(await Bun.file(statePath).text()).toBe("{broken")
+    })
   })
 })
 

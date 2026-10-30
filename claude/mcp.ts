@@ -2,7 +2,9 @@ import { basename, dirname, resolve } from "node:path"
 import { Command } from "commander"
 
 import { cursorMcpConfigPath, readCursorMcpServers } from "../codex/config.ts"
-import { isJsonObject, readJsonObject, type JsonObject } from "./settings.ts"
+import {
+  isJsonObject, readJsonObject, runtimeStatePath, type JsonObject,
+} from "./config.ts"
 
 /**
  * Syncs Cursor MCP servers into Claude Code's user scope.
@@ -38,17 +40,7 @@ export interface McpPlan {
   skip: { name: string; reason: string }[]
 }
 
-export const claudeConfigPath = (
-  env: NodeJS.ProcessEnv = process.env,
-): string => {
-  const home = env.HOME
-
-  if (!home) {
-    throw new Error("HOME is not set")
-  }
-
-  return resolve(home, ".claude.json")
-}
+export const claudeConfigPath = runtimeStatePath
 
 export const defaultLauncherContext = (
   sourcePath: string = cursorMcpConfigPath(),

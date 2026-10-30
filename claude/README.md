@@ -1,8 +1,23 @@
-# Claude Code Config
+# Claude Code configuration
 
 This directory manages the parts of Claude Code config that should match on
 every machine. `just sync` applies them and `just health` fails on drift.
 Background: [#67](https://github.com/Unique-Divine/dotfiles/issues/67).
+
+Script `config.ts` is the single entry point for both
+`$HOME/.claude/settings.json` and `$HOME/.claude.json`. It preflights both files
+before writing, and checks or repairs the managed configuration in one call:
+
+```bash
+just claude config --check
+just claude config --dry-run
+just claude config --run
+```
+
+With `CLAUDE_CONFIG_DIR` set to a nonempty path, settings, global state, MCP
+configuration reads, and Herdr hooks use that directory. Settings live at
+`settings.json` and global state at `.claude.json` inside it. An unset or empty
+override keeps the default paths above; other profiles are left alone.
 
 ## Global instructions
 
@@ -15,7 +30,7 @@ session.
 
 ## Settings
 
-File `settings.ts` owns top-level keys in `$HOME/.claude/settings.json` and
+File `config.ts` owns top-level keys in `$HOME/.claude/settings.json` and
 keeps every other key, including values that `/config`, `/model`, and
 permission prompts write. Claude Code writes this file, so do not symlink it.
 
@@ -69,11 +84,28 @@ file.
 The diff shows only owned keys and `permissions`, so unmanaged values such as
 an `env` block never print.
 
-```bash
-bun run claude/settings.ts --dry-run
-bun run claude/settings.ts --run
-bun run claude/settings.ts --check
+## Portable preferences and onboarding
+
+`just sync` enforces these fields in `$HOME/.claude.json` on every machine:
+
+```json
+{
+  "editorMode": "vim",
+  "showExpandedTodos": true,
+  "hasCompletedOnboarding": true
+}
 ```
+
+The source of truth is `config.ts`. Other fields, including MCP definitions,
+authentication, account identity, and project trust, are preserved. Login
+remains a separate step on each machine. These are internal Claude fields;
+the onboarding marker was verified with Claude Code 2.1.310 on Homebox.
+
+`just health` checks the fields without writing. Repair refuses to change
+state while Claude processes are running under your user, because Claude can
+rewrite this file. An already-current file needs no write and does not block
+sync. Changes use a private backup and an atomic replacement. The state diff
+shows only the three managed fields.
 
 ## MCP servers
 

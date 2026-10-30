@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { parseLaunchArgs, resolveLaunchSpec } from "./mcp-launch.ts"
 import {
   describePlan,
+  claudeConfigPath,
   isLauncherEntry,
   launcherEntry,
   planCommands,
@@ -52,12 +53,14 @@ const withTempDir = async (
 const runScript = async (
   cmd: string[],
   input?: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
   const proc = Bun.spawn(cmd, {
     cwd: join(import.meta.dir, ".."),
     stdin: input === undefined ? "ignore" : new Blob([input]),
     stdout: "pipe",
     stderr: "pipe",
+    env: env ?? process.env,
   })
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
@@ -69,6 +72,30 @@ const runScript = async (
 }
 
 describe("claude mcp plan", () => {
+  test("MCP reads use the same alternate Claude root as configuration", async () => {
+    await withTempDir(async (home) => {
+      const directory = join(home, "alternate profile")
+      await Bun.write(join(directory, ".claude.json"), JSON.stringify({
+        mcpServers: { stale: launcherEntry("stale", ctx) },
+      }))
+      const source = join(home, "empty-mcp.json")
+      await writeFile(source, JSON.stringify({ mcpServers: {} }))
+      await writeFile(join(home, ".claude.json"), "{}")
+      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: directory }
+      expect(claudeConfigPath(env)).toBe(join(directory, ".claude.json"))
+      expect(claudeConfigPath({ HOME: home, CLAUDE_CONFIG_DIR: "" }))
+        .toBe(join(home, ".claude.json"))
+      const result = await runScript([
+        process.execPath, mcpScript, "--check", "--mcp-source", source,
+      ], undefined, env)
+      expect(result.exitCode).toBe(1)
+      expect(result.stdout).toContain("stale")
+      expect(await Bun.file(join(home, ".claude.json")).text()).toBe("{}")
+      expect((await Bun.file(join(directory, ".claude.json")).json())
+        .mcpServers.stale).toEqual(launcherEntry("stale", ctx))
+    })
+  })
+
   test("adds stdio servers and skips remote servers", () => {
     const plan = planMcpSync(cursorServers, {}, ctx)
 

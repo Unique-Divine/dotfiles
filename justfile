@@ -112,6 +112,10 @@ gh-rev-install:
 herdr-install *ARGS:
   bun run herdr-release/install.ts {{ARGS}}
 
+# Install or repair required Codex, Claude Code, and Cursor Herdr hooks.
+herdr-integrations:
+  bun run herdr-cfg/integrations.ts --run
+
 # Preview one agent per tab in the current workspace; use --run to move.
 [positional-arguments]
 herdr-flatten *ARGS:
@@ -207,7 +211,8 @@ sync:
   fi
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
-  bun run claude/settings.ts --run
+  bun run claude/config.ts --run
+  just herdr-integrations
   if command -v claude >/dev/null 2>&1; then
     bun run claude/mcp.ts --run
   fi
@@ -242,8 +247,7 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
-# Run the Claude Code settings or MCP sync CLI, such as `just claude mcp
-# --dry-run`. For options, run `just claude settings` or `just claude mcp`.
+# Manage Claude configuration or MCPs, e.g. just claude config --check.
 claude TOOL *ARGS:
   bun run claude/{{TOOL}}.ts {{ARGS}}
 

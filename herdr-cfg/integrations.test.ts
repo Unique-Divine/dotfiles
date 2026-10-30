@@ -1,0 +1,290 @@
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile }
+  from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { parse, stringify as stringifyToml, type TomlTable } from "smol-toml"
+
+import { applySettings, claudePaths } from "../claude/config"
+import { applyConfig, serialize as serializeCodexConfig } from "../codex/config"
+import { applyCliConfig } from "../cursor/cli-config"
+
+import {
+  checkIntegrations, configDirectory, harnesses, installIntegrations,
+  enableCodexHooks, missingTools, readCodexConfig, readConfig, registered,
+  repairCodexHooks, type Environment,
+} from "./integrations"
+
+const homes: string[] = []
+afterEach(async () => {
+  await Promise.all(homes.splice(0).map((home) =>
+    rm(home, { recursive: true, force: true })))
+})
+
+async function environment(): Promise<Environment> {
+  const home = await mkdtemp(join(tmpdir(), "herdr hooks ' "))
+  homes.push(home)
+  return { HOME: home, PATH: process.env.PATH,
+    CODEX_HOME: join(home, "custom codex"),
+    CLAUDE_CONFIG_DIR: join(home, "custom claude"),
+    CURSOR_CONFIG_DIR: join(home, "custom cursor") }
+}
+
+async function snapshot(env: Environment): Promise<string[]> {
+  const texts: string[] = []
+  for (const harness of harnesses) {
+    const directory = configDirectory(harness, env)
+    for (const relative of [harness.config, harness.script,
+      ...(harness.name === "codex" ? ["config.toml"] : [])]) {
+      texts.push(await readFile(join(directory, relative), "utf8"))
+    }
+  }
+  return texts
+}
+
+test("required executables never silently skip a harness", async () => {
+  const env = await environment()
+  env.PATH = ""
+  expect(missingTools(env)).toEqual([
+    "herdr", "codex", "claude", "cursor-agent or agent",
+  ])
+  await expect(installIntegrations(env)).rejects.toThrow("Missing required CLI")
+})
+
+test("config directories honor defaults and tilde overrides", () => {
+  const codex = harnesses[0]!
+  expect(configDirectory(codex, { HOME: "/test" })).toBe("/test/.codex")
+  expect(configDirectory(codex, {
+    HOME: "/test", CODEX_HOME: "~/custom codex",
+  })).toBe("/test/custom codex")
+  for (const override of [undefined, "", "/test/alternate profile"]) {
+    const env = { HOME: "/test", CLAUDE_CONFIG_DIR: override }
+    expect(configDirectory(harnesses[1]!, env)).toBe(claudePaths(env).directory)
+  }
+})
+
+test("registration rejects disabled hooks and restrictive matchers", () => {
+  const claude = harnesses[1]!
+  const command = "bash '/test/hook.sh' session"
+  const config = { hooks: { SessionStart: [
+    { matcher: "^(startup|resume)$", hooks: [{ type: "command", command }] },
+  ] } }
+  expect(registered(claude, config, "/test/hook.sh")).toBe(true)
+  expect(registered(claude, { ...config, disableAllHooks: true },
+    "/test/hook.sh")).toBe(false)
+  config.hooks.SessionStart[0]!.matcher = "^resume$"
+  expect(registered(claude, config, "/test/hook.sh")).toBe(false)
+})
+
+test("malformed JSON and TOML diagnostics never contain source values",
+  async () => {
+    const env = await environment()
+    const sentinel = `secret_${crypto.randomUUID().replaceAll("-", "")}`
+    const cases = [
+      { harness: harnesses[1]!, format: "JSON", file: "settings.json",
+        text: `{"env":{"TOKEN":${sentinel}}}`,
+        read: () => readConfig(harnesses[1]!, env) },
+      { harness: harnesses[0]!, format: "TOML", file: "config.toml",
+        text: `[mcp_servers.private.env]\nTOKEN = "${sentinel}" trailing\n`,
+        read: () => readCodexConfig(env) },
+    ]
+    for (const entry of cases) {
+      const directory = configDirectory(entry.harness, env)
+      await mkdir(directory, { recursive: true })
+      const path = join(directory, entry.file)
+      await writeFile(path, entry.text)
+      let diagnostic = ""
+      try { await entry.read() }
+      catch (error) { diagnostic = String(error) }
+      expect(diagnostic).toContain(`Unable to parse ${entry.format}`)
+      expect(diagnostic).toContain(path)
+      expect(diagnostic).not.toContain(sentinel)
+      expect(await readFile(path, "utf8")).toBe(entry.text)
+    }
+  })
+
+test("Codex hook repair changes only global and selected-profile flags",
+  async () => {
+    const env = await environment()
+    const directory = configDirectory(harnesses[0]!, env)
+    await mkdir(directory, { recursive: true })
+    const path = join(directory, "config.toml")
+    const original = {
+      profile: "work",
+      features: { hooks: false, other: true },
+      profiles: {
+        work: {
+          model: "test-model", features: { hooks: false, unrelated: true },
+        },
+        personal: { features: { hooks: false } },
+      },
+      mcp_servers: { private: { env: { TOKEN: crypto.randomUUID() } } },
+    }
+    const desired = {
+      ...original,
+      features: { ...original.features, hooks: true },
+      profiles: { ...original.profiles,
+        work: { ...original.profiles.work,
+          features: { ...original.profiles.work.features, hooks: true } } },
+    }
+    expect(enableCodexHooks(original)).toEqual(desired)
+    expect(original.profiles.work.features.hooks).toBe(false)
+    await writeFile(path, stringifyToml(original))
+    await repairCodexHooks(env)
+    const once = await readFile(path, "utf8")
+    expect(parse(once)).toEqual(desired)
+    expect(once).toBe(serializeCodexConfig(desired))
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    await repairCodexHooks(env)
+    expect(await readFile(path, "utf8")).toBe(once)
+    expect(await readdir(directory)).toEqual(["config.toml"])
+    const current = { features: { hooks: true } }
+    expect(enableCodexHooks(current)).toBe(current)
+
+    // Reproduce the sync ordering: portable defaults precede hook repair.
+    // Repair must retain the exact format checked by Codex config health.
+    const options = { runtimePath: path,
+      mcpSourcePath: join(env.HOME!, "missing-mcp.json"), quiet: true }
+    await applyConfig(options)
+    const managed = parse(await readFile(path, "utf8"))
+    const profiles = managed.profiles as TomlTable
+    const work = profiles.work as TomlTable
+    const features = work.features as TomlTable
+    features.hooks = false
+    await writeFile(path, serializeCodexConfig(managed))
+    await repairCodexHooks(env)
+    expect(await applyConfig({ ...options, dryRun: true })).toBe(false)
+  })
+
+// Real installers and CLI version probes are required; no substitute binaries.
+// Minimal CI environments still run the pure and preflight tests above.
+describe.skipIf(missingTools(process.env).length > 0)("real Herdr installer", () => {
+  test("selected Codex profile repair converges and check mode is read-only",
+    async () => {
+      const env = await environment()
+      await installIntegrations(env)
+      const path = join(configDirectory(harnesses[0]!, env), "config.toml")
+      const config = {
+        profile: "work",
+        features: { hooks: true },
+        profiles: {
+          work: { features: { hooks: false }, model: "test-model" },
+          personal: { features: { hooks: false } },
+        },
+        mcp_servers: { private: { env: { TOKEN: crypto.randomUUID() } } },
+      }
+      const before = stringifyToml(config)
+      await writeFile(path, before)
+      expect((await checkIntegrations(env)).join()).toContain("must be enabled")
+      expect(await readFile(path, "utf8")).toBe(before)
+      await installIntegrations(env)
+      expect(await checkIntegrations(env)).toEqual([])
+      expect(parse(await readFile(path, "utf8"))).toEqual({
+        ...config,
+        profiles: { ...config.profiles,
+          work: { ...config.profiles.work, features: { hooks: true } } },
+      })
+      const once = await snapshot(env)
+      await installIntegrations(env)
+      expect(await snapshot(env)).toEqual(once)
+    }, 60000)
+
+  test("both CLI modes sanitize parser failures without changing files",
+    async () => {
+      const env = await environment()
+      await installIntegrations(env)
+      const codexPath = join(configDirectory(harnesses[0]!, env), "config.toml")
+      const claudePath = join(configDirectory(harnesses[1]!, env), "settings.json")
+      const originalToml = await readFile(codexPath, "utf8")
+      const originalJson = await readFile(claudePath, "utf8")
+      const sentinel = `secret_${crypto.randomUUID().replaceAll("-", "")}`
+      for (const format of ["JSON", "TOML"]) {
+        const path = format === "JSON" ? claudePath : codexPath
+        await writeFile(claudePath, originalJson)
+        await writeFile(codexPath, originalToml)
+        await writeFile(path, format === "JSON"
+          ? `{"env":{"TOKEN":${sentinel}}}`
+          : `[features]\nhooks = true\n` +
+            `[mcp_servers.private.env]\nTOKEN = "${sentinel}" trailing\n`)
+        const before = await snapshot(env)
+        for (const mode of ["--check", "--run"]) {
+          const proc = Bun.spawn([process.execPath,
+            join(import.meta.dir, "integrations.ts"), mode], {
+            env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe",
+          })
+          const [stdout, stderr, code] = await Promise.all([
+            new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+            proc.exited,
+          ])
+          expect(code).toBe(1)
+          expect(stdout + stderr).toContain(`Unable to parse ${format}`)
+          expect(stdout + stderr).toContain(path)
+          expect(stdout + stderr).not.toContain(sentinel)
+          expect(await snapshot(env)).toEqual(before)
+        }
+      }
+    }, 60000)
+
+  test("repair preserves unrelated settings and is repeatable/read-only", async () => {
+    const env = await environment()
+    for (const harness of harnesses) {
+      const directory = configDirectory(harness, env)
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, harness.config), JSON.stringify({
+        custom: "preserve me", hooks: { unrelated: [{ command: "true" }] },
+      }))
+    }
+    await installIntegrations(env)
+    expect(await checkIntegrations(env)).toEqual([])
+    await applySettings({ runtimePath: join(configDirectory(harnesses[1]!, env),
+      "settings.json"), quiet: true })
+    await applyConfig({ runtimePath: join(configDirectory(harnesses[0]!, env),
+      "config.toml"), mcpSourcePath: join(env.HOME!, "missing-mcp.json"),
+      quiet: true })
+    await applyCliConfig({ runtimePath: join(configDirectory(harnesses[2]!, env),
+      "cli-config.json"), quiet: true })
+    expect(await checkIntegrations(env)).toEqual([])
+    const before = await snapshot(env)
+    await checkIntegrations(env)
+    expect(await snapshot(env)).toEqual(before)
+    await installIntegrations(env)
+    expect(await snapshot(env)).toEqual(before)
+    for (const harness of harnesses) {
+      const config = JSON.parse(await readFile(join(
+        configDirectory(harness, env), harness.config), "utf8"))
+      expect(config.custom).toBe("preserve me")
+      expect(config.hooks.unrelated).toEqual([{ command: "true" }])
+    }
+
+    const codex = harnesses[0]!
+    const codexDirectory = configDirectory(codex, env)
+    await writeFile(join(codexDirectory, "hooks.json"), "{}")
+    expect((await checkIntegrations(env)).join()).toContain("not correctly registered")
+    await installIntegrations(env)
+    const script = join(codexDirectory, codex.script)
+    await writeFile(script, (await readFile(script, "utf8")) + "\nif\n")
+    expect((await checkIntegrations(env)).join()).toContain("codex:")
+    await installIntegrations(env)
+    await writeFile(script, (await readFile(script, "utf8"))
+      .replace(/HERDR_INTEGRATION_VERSION=\d+/, "HERDR_INTEGRATION_VERSION=0"))
+    expect((await checkIntegrations(env)).join()).toContain("not current")
+    await installIntegrations(env)
+    await writeFile(join(codexDirectory, "config.toml"),
+      '[features]\nhooks = false\n')
+    expect((await checkIntegrations(env)).join()).toContain("must be enabled")
+    await installIntegrations(env)
+    expect(await checkIntegrations(env)).toEqual([])
+  }, 60000)
+
+  test("malformed configuration fails before writing other harnesses", async () => {
+    const env = await environment()
+    await installIntegrations(env)
+    const claude = harnesses[1]!
+    const path = join(configDirectory(claude, env), claude.config)
+    await writeFile(path, "{broken")
+    const before = await snapshot(env)
+    expect((await checkIntegrations(env)).join()).toContain("claude:")
+    await expect(installIntegrations(env)).rejects.toThrow()
+    expect(await snapshot(env)).toEqual(before)
+  }, 60000)
+})

@@ -52,6 +52,32 @@ with `codex resume <conversation-id>`. Fresh Zsh shells already load the
 wrapper; use `source "$DOTFILES/zsh/aliases.sh"` in an older shell first.
 Earlier output from an alternate screen cannot be recovered as host scrollback.
 
+## Harness integrations
+
+`just sync` installs and repairs the Herdr hooks for Codex, Claude Code,
+and Cursor after applying their portable settings. All three CLIs are required;
+Cursor can be available as `cursor-agent` or `agent`. A missing CLI fails setup
+instead of silently skipping its integration. Install the missing CLI first.
+
+Run `just herdr-integrations` to repair hooks without running the full sync.
+`just health` checks CLI availability, hook versions, script syntax, hook
+registration, and Codex's hook feature flag without changing configuration.
+The setup respects `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `CURSOR_CONFIG_DIR`.
+It preserves unrelated hooks and settings. Neither command restarts agents.
+
+Codex hook enablement is managed globally and for an explicit disabled override
+in the profile selected by `config.toml`. Repair enables that selected profile's
+hooks while preserving other profile settings and unselected profiles. A
+changed TOML file is rewritten using the same serializer as Codex settings sync;
+configuration values are preserved, but comments and formatting may change.
+
+Start a fresh harness session after repair to register its session reference
+with Herdr. Existing panes can still be detected without hooks, but resuming
+their conversations after a server restart needs a recorded session reference.
+Harness authentication and first-launch onboarding remain machine-local.
+Codex may ask once to review newly installed hooks before running them. Health
+checks installation; a fresh session confirms hook delivery after onboarding.
+
 ## Apply a configuration change
 
 Validate the managed configuration, then reload the running Herdr server:
