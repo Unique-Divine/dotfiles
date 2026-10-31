@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Minimal xclip stand-in that copies to the Windows clipboard via pbcopy.
+#
+# tuicr runs `xclip -selection clipboard` with text on stdin when
+# XDG_SESSION_TYPE=x11 (see the tuicr alias in zsh/aliases.sh). The real
+# xclip writes to the X11 clipboard, which does not reach Windows on WSL.
+#
+# Only that exact copy form is implemented. Every other invocation is
+# rejected with exit code 2 so nothing silently misbehaves.
+
+set -Eeuo pipefail
+
+readonly exit_unsupported=2
+
+# Print an error to stderr and exit with the given code.
+# Usage: die <code> <message>
+die() {
+  local -r code="$1"
+  local -r message="$2"
+
+  printf 'xclip (dotfiles shim): %s\n' "$message" >&2
+  exit "$code"
+}
+
+main() {
+  if [[ "$#" -ne 2 || "$1" != "-selection" || "$2" != "clipboard" ]]; then
+    die "$exit_unsupported" \
+      "unsupported args: '$*'; only '-selection clipboard' copy is implemented"
+  fi
+
+  if ! command -v pbcopy >/dev/null 2>&1; then
+    die 1 "pbcopy not found on PATH"
+  fi
+
+  exec pbcopy
+}
+
+main "$@"
