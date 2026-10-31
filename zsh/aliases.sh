@@ -71,6 +71,6 @@ function codex {
 # as an IDE-forwarding shim.
 alias cursor=agent
 
-# Route tuicr's clipboard copy through bin/xclip, which forwards to pbcopy.
-# tuicr only shells out to xclip when XDG_SESSION_TYPE=x11.
+# tuicr copies with `xclip` only when XDG_SESSION_TYPE=x11; bin/xclip sends
+# that to the Windows clipboard. See "xclip replacement" in README.md.
 alias tuicr="XDG_SESSION_TYPE=x11 tuicr"
