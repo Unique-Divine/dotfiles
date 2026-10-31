@@ -274,8 +274,9 @@ Known callers:
   `XDG_SESSION_TYPE=x11`. The `tuicr` alias in `zsh/aliases.sh` sets it.
   Without it, tuicr uses its built-in X11 clipboard, which doesn't reach
   Windows.
-- **herdr** copies and pastes pane text with `xclip -selection clipboard -in`
-  and `-out` when `DISPLAY` is set.
+- **herdr** reads the clipboard with `xclip -selection clipboard -out` when
+  you paste into its own text boxes, such as copy-mode search. Copying from
+  herdr on WSL uses OSC 52, not `xclip`.
 
 Behavior:
 
