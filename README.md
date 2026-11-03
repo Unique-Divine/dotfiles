@@ -259,6 +259,44 @@ the Cursor file.
 - `legacy-pbcopy` and `legacy-pbpaste` retain the old one-shot commands for
   diagnostics and performance comparison
 
+#### xclip replacement
+
+Linux tools that copy with `xclip` write to the X11 clipboard, which does not
+reach Windows on WSL. `bin/xclip` replaces `xclip` with a Bun program
+(`bin/xclip.ts`, linked as `bin/xclip`) that implements the xclip 0.13 command
+line on top of `pbcopy` and `pbpaste`. Because `dotfiles/bin` comes before
+`/usr/bin` on `PATH`, every program that runs `xclip` gets this one. The real
+xclip doesn't need to be installed.
+
+Known callers:
+
+- **tuicr** copies reviews with `xclip -selection clipboard`, but only when
+  `XDG_SESSION_TYPE=x11`. The `tuicr` alias in `zsh/aliases.sh` sets it.
+  Without it, tuicr uses its built-in X11 clipboard, which doesn't reach
+  Windows.
+- **herdr** reads the clipboard with `xclip -selection clipboard -out` when
+  you paste into its own text boxes, such as copy-mode search. Copying from
+  herdr on WSL uses OSC 52, not `xclip`.
+
+Behavior:
+
+| Feature | Support |
+|---|---|
+| `-i`/`-in` (default) and `-o`/`-out` | Copy stdin or files; paste to stdout |
+| `-selection` | All selections map to the one Windows clipboard |
+| `-r`/`-rmlastnl`, `-f`/`-filter` | Same as xclip |
+| `-t`/`-target` | Text targets only; `-o -t TARGETS` lists them |
+| `-l`, `-d`, `-noutf8`, `-quiet`, `-silent` | Accepted and ignored |
+| `-verbose`, `-help`, `-version` | Commentary, help, and version on stderr |
+| Option abbreviations | Unique prefixes, as in xclip (`-sel`, `-verb`) |
+| Image targets (`image/png`) | Rejected with exit code 1 |
+
+Arguments that are not options are treated as input files, as in xclip, so an
+unknown option fails with `xclip: -bogus: No such file or directory`. Run
+`bun test bin/xclip.test.ts` to check the behavior. The tests record xclip
+0.13's behavior and use stand-in clipboard commands, except for one round trip
+through the real Windows clipboard.
+
 #### Remote or SSH WSL
 
 The clipboard daemon needs a PowerShell process that can reach the logged-in

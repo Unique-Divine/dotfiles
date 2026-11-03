@@ -70,3 +70,7 @@ function codex {
 # Keep `cursor` on the CLI. `agent update` rewrites ~/.local/bin/cursor
 # as an IDE-forwarding shim.
 alias cursor=agent
+
+# tuicr copies with `xclip` only when XDG_SESSION_TYPE=x11; bin/xclip sends
+# that to the Windows clipboard. See "xclip replacement" in README.md.
+alias tuicr="XDG_SESSION_TYPE=x11 tuicr"
