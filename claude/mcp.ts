@@ -7,7 +7,8 @@ import {
   managedStatePath, planSync, readManagedState, type McpPlan,
 } from "../mcp/plan.ts"
 import {
-  codexConfigPath, defaultLauncherContext, desiredEntries, isRecord,
+  codexConfigPath, defaultLauncherContext, desiredEntries, heldByCodex,
+  isRecord,
   readCodexMcpServers, type LauncherContext, type McpServers,
 } from "../mcp/servers.ts"
 import { readJsonObject, runtimeStatePath } from "./config.ts"
@@ -71,15 +72,18 @@ const runClaude = async (cmd: string[]): Promise<void> => {
 
 /**
  * Saves the Claude entries a plan replaces but does not own, as private JSON
- * beside the managed-state file. Returns the backup path, if one was written.
+ * beside the managed-state file, unless Codex already holds their definition. Returns the backup path, if one was written.
  */
 export const backupReplacedEntries = async (
   plan: McpPlan,
   current: Record<string, unknown>,
+  codexServers: McpServers,
   targetPath: string,
   statePath: string,
 ): Promise<string | undefined> => {
-  const replaced = plan.update.filter((u) => u.replacesUnmanaged)
+  // An entry Codex already holds, such as one just ingested, loses nothing.
+  const replaced = plan.update.filter(({ name, replacesUnmanaged }) =>
+    replacesUnmanaged && !heldByCodex(current[name], codexServers[name]))
 
   if (replaced.length === 0) return undefined
 
@@ -223,7 +227,7 @@ export const createProgram = (): Command => {
           plan,
           apply: async () => {
             const backup = await backupReplacedEntries(
-              plan, claudeServers, targetPath, statePath,
+              plan, claudeServers, codexServers, targetPath, statePath,
             )
 
             if (backup && !options.quiet) {

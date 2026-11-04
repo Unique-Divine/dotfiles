@@ -8,7 +8,8 @@ import { readClaudeUserMcpServers, claudeConfigPath } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile } from "../cursor/mcp.ts"
 import { sameEntry, writePrivateFile } from "./plan.ts"
 import {
-  codexConfigPath, isLauncherEntry, isRecord, jsonToCodex, type McpServer,
+  codexConfigPath, isLauncherEntry, isRecord, jsonToCodex, transportFields,
+  transportView, type McpServer,
 } from "./servers.ts"
 
 /**
@@ -22,24 +23,10 @@ import {
 
 export type IngestSource = "claude" | "cursor"
 
-/**
- * Fields that define how Codex reaches and authenticates to a server.
- * `--force` replaces all of them; other fields, such as timeouts, are kept.
- */
-const transportFields = [
-  "command", "args", "env", "env_vars", "cwd", "url", "http_headers",
-  "bearer_token_env_var", "env_http_headers",
-] as const
-
-const transportView = (server: McpServer): McpServer =>
-  Object.fromEntries(transportFields
-    .filter((field) => server[field] !== undefined)
-    .map((field) => [field, server[field]]))
-
 export interface IngestPlan {
   add: { name: string; server: McpServer }[]
   replace: { name: string; server: McpServer }[]
-  clash: string[]
+  clash: { name: string; reason: string }[]
   skip: { name: string; reason: string }[]
 }
 
@@ -57,12 +44,21 @@ export const planIngest = (
 
     const mapped = jsonToCodex(entry)
 
+    const existing = codexServers[name]
+
     if (!mapped.ok) {
-      plan.skip.push({ name, reason: mapped.reason })
+      if (existing === undefined) {
+        plan.skip.push({ name, reason: mapped.reason })
+      } else {
+        // Codex holds the name, so the export would replace this entry.
+        plan.clash.push({
+          name,
+          reason: `cannot ingest (${mapped.reason}); rename it or move it ` +
+            "to Codex by hand",
+        })
+      }
       continue
     }
-
-    const existing = codexServers[name]
 
     if (existing === undefined) {
       plan.add.push({ name, server: mapped.entry })
@@ -71,7 +67,10 @@ export const planIngest = (
       if (force) {
         plan.replace.push({ name, server: mapped.entry })
       } else {
-        plan.clash.push(name)
+        plan.clash.push({
+          name,
+          reason: "differs from Codex; --force replaces it",
+        })
       }
     }
   }
@@ -109,8 +108,7 @@ export const applyIngest = (
 export const describeIngest = (plan: IngestPlan): string[] => [
   ...plan.add.map(({ name }) => `+ add ${name}`),
   ...plan.replace.map(({ name }) => `~ replace ${name}`),
-  ...plan.clash.map((name) =>
-    `! clash ${name}: differs from Codex; --force replaces it`),
+  ...plan.clash.map(({ name, reason }) => `! clash ${name}: ${reason}`),
   ...plan.skip.map(({ name, reason }) => `! skip ${name}: ${reason}`),
 ]
 
@@ -219,7 +217,7 @@ export const createProgram = (): Command => {
         // Fail so `just mcp-ingest` stops before an export overwrites the
         // clashing entries in the source tool.
         console.error(`${plan.clash.length} clashing server(s) were not ` +
-          "ingested. Rename them, or rerun with --force to replace Codex.")
+          "ingested. See the ! clash lines above.")
         process.exitCode = 1
       }
     })

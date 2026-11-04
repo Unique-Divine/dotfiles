@@ -289,3 +289,39 @@ export const desiredEntries = (
 
   return desired
 }
+
+/**
+ * Fields that define how Codex reaches and authenticates to a server. Other
+ * fields, such as timeouts, are Codex-only settings.
+ */
+export const transportFields = [
+  "command", "args", "env", "env_vars", "cwd", "url", "http_headers",
+  "bearer_token_env_var", "env_http_headers",
+] as const
+
+export const transportView = (server: McpServer): McpServer =>
+  Object.fromEntries(transportFields
+    .filter((field) => server[field] !== undefined)
+    .map((field) => [field, server[field]]))
+
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, inner: unknown) =>
+    isRecord(inner)
+      ? Object.fromEntries(
+        Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)),
+      )
+      : inner,
+  )
+
+/**
+ * Reports whether a Claude or Cursor entry defines the same server as a Codex
+ * one, so replacing it loses nothing. Used to skip backups after ingest.
+ */
+export const heldByCodex = (entry: unknown, codexServer: unknown): boolean => {
+  if (!isRecord(codexServer)) return false
+
+  const mapped = jsonToCodex(entry)
+
+  return mapped.ok &&
+    canonical(mapped.entry) === canonical(transportView(codexServer))
+}

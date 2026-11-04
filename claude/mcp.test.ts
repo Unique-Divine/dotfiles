@@ -260,6 +260,24 @@ describe("claude mcp --run", () => {
     })
   })
 
+  test("skips the backup when Codex already holds the entry", async () => {
+    // The shape a just-ingested Claude entry has before the export.
+    const ingested = {
+      type: "stdio", command: "notion-mcp-server",
+      env: { NOTION_TOKEN: secret },
+    }
+
+    await withRunFixture({ notion: ingested }, async ({ dir, run }) => {
+      const result = await run()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain("~ replace notion (unmanaged Claude entry)")
+      expect(result.stdout).not.toContain("Saved replaced Claude entries")
+      expect((await readdir(join(dir, "state")))
+        .filter((name) => name.startsWith("claude-mcp-before-dotfiles-")))
+        .toEqual([])
+    })
+  })
+
   test("restores the old entry when add-json fails after remove", async () => {
     const handAdded = { type: "stdio", command: "npx", args: ["notion"] }
 

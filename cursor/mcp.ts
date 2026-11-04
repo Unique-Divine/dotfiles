@@ -8,8 +8,8 @@ import {
   type McpPlan,
 } from "../mcp/plan.ts"
 import {
-  codexConfigPath, defaultLauncherContext, desiredEntries, isRecord,
-  readCodexMcpServers,
+  codexConfigPath, defaultLauncherContext, desiredEntries, heldByCodex,
+  isRecord, readCodexMcpServers, type McpServers,
 } from "../mcp/servers.ts"
 
 /**
@@ -91,26 +91,42 @@ export const applyPlan = (
   return { ...config, mcpServers: next }
 }
 
+/** Replaced user entries whose definition Codex does not already hold. */
+export const entriesNeedingBackup = (
+  plan: McpPlan,
+  servers: Record<string, unknown>,
+  codexServers: McpServers,
+): string[] =>
+  plan.update
+    .filter(({ name, replacesUnmanaged }) =>
+      replacesUnmanaged && !heldByCodex(servers[name], codexServers[name]))
+    .map(({ name }) => name)
+
 const writeCursorFile = async (
   path: string,
   before: CursorMcpFile,
   plan: McpPlan,
-): Promise<void> => {
+  codexServers: McpServers,
+): Promise<string | undefined> => {
   const latest = await readCursorMcpFile(path)
 
   if (latest.text !== before.text) {
     throw new Error(`${path} changed during sync; rerun it`)
   }
 
-  if (before.text && plan.update.some((u) => u.replacesUnmanaged)) {
+  let backup: string | undefined
+
+  if (before.text &&
+    entriesNeedingBackup(plan, before.servers, codexServers).length > 0) {
     // The old file can hold tokens, so the backup is private too.
-    await writeFile(`${path}.before-dotfiles-${Date.now()}`, before.text, {
-      mode: 0o600, flag: "wx",
-    })
+    backup = `${path}.before-dotfiles-${Date.now()}`
+    await writeFile(backup, before.text, { mode: 0o600, flag: "wx" })
   }
 
   const next = applyPlan(before.config, before.servers, plan)
   await writePrivateFile(path, `${JSON.stringify(next, null, 2)}\n`)
+
+  return backup
 }
 
 interface McpOptions {
@@ -192,7 +208,15 @@ export const createProgram = (): Command => {
           targetPath,
           desired,
           plan,
-          apply: () => writeCursorFile(targetPath, current, plan),
+          apply: async () => {
+            const backup = await writeCursorFile(
+              targetPath, current, plan, codexServers,
+            )
+
+            if (backup && !options.quiet) {
+              console.log(`Saved the previous Cursor file to ${backup}`)
+            }
+          },
         })
       }
     })

@@ -88,7 +88,7 @@ describe("cursor mcp", () => {
     })
   })
 
-  test("converts a legacy file, backs it up, and is idempotent", async () => {
+  test("converts a legacy file and is idempotent", async () => {
     await withFixture(async ({ dir, cursorConfig, statePath, run }) => {
       await writeFile(cursorConfig, JSON.stringify(legacyCursorFile))
 
@@ -110,11 +110,10 @@ describe("cursor mcp", () => {
       expect(servers.personal).toEqual(legacyCursorFile.mcpServers.personal)
       expect((await stat(cursorConfig)).mode & 0o777).toBe(0o600)
 
-      const backups = (await readdir(dir))
-        .filter((name) => name.startsWith("mcp.json.before-dotfiles-"))
-      expect(backups.length).toBe(1)
-      expect(await Bun.file(join(dir, backups[0])).json())
-        .toEqual(legacyCursorFile)
+      // Codex already holds the replaced notion definition: no backup.
+      expect((await readdir(dir))
+        .filter((name) => name.startsWith("mcp.json.before-dotfiles-")))
+        .toEqual([])
       expect(await Bun.file(statePath).json()).toEqual({
         version: 1, targets: { [cursorConfig]: ["docs", "keyed"] },
       })
@@ -124,6 +123,27 @@ describe("cursor mcp", () => {
       expect(again.stdout).toContain("already current")
     })
   })
+
+  test("backs up the file before replacing a differing user entry",
+    async () => {
+      await withFixture(async ({ dir, cursorConfig, run }) => {
+        const file = {
+          mcpServers: { notion: { command: "npx", args: ["notion"] } },
+        }
+        await writeFile(cursorConfig, JSON.stringify(file))
+
+        const result = await run("--run")
+        expect(result.exitCode).toBe(0)
+        expect(result.stdout).toContain("Saved the previous Cursor file")
+
+        const backups = (await readdir(dir))
+          .filter((name) => name.startsWith("mcp.json.before-dotfiles-"))
+        expect(backups.length).toBe(1)
+        const backupPath = join(dir, backups[0])
+        expect((await stat(backupPath)).mode & 0o777).toBe(0o600)
+        expect(await Bun.file(backupPath).json()).toEqual(file)
+      })
+    })
 
   test("removes owned servers that left Codex and keeps the rest", async () => {
     await withFixture(async ({ source, cursorConfig, run }) => {

@@ -68,10 +68,27 @@ describe("planIngest", () => {
     const plan = planIngest(claudeServers, codex)
 
     expect(plan.add).toEqual([])
-    expect(plan.clash).toEqual(["local"])
+    expect(plan.clash.map(({ name }) => name)).toEqual(["local"])
     expect(describeIngest(plan)).toContain(
       "! clash local: differs from Codex; --force replaces it",
     )
+  })
+
+  test("an unmappable entry under a name Codex holds is a clash", () => {
+    const source = {
+      mail: { type: "http", url: "https://x", headers: { A: "${TOKEN}" } },
+      stream: { type: "sse", url: "https://sse.example.com" },
+    }
+    const codex = { mail: { url: "https://mail.example.com/mcp" } }
+
+    for (const force of [false, true]) {
+      const plan = planIngest(source, codex, force)
+      expect(plan.clash.map(({ name }) => name)).toEqual(["mail"])
+      expect(plan.skip.map(({ name }) => name)).toEqual(["stream"])
+      expect(plan.replace).toEqual([])
+    }
+    expect(describeIngest(planIngest(source, codex))[0])
+      .toStartWith("! clash mail: cannot ingest (uses ${...} interpolation")
   })
 
   test("--force replaces transport fields and keeps Codex-only fields", () => {

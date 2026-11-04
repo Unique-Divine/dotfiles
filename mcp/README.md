@@ -55,8 +55,8 @@ Codex wins on names. For each target:
 - **Add.** A Codex server the target lacks is added.
 - **Replace.** A same-named target entry that differs is replaced. When the
   sync does not own that entry, the plan says
-  `~ replace <name> (unmanaged ... entry)` and the old entry is backed up
-  first (see below).
+  `~ replace <name> (unmanaged ... entry)`, and the old entry is backed up
+  first unless Codex already holds the same definition (see below).
 - **Remove.** An owned entry is removed when its server leaves Codex.
   Launcher entries are always owned. A url entry is owned when file
   `$XDG_STATE_HOME/dotfiles/mcp-managed.json` (default
@@ -76,16 +76,21 @@ Claude writes go through `claude mcp add-json --scope user` and
 `claude mcp remove`, because Claude Code rewrites `$HOME/.claude.json` while
 it runs. Before replacing entries it does not own, `claude/mcp.ts` saves them
 to `claude-mcp-before-dotfiles-<ms>.json` (mode 0600) beside the managed-state
-file. A replacement removes and then re-adds the entry; if the add fails, the
-old entry is added back before the error is reported. Errors from a failed
-`add-json` omit the CLI's stderr, which could echo header values. The
-`add-json` payload is visible in the process list while the command runs.
+file and prints the path. A replacement removes and then re-adds the entry; if
+the add fails, the old entry is added back before the error is reported.
+Errors from a failed `add-json` omit the CLI's stderr, which could echo header
+values. The `add-json` payload is visible in the process list while the
+command runs.
 
 `cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an atomic, mode
 0600 replacement, and keeps other top-level keys. Before it replaces an entry
-it does not own, it saves the old file as `mcp.json.before-dotfiles-<ms>`.
+it does not own, it saves the old file as `mcp.json.before-dotfiles-<ms>` and
+prints the path.
 
-Both backups can hold tokens.
+Both backups can hold tokens. Neither is written when every replaced entry
+has the same definition Codex already holds, as after an ingest, because
+nothing would be lost. Nothing deletes backups; remove them once you have
+checked the result.
 
 ## Ingest servers added elsewhere
 
@@ -104,8 +109,9 @@ entries with Claude's `headersHelper` or `oauth`, and entries that use
 `${VAR}` or `${env:VAR}` interpolation. Add those to Codex by hand.
 
 Ingest adds a server only when Codex has no server of that name. A same-named
-server with a different definition is reported as `! clash`, and the run exits
-1 after writing the clean additions, so `just mcp-ingest` stops before the
+server with a different definition is reported as `! clash`, as is an entry
+ingest cannot map under a name Codex already has. The run exits 1 after
+writing the clean additions, so `just mcp-ingest` stops before the
 export would overwrite the clashing entry. `--force` replaces the Codex
 server's transport and auth fields (`command`, `args`, `env`, `env_vars`,
 `cwd`, `url`, `http_headers`, `bearer_token_env_var`, `env_http_headers`) and
