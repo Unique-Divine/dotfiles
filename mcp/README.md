@@ -6,6 +6,9 @@ Code. Add or edit a server in Codex, by hand or with `codex mcp add`, then run
 `just sync`.
 
 ```
+                  mcp/ingest.ts --from claude|cursor   (opt-in)
+                        │
+                        ▼
 $HOME/.codex/config.toml [mcp_servers]
   ├── cursor/mcp.ts ──▶ $HOME/.cursor/mcp.json (Cursor CLI)
   └── claude/mcp.ts ──▶ $HOME/.claude.json (user scope)
@@ -67,6 +70,29 @@ it runs. `cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an
 atomic, mode 0600 replacement, and keeps other top-level keys. Before it
 replaces an entry it does not own, it saves the old file as
 `mcp.json.before-dotfiles-<ms>`, which can hold tokens.
+
+## Ingest servers added elsewhere
+
+A server added with `claude mcp add` or by hand in the Cursor file stays in
+that tool. To make it a Codex server and export it everywhere, run:
+
+```bash
+bun run mcp/ingest.ts --from claude --dry-run   # preview
+just mcp-ingest                                 # Claude → Codex → all tools
+just mcp-ingest cursor                          # Cursor → Codex → all tools
+```
+
+Ingest skips launcher entries, which already come from Codex, and SSE
+servers, which Codex cannot run. It adds a server only when Codex has no
+server of that name. A same-named server with a different definition is
+reported as `! clash`; `--force` replaces its `command`, `args`, `env`, `cwd`,
+`url`, and `http_headers` and keeps other Codex fields such as
+`startup_timeout_sec`. The Codex file is rewritten with mode 0600, and output
+lists key paths, never values.
+
+After the export, Claude's ingested stdio entry becomes a launcher entry, so
+its env leaves `$HOME/.claude.json`. Url servers that use OAuth need a login
+in Codex once, with `codex mcp login <name>`.
 
 ## Commands
 

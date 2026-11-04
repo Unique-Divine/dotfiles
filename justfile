@@ -248,6 +248,17 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
+# Copy MCP servers only Claude (default) or Cursor has into Codex, then export
+# them to every tool. Preview with: bun run mcp/ingest.ts --from claude --dry-run
+mcp-ingest FROM="claude" *ARGS="":
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  bun run mcp/ingest.ts --from "{{FROM}}" --run {{ARGS}}
+  bun run cursor/mcp.ts --run
+  if command -v claude >/dev/null 2>&1; then
+    bun run claude/mcp.ts --run
+  fi
+
 # Manage Claude configuration or MCPs, e.g. just claude config --check.
 claude TOOL *ARGS:
   bun run claude/{{TOOL}}.ts {{ARGS}}
