@@ -9,9 +9,9 @@ import { changedKeyPaths, formatKeyChanges } from "../configDiff.ts"
  * Portable Codex defaults maintained by this dotfiles repository.
  *
  * See https://developers.openai.com/codex/config-reference for the available
- * configuration fields. Project trust and onboarding state are intentionally
- * local and are preserved from the runtime config. Cursor-provided MCP servers
- * are merged in separately at generation time.
+ * configuration fields. Project trust, onboarding state, and `mcp_servers` are
+ * local and are preserved from the runtime config. The MCP servers are the
+ * source that `mcp/` exports to Claude Code and the Cursor CLI.
  */
 export const dotfileConfig = {
   personality: "pragmatic",
@@ -51,84 +51,8 @@ export const runtimeConfigPath = (
   return resolve(home, ".codex/config.toml")
 }
 
-export const cursorMcpConfigPath = (
-  env: NodeJS.ProcessEnv = process.env,
-): string => {
-  const home = env.HOME
-
-  if (!home) {
-    throw new Error("HOME is not set")
-  }
-
-  return resolve(home, ".cursor/mcp.json")
-}
-
 const isTomlTable = (value: unknown): value is TomlTable =>
   typeof value === "object" && value !== null && !Array.isArray(value)
-
-const isTomlValue = (value: unknown): boolean => {
-  if (
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value))
-  ) {
-    return true
-  }
-
-  if (Array.isArray(value)) {
-    return value.every(isTomlValue)
-  }
-
-  if (isTomlTable(value)) {
-    return Object.values(value).every(isTomlValue)
-  }
-
-  return false
-}
-
-export const readCursorMcpServers = async (
-  path: string,
-): Promise<TomlTable> => {
-  const file = Bun.file(path)
-
-  if (!(await file.exists())) {
-    return {}
-  }
-
-  let config: unknown
-
-  try {
-    config = JSON.parse(await file.text())
-  } catch (error) {
-    throw new Error(`Unable to parse Cursor MCP config at ${path}`, {
-      cause: error,
-    })
-  }
-
-  if (!isTomlTable(config)) {
-    throw new Error(`${path} must contain a JSON object`)
-  }
-
-  if (!("mcpServers" in config)) {
-    return {}
-  }
-
-  const servers = config.mcpServers
-
-  if (!isTomlTable(servers)) {
-    throw new Error(`${path} mcpServers must be an object`)
-  }
-
-  for (const [name, server] of Object.entries(servers)) {
-    if (!isTomlTable(server) || !isTomlValue(server)) {
-      throw new Error(
-        `${path} mcpServers.${name} must be a TOML-compatible object`,
-      )
-    }
-  }
-
-  return servers
-}
 
 const parseTomlTable = (toml: string, path: string): TomlTable => {
   const parsed = parse(toml) as unknown
@@ -160,7 +84,6 @@ const mergeTables = (runtime: TomlTable, owned: TomlTable): TomlTable => {
 export const mergeRuntimeConfig = (
   runtimeConfig: TomlTable,
   config: TomlTable = dotfileConfig,
-  cursorMcpServers: TomlTable = {},
 ): TomlTable => {
   const cleanedRuntimeConfig = { ...runtimeConfig }
   // Project trust belongs under projects.<path>; remove the old top-level key.
@@ -171,20 +94,7 @@ export const mergeRuntimeConfig = (
     if (key in cleanedRuntimeConfig) delete managedConfig[key]
   }
 
-  const merged = mergeTables(cleanedRuntimeConfig, managedConfig)
-
-  if (Object.keys(cursorMcpServers).length === 0) {
-    return merged
-  }
-
-  const runtimeMcpServers = isTomlTable(merged.mcp_servers)
-    ? merged.mcp_servers
-    : {}
-
-  return {
-    ...merged,
-    mcp_servers: { ...runtimeMcpServers, ...cursorMcpServers },
-  }
+  return mergeTables(cleanedRuntimeConfig, managedConfig)
 }
 
 const schemaDirective =
@@ -214,25 +124,18 @@ const readRuntimeConfig = async (
 
 export interface ApplyOptions {
   runtimePath?: string
-  mcpSourcePath?: string
   dryRun?: boolean
   quiet?: boolean
 }
 
 export const applyConfig = async ({
   runtimePath = runtimeConfigPath(),
-  mcpSourcePath = cursorMcpConfigPath(),
   dryRun = false,
   quiet = false,
 }: ApplyOptions = {}): Promise<boolean> => {
   const { config: runtimeConfig, text: beforeText } =
     await readRuntimeConfig(runtimePath)
-  const cursorMcpServers = await readCursorMcpServers(mcpSourcePath)
-  const nextConfig = mergeRuntimeConfig(
-    runtimeConfig,
-    dotfileConfig,
-    cursorMcpServers,
-  )
+  const nextConfig = mergeRuntimeConfig(runtimeConfig, dotfileConfig)
   const currentText = serialize(runtimeConfig)
   const afterText = serialize(nextConfig)
   const hasSchemaDirective = beforeText.startsWith(`${schemaDirective}\n`)
@@ -270,7 +173,6 @@ export const applyConfig = async ({
 interface ConfigOptions {
   check?: boolean
   dryRun?: boolean
-  mcpSource?: string
   print?: boolean
   quiet?: boolean
   run?: boolean
@@ -278,14 +180,8 @@ interface ConfigOptions {
 
 const runConfig = async (options: ConfigOptions): Promise<void> => {
   const runtimePath = runtimeConfigPath()
-  const mcpSourcePath = options.mcpSource ?? cursorMcpConfigPath()
   const { config: runtimeConfig } = await readRuntimeConfig(runtimePath)
-  const cursorMcpServers = await readCursorMcpServers(mcpSourcePath)
-  const nextConfig = mergeRuntimeConfig(
-    runtimeConfig,
-    dotfileConfig,
-    cursorMcpServers,
-  )
+  const nextConfig = mergeRuntimeConfig(runtimeConfig, dotfileConfig)
 
   if (options.print) {
     process.stdout.write(serialize(nextConfig))
@@ -294,7 +190,6 @@ const runConfig = async (options: ConfigOptions): Promise<void> => {
 
   const changed = await applyConfig({
     runtimePath,
-    mcpSourcePath,
     dryRun: !options.run || options.dryRun || options.check,
     quiet: options.quiet,
   })
@@ -318,10 +213,6 @@ export const createProgram = (): Command => {
     .option(
       "--print",
       "print the generated runtime config TOML, including secrets",
-    )
-    .option(
-      "--mcp-source <path>",
-      "read Cursor MCP servers from this JSON file",
     )
     .option("--quiet", "suppress normal output with --run")
     .action(async (options: ConfigOptions) => {

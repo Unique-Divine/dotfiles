@@ -239,8 +239,7 @@ describe.skipIf(missingTools(process.env).length > 0)("real Herdr installer", ()
     await applySettings({ runtimePath: join(configDirectory(harnesses[1]!, env),
       "settings.json"), quiet: true })
     await applyConfig({ runtimePath: join(configDirectory(harnesses[0]!, env),
-      "config.toml"), mcpSourcePath: join(env.HOME!, "missing-mcp.json"),
-      quiet: true })
+      "config.toml"), quiet: true })
     await applyCliConfig({ runtimePath: join(configDirectory(harnesses[2]!, env),
       "cli-config.json"), quiet: true })
     expect(await checkIntegrations(env)).toEqual([])

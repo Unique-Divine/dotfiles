@@ -1,11 +1,13 @@
-import { cursorMcpConfigPath, readCursorMcpServers } from "../codex/config.ts"
+import {
+  codexConfigPath, isStringRecord, readCodexMcpServers,
+} from "../mcp/servers.ts"
 
 /**
- * Starts one Cursor-defined MCP server for Claude Code.
+ * Starts one Codex-defined MCP server for Claude Code or the Cursor CLI.
  *
- * Claude Code's user-scope entry runs `mcp-launch.ts --source <path> <name>`.
- * The server's `env` stays in `$HOME/.cursor/mcp.json`; this launcher reads it
- * when Claude starts the server and hands it only to the child process.
+ * Generated entries run `mcp-launch.ts --source <path> <name>`. The server's
+ * `env` stays in `$HOME/.codex/config.toml`; this launcher reads it when the
+ * tool starts the server and hands it only to the child process.
  *
  * Stdout belongs to the MCP protocol, so the launcher never writes to it.
  * Errors name the server and never include env values.
@@ -15,16 +17,11 @@ import { cursorMcpConfigPath, readCursorMcpServers } from "../codex/config.ts"
 export interface LaunchSpec {
   cmd: string[]
   env: Record<string, string>
+  cwd?: string
 }
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string")
-
-const isStringRecord = (value: unknown): value is Record<string, string> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.values(value).every((entry) => typeof entry === "string")
 
 export const resolveLaunchSpec = (
   servers: Record<string, unknown>,
@@ -32,7 +29,7 @@ export const resolveLaunchSpec = (
   baseEnv: Record<string, string | undefined>,
 ): LaunchSpec => {
   if (!Object.hasOwn(servers, name)) {
-    throw new Error(`MCP server ${name} is not defined in the Cursor config`)
+    throw new Error(`MCP server ${name} is not defined or is disabled in the Codex config`)
   }
 
   const server = servers[name] as Record<string, unknown>
@@ -52,6 +49,10 @@ export const resolveLaunchSpec = (
     throw new Error(`MCP server ${name} env values must be strings`)
   }
 
+  if (server.cwd !== undefined && typeof server.cwd !== "string") {
+    throw new Error(`MCP server ${name} cwd must be a string`)
+  }
+
   const env: Record<string, string> = {}
 
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -62,7 +63,11 @@ export const resolveLaunchSpec = (
 
   const executable = Bun.which(command, { PATH: env.PATH ?? "" }) ?? command
 
-  return { cmd: [executable, ...args], env }
+  return {
+    cmd: [executable, ...args],
+    env,
+    ...(server.cwd ? { cwd: server.cwd } : {}),
+  }
 }
 
 interface LaunchArgs {
@@ -71,7 +76,7 @@ interface LaunchArgs {
 }
 
 export const parseLaunchArgs = (argv: string[]): LaunchArgs => {
-  let sourcePath = cursorMcpConfigPath()
+  let sourcePath = codexConfigPath()
   const positional: string[] = []
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -104,7 +109,7 @@ const main = async (): Promise<void> => {
 
   try {
     const { name, sourcePath } = parseLaunchArgs(Bun.argv.slice(2))
-    const servers = await readCursorMcpServers(sourcePath)
+    const servers = await readCodexMcpServers(sourcePath)
     spec = resolveLaunchSpec(servers, name, process.env)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -114,6 +119,7 @@ const main = async (): Promise<void> => {
 
   const child = Bun.spawn(spec.cmd, {
     env: spec.env,
+    cwd: spec.cwd,
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
