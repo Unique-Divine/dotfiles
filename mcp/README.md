@@ -105,12 +105,16 @@ just mcp-ingest cursor                          # Cursor → Codex → all tools
 
 Ingest skips launcher entries, which already come from Codex. It also skips,
 with a `! skip` reason, entries Codex cannot hold as they are: SSE servers,
-entries with Claude's `headersHelper` or `oauth`, and entries that use
-`${VAR}` or `${env:VAR}` interpolation. Add those to Codex by hand.
+entries with any field besides `type`, `command`, `args`, `env`, `cwd`, `url`,
+and `headers` (such as Claude's `headersHelper` or `oauth`, or Cursor's
+`auth` or `envFile`), and entries that use `${VAR}` or `${env:VAR}`
+interpolation. Add those to Codex by hand.
 
 Ingest adds a server only when Codex has no server of that name. A same-named
 server with a different definition is reported as `! clash`, as is an entry
-ingest cannot map under a name Codex already has. The run exits 1 after
+ingest cannot map under a name Codex already has. Both count only when the
+export would overwrite the entry; when the Codex server is disabled or cannot
+be exported, the name is reported as `! skip` instead. The run exits 1 after
 writing the clean additions, so `just mcp-ingest` stops before the
 export would overwrite the clashing entry. `--force` replaces the Codex
 server's transport and auth fields (`command`, `args`, `env`, `env_vars`,

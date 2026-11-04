@@ -91,6 +91,29 @@ describe("planIngest", () => {
       .toStartWith("! clash mail: cannot ingest (uses ${...} interpolation")
   })
 
+  test("no clash when the export would leave the entry alone", () => {
+    const source = {
+      gh: {
+        type: "http", url: "https://gh.example.com/mcp",
+        headers: { Authorization: "Bearer ${GH_TOKEN}" },
+      },
+      off: { type: "stdio", command: "x", envFile: "/e" },
+      other: { type: "stdio", command: "mine" },
+    }
+    const codex = {
+      gh: { url: "https://gh.example.com/mcp", bearer_token_env_var: "GH" },
+      off: { command: "x", enabled: false },
+      other: { url: "https://o", env_http_headers: { A: "B" } },
+    }
+    const plan = planIngest(source, codex)
+
+    expect(plan.clash).toEqual([])
+    expect(plan.skip.map(({ name }) => name)).toEqual(["gh", "off", "other"])
+    expect(plan.skip[2].reason).toContain("--force replaces it")
+    expect(planIngest(source, codex, true).replace.map(({ name }) => name))
+      .toEqual(["other"])
+  })
+
   test("--force replaces transport fields and keeps Codex-only fields", () => {
     const config: TomlTable = {
       model: "m",

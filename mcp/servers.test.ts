@@ -8,6 +8,8 @@ import {
   classifyServer,
   codexUrlToJson,
   desiredEntries,
+  heldByCodex,
+  isExported,
   isLauncherEntry,
   jsonToCodex,
   launcherEntry,
@@ -134,6 +136,11 @@ describe("server mapping", () => {
       .toEqual({ ok: false, reason: "uses headersHelper, which Codex cannot hold" })
     expect(jsonToCodex({ type: "http", url: "https://x", oauth: {} }).ok)
       .toBe(false)
+    // Cursor-only fields would be dropped, so they block ingest too.
+    expect(jsonToCodex({
+      url: "https://x", auth: { CLIENT_ID: "i", CLIENT_SECRET: "s" },
+    })).toEqual({ ok: false, reason: "uses auth, which Codex cannot hold" })
+    expect(jsonToCodex({ command: "c", envFile: "/srv/.env" }).ok).toBe(false)
     for (const placeholder of ["${TOKEN}", "${env:TOKEN}"]) {
       expect(jsonToCodex({ command: "c", env: { T: placeholder } }).ok)
         .toBe(false)
@@ -190,5 +197,26 @@ describe("desiredEntries", () => {
     expect(isLauncherEntry({ command: "bun", args: ["mcp-launch.ts"] }))
       .toBe(false)
     expect(isLauncherEntry({ url: "https://example.com" })).toBe(false)
+  })
+})
+
+describe("heldByCodex and isExported", () => {
+  test("an entry matches only when Codex holds every field it has", () => {
+    const codex = { command: "c", env: { K: "v" }, startup_timeout_sec: 5 }
+
+    expect(heldByCodex({ type: "stdio", command: "c", env: { K: "v" } }, codex))
+      .toBe(true)
+    expect(heldByCodex({ command: "c", env: { K: "v" }, envFile: "/e" }, codex))
+      .toBe(false)
+    expect(heldByCodex({ command: "c" }, codex)).toBe(false)
+    expect(heldByCodex({ command: "c" }, undefined)).toBe(false)
+  })
+
+  test("reports which Codex servers the export writes", () => {
+    expect(isExported({ command: "c" }, "claude")).toBe(true)
+    expect(isExported({ url: "https://x" }, "cursor")).toBe(true)
+    expect(isExported({ url: "https://x", bearer_token_env_var: "T" }, "claude"))
+      .toBe(false)
+    expect(isExported({ args: ["x"] }, "claude")).toBe(false)
   })
 })

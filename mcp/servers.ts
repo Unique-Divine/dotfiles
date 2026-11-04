@@ -175,6 +175,23 @@ export const codexUrlToJson = (
   }
 }
 
+/** JSON entry fields that map to Codex without loss. */
+const jsonEntryFields = new Set([
+  "type", "command", "args", "env", "cwd", "url", "headers",
+])
+
+/**
+ * Reports whether the export writes this Codex server to the target, so a
+ * same-named target entry would be replaced.
+ */
+export const isExported = (server: unknown, target: McpTarget): boolean => {
+  const kind = classifyServer(server)
+
+  if (kind === "stdio") return true
+  if (kind === "url") return codexUrlToJson(server as McpServer, target).ok
+  return false
+}
+
 /**
  * Maps a Claude or Cursor JSON entry to a Codex server for ingest. Codex
  * speaks stdio and streamable HTTP, so SSE entries are skipped.
@@ -186,8 +203,10 @@ export const jsonToCodex = (entry: unknown): Mapped => {
     return { ok: false, reason: "Codex does not support SSE servers" }
   }
 
-  for (const field of ["headersHelper", "oauth"]) {
-    if (entry[field] !== undefined) {
+  // Anything else, such as Claude `headersHelper` or `oauth` or Cursor
+  // `auth` or `envFile`, would be dropped, so refuse rather than lose it.
+  for (const field of Object.keys(entry)) {
+    if (!jsonEntryFields.has(field)) {
       return { ok: false, reason: `uses ${field}, which Codex cannot hold` }
     }
   }

@@ -8,7 +8,8 @@ import { readClaudeUserMcpServers, claudeConfigPath } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile } from "../cursor/mcp.ts"
 import { sameEntry, writePrivateFile } from "./plan.ts"
 import {
-  codexConfigPath, isLauncherEntry, isRecord, jsonToCodex, transportFields,
+  codexConfigPath, isExported, isLauncherEntry, isRecord, jsonToCodex,
+  transportFields,
   transportView, type McpServer,
 } from "./servers.ts"
 
@@ -34,6 +35,7 @@ export const planIngest = (
   sourceServers: Record<string, unknown>,
   codexServers: Record<string, unknown>,
   force = false,
+  source: IngestSource = "claude",
 ): IngestPlan => {
   const plan: IngestPlan = { add: [], replace: [], clash: [], skip: [] }
 
@@ -45,9 +47,13 @@ export const planIngest = (
     const mapped = jsonToCodex(entry)
 
     const existing = codexServers[name]
+    // A clash matters only when the export would overwrite the entry. A
+    // disabled or unexportable Codex server leaves it alone.
+    const exported = isRecord(existing) && existing.enabled !== false &&
+      isExported(existing, source)
 
     if (!mapped.ok) {
-      if (existing === undefined) {
+      if (!exported) {
         plan.skip.push({ name, reason: mapped.reason })
       } else {
         // Codex holds the name, so the export would replace this entry.
@@ -64,7 +70,13 @@ export const planIngest = (
       plan.add.push({ name, server: mapped.entry })
     } else if (!isRecord(existing) ||
       !sameEntry(transportView(existing), mapped.entry)) {
-      if (force) {
+      if (!exported && !force) {
+        plan.skip.push({
+          name,
+          reason: "Codex has a different server under this name that the " +
+            "export skips; --force replaces it",
+        })
+      } else if (force) {
         plan.replace.push({ name, server: mapped.entry })
       } else {
         plan.clash.push({
@@ -181,7 +193,9 @@ export const createProgram = (): Command => {
       const codexServers = isRecord(codex.config.mcp_servers)
         ? codex.config.mcp_servers
         : {}
-      const plan = planIngest(sourceServers, codexServers, options.force)
+      const plan = planIngest(
+        sourceServers, codexServers, options.force, source,
+      )
       const next = applyIngest(codex.config, plan)
 
       if (!options.quiet || !options.run) {
