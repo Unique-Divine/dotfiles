@@ -22,9 +22,13 @@ import {
 
 export type IngestSource = "claude" | "cursor"
 
-/** Fields that define how Codex reaches a server. Others are kept. */
+/**
+ * Fields that define how Codex reaches and authenticates to a server.
+ * `--force` replaces all of them; other fields, such as timeouts, are kept.
+ */
 const transportFields = [
-  "command", "args", "env", "cwd", "url", "http_headers",
+  "command", "args", "env", "env_vars", "cwd", "url", "http_headers",
+  "bearer_token_env_var", "env_http_headers",
 ] as const
 
 const transportView = (server: McpServer): McpServer =>
@@ -154,7 +158,8 @@ export const createProgram = (): Command => {
     .name("mcp-ingest")
     .description(
       "Copy MCP servers that only Claude Code or the Cursor CLI has into " +
-        "~/.codex/config.toml. Run just sync afterward to export them.",
+        "~/.codex/config.toml. Run just sync afterward to export them. " +
+        "Exits 1 when a same-named Codex server differs, unless --force.",
     )
     .requiredOption("--from <tool>", "source tool: claude or cursor")
     .option("--path <file>", "source config file (default: the tool's)")
@@ -202,16 +207,20 @@ export const createProgram = (): Command => {
         return
       }
 
-      if (!options.run || options.dryRun || !ingestHasChanges(plan)) return
+      if (options.run && !options.dryRun && ingestHasChanges(plan)) {
+        if ((await readCodexFile(codexPath)).text !== codex.text) {
+          throw new Error(`${codexPath} changed during ingest; rerun it`)
+        }
 
-      if ((await readCodexFile(codexPath)).text !== codex.text) {
-        throw new Error(`${codexPath} changed during ingest; rerun it`)
+        await writePrivateFile(codexPath, serialize(next))
       }
 
-      await writePrivateFile(codexPath, serialize(next))
-
-      if (!options.quiet) {
-        console.log("Run just sync to export the new servers to every tool")
+      if (plan.clash.length > 0) {
+        // Fail so `just mcp-ingest` stops before an export overwrites the
+        // clashing entries in the source tool.
+        console.error(`${plan.clash.length} clashing server(s) were not ` +
+          "ingested. Rename them, or rerun with --force to replace Codex.")
+        process.exitCode = 1
       }
     })
 

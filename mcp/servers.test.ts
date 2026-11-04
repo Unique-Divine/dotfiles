@@ -130,6 +130,17 @@ describe("server mapping", () => {
       entry: { url: "https://x", http_headers: { Authorization: "Bearer t" } },
     })
     expect(jsonToCodex({ type: "sse", url: "https://x" }).ok).toBe(false)
+    expect(jsonToCodex({ url: "https://x", headersHelper: "/bin/h" }))
+      .toEqual({ ok: false, reason: "uses headersHelper, which Codex cannot hold" })
+    expect(jsonToCodex({ type: "http", url: "https://x", oauth: {} }).ok)
+      .toBe(false)
+    for (const placeholder of ["${TOKEN}", "${env:TOKEN}"]) {
+      expect(jsonToCodex({ command: "c", env: { T: placeholder } }).ok)
+        .toBe(false)
+      expect(jsonToCodex({
+        url: "https://x", headers: { A: `Bearer ${placeholder}` },
+      }).ok).toBe(false)
+    }
     expect(jsonToCodex({ type: "stdio", command: "x", env: { K: 1 } }).ok)
       .toBe(false)
   })

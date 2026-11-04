@@ -186,6 +186,18 @@ export const jsonToCodex = (entry: unknown): Mapped => {
     return { ok: false, reason: "Codex does not support SSE servers" }
   }
 
+  for (const field of ["headersHelper", "oauth"]) {
+    if (entry[field] !== undefined) {
+      return { ok: false, reason: `uses ${field}, which Codex cannot hold` }
+    }
+  }
+
+  // Claude `${VAR}` and Cursor `${env:VAR}` expand at load time; Codex and
+  // the launcher would pass the placeholder through literally.
+  if (JSON.stringify(entry).includes("${")) {
+    return { ok: false, reason: "uses ${...} interpolation; add it by hand" }
+  }
+
   const kind = classifyServer(entry)
 
   if (kind === "stdio") {

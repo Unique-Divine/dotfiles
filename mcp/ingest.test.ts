@@ -94,6 +94,25 @@ describe("planIngest", () => {
     })
     expect(next.model).toBe("m")
   })
+
+  test("--force drops Codex auth fields from the replaced server", () => {
+    const config: TomlTable = {
+      mcp_servers: {
+        mail: {
+          url: "https://old.example.com/mcp",
+          bearer_token_env_var: "MAIL_TOKEN",
+          env_http_headers: { "X-Key": "MAIL_KEY" },
+          tool_timeout_sec: 5,
+        },
+      },
+    }
+    const plan = planIngest(claudeServers, config.mcp_servers as TomlTable, true)
+    const next = applyIngest(config, plan)
+
+    expect((next.mcp_servers as TomlTable).mail).toEqual({
+      url: "https://mail.example.com/mcp", tool_timeout_sec: 5,
+    })
+  })
 })
 
 describe("mcp ingest CLI", () => {
@@ -141,6 +160,31 @@ describe("mcp ingest CLI", () => {
         [name, replacesUnmanaged])).toEqual([["local", true], ["notion", false]])
       expect(JSON.stringify(exportPlan)).not.toContain(secret)
       expect(exportPlan.add).toEqual([])
+    })
+  })
+
+  test("--run exits 1 on a clash but still writes clean additions", async () => {
+    await withTempDir(async (dir) => {
+      const claudeConfig = join(dir, "claude.json")
+      const codexConfig = join(dir, "config.toml")
+      await writeFile(claudeConfig, JSON.stringify({ mcpServers: claudeServers }))
+      await writeFile(codexConfig, stringify({
+        mcp_servers: { local: { command: "other" } },
+      }))
+
+      const result = await runIngest([
+        "--from", "claude", "--path", claudeConfig,
+        "--codex-config", codexConfig, "--run",
+      ])
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stdout).toContain("! clash local")
+      expect(result.stderr).toContain("1 clashing server(s) were not ingested")
+      const written = parse(await Bun.file(codexConfig).text())
+      expect(written.mcp_servers).toEqual({
+        local: { command: "other" },
+        mail: { url: "https://mail.example.com/mcp" },
+      })
     })
   })
 
