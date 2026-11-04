@@ -75,8 +75,10 @@ Don't sync a renderer change under running sessions. A live switch from
 fullscreen blanks the pane. Run `/tui default` in each session, or quit and
 resume.
 
-Sync adds each rule in `managedAllowRules`, currently `Bash(rg:*)`, to
-`permissions.allow`. It doesn't own `permissions`: rules added through
+Sync adds each rule in `managedAllowRules` to `permissions.allow`:
+`Bash(rg:*)`, plus `mcp__superhuman-mail__unsubscribe` and
+`mcp__superhuman-mail__trash_thread` for inbox cleanup. Other Superhuman tools,
+such as `send_draft`, still prompt. It doesn't own `permissions`: rules added through
 `/permissions` or prompts, along with `deny`, `ask`, and `defaultMode`, stay.
 Removing a rule from `managedAllowRules` doesn't remove it from the runtime
 file.
