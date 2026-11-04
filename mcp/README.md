@@ -1,11 +1,13 @@
 # MCP servers
 
 The `[mcp_servers]` table in `$HOME/.codex/config.toml` is the single source
-of truth for MCP servers. `just sync` exports it to Claude Code. Add or edit a
-server in Codex, by hand or with `codex mcp add`, then run `just sync`.
+of truth for MCP servers. `just sync` exports it to the Cursor CLI and Claude
+Code. Add or edit a server in Codex, by hand or with `codex mcp add`, then run
+`just sync`.
 
 ```
 $HOME/.codex/config.toml [mcp_servers]
+  ├── cursor/mcp.ts ──▶ $HOME/.cursor/mcp.json (Cursor CLI)
   └── claude/mcp.ts ──▶ $HOME/.claude.json (user scope)
 ```
 
@@ -33,6 +35,8 @@ that server's `command`, `args`, `env`, and `cwd` from the Codex file and
 passes `env` only to the child process. Tokens stay in one file. Edit a token
 in `config.toml` and the next session uses it with no resync.
 
+Cursor entries are the same without `"type"`.
+
 A **url** server is copied as is. Codex `http_headers` becomes `headers`, and
 Claude entries get `"type": "http"`. A url server that uses
 `bearer_token_env_var` or `env_http_headers` is skipped, because the JSON
@@ -59,17 +63,25 @@ Output lists server names only, never env or header values.
 
 Claude writes go through `claude mcp add-json --scope user` and
 `claude mcp remove`, because Claude Code rewrites `$HOME/.claude.json` while
-it runs.
+it runs. `cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an
+atomic, mode 0600 replacement, and keeps other top-level keys. Before it
+replaces an entry it does not own, it saves the old file as
+`mcp.json.before-dotfiles-<ms>`, which can hold tokens.
 
 ## Commands
 
+`just sync` runs `cursor/mcp.ts --run`, then `claude/mcp.ts --run` when the
+`claude` CLI is installed. `just health` runs both with `--check`.
+
 ```bash
-bun run claude/mcp.ts --dry-run
-bun run claude/mcp.ts --run
+bun run cursor/mcp.ts --dry-run
+bun run cursor/mcp.ts --run
 bun run claude/mcp.ts --check
 bun run claude/mcp.ts --print   # generated entries, no stdio env
 ```
 
-Each one takes `--mcp-source <config.toml>` and `--state <path>` for tests or
-other profiles. Entries hold absolute paths to this checkout and to `bun`.
-After moving the checkout, run `just sync` to rewrite them.
+Both scripts take `--run`, `--dry-run`, `--check`, and `--print`, plus
+`--mcp-source <config.toml>`, `--state <path>`, and `--claude-config` or
+`--cursor-config` for tests or other profiles. Entries hold absolute paths to
+this checkout and to `bun`. After moving the checkout, run `just sync` to
+rewrite them.

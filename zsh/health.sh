@@ -126,6 +126,10 @@ if ! bun run cursor/cli-config.ts --check; then
   failed=1
 fi
 
+if ! bun run cursor/mcp.ts --check; then
+  failed=1
+fi
+
 if ! bun run claude/config.ts --check; then
   failed=1
 fi
