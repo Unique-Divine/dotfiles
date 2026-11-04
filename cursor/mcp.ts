@@ -136,7 +136,10 @@ export const createProgram = (): Command => {
     .option("--run", "write the Cursor MCP config if it differs")
     .option("--dry-run", "print the plan without changing anything")
     .option("--check", "exit with code 1 if the plan has changes")
-    .option("--print", "print the generated Cursor entries as JSON")
+    .option(
+      "--print",
+      "print the generated Cursor entries, including url header values",
+    )
     .option("--mcp-source <path>", "read MCP servers from this Codex config")
     .option("--cursor-config <path>", "Cursor MCP JSON file to sync")
     .option("--state <path>", "managed url server state file")

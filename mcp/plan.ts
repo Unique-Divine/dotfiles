@@ -225,8 +225,8 @@ export const writeManagedState = async (
 
 /**
  * Applies a plan through `apply` and keeps the managed-state file honest
- * across a partial failure: names we may add are recorded before any write,
- * and the final set (the desired url names) is recorded after success.
+ * across a partial failure: names we add are recorded before any write, and
+ * the final set (the desired url names) is recorded after success.
  */
 export const applyWithManagedState = async ({
   statePath,
@@ -245,9 +245,15 @@ export const applyWithManagedState = async ({
   const before = managedNames(state, targetPath)
 
   if (hasChanges(plan)) {
+    // Pre-record only new names. A replaced or identical entry is adopted
+    // after success, so a failed run never claims an untouched user entry.
+    const urlNames = new Set(desired.urlNames)
+    const added = plan.add
+      .map(({ name }) => name)
+      .filter((name) => urlNames.has(name))
     await writeManagedState(
       statePath,
-      withManagedNames(state, targetPath, [...before, ...desired.urlNames]),
+      withManagedNames(state, targetPath, [...before, ...added]),
     )
     await apply()
   }

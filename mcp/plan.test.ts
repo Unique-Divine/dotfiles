@@ -171,6 +171,31 @@ describe("managed state", () => {
     })
   })
 
+  test("a failed apply never claims an untouched user entry", async () => {
+    await withTempDir(async (dir) => {
+      const statePath = join(dir, "mcp-managed.json")
+      const targetPath = join(dir, "cursor.json")
+      const desired = desiredEntries({
+        ...codexServers,
+        mail: { url: "https://mail.example.com/mcp" },
+      }, "cursor", ctx)
+      const plan = planSync(desired, {
+        mail: { url: "https://user.example.com/mcp" },
+      })
+      expect(plan.update[0]).toMatchObject({
+        name: "mail", replacesUnmanaged: true,
+      })
+
+      await expect(applyWithManagedState({
+        statePath, targetPath, desired, plan,
+        apply: async () => { throw new Error("boom") },
+      })).rejects.toThrow("boom")
+
+      const state = await readManagedState(statePath)
+      expect([...managedNames(state, targetPath)]).toEqual(["docs"])
+    })
+  })
+
   test("no-op runs with nothing to own write no state file", async () => {
     await withTempDir(async (dir) => {
       const statePath = join(dir, "mcp-managed.json")

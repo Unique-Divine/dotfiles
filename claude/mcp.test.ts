@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { stringify } from "smol-toml"
 
 import { launcherEntry, type LauncherContext } from "../mcp/servers.ts"
 import { parseLaunchArgs, resolveLaunchSpec } from "./mcp-launch.ts"
-import { claudeConfigPath, planCommands, planMcpSync } from "./mcp.ts"
+import { claudeConfigPath, planMcpSync } from "./mcp.ts"
 
 const mcpScript = join(import.meta.dir, "mcp.ts")
 const launchScript = join(import.meta.dir, "mcp-launch.ts")
@@ -26,7 +26,10 @@ const codexServers = {
     args: ["--directory", "/srv/telegram", "run", "main.py"],
     env: { TELEGRAM_API_HASH: secret },
   },
-  remote: { url: "https://mcp.example.com/mcp" },
+  remote: {
+    url: "https://mcp.example.com/mcp",
+    http_headers: { "X-Api-Key": `header-${secret}` },
+  },
 }
 
 const withTempDir = async (
@@ -95,108 +98,186 @@ describe("claude mcp plan", () => {
       command: ctx.bunPath,
       args: [ctx.launcherPath, "--source", ctx.sourcePath, "notion"],
     })
-    expect(plan.add[1].entry)
-      .toEqual({ type: "http", url: "https://mcp.example.com/mcp" })
-  })
-
-  test("generated entries and commands contain no stdio env", () => {
-    const plan = planMcpSync(codexServers, {}, ctx)
-    const serialized = JSON.stringify([plan, planCommands(plan)])
-
-    expect(serialized).not.toContain(secret)
-    expect(serialized).not.toContain("NOTION_TOKEN")
-  })
-
-  test("commands remove before add for updates", () => {
-    const entry = launcherEntry("notion", ctx)
-    const commands = planCommands({
-      add: [],
-      update: [{ name: "notion", entry, replacesUnmanaged: false }],
-      remove: ["stale"],
-      skip: [],
+    expect(plan.add[1].entry).toEqual({
+      type: "http",
+      url: "https://mcp.example.com/mcp",
+      headers: { "X-Api-Key": `header-${secret}` },
     })
+  })
 
-    expect(commands).toEqual([
-      ["claude", "mcp", "remove", "--scope", "user", "stale"],
-      ["claude", "mcp", "remove", "--scope", "user", "notion"],
-      [
-        "claude", "mcp", "add-json", "--scope", "user", "notion",
-        JSON.stringify(entry),
-      ],
-    ])
+  test("generated stdio entries contain no env", () => {
+    const plan = planMcpSync(codexServers, {}, ctx)
+    const stdio = plan.add.filter(({ name }) => name !== "remote")
+
+    expect(JSON.stringify(stdio)).not.toContain(secret)
+    expect(JSON.stringify(stdio)).not.toContain("NOTION_TOKEN")
   })
 })
 
 describe("claude mcp CLI", () => {
-  test("--dry-run, --check, and --print never print secrets", async () => {
+  test("--dry-run and --check never print secrets; --print shows headers",
+    async () => {
+      await withTempDir(async (dir) => {
+        const source = join(dir, "config.toml")
+        const claudeConfig = join(dir, "claude.json")
+        await writeFile(source, stringify({ mcp_servers: codexServers }))
+        await writeFile(claudeConfig, JSON.stringify({ mcpServers: {} }))
+        const base = [
+          "bun", mcpScript, "--mcp-source", source,
+          "--claude-config", claudeConfig, "--state", join(dir, "state.json"),
+        ]
+
+        for (const flag of ["--dry-run", "--check"]) {
+          const result = await runScript([...base, flag])
+
+          expect(result.stdout).not.toContain(secret)
+          expect(result.stderr).not.toContain(secret)
+        }
+
+        const check = await runScript([...base, "--check"])
+        expect(check.exitCode).toBe(1)
+        expect(check.stdout).toContain("+ add telegram")
+
+        // --print is documented to include url header values, never stdio env.
+        const printed = await runScript([...base, "--print"])
+        expect(Object.keys(JSON.parse(printed.stdout)))
+          .toEqual(["notion", "remote", "telegram"])
+        expect(printed.stdout).toContain(`header-${secret}`)
+        expect(printed.stdout).not.toContain("NOTION_TOKEN")
+        expect(await Bun.file(join(dir, "state.json")).exists()).toBe(false)
+      })
+    })
+
+  test("--claude-config with --run must match the claude CLI file", async () => {
     await withTempDir(async (dir) => {
-      const source = join(dir, "config.toml")
-      const claudeConfig = join(dir, "claude.json")
-      await writeFile(source, stringify({ mcp_servers: codexServers }))
-      await writeFile(claudeConfig, JSON.stringify({ mcpServers: {} }))
-      const base = [
-        "bun", mcpScript, "--mcp-source", source,
-        "--claude-config", claudeConfig, "--state", join(dir, "state.json"),
-      ]
+      const result = await runScript([
+        "bun", mcpScript, "--run", "--mcp-source", join(dir, "c.toml"),
+        "--claude-config", join(dir, "other.json"),
+        "--state", join(dir, "state.json"),
+      ], undefined, { ...process.env, HOME: dir, CLAUDE_CONFIG_DIR: "" })
 
-      for (const flag of ["--dry-run", "--check", "--print"]) {
-        const result = await runScript([...base, flag])
-
-        expect(result.stdout).not.toContain(secret)
-        expect(result.stderr).not.toContain(secret)
-      }
-
-      const check = await runScript([...base, "--check"])
-      expect(check.exitCode).toBe(1)
-      expect(check.stdout).toContain("+ add telegram")
-
-      const printed = JSON.parse((await runScript([...base, "--print"])).stdout)
-      expect(Object.keys(printed)).toEqual(["notion", "remote", "telegram"])
-      expect(await Bun.file(join(dir, "state.json")).exists()).toBe(false)
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain("set CLAUDE_CONFIG_DIR")
     })
   })
 })
 
+interface RunFixture {
+  dir: string
+  claudeConfig: string
+  statePath: string
+  log: string
+  run: () => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  calls: () => Promise<string[]>
+}
+
+/**
+ * Runs `claude/mcp.ts --run` against a stub `claude` on PATH that logs its
+ * arguments. With `failAddOf`, the stub fails add-json for launcher entries
+ * of that server, the way a CLI validation error would.
+ */
+const withRunFixture = async (
+  claudeServers: Record<string, unknown>,
+  test: (fixture: RunFixture) => Promise<void>,
+  failAddOf?: string,
+): Promise<void> => {
+  await withTempDir(async (dir) => {
+    const source = join(dir, "config.toml")
+    const claudeConfig = join(dir, ".claude.json")
+    const statePath = join(dir, "state/mcp-managed.json")
+    const log = join(dir, "claude.log")
+    const bin = join(dir, "bin")
+    const fail = failAddOf
+      ? `if [ "$2" = add-json ] && [ "$5" = '${failAddOf}' ] && ` +
+        `printf '%s' "$6" | grep -q mcp-launch.ts; then ` +
+        `echo "bad payload $6" >&2; exit 3; fi\n`
+      : ""
+    await Bun.write(join(bin, "claude"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${fail}`)
+    await Bun.spawn(["chmod", "+x", join(bin, "claude")]).exited
+    await writeFile(source, stringify({ mcp_servers: codexServers }))
+    await writeFile(claudeConfig, JSON.stringify({ mcpServers: claudeServers }))
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      CLAUDE_CONFIG_DIR: dir,
+    }
+
+    await test({
+      dir, claudeConfig, statePath, log,
+      run: () => runScript([
+        "bun", mcpScript, "--run", "--mcp-source", source,
+        "--state", statePath,
+      ], undefined, env),
+      calls: async () => (await Bun.file(log).text()).trim().split("\n")
+        .map((line) => line.split(" ").slice(0, 5).join(" ")),
+    })
+  })
+}
+
 describe("claude mcp --run", () => {
   test("applies through the claude CLI and records owned url servers", async () => {
-    await withTempDir(async (dir) => {
-      const source = join(dir, "config.toml")
-      const claudeConfig = join(dir, "claude.json")
-      const statePath = join(dir, "state.json")
-      const log = join(dir, "claude.log")
-      const bin = join(dir, "bin")
-      await Bun.write(join(bin, "claude"),
-        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n`)
-      await Bun.spawn(["chmod", "+x", join(bin, "claude")]).exited
-      await writeFile(source, stringify({ mcp_servers: codexServers }))
-      await writeFile(claudeConfig, JSON.stringify({
-        mcpServers: {
-          stale: launcherEntry("stale", ctx),
-          mine: { type: "http", url: "https://mine.example.com/mcp" },
-        },
-      }))
-      const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }
+    await withRunFixture({
+      stale: launcherEntry("stale", ctx),
+      mine: { type: "http", url: "https://mine.example.com/mcp" },
+    }, async ({ claudeConfig, statePath, run, calls, log }) => {
+      const result = await run()
 
-      const result = await runScript([
-        "bun", mcpScript, "--run", "--quiet", "--mcp-source", source,
-        "--claude-config", claudeConfig, "--state", statePath,
-      ], undefined, env)
-
-      expect(result).toMatchObject({ exitCode: 0, stdout: "", stderr: "" })
-      const calls = (await Bun.file(log).text()).trim().split("\n")
-      expect(calls.map((line) => line.split(" ").slice(0, 5).join(" ")))
-        .toEqual([
-          "mcp remove --scope user stale",
-          "mcp add-json --scope user notion",
-          "mcp add-json --scope user remote",
-          "mcp add-json --scope user telegram",
-        ])
-      expect(calls.join("\n")).not.toContain(secret)
+      expect(result.exitCode).toBe(0)
+      expect(await calls()).toEqual([
+        "mcp remove --scope user stale",
+        "mcp add-json --scope user notion",
+        "mcp add-json --scope user remote",
+        "mcp add-json --scope user telegram",
+      ])
+      expect(await Bun.file(log).text()).not.toContain("NOTION_TOKEN")
       expect(await Bun.file(statePath).json()).toEqual({
         version: 1,
         targets: { [claudeConfig]: ["remote"] },
       })
     })
+  })
+
+  test("backs up a hand-added entry before replacing it", async () => {
+    const handAdded = {
+      type: "stdio", command: "npx", args: ["notion"], env: { T: secret },
+    }
+
+    await withRunFixture({ notion: handAdded }, async ({ dir, run }) => {
+      const result = await run()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain("~ replace notion (unmanaged Claude entry)")
+      expect(result.stdout).not.toContain(secret)
+
+      const stateDir = join(dir, "state")
+      const backups = (await readdir(stateDir))
+        .filter((name) => name.startsWith("claude-mcp-before-dotfiles-"))
+      expect(backups.length).toBe(1)
+      const backupPath = join(stateDir, backups[0])
+      expect((await stat(backupPath)).mode & 0o777).toBe(0o600)
+      expect((await Bun.file(backupPath).json()).mcpServers)
+        .toEqual({ notion: handAdded })
+    })
+  })
+
+  test("restores the old entry when add-json fails after remove", async () => {
+    const handAdded = { type: "stdio", command: "npx", args: ["notion"] }
+
+    await withRunFixture({ notion: handAdded }, async ({ run, log }) => {
+      const result = await run()
+
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain("claude mcp add-json notion failed (3)")
+      expect(result.stderr).not.toContain("bad payload")
+      const lines = (await Bun.file(log).text()).trim().split("\n")
+      expect(lines.slice(0, 3).map((l) => l.split(" ").slice(0, 5).join(" ")))
+        .toEqual([
+          "mcp remove --scope user notion",
+          "mcp add-json --scope user notion",
+          "mcp add-json --scope user notion",
+        ])
+      expect(lines[2]).toEndWith(JSON.stringify(handAdded))
+    }, "notion")
   })
 })
 

@@ -13,6 +13,10 @@ const secret = `secret-${crypto.randomUUID()}`
 const codexServers = {
   notion: { command: "notion-mcp-server", env: { NOTION_TOKEN: secret } },
   docs: { url: "https://docs.example.com/mcp" },
+  keyed: {
+    url: "https://keyed.example.com/mcp",
+    http_headers: { "X-Api-Key": `header-${secret}` },
+  },
 }
 
 /** Today's Cursor file: full copies with env, written by hand. */
@@ -91,6 +95,7 @@ describe("cursor mcp", () => {
       const check = await run("--check")
       expect(check.exitCode).toBe(1)
       expect(check.stdout).toContain("+ add docs")
+      expect(check.stdout).not.toContain(secret)
       expect(check.stdout).toContain("~ replace notion (unmanaged Cursor entry)")
       expect(check.stdout).not.toContain("personal")
 
@@ -111,7 +116,7 @@ describe("cursor mcp", () => {
       expect(await Bun.file(join(dir, backups[0])).json())
         .toEqual(legacyCursorFile)
       expect(await Bun.file(statePath).json()).toEqual({
-        version: 1, targets: { [cursorConfig]: ["docs"] },
+        version: 1, targets: { [cursorConfig]: ["docs", "keyed"] },
       })
 
       const again = await run("--check")
@@ -136,17 +141,22 @@ describe("cursor mcp", () => {
     })
   })
 
-  test("creates a missing file and never prints secrets", async () => {
+  test("creates a missing file; only --print shows header values", async () => {
     await withFixture(async ({ cursorConfig, run }) => {
-      for (const flag of ["--dry-run", "--check", "--print", "--run"]) {
+      for (const flag of ["--dry-run", "--check", "--run"]) {
         const result = await run(flag)
         expect(result.stdout).not.toContain(secret)
         expect(result.stderr).not.toContain(secret)
       }
 
-      expect(await Bun.file(cursorConfig).text()).not.toContain(secret)
-      const printed = JSON.parse((await run("--print")).stdout)
-      expect(Object.keys(printed)).toEqual(["docs", "notion"])
+      const text = await Bun.file(cursorConfig).text()
+      expect(text).not.toContain("NOTION_TOKEN")
+      expect(JSON.parse(text).mcpServers.keyed.headers)
+        .toEqual({ "X-Api-Key": `header-${secret}` })
+      const printed = await run("--print")
+      expect(Object.keys(JSON.parse(printed.stdout)))
+        .toEqual(["docs", "keyed", "notion"])
+      expect(printed.stdout).not.toContain("NOTION_TOKEN")
     })
   })
 

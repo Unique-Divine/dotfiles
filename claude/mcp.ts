@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises"
+import { dirname, resolve } from "node:path"
 import { Command } from "commander"
 
 import {
@@ -6,7 +8,7 @@ import {
 } from "../mcp/plan.ts"
 import {
   codexConfigPath, defaultLauncherContext, desiredEntries, isRecord,
-  readCodexMcpServers, type LauncherContext, type McpServer, type McpServers,
+  readCodexMcpServers, type LauncherContext, type McpServers,
 } from "../mcp/servers.ts"
 import { readJsonObject, runtimeStatePath } from "./config.ts"
 
@@ -37,25 +39,6 @@ export const planMcpSync = (
     managedUrlNames,
   )
 
-/** `claude` CLI invocations that apply a plan, in order. */
-export const planCommands = (
-  plan: McpPlan,
-  claudeBin = "claude",
-): string[][] => {
-  const remove = (name: string) =>
-    [claudeBin, "mcp", "remove", "--scope", "user", name]
-  const add = (name: string, entry: McpServer) => [
-    claudeBin, "mcp", "add-json", "--scope", "user", name,
-    JSON.stringify(entry),
-  ]
-
-  return [
-    ...plan.remove.map(remove),
-    ...plan.update.flatMap(({ name, entry }) => [remove(name), add(name, entry)]),
-    ...plan.add.map(({ name, entry }) => add(name, entry)),
-  ]
-}
-
 export const readClaudeUserMcpServers = async (
   path: string,
 ): Promise<Record<string, unknown>> => {
@@ -69,23 +52,84 @@ export const readClaudeUserMcpServers = async (
   return servers
 }
 
-const runCommands = async (commands: string[][]): Promise<void> => {
-  for (const cmd of commands) {
-    // Argument vectors avoid shell quoting of the JSON payload.
-    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" })
-    const [exitCode, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stderr).text(),
-    ])
+/** Runs one `claude` command. Errors never include an add-json payload. */
+const runClaude = async (cmd: string[]): Promise<void> => {
+  // Argument vectors avoid shell quoting of the JSON payload.
+  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" })
+  const [exitCode, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stderr).text(),
+  ])
 
-    if (exitCode !== 0) {
-      // Name the verb and server, not the add-json payload with url headers.
-      throw new Error(
-        `${cmd.slice(0, 3).join(" ")} ${cmd[5]} failed (${exitCode}): ` +
-          stderr.trim(),
-      )
+  if (exitCode !== 0) {
+    const label = `${cmd.slice(0, 3).join(" ")} ${cmd[5]}`
+    // The CLI may echo an add-json payload, which can hold url headers.
+    const detail = cmd[2] === "add-json" ? "" : `: ${stderr.trim()}`
+    throw new Error(`${label} failed (${exitCode})${detail}`)
+  }
+}
+
+/**
+ * Saves the Claude entries a plan replaces but does not own, as private JSON
+ * beside the managed-state file. Returns the backup path, if one was written.
+ */
+export const backupReplacedEntries = async (
+  plan: McpPlan,
+  current: Record<string, unknown>,
+  targetPath: string,
+  statePath: string,
+): Promise<string | undefined> => {
+  const replaced = plan.update.filter((u) => u.replacesUnmanaged)
+
+  if (replaced.length === 0) return undefined
+
+  const path = resolve(
+    dirname(statePath),
+    `claude-mcp-before-dotfiles-${Date.now()}.json`,
+  )
+  const mcpServers = Object.fromEntries(
+    replaced.map(({ name }) => [name, current[name]]),
+  )
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(
+    path,
+    `${JSON.stringify({ targetPath, mcpServers }, null, 2)}\n`,
+    { mode: 0o600, flag: "wx" },
+  )
+
+  return path
+}
+
+/**
+ * Applies a plan through the `claude` CLI. An update removes and re-adds the
+ * entry; if the add fails, the previous entry is restored before throwing.
+ */
+export const applyClaudePlan = async (
+  plan: McpPlan,
+  current: Record<string, unknown>,
+  claudeBin = "claude",
+): Promise<void> => {
+  const remove = (name: string) =>
+    runClaude([claudeBin, "mcp", "remove", "--scope", "user", name])
+  const add = (name: string, entry: unknown) => runClaude([
+    claudeBin, "mcp", "add-json", "--scope", "user", name,
+    JSON.stringify(entry),
+  ])
+
+  for (const name of plan.remove) await remove(name)
+
+  for (const { name, entry } of plan.update) {
+    await remove(name)
+
+    try {
+      await add(name, entry)
+    } catch (error) {
+      await add(name, current[name]).catch(() => undefined)
+      throw error
     }
   }
+
+  for (const { name, entry } of plan.add) await add(name, entry)
 }
 
 interface McpOptions {
@@ -111,7 +155,10 @@ export const createProgram = (): Command => {
     .option("--run", "apply the plan with the claude CLI")
     .option("--dry-run", "print the plan without changing anything")
     .option("--check", "exit with code 1 if the plan has changes")
-    .option("--print", "print the generated Claude entries as JSON")
+    .option(
+      "--print",
+      "print the generated Claude entries, including url header values",
+    )
     .option("--mcp-source <path>", "read MCP servers from this Codex config")
     .option(
       "--claude-config <path>",
@@ -137,6 +184,13 @@ export const createProgram = (): Command => {
       if (options.print) {
         process.stdout.write(`${JSON.stringify(desired.entries, null, 2)}\n`)
         return
+      }
+
+      if (options.run && options.claudeConfig &&
+        resolve(options.claudeConfig) !== resolve(claudeConfigPath())) {
+        // --run writes through the claude CLI, which uses its own config.
+        throw new Error("--claude-config with --run must be the file the " +
+          "claude CLI uses; set CLAUDE_CONFIG_DIR for another profile")
       }
 
       const targetPath = options.claudeConfig ?? claudeConfigPath()
@@ -167,7 +221,17 @@ export const createProgram = (): Command => {
           targetPath,
           desired,
           plan,
-          apply: () => runCommands(planCommands(plan)),
+          apply: async () => {
+            const backup = await backupReplacedEntries(
+              plan, claudeServers, targetPath, statePath,
+            )
+
+            if (backup && !options.quiet) {
+              console.log(`Saved replaced Claude entries to ${backup}`)
+            }
+
+            await applyClaudePlan(plan, claudeServers)
+          },
         })
       }
     })

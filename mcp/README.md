@@ -50,26 +50,42 @@ A server with `enabled = false` is treated as absent.
 
 ## Sync rules
 
-- A Codex server is added to the target, or replaces a same-named entry.
-  Replacing an entry this sync did not create is reported as
-  `~ replace <name> (unmanaged ... entry)`.
-- An entry this sync owns is removed when its server leaves the Codex
-  config. Launcher entries are always owned. A url entry is owned when file
+Codex wins on names. For each target:
+
+- **Add.** A Codex server the target lacks is added.
+- **Replace.** A same-named target entry that differs is replaced. When the
+  sync does not own that entry, the plan says
+  `~ replace <name> (unmanaged ... entry)` and the old entry is backed up
+  first (see below).
+- **Remove.** An owned entry is removed when its server leaves Codex.
+  Launcher entries are always owned. A url entry is owned when file
   `$XDG_STATE_HOME/dotfiles/mcp-managed.json` (default
   `$HOME/.local/state/dotfiles/mcp-managed.json`) lists its name for that
-  target.
-- Entries this sync does not own are left alone.
-- A Codex server that cannot be mapped is reported with `! skip` and keeps any
-  existing copy.
+  target. After a successful run, every url server Codex exports is owned,
+  including a hand-added entry that already matched or was replaced.
+- **Keep.** An entry whose name Codex does not have and that the sync does not
+  own is never touched.
+- **Skip.** A Codex server that cannot be mapped is reported with `! skip`
+  and keeps any existing copy.
 
-Output lists server names only, never env or header values.
+`--dry-run`, `--check`, and `--run` print server names only, never env or
+header values. `--print` writes the generated entries, which include url
+header values but never stdio env.
 
 Claude writes go through `claude mcp add-json --scope user` and
 `claude mcp remove`, because Claude Code rewrites `$HOME/.claude.json` while
-it runs. `cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an
-atomic, mode 0600 replacement, and keeps other top-level keys. Before it
-replaces an entry it does not own, it saves the old file as
-`mcp.json.before-dotfiles-<ms>`, which can hold tokens.
+it runs. Before replacing entries it does not own, `claude/mcp.ts` saves them
+to `claude-mcp-before-dotfiles-<ms>.json` (mode 0600) beside the managed-state
+file. A replacement removes and then re-adds the entry; if the add fails, the
+old entry is added back before the error is reported. Errors from a failed
+`add-json` omit the CLI's stderr, which could echo header values. The
+`add-json` payload is visible in the process list while the command runs.
+
+`cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an atomic, mode
+0600 replacement, and keeps other top-level keys. Before it replaces an entry
+it does not own, it saves the old file as `mcp.json.before-dotfiles-<ms>`.
+
+Both backups can hold tokens.
 
 ## Ingest servers added elsewhere
 
@@ -82,13 +98,19 @@ just mcp-ingest                                 # Claude → Codex → all tools
 just mcp-ingest cursor                          # Cursor → Codex → all tools
 ```
 
-Ingest skips launcher entries, which already come from Codex, and SSE
-servers, which Codex cannot run. It adds a server only when Codex has no
-server of that name. A same-named server with a different definition is
-reported as `! clash`; `--force` replaces its `command`, `args`, `env`, `cwd`,
-`url`, and `http_headers` and keeps other Codex fields such as
-`startup_timeout_sec`. The Codex file is rewritten with mode 0600, and output
-lists key paths, never values.
+Ingest skips launcher entries, which already come from Codex. It also skips,
+with a `! skip` reason, entries Codex cannot hold as they are: SSE servers,
+entries with Claude's `headersHelper` or `oauth`, and entries that use
+`${VAR}` or `${env:VAR}` interpolation. Add those to Codex by hand.
+
+Ingest adds a server only when Codex has no server of that name. A same-named
+server with a different definition is reported as `! clash`, and the run exits
+1 after writing the clean additions, so `just mcp-ingest` stops before the
+export would overwrite the clashing entry. `--force` replaces the Codex
+server's transport and auth fields (`command`, `args`, `env`, `env_vars`,
+`cwd`, `url`, `http_headers`, `bearer_token_env_var`, `env_http_headers`) and
+keeps others, such as `startup_timeout_sec`. The Codex file is rewritten with
+mode 0600, and output lists key paths, never values.
 
 After the export, Claude's ingested stdio entry becomes a launcher entry, so
 its env leaves `$HOME/.claude.json`. Url servers that use OAuth need a login
@@ -103,11 +125,15 @@ in Codex once, with `codex mcp login <name>`.
 bun run cursor/mcp.ts --dry-run
 bun run cursor/mcp.ts --run
 bun run claude/mcp.ts --check
-bun run claude/mcp.ts --print   # generated entries, no stdio env
+bun run claude/mcp.ts --print   # entries with url headers, no stdio env
 ```
 
 Both scripts take `--run`, `--dry-run`, `--check`, and `--print`, plus
-`--mcp-source <config.toml>`, `--state <path>`, and `--claude-config` or
-`--cursor-config` for tests or other profiles. Entries hold absolute paths to
-this checkout and to `bun`. After moving the checkout, run `just sync` to
-rewrite them.
+`--mcp-source <config.toml>` and `--state <path>`. `cursor/mcp.ts` takes
+`--cursor-config <path>` for its target file. `claude/mcp.ts --claude-config`
+only changes what `--check` and `--dry-run` read: `--run` writes through the
+`claude` CLI, so it refuses a path other than the CLI's own. For another
+Claude profile, set `CLAUDE_CONFIG_DIR`.
+
+Entries hold absolute paths to this checkout and to `bun`. After moving the
+checkout, run `just sync` to rewrite them.
