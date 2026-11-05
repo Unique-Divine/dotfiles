@@ -35,7 +35,7 @@ impl<'a> Gcs<'a> {
 
     /// Authenticate only after validating bucket/origin; never print
     /// token output.
-    pub fn list(&self, prefix: &str) -> Result<Vec<Record>> {
+    fn token(&self) -> Result<String> {
         public_url("validation", &self.config.base_url)?;
         ensure!(
             matches(r"^[a-z0-9][a-z0-9._-]*$", &self.config.bucket),
@@ -58,6 +58,12 @@ impl<'a> Gcs<'a> {
             "Google authentication failed. Sign in with gcloud auth login {}",
             self.config.account
         );
+        Ok(token.trim().to_owned())
+    }
+
+    /// Fetch fresh metadata for every page under a prefix.
+    pub fn list(&self, prefix: &str) -> Result<Vec<Record>> {
+        let token = self.token()?;
         collect_pages(&self.config.base_url, |cursor| {
             let mut url = Url::parse(&format!(
                 "https://storage.googleapis.com/storage/v1/b/{}/o",
@@ -77,25 +83,118 @@ impl<'a> Gcs<'a> {
             Ok(self
                 .client
                 .get(url)
-                .bearer_auth(token.trim())
+                .bearer_auth(&token)
                 .send()?
                 .error_for_status()?
                 .json()?)
         })
     }
 
-    /// Never replace an existing object; MD5 also detects file changes
-    /// mid-upload.
-    pub fn upload(&self, file: &Path, key: &str, digest: &str) -> Result<()> {
-        let status = upload_command("gcloud", self.config, file, key, digest)
-            .stdout(Stdio::from(std::io::stderr()))
-            .status()
-            .context("gcloud is required")?;
-        ensure!(
-            status.success(),
-            "Upload failed. Existing names are never overwritten; use a different slug for another version"
-        );
+    /// Return the stored size of one object, or `None` when it is absent.
+    pub fn existing_size(&self, key: &str) -> Result<Option<u64>> {
+        let token = self.token()?;
+        let mut url = Url::parse(&format!(
+            "https://storage.googleapis.com/storage/v1/b/{}/o/",
+            self.config.bucket
+        ))?;
+        // One encoded segment keeps directory separators inside the name.
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("Invalid storage URL"))?
+            .pop_if_empty()
+            .push(key);
+        url.query_pairs_mut().append_pair("fields", "size");
+        let response = self.client.get(url).bearer_auth(&token).send()?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        object_size(&response.error_for_status()?.json()?).map(Some)
+    }
+
+    /// Refuse existing names unless `replace` is set; MD5 also detects file
+    /// changes mid-upload.
+    pub fn upload(
+        &self,
+        file: &Path,
+        key: &str,
+        digest: &str,
+        replace: bool,
+    ) -> Result<()> {
+        let status =
+            upload_command("gcloud", self.config, file, key, digest, replace)
+                .stdout(Stdio::from(std::io::stderr()))
+                .status()
+                .context("gcloud is required")?;
+        if replace {
+            ensure!(status.success(), "Upload failed");
+        } else {
+            ensure!(
+                status.success(),
+                "Upload failed. Existing names are not overwritten without --replace; use --replace or a different slug"
+            );
+        }
         Ok(())
+    }
+
+    /// Purge the Hosting CDN with a new release of identical content.
+    /// Firebase refuses to re-release the active version, so this clones it
+    /// first; every release clears cached responses, including `/f/`.
+    pub fn purge_cdn(&self, key: &str) -> Result<()> {
+        let token = self.token()?;
+        ensure!(
+            matches(r"^[a-z0-9][a-z0-9-]*$", &self.config.hosting_site),
+            "Hosting site must be a Firebase site ID"
+        );
+        let api = "https://firebasehosting.googleapis.com/v1beta1";
+        let site = format!("{api}/sites/{}", self.config.hosting_site);
+        let call =
+            |request: reqwest::blocking::RequestBuilder| -> Result<Value> {
+                Ok(request
+                    .bearer_auth(&token)
+                    .header("x-goog-user-project", &self.config.project)
+                    .send()?
+                    .error_for_status()?
+                    .json()?)
+            };
+        let live = call(self.client.get(format!("{site}/channels/live")))?;
+        let source = live_version(&live, &self.config.hosting_site)?;
+        let mut operation =
+            call(self.client.post(format!("{site}/versions:clone")).json(
+                &serde_json::json!({
+                    "sourceVersion": source,
+                    "finalize": true,
+                }),
+            ))?;
+        let name = operation
+            .get("name")
+            .and_then(Value::as_str)
+            .context("Hosting clone returned no operation")?
+            .to_owned();
+        ensure!(
+            matches(r"^projects/[0-9]+/operations/[A-Za-z0-9_-]+$", &name),
+            "Hosting clone returned an invalid operation"
+        );
+        for attempt in 0..30 {
+            if operation.get("done").and_then(Value::as_bool) == Some(true) {
+                break;
+            }
+            thread::sleep(Duration::from_secs(1 + attempt.min(4)));
+            operation = call(self.client.get(format!("{api}/{name}")))?;
+        }
+        let version = cloned_version(&operation, &self.config.hosting_site)?;
+        let mut url = Url::parse(&format!("{site}/channels/live/releases"))?;
+        url.query_pairs_mut().append_pair("versionName", &version);
+        call(self.client.post(url).json(&serde_json::json!({
+            "message": format!("ud fs publish --replace {key}: purge CDN")
+        })))?;
+        Ok(())
+    }
+
+    /// Retry until the public body has the uploaded MD5, so stale CDN bytes
+    /// fail verification even when the size is unchanged.
+    pub fn verify_digest(&self, url: &str, digest: &str) -> Result<()> {
+        verify_digest(&self.client, url, digest, 8, |attempt| {
+            thread::sleep(Duration::from_secs(2 + attempt as u64));
+        })
     }
 
     /// Retry public visibility before reporting successful publication.
@@ -106,6 +205,47 @@ impl<'a> Gcs<'a> {
     }
 }
 
+/// Read the decimal size string from GCS object metadata.
+pub(super) fn object_size(metadata: &Value) -> Result<u64> {
+    metadata
+        .get("size")
+        .and_then(Value::as_str)
+        .and_then(|size| size.parse().ok())
+        .context("Storage returned invalid object metadata")
+}
+
+/// Extract the live version name, refusing versions from another site.
+pub(super) fn live_version(channel: &Value, site: &str) -> Result<String> {
+    let version = channel
+        .pointer("/release/version/name")
+        .and_then(Value::as_str)
+        .context("Hosting live channel has no released version")?;
+    ensure!(
+        version.starts_with(&format!("sites/{site}/versions/")),
+        "Hosting returned a version from another site"
+    );
+    Ok(version.to_owned())
+}
+
+/// Extract the finalized version from a completed clone operation.
+pub(super) fn cloned_version(operation: &Value, site: &str) -> Result<String> {
+    ensure!(
+        operation.get("done").and_then(Value::as_bool) == Some(true),
+        "Hosting clone did not finish in time"
+    );
+    if let Some(error) = operation.get("error") {
+        bail!("Hosting clone failed: {error}");
+    }
+    let response = operation
+        .get("response")
+        .context("Hosting clone returned no version")?;
+    ensure!(
+        response.get("status").and_then(Value::as_str) == Some("FINALIZED"),
+        "Hosting clone did not finalize the version"
+    );
+    live_version(&serde_json::json!({"release":{"version":response}}), site)
+}
+
 /// Assemble literal argv, keeping user paths out of shell interpolation.
 pub(super) fn upload_command(
     program: &str,
@@ -113,6 +253,7 @@ pub(super) fn upload_command(
     file: &Path,
     key: &str,
     digest: &str,
+    replace: bool,
 ) -> Command {
     let mut command = Command::new(program);
     let mime = inline_type(key).unwrap_or("application/octet-stream");
@@ -126,8 +267,12 @@ pub(super) fn upload_command(
         .arg("cp")
         .arg(file)
         .arg(format!("gs://{}/{key}", config.bucket))
-        .args(["--project", &config.project, "--account", &config.account])
-        .arg("--if-generation-match=0")
+        .args(["--project", &config.project, "--account", &config.account]);
+    if !replace {
+        // Generation 0 matches only an absent object, so creation is atomic.
+        command.arg("--if-generation-match=0");
+    }
+    command
         .arg(format!("--content-md5={digest}"))
         .arg("--cache-control=public,max-age=300,no-transform")
         .arg(format!("--content-type={mime}"))
@@ -204,6 +349,39 @@ pub(super) fn verify(
             ensure!(
                 response.status() == 200 && size == Some(expected),
                 "Public response has unexpected status or size"
+            );
+            Ok(())
+        })();
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt + 1 == attempts => return Err(error),
+            Err(_) => pause(attempt),
+        }
+    }
+    bail!("No verification attempts configured")
+}
+
+/// Compare the full public body with the base64 MD5 sent to storage.
+pub(super) fn verify_digest(
+    client: &Client,
+    url: &str,
+    expected: &str,
+    attempts: usize,
+    mut pause: impl FnMut(usize),
+) -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use md5::{Digest, Md5};
+    for attempt in 0..attempts {
+        let result = (|| {
+            let response = client.get(url).send()?;
+            ensure!(
+                response.status() == 200,
+                "Public response has unexpected status"
+            );
+            let actual = STANDARD.encode(Md5::digest(response.bytes()?));
+            ensure!(
+                actual == expected,
+                "Public response still serves different bytes"
             );
             Ok(())
         })();

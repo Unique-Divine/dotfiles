@@ -100,6 +100,11 @@ file. Flag `--md` emits an HTML image tag for supported raster images or a
 Markdown link for other files, including SVG. Successful output is copied to
 the clipboard when supported; `--no-clipboard` disables that step.
 
+Existing names are refused by default. Flag `--replace` overwrites the object
+at the same URL, purges the Firebase Hosting CDN with a release of a clone of
+the live version, and verifies that the public URL serves the new MD5. With
+`--dry-run`, `--replace` signs in and reports whether the target exists.
+
 Bare `ls` selects the current Bangkok calendar month; `--all` includes the
 whole collection. A positional directory recursively includes all dates beneath
 it, with an optional trailing slash. Flag `--time` narrows the selection.

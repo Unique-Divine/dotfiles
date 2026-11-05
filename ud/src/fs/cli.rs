@@ -39,9 +39,13 @@ pub(crate) struct PublishArgs {
     /// Print output without copying it to the clipboard.
     #[arg(long)]
     pub no_clipboard: bool,
-    /// Validate and print without uploading or signing in.
+    /// Validate and print without uploading; with --replace, sign in to
+    /// report whether the target exists.
     #[arg(long)]
     pub dry_run: bool,
+    /// Overwrite an existing object at the same URL and purge the CDN.
+    #[arg(long)]
+    pub replace: bool,
 }
 
 /// Mutually exclusive filters and formats fail during parsing, before login.
