@@ -172,6 +172,14 @@ describe("claude settings", () => {
     expect(managedAllowRules).toContain("Bash(rg:*)")
   })
 
+  test("allows only the Superhuman cleanup tools", () => {
+    expect(managedAllowRules.filter((rule) =>
+      rule.startsWith("mcp__superhuman-mail__"))).toEqual([
+      "mcp__superhuman-mail__unsubscribe",
+      "mcp__superhuman-mail__trash_thread",
+    ])
+  })
+
   test("adds managed allow rules and keeps runtime permissions", () => {
     expect(
       mergePermissions(

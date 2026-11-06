@@ -114,8 +114,20 @@ pub(super) fn copy(
     }
 }
 
-/// Dry runs stop before client creation, authentication, checksumming or
-/// upload.
+/// Describe what `--replace` finds at the target, for stderr only.
+pub(super) fn target_note(key: &str, existing: Option<u64>) -> String {
+    match existing {
+        Some(size) => format!(
+            "Target exists: {key} ({size} bytes); --replace overwrites it."
+        ),
+        None => format!(
+            "Target does not exist: {key}; --replace publishes it as new."
+        ),
+    }
+}
+
+/// Dry runs stop before checksumming or upload; only `--replace` signs in
+/// to check the target.
 pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
     let plan = naming::plan(
         &args.file,
@@ -125,15 +137,36 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         Utc::now(),
     )?;
     let text = output(&plan, args.md);
-    if args.dry_run {
+    if args.dry_run && !args.replace {
         println!("{text}");
         return Ok(());
     }
     let backend = Gcs::new(config)?;
-    backend.upload(&plan.file, &plan.key, &checksum(&plan.file)?)?;
-    backend.verify(&plan.url, plan.file.metadata()?.len()).with_context(|| {
-        format!("Uploaded {}, but public verification failed. The object remains in storage", plan.key)
-    })?;
+    let existing = if args.replace {
+        let existing = backend.existing_size(&plan.key)?;
+        eprintln!("{}", target_note(&plan.key, existing));
+        existing
+    } else {
+        None
+    };
+    if args.dry_run {
+        println!("{text}");
+        return Ok(());
+    }
+    let digest = checksum(&plan.file)?;
+    backend.upload(&plan.file, &plan.key, &digest, args.replace)?;
+    if existing.is_some() {
+        backend.purge_cdn(&plan.key).with_context(|| {
+            format!("Replaced {}, but the CDN purge failed. Cached copies expire within five minutes", plan.key)
+        })?;
+        backend.verify_digest(&plan.url, &digest).with_context(|| {
+            format!("Replaced {}, but the public URL does not serve the new bytes yet", plan.key)
+        })?;
+    } else {
+        backend.verify(&plan.url, plan.file.metadata()?.len()).with_context(|| {
+            format!("Uploaded {}, but public verification failed. The object remains in storage", plan.key)
+        })?;
+    }
     println!("{text}");
     std::io::stdout().flush()?;
     if !args.no_clipboard

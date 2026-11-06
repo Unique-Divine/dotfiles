@@ -75,8 +75,10 @@ Don't sync a renderer change under running sessions. A live switch from
 fullscreen blanks the pane. Run `/tui default` in each session, or quit and
 resume.
 
-Sync adds each rule in `managedAllowRules`, currently `Bash(rg:*)`, to
-`permissions.allow`. It doesn't own `permissions`: rules added through
+Sync adds each rule in `managedAllowRules` to `permissions.allow`:
+`Bash(rg:*)`, plus `mcp__superhuman-mail__unsubscribe` and
+`mcp__superhuman-mail__trash_thread` for inbox cleanup. Other Superhuman tools,
+such as `send_draft`, still prompt. It doesn't own `permissions`: rules added through
 `/permissions` or prompts, along with `deny`, `ask`, and `defaultMode`, stay.
 Removing a rule from `managedAllowRules` doesn't remove it from the runtime
 file.
@@ -109,46 +111,7 @@ shows only the three managed fields.
 
 ## MCP servers
 
-File `$HOME/.cursor/mcp.json` is the MCP source for Cursor, Codex, and
-Claude Code. `codex/config.ts` copies its servers into Codex. File `mcp.ts`
-registers each stdio server in Claude's user scope with an entry like this:
-
-```json
-{
-  "type": "stdio",
-  "command": "/home/me/.bun/bin/bun",
-  "args": [
-    "/path/to/dotfiles/claude/mcp-launch.ts",
-    "--source", "/home/me/.cursor/mcp.json",
-    "notion-mcp"
-  ]
-}
-```
-
-The entry has no `env`. When Claude Code starts the server, `mcp-launch.ts`
-reads that server's definition from the Cursor file and passes its `env` only
-to the child process. Tokens stay in one file, and no secret value lands in
-`$HOME/.claude.json` or in this script's output. Edit a token in
-`$HOME/.cursor/mcp.json` and the next Claude session uses it with no resync.
-
-Sync rules:
-
-- A Cursor stdio server is added, or replaces a same-named Claude entry.
-- A launcher entry whose server left the Cursor file is removed.
-- Claude-only servers that do not run `claude/mcp-launch.ts` are left alone.
-- Remote (`url`) servers are skipped, because their `headers` usually hold
-  credentials. Add them with `claude mcp add`.
-
-Writes go through `claude mcp add-json --scope user` and `claude mcp remove`,
-because Claude Code rewrites `$HOME/.claude.json` while it runs. Output lists
-server names only.
-
-```bash
-bun run claude/mcp.ts --dry-run
-bun run claude/mcp.ts --run
-bun run claude/mcp.ts --check
-bun run claude/mcp.ts --print   # generated entries, no env
-```
-
-Entries hold absolute paths to this checkout and to `bun`. After moving the
-checkout, run `just sync` to rewrite them.
+File `mcp.ts` registers the MCP servers from `$HOME/.codex/config.toml` in
+Claude's user scope. Stdio servers run through `mcp-launch.ts`, so their env
+stays in the Codex file. See [`mcp/README.md`](../mcp/README.md) for the flow,
+entry shapes, and sync rules.

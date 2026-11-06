@@ -88,7 +88,12 @@ const ownedTopLevelFields = [
  * Rules sync adds to `permissions.allow`. Unlike owned keys, the runtime rules
  * stay, because `/permissions` and permission prompts also write that list.
  */
-export const managedAllowRules: readonly string[] = ["Bash(rg:*)"]
+export const managedAllowRules: readonly string[] = [
+  "Bash(rg:*)",
+  // Superhuman Mail inbox cleanup: unsubscribe and move threads to Trash.
+  "mcp__superhuman-mail__unsubscribe",
+  "mcp__superhuman-mail__trash_thread",
+]
 
 /**
  * Returns runtime `permissions` with every managed allow rule present. Other

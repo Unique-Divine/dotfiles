@@ -232,9 +232,9 @@ managed configuration and Codex scrolling settings.
 
 [`codex/config.ts`](codex/config.ts) maintains portable defaults in
 `$HOME/.codex/config.toml` while preserving local project and onboarding
-state. When present, `$HOME/.cursor/mcp.json` supplies same-named MCP servers;
-other Codex MCP servers remain local. Run `bun run codex/config.ts` for its
-usage and options.
+state. Its `mcp_servers` table is the MCP source that [`mcp/`](mcp/README.md)
+exports to the other tools. Run `bun run codex/config.ts` for its usage and
+options.
 
 ### Claude Code config
 
@@ -243,9 +243,9 @@ servers. [`claude/config.ts`](claude/config.ts) merges owned keys, such as
 empty commit and PR `attribution`, into `$HOME/.claude/settings.json`, and
 adds the `rg` allow rule. [`claude/CLAUDE.md`](claude/CLAUDE.md) is linked to
 `$HOME/.claude/CLAUDE.md` as global instructions.
-[`claude/mcp.ts`](claude/mcp.ts) registers each `$HOME/.cursor/mcp.json` stdio
-server in Claude's user scope through a launcher, so server secrets stay in
-the Cursor file.
+[`claude/mcp.ts`](claude/mcp.ts) registers each Codex MCP server in Claude's
+user scope. Stdio servers run through a launcher, so their secrets stay in
+`$HOME/.codex/config.toml`.
 
 ### WSL Clipboard Integration
 

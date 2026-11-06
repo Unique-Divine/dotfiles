@@ -760,10 +760,55 @@ fn fs_upload_refusal_has_no_success_output() {
         .unwrap();
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert!(stderr(&output).contains("Existing names are never overwritten"));
+    assert!(stderr(&output).contains("not overwritten without --replace"));
     let args = fs::read_to_string(arguments).unwrap();
     assert!(args.contains("--if-generation-match=0"));
     assert!(args.contains("--content-md5="));
+}
+
+/// A replace dry run must sign in to check the target, and a failed login
+/// must not print the URL as if the check succeeded.
+#[test]
+fn fs_replace_dry_run_checks_target_through_login() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let marker = temp.path().join("gcloud-called");
+    write_executable(
+        &bin.join("gcloud"),
+        "#!/bin/sh\ntouch \"$GCLOUD_MARKER\"\nexit 1\n",
+    );
+    let file = temp.path().join("data.png");
+    fs::write(&file, b"image").unwrap();
+    let publish = |extra: &[&str]| {
+        let mut args = vec![
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "image",
+            "--date",
+            "2026-10-12",
+            "--dry-run",
+        ];
+        args.extend_from_slice(extra);
+        isolated_ud(&temp)
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("UD_FS_BASE_URL", "https://example.com")
+            .env("PATH", path_with(&bin))
+            .env("GCLOUD_MARKER", &marker)
+            .args(&args)
+            .output()
+            .unwrap()
+    };
+    let plain = publish(&[]);
+    assert_success(&plain);
+    assert_eq!(stdout(&plain), "https://example.com/f/26/261012-image.png");
+    assert!(!marker.exists(), "plain dry run must stay local");
+    let replace = publish(&["--replace"]);
+    assert!(!replace.status.success());
+    assert_eq!(stdout(&replace), "");
+    assert!(stderr(&replace).contains("Google authentication failed"));
+    assert!(marker.exists(), "replace dry run must check the target");
 }
 
 /// Installing the built-in removes only this checkout's retired symlinks.

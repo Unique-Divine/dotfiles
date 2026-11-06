@@ -3,10 +3,9 @@
 `config.ts` maintains portable defaults for the Codex CLI. It writes the
 runtime file at `$HOME/.codex/config.toml` while preserving local state.
 
-When `$HOME/.cursor/mcp.json` exists, its `mcpServers` entries are imported
-into Codex's `mcp_servers` table. A Cursor server replaces a same-named Codex
-server; Codex-only servers remain local. The source path can be overridden for
-automation and tests with `--mcp-source <path>`.
+Its `mcp_servers` table is the MCP source for every tool. `config.ts` never
+changes it; `just sync` exports it to Claude Code. See
+[`mcp/README.md`](../mcp/README.md).
 
 ## Managed settings
 
@@ -16,16 +15,15 @@ model, reasoning effort, approval policy, sandbox mode, and
 
 Project-specific trust, TUI onboarding state, authentication, history, caches,
 databases, and logs are intentionally not backed up here. MCP servers are
-local except for same-named entries managed through Cursor's MCP config.
+local data in the runtime file, not part of `dotfileConfig`.
 
 See the [Codex config reference](https://developers.openai.com/codex/config-reference).
 
 ## Output
 
 The runtime file holds MCP tokens. Drift reports from `--dry-run`, `--check`,
-and `--run` list changed key paths, such as
-`~ mcp_servers.notion-mcp.env.NOTION_TOKEN`, and never values. `--print`
-writes the full generated file, secrets included.
+and `--run` list changed key paths, such as `~ tui.vim_mode_default`, and
+never values. `--print` writes the full generated file, secrets included.
 
 ## Usage
 
@@ -39,7 +37,4 @@ bun run codex/config.ts --check
 
 # Apply portable defaults
 bun run codex/config.ts --run
-
-# Use a non-default Cursor MCP source
-bun run codex/config.ts --run --mcp-source /path/to/mcp.json
 ```

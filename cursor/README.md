@@ -1,5 +1,8 @@
 # Cursor CLI Config
 
+File `mcp.ts` writes the MCP servers from `$HOME/.codex/config.toml` to
+`$HOME/.cursor/mcp.json`. See [`mcp/README.md`](../mcp/README.md).
+
 File `cli-config.ts` is the source of truth for portable Cursor CLI
 preferences. Command `just sync` merges those values into
 `$HOME/.cursor/cli-config.json`. Command `just health` runs `--check` and

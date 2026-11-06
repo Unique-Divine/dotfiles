@@ -599,6 +599,7 @@ fn upload_preconditions_and_checksum() {
         &file,
         "26/image.png",
         "hash",
+        false,
     );
     let args = command
         .get_args()
@@ -631,4 +632,137 @@ fn clipboard_failure_and_timeout() {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(publish::copy(&program, "url", Duration::from_millis(20)).is_err());
+}
+
+/// Replacement drops only the absent-object precondition; integrity and
+/// serving headers stay identical to a first publish.
+#[test]
+fn replace_upload_omits_generation_precondition() {
+    let temp = TempDir::new().unwrap();
+    let file = fixture(&temp, "data");
+    let config = Settings::from_sources(temp.path(), |_| None).unwrap();
+    let argv = |replace| {
+        backend::upload_command(
+            "gcloud",
+            &config,
+            &file,
+            "26/image.png",
+            "hash",
+            replace,
+        )
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+    };
+    let (create, replace) = (argv(false), argv(true));
+    assert!(
+        !replace
+            .iter()
+            .any(|a| a.starts_with("--if-generation-match"))
+    );
+    assert_eq!(
+        create
+            .into_iter()
+            .filter(|a| a != "--if-generation-match=0")
+            .collect::<Vec<_>>(),
+        replace
+    );
+}
+
+/// Hosting site defaults to the personal site and accepts an override.
+#[test]
+fn hosting_site_setting_precedence() {
+    let temp = TempDir::new().unwrap();
+    let default = Settings::from_sources(temp.path(), |_| None).unwrap();
+    assert_eq!(default.hosting_site, "uniquedivine-site");
+    let custom = Settings::from_sources(temp.path(), |key| {
+        (key == "UD_FS_HOSTING_SITE").then(|| "other-site".to_owned())
+    })
+    .unwrap();
+    assert_eq!(custom.hosting_site, "other-site");
+}
+
+/// Metadata and live-channel parsing reject malformed or foreign values.
+#[test]
+fn replace_metadata_parsing() {
+    assert_eq!(
+        backend::object_size(&json!({"size":"921252"})).unwrap(),
+        921252
+    );
+    assert!(backend::object_size(&json!({"size":12})).is_err());
+    assert!(backend::object_size(&json!({})).is_err());
+    let channel = json!({"release":{"version":{
+        "name":"sites/uniquedivine-site/versions/4f1bc46c43a73275"}}});
+    assert_eq!(
+        backend::live_version(&channel, "uniquedivine-site").unwrap(),
+        "sites/uniquedivine-site/versions/4f1bc46c43a73275"
+    );
+    assert!(backend::live_version(&channel, "other-site").is_err());
+    assert!(backend::live_version(&json!({}), "uniquedivine-site").is_err());
+    let done = json!({"done":true,"response":{
+        "name":"sites/uniquedivine-site/versions/9d6000dc7d7ae608",
+        "status":"FINALIZED"}});
+    assert_eq!(
+        backend::cloned_version(&done, "uniquedivine-site").unwrap(),
+        "sites/uniquedivine-site/versions/9d6000dc7d7ae608"
+    );
+    for operation in [
+        json!({"name":"projects/1/operations/a"}),
+        json!({"done":true,"error":{"code":9}}),
+        json!({"done":true,"response":{
+            "name":"sites/uniquedivine-site/versions/x","status":"CREATED"}}),
+    ] {
+        assert!(
+            backend::cloned_version(&operation, "uniquedivine-site").is_err()
+        );
+    }
+    assert!(
+        publish::target_note("26/a.png", Some(5)).starts_with("Target exists")
+    );
+    assert!(
+        publish::target_note("26/a.png", None)
+            .starts_with("Target does not exist")
+    );
+}
+
+/// Digest verification retries until the body changes, catching a stale
+/// cached copy with the same status and size.
+#[test]
+fn public_verification_compares_body_digest() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/file", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        for (status, body) in [
+            (404, "image"),
+            (200, "stale"),
+            (200, "image"),
+            (200, "stale"),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0; 4096];
+            let n = stream.read(&mut buffer).unwrap();
+            assert!(
+                String::from_utf8_lossy(&buffer[..n]).starts_with("GET /file ")
+            );
+            write!(stream,"HTTP/1.1 {status} Status\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+    let digest = publish::checksum(&fixture(&temp, "data")).unwrap();
+    let mut pauses = Vec::new();
+    backend::verify_digest(&client, &url, &digest, 3, |n| pauses.push(n))
+        .unwrap();
+    assert_eq!(pauses, [0, 1]);
+    assert!(
+        backend::verify_digest(&client, &url, &digest, 1, |_| panic!(
+            "final failure must not sleep"
+        ))
+        .is_err()
+    );
+    worker.join().unwrap();
 }

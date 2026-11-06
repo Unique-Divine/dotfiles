@@ -11,6 +11,8 @@ pub(super) struct Settings {
     pub base_url: String,
     /// Private GCS bucket whose objects are served by that origin.
     pub bucket: String,
+    /// Firebase Hosting site whose CDN caches `/f/` responses.
+    pub hosting_site: String,
     /// Google project passed explicitly to avoid changing CLI defaults.
     pub project: String,
     /// Owner login passed explicitly so another active account is not used.
@@ -79,6 +81,12 @@ impl Settings {
                 "UD_FS_BUCKET",
                 "PUB_BUCKET",
                 "uniquedivine-public-files-876932632137",
+            )?,
+            hosting_site: setting(
+                "hosting_site",
+                "UD_FS_HOSTING_SITE",
+                "UD_FS_HOSTING_SITE",
+                "uniquedivine-site",
             )?,
             project: "exalted-justice-359714".into(),
             account: "realuniquedivine@gmail.com".into(),
