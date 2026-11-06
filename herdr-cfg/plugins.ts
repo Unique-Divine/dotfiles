@@ -3,10 +3,23 @@ import { constants } from "node:fs"
 import { access, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 
-/** One action or pane entry from `herdr plugin list --json`. */
-export interface PluginEntry {
-  id: string
+/** A platform name as Herdr manifests spell it. */
+export type HerdrPlatform = "linux" | "macos" | "windows"
+
+/** A manifest command with an optional platform restriction. */
+export interface PlatformCommand {
   command: string[]
+  platforms?: HerdrPlatform[]
+}
+
+/** One action or pane entry from `herdr plugin list --json`. */
+export interface PluginEntry extends PlatformCommand {
+  id: string
+}
+
+/** One event hook from `herdr plugin list --json`. */
+export interface EventHook extends PlatformCommand {
+  on: string
 }
 
 /** The plugin fields this check reads from `herdr plugin list --json`. */
@@ -14,16 +27,19 @@ export interface HerdrPlugin {
   plugin_id: string
   enabled: boolean
   plugin_root: string
+  platforms?: HerdrPlatform[]
   source?: { kind?: string }
-  build?: { command: string[] }[]
+  build?: PlatformCommand[]
+  startup?: PlatformCommand[]
   actions?: PluginEntry[]
+  events?: EventHook[]
   panes?: PluginEntry[]
 }
 
-/** A plugin entry whose executable Herdr cannot launch. */
+/** A plugin command whose executable Herdr cannot launch. */
 export interface MissingExecutable {
   pluginId: string
-  kind: "action" | "pane"
+  kind: "startup" | "action" | "event" | "pane"
   entryId: string
   executable: string
   repair: string
@@ -54,6 +70,26 @@ export function resolveProgram(
   return Bun.which(program, { PATH: env.PATH ?? "" }) ?? undefined
 }
 
+/** Map a Node platform to Herdr's name, which treats non-Unix as Windows. */
+export function herdrPlatform(
+  platform: NodeJS.Platform = process.platform,
+): HerdrPlatform {
+  if (platform === "linux") return "linux"
+  if (platform === "darwin") return "macos"
+  return "windows"
+}
+
+/**
+ * Report whether Herdr runs a command on the host: the command's own
+ * platforms win, else the plugin's, and no list means every platform.
+ */
+export function runsOn(
+  item: PlatformCommand, plugin: HerdrPlugin, host: HerdrPlatform,
+): boolean {
+  const platforms = item.platforms ?? plugin.platforms
+  return !platforms || platforms.includes(host)
+}
+
 async function isExecutableFile(path: string): Promise<boolean> {
   try {
     await access(path, constants.X_OK)
@@ -64,10 +100,13 @@ async function isExecutableFile(path: string): Promise<boolean> {
 }
 
 /** Describe how to restore a plugin's missing executables. */
-export function repairHint(plugin: HerdrPlugin): string {
+export function repairHint(
+  plugin: HerdrPlugin, host: HerdrPlatform = herdrPlatform(),
+): string {
   const quote = (value: string): string =>
     /^[\w./=-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`
-  const build = plugin.build?.map((step) => step.command.map(quote).join(" "))
+  const build = plugin.build?.filter((step) => runsOn(step, plugin, host))
+    .map((step) => step.command.map(quote).join(" "))
   if (plugin.source?.kind === "local" && build?.length) {
     return `cd ${quote(plugin.plugin_root)} && ${build.join(" && ")}`
   }
@@ -77,25 +116,46 @@ export function repairHint(plugin: HerdrPlugin): string {
   return `herdr plugin uninstall ${plugin.plugin_id}, then reinstall it`
 }
 
-/** List enabled plugin actions and panes whose executable is unavailable. */
+interface LaunchedCommand {
+  kind: MissingExecutable["kind"]
+  entryId: string
+  item: PlatformCommand
+}
+
+/** List every command Herdr launches for a plugin, labeled for reports. */
+function launchedCommands(plugin: HerdrPlugin): LaunchedCommand[] {
+  return [
+    ...(plugin.startup ?? []).map((item, index) =>
+      ({ kind: "startup" as const, entryId: `#${index + 1}`, item })),
+    ...(plugin.actions ?? []).map((item) =>
+      ({ kind: "action" as const, entryId: item.id, item })),
+    ...(plugin.events ?? []).map((item) =>
+      ({ kind: "event" as const, entryId: item.on, item })),
+    ...(plugin.panes ?? []).map((item) =>
+      ({ kind: "pane" as const, entryId: item.id, item })),
+  ]
+}
+
+/**
+ * List enabled plugin startup hooks, actions, event hooks, and panes that run
+ * on the host but whose executable is unavailable.
+ */
 export async function findMissingExecutables(
   plugins: HerdrPlugin[], env: Environment = process.env,
+  host: HerdrPlatform = herdrPlatform(),
 ): Promise<MissingExecutable[]> {
   const missing: MissingExecutable[] = []
   for (const plugin of plugins) {
     if (!plugin.enabled) continue
-    const entries = [
-      ...(plugin.actions ?? []).map((entry) => ({ kind: "action", entry })),
-      ...(plugin.panes ?? []).map((entry) => ({ kind: "pane", entry })),
-    ] as { kind: MissingExecutable["kind"], entry: PluginEntry }[]
-    for (const { kind, entry } of entries) {
-      const program = entry.command[0]
+    for (const { kind, entryId, item } of launchedCommands(plugin)) {
+      if (!runsOn(item, plugin, host)) continue
+      const program = item.command[0]
       if (!program) continue
       const resolved = resolveProgram(program, plugin.plugin_root, env)
       if (resolved && await isExecutableFile(resolved)) continue
       missing.push({
-        pluginId: plugin.plugin_id, kind, entryId: entry.id,
-        executable: resolved ?? program, repair: repairHint(plugin),
+        pluginId: plugin.plugin_id, kind, entryId,
+        executable: resolved ?? program, repair: repairHint(plugin, host),
       })
     }
   }
@@ -138,7 +198,8 @@ if (import.meta.main) {
     }
     const problems = await checkPlugins()
     if (problems.length) throw new Error(problems.join("\n"))
-    console.log("Herdr plugins: every enabled action and pane can launch")
+    console.log("Herdr plugins: every enabled startup hook, action, " +
+      "event hook, and pane can launch")
   } catch (error) {
     console.error(String(error))
     process.exitCode = 1

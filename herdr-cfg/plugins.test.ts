@@ -4,8 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  findMissingExecutables, formatProblems, parsePluginList, repairHint,
-  resolveProgram, type HerdrPlugin,
+  findMissingExecutables, formatProblems, herdrPlatform, parsePluginList,
+  repairHint, resolveProgram, type HerdrPlugin,
 } from "./plugins"
 
 const roots: string[] = []
@@ -118,6 +118,49 @@ describe("findMissingExecutables", () => {
       [plugin(root, { enabled: false })], {})).toEqual([])
   })
 
+  test("reports a startup hook whose executable is gone", async () => {
+    const root = await pluginRoot()
+    const missing = await findMissingExecutables([plugin(root, {
+      startup: [{ command: ["./bin/boot", "--quiet"] }],
+      actions: [], panes: [],
+    })], {})
+    expect(missing.map((item) => `${item.kind}:${item.entryId}`))
+      .toEqual(["startup:#1"])
+    expect(missing[0]!.executable).toBe(join(root, "bin/boot"))
+  })
+
+  test("reports an event hook whose executable is gone", async () => {
+    const root = await pluginRoot()
+    await executable(join(root, "bin", "present"))
+    const missing = await findMissingExecutables([plugin(root, {
+      events: [
+        { on: "pane.created", command: ["./bin/present"] },
+        { on: "pane.closed", command: ["./bin/absent"] },
+      ],
+      actions: [], panes: [],
+    })], {})
+    expect(missing.map((item) => `${item.kind}:${item.entryId}`))
+      .toEqual(["event:pane.closed"])
+  })
+
+  test("skips commands that do not run on the host platform", async () => {
+    const root = await pluginRoot()
+    const onlyMacos = plugin(root, {
+      startup: [{ command: ["./bin/boot"], platforms: ["macos"] }],
+      events: [{ on: "pane.created", command: ["./bin/hook"] }],
+      actions: [{ id: "mac-only", command: ["./bin/a"],
+        platforms: ["macos"] }],
+      panes: [{ id: "everywhere", command: ["./bin/p"],
+        platforms: ["linux", "macos"] }],
+      platforms: ["macos"],
+    })
+    const linux = await findMissingExecutables([onlyMacos], {}, "linux")
+    expect(linux.map((item) => `${item.kind}:${item.entryId}`))
+      .toEqual(["pane:everywhere"])
+    const macos = await findMissingExecutables([onlyMacos], {}, "macos")
+    expect(macos).toHaveLength(4)
+  })
+
   test("reports bare commands that PATH cannot resolve", async () => {
     const root = await pluginRoot()
     const missing = await findMissingExecutables([plugin(root, {
@@ -132,6 +175,21 @@ describe("repairHint and formatProblems", () => {
     expect(repairHint(plugin("/dot files/herdr-tmux"))).toBe(
       "cd '/dot files/herdr-tmux' && " +
       "cargo build --release --target-dir target")
+  })
+
+  test("repair skips build steps for other platforms", () => {
+    const cross = plugin("/p", { build: [
+      { command: ["make", "mac"], platforms: ["macos"] },
+      { command: ["make", "linux"], platforms: ["linux"] },
+    ] })
+    expect(repairHint(cross, "linux")).toBe("cd /p && make linux")
+    expect(repairHint(cross, "macos")).toBe("cd /p && make mac")
+  })
+
+  test("maps Node platforms to Herdr platform names", () => {
+    expect(herdrPlatform("linux")).toBe("linux")
+    expect(herdrPlatform("darwin")).toBe("macos")
+    expect(herdrPlatform("win32")).toBe("windows")
   })
 
   test("installed plugins repair by reinstalling", () => {
