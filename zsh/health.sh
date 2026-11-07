@@ -119,7 +119,7 @@ if ! which_ok bun; then
   exit 1
 fi
 
-if ! bun run bun/sync.ts --check; then
+if ! bun --no-install bun/sync.ts --check; then
   failed=1
 fi
 

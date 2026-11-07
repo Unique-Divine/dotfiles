@@ -667,7 +667,7 @@ if (import.meta.main) {
       await activateMdtoc(config, args[1]!)
       console.log("ud-mdtoc release pinned; run just bun-sync")
     } else {
-      throw new Error("Usage: bun run bun/sync.ts " +
+      throw new Error("Usage: bun --no-install bun/sync.ts " +
         "--check | --run | --lock | --activate-mdtoc VERSION")
     }
   } catch (error) {

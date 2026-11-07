@@ -229,19 +229,19 @@ health:
 
 # Restore the locked global Bun packages and their command and plugin links.
 bun-sync:
-  bun run bun/sync.ts --run
+  bun --no-install bun/sync.ts --run
 
 # Inspect managed Bun packages and links without changing the installation.
 bun-health:
-  bun run bun/sync.ts --check
+  bun --no-install bun/sync.ts --check
 
 # Refresh the global Bun lockfile after editing bun/global/package.json.
 bun-lock:
-  bun run bun/sync.ts --lock
+  bun --no-install bun/sync.ts --lock
 
 # Pin a published ud-mdtoc release in the managed global manifest.
 bun-activate-mdtoc VERSION="0.1.0":
-  bun run bun/sync.ts --activate-mdtoc {{quote(VERSION)}}
+  bun --no-install bun/sync.ts --activate-mdtoc {{quote(VERSION)}}
 
 # Install or verify the native Claude CLI and its command resolution.
 claude-install:
