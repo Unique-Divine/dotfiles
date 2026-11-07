@@ -223,6 +223,14 @@ sync:
 health:
   bash zsh/health.sh
 
+# Install or verify the native Claude CLI and its command resolution.
+claude-install:
+  bash claude/native.sh --run
+
+# Check the native Claude installation without installing or updating it.
+claude-health:
+  bash claude/native.sh --check
+
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
   #!/usr/bin/env bash
