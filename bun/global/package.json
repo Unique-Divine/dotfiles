@@ -17,6 +17,7 @@
     "prettier": "3.5.1",
     "ts-node": "10.9.2",
     "tsc": "2.0.4",
-    "widdershins": "4.0.1"
+    "widdershins": "4.0.1",
+    "@uniquedivine/ud-mdtoc": "0.1.0"
   }
 }

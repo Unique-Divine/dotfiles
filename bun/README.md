@@ -84,10 +84,11 @@ built-file hashes, and archive hash. Sync rebuilds missing or changed artifacts,
 but refuses to overwrite tracked source edits. Source provisioning runs before
 lock refresh and global installation.
 
-## Activate `ud-mdtoc` After Publication
+## Update `ud-mdtoc` After Publication
 
-The initial manifest deliberately omits the unpublished release. After
-publishing from `jiyuu/mdtoc` with its validated `just publish` recipe, run:
+The manifest pins the published `ud-mdtoc` release. After publishing another
+version from `jiyuu/mdtoc` with its validated `just publish` recipe, run these
+commands with that version:
 
 ```sh
 cd "$DOTFILES"
