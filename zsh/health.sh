@@ -15,6 +15,7 @@ bash_files=(
   zsh/zinit-install.sh
   zsh/ud/shell.sh
   ud/source-hash.sh
+  claude/native.sh
 )
 
 zsh_files=(
@@ -116,6 +117,14 @@ fi
 
 if ! which_ok bun; then
   exit 1
+fi
+
+if ! bun run bun/sync.ts --check; then
+  failed=1
+fi
+
+if ! bash claude/native.sh --check; then
+  failed=1
 fi
 
 if ! bun run codex/config.ts --check; then

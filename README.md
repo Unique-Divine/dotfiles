@@ -161,6 +161,18 @@ does not write: it checks required commands, Mason packages, and Codex,
 Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
 installation remains an explicit action.
 
+Global Bun CLI packages are declared in
+[`bun/global/package.json`](bun/global/package.json), with transitive versions
+recorded in its lockfile. Command `just sync` restores the installation and
+command links before updating Jiyuu. Command `just bun-health` checks it without
+installing packages. See [Bun tool management](bun/README.md) for migration,
+package changes, and publishing the Markdown TOC tool.
+
+Claude Code uses its native installation. Commands `just sync` and
+`just claude-install` install it when missing, while `just claude-health` checks
+that the shell selects the native executable. The native installer manages
+Claude updates independently of the Bun package lock.
+
 ### AI agent skills
 
 Public skills are distributed from Unique-Divine/jiyuu under `jiyuu/ai-skills`

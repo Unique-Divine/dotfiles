@@ -22,7 +22,9 @@ test-rust:
   cargo test --workspace --locked
 
 test-bun:
-  bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
+  bun test \
+    --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts" \
+    --path-ignore-patterns "**/bun/sources/**"
 
 alias t := test
 
@@ -191,11 +193,13 @@ sync:
     curl -fsSL https://chatgpt.com/codex/install.sh | \
       CODEX_NON_INTERACTIVE=1 sh
   fi
-  just i-jiyuu
   bun install
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just bun-sync
+  just claude-install
+  just i-jiyuu
   just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     just herdr-install
@@ -222,6 +226,22 @@ sync:
 # Check required tools and drift without changing dotfile-managed state.
 health:
   bash zsh/health.sh
+
+# Restore the locked global Bun packages and their command and plugin links.
+bun-sync:
+  bun run bun/sync.ts --run
+
+# Inspect managed Bun packages and links without changing the installation.
+bun-health:
+  bun run bun/sync.ts --check
+
+# Refresh the global Bun lockfile after editing bun/global/package.json.
+bun-lock:
+  bun run bun/sync.ts --lock
+
+# Pin a published ud-mdtoc release in the managed global manifest.
+bun-activate-mdtoc VERSION="0.1.0":
+  bun run bun/sync.ts --activate-mdtoc {{quote(VERSION)}}
 
 # Install or verify the native Claude CLI and its command resolution.
 claude-install:

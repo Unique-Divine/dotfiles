@@ -69,7 +69,8 @@ vim.cmd('qa!')
   const proc = Bun.spawn([nvim!, "--headless", "-u", "NONE", "-l", script], {
     env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`,
-      MDTOC_NVIM_ROOT: import.meta.dir, MDTOC_DOCUMENT: document, MDTOC_BIN: bin,
+      MDTOC_NVIM_ROOT: join(import.meta.dir, "..", "nvim"),
+      MDTOC_DOCUMENT: document, MDTOC_BIN: bin,
     },
     stdout: "pipe", stderr: "pipe",
   })
