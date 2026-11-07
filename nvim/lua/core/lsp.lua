@@ -185,41 +185,7 @@ local function plugin_config()
 
   require('core/mason-lock').setup()
 
-  -- `:Toc` / `:TocCopy`: markdown TOC via jiyuu/mdtoc.
-  local mdtoc_cli = '"$HOME/ki/boku/jiyuu/mdtoc/src/cli.ts"'
-  local mdtoc_flags = '--bullets="-" --maxdepth=3 --no-firsth1'
-
-  vim.api.nvim_create_user_command('TocCopy', function()
-    vim.cmd('!bun run ' .. mdtoc_cli .. ' % ' .. mdtoc_flags .. ' | pbcopy')
-    print('markdown-toc: yanked TOC to clipboard')
-  end, {
-    desc = "Generate markdown TOC and copy to clipboard",
-  })
-
-  vim.api.nvim_create_user_command('Toc', function()
-    local file = vim.fn.expand('%:p')
-    if file == '' then
-      print('markdown-toc: save the buffer first')
-      return
-    end
-    vim.cmd('write')
-    local cmd = table.concat({
-      'bun run',
-      mdtoc_cli,
-      vim.fn.shellescape(file),
-      '-i',
-      mdtoc_flags,
-    }, ' ')
-    vim.fn.system(cmd)
-    if vim.v.shell_error == 0 then
-      vim.cmd('edit!')
-      print('markdown-toc: updated TOC in place')
-    else
-      print('markdown-toc: failed')
-    end
-  end, {
-    desc = "Insert/update markdown TOC at <!-- toc --> marker",
-  })
+  require('core/mdtoc').setup()
 
   setup_autoformat()
 end
