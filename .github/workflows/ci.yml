@@ -121,6 +121,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
+      # `ud fs` backlinks search with ripgrep, which the runner image lacks.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
       - run: just test-rust
   clippy:
     name: Root Rust Clippy
