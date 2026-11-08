@@ -308,8 +308,19 @@ fn backlinks_find_documents_per_key() {
     )
     .unwrap();
     std::fs::write(docs.join("other.md"), "/f/26/ui/b.svg\n").unwrap();
-    let keys =
-        ["26-11/261108-a.png", "26/ui/b.svg", "26/unused.png"].map(String::from);
+    // Agent notes in dot-directories count; the .git folder never does.
+    std::fs::create_dir_all(docs.join(".claude")).unwrap();
+    std::fs::write(docs.join(".claude/notes.md"), "/f/26/unused-hidden.png")
+        .unwrap();
+    std::fs::create_dir_all(docs.join(".git")).unwrap();
+    std::fs::write(docs.join(".git/x.md"), "/f/26/unused-hidden.png").unwrap();
+    let keys = [
+        "26-11/261108-a.png",
+        "26/ui/b.svg",
+        "26/unused.png",
+        "26/unused-hidden.png",
+    ]
+    .map(String::from);
     let found =
         backlinks(&keys, &[docs.clone(), temp.path().join("absent")]).unwrap();
     let readme = docs.join("epic/README.md").display().to_string();
@@ -321,6 +332,10 @@ fn backlinks_find_documents_per_key() {
     expected.sort();
     assert_eq!(b, expected);
     assert!(found["26/unused.png"].is_empty());
+    assert_eq!(
+        found["26/unused-hidden.png"],
+        [docs.join(".claude/notes.md").display().to_string()]
+    );
 }
 
 #[test]
