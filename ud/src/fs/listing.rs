@@ -55,11 +55,20 @@ pub(super) fn time_filter(value: &str) -> Result<String> {
     Ok(compact)
 }
 
-/// Recognize current and two historical layouts, rejecting inconsistent years.
+/// Recognize the current month layout and three historical layouts,
+/// rejecting folders that disagree with the filename date.
 pub(super) fn publication_date(key: &str) -> Option<String> {
     let parts = key.split('/').collect::<Vec<_>>();
     let leaf = parts.last()?;
-    let value = if parts.len() >= 2
+    let value = if parts.len() == 2
+        && matches(r"^[0-9]{2}-[0-9]{2}$", parts[0])
+        && matches(r"^[0-9]{6}-.+$", leaf)
+    {
+        if parts[0].replace('-', "") != leaf[..4] {
+            return None;
+        }
+        leaf[..6].to_owned()
+    } else if parts.len() >= 2
         && matches(r"^[0-9]{6}-.+$", leaf)
         && parts[0] == &leaf[..2]
     {

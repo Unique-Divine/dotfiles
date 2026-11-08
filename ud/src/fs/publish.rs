@@ -126,6 +126,45 @@ pub(super) fn target_note(key: &str, existing: Option<u64>) -> String {
     }
 }
 
+/// Highest `-N` suffix tried before publishing gives up on a name.
+pub(super) const MAX_NUMBER: u32 = 9;
+
+/// Create the first free name among `slug`, `slug-2` … `slug-9`. Every
+/// attempt carries the absent-object precondition, so nothing is overwritten.
+/// Only after a refusal does a metadata read decide whether the name was
+/// taken; if that read fails, the original upload error is reported.
+fn upload_numbered(
+    backend: &Gcs,
+    plan: &Plan,
+    digest: &str,
+    origin: &str,
+) -> Result<Plan> {
+    for number in 1..=MAX_NUMBER {
+        let candidate = plan.numbered(number, origin)?;
+        match backend.upload(&candidate.file, &candidate.key, digest, false) {
+            Ok(()) => {
+                if number > 1 {
+                    eprintln!(
+                        "{} exists; published as {}",
+                        plan.key, candidate.key
+                    );
+                }
+                return Ok(candidate);
+            }
+            Err(error) => {
+                if !matches!(backend.existing_size(&candidate.key), Ok(Some(_)))
+                {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "{} and its -2 to -{MAX_NUMBER} alternatives exist; choose another slug",
+        plan.key
+    )
+}
+
 /// Dry runs stop before checksumming or upload; only `--replace` signs in
 /// to check the target.
 pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
@@ -154,7 +193,13 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         return Ok(());
     }
     let digest = checksum(&plan.file)?;
-    backend.upload(&plan.file, &plan.key, &digest, args.replace)?;
+    let plan = if args.replace {
+        backend.upload(&plan.file, &plan.key, &digest, true)?;
+        plan
+    } else {
+        upload_numbered(&backend, &plan, &digest, &config.base_url)?
+    };
+    let text = output(&plan, args.md);
     if existing.is_some() {
         backend.purge_cdn(&plan.key).with_context(|| {
             format!("Replaced {}, but the CDN purge failed. Cached copies expire within five minutes", plan.key)

@@ -17,7 +17,7 @@ pub(crate) struct FsArgs {
 /// File operations; listing reads metadata and publishing is always explicit.
 #[derive(Debug, Subcommand)]
 pub(crate) enum FsCommand {
-    /// Publish a named local file at /f/YY/DIRS/YYMMDD-name.ext.
+    /// Publish a named local file at /f/YY-MM/YYMMDD-name.ext.
     Publish(PublishArgs),
     /// List the current Bangkok month, or all dates under a directory.
     Ls(ListArgs),
@@ -28,7 +28,7 @@ pub(crate) enum FsCommand {
 pub(crate) struct PublishArgs {
     /// Local regular file, at most 256 MiB.
     pub file: PathBuf,
-    /// Name with optional semantic directories and extension.
+    /// Flat name with an optional extension; folders are rejected.
     pub slug: String,
     /// Override date using YYYY-MM-DD.
     #[arg(long)]

@@ -657,7 +657,7 @@ fn fs_outputs_and_date_override_through_ud() {
     assert_success(&output);
     assert_eq!(
         stdout(&output),
-        "https://uniquedivine.com/f/26/261012-trade-modal.png"
+        "https://uniquedivine.com/f/26-10/261012-trade-modal.png"
     );
     let output = isolated_ud(&temp)
         .env("XDG_CONFIG_HOME", temp.path().join("config"))
@@ -666,7 +666,7 @@ fn fs_outputs_and_date_override_through_ud() {
             "fs",
             "publish",
             file.to_str().unwrap(),
-            "ui/trade-modal.webp",
+            "trade-modal.webp",
             "--dry-run",
             "--md",
             "--date",
@@ -677,7 +677,7 @@ fn fs_outputs_and_date_override_through_ud() {
     assert_success(&output);
     assert_eq!(
         stdout(&output),
-        "<img src=\"https://uniquedivine.com/f/26/ui/260901-trade-modal.webp\" alt=\"trade modal\" />"
+        "<img src=\"https://uniquedivine.com/f/26-09/260901-trade-modal.webp\" alt=\"trade modal\" />"
     );
 }
 
@@ -710,6 +710,13 @@ fn fs_command_errors_do_not_authenticate_or_print_data() {
             "../bad",
             "--dry-run",
         ],
+        vec![
+            "fs",
+            "publish",
+            file.to_str().unwrap(),
+            "ui/icon",
+            "--dry-run",
+        ],
     ] {
         let output = isolated_ud(&temp)
             .env("XDG_CONFIG_HOME", temp.path().join("config"))
@@ -738,7 +745,7 @@ fn fs_upload_refusal_has_no_success_output() {
     let arguments = temp.path().join("args");
     write_executable(
         &bin.join("gcloud"),
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GCLOUD_ARGS\"\nexit 1\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$GCLOUD_ARGS\"\nexit 1\n",
     );
     let file = temp.path().join("data.png");
     fs::write(&file, b"image").unwrap();
@@ -802,7 +809,10 @@ fn fs_replace_dry_run_checks_target_through_login() {
     };
     let plain = publish(&[]);
     assert_success(&plain);
-    assert_eq!(stdout(&plain), "https://example.com/f/26/261012-image.png");
+    assert_eq!(
+        stdout(&plain),
+        "https://example.com/f/26-10/261012-image.png"
+    );
     assert!(!marker.exists(), "plain dry run must stay local");
     let replace = publish(&["--replace"]);
     assert!(!replace.status.success());

@@ -1,7 +1,7 @@
 //! Pure naming rules shared by publishing and storage metadata validation.
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::Asia::Bangkok;
 use regex::Regex;
@@ -22,6 +22,30 @@ pub(super) struct Plan {
     pub url: String,
     /// Extension-free basename used in HTML alt text and Markdown link labels.
     pub label: String,
+    /// Key without the extension, used to derive numbered alternatives.
+    stem: String,
+    /// Lowercase extension including its leading dot, or empty.
+    suffix: String,
+}
+
+impl Plan {
+    /// Derive the `-N` alternative used when the plain name already exists.
+    /// Number 1 is the plain name itself.
+    pub fn numbered(&self, number: u32, origin: &str) -> Result<Plan> {
+        let key = if number <= 1 {
+            format!("{}{}", self.stem, self.suffix)
+        } else {
+            format!("{}-{number}{}", self.stem, self.suffix)
+        };
+        Ok(Plan {
+            file: self.file.clone(),
+            url: public_url(&key, origin)?,
+            key,
+            label: self.label.clone(),
+            stem: self.stem.clone(),
+            suffix: self.suffix.clone(),
+        })
+    }
 }
 
 /// Match a whole value; patterns are developer constants, never user input.
@@ -79,22 +103,19 @@ fn explicit_date(value: &str) -> Result<NaiveDate> {
     Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")?)
 }
 
-/// Validate semantic directories separately from the extension-bearing leaf.
+/// Split a flat name into its slug and lowercase extension. Folders are
+/// rejected: tags describe files, so URLs never encode a topic.
 fn destination_name(file: &Path, slug: &str) -> Result<(String, String)> {
-    let mut parts = slug.split('/').collect::<Vec<_>>();
-    let leaf = parts.pop().unwrap_or("");
-    for part in &parts {
-        ensure!(
-            part.len() <= 80 && matches(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", part),
-            "Directories must use lowercase names, digits, and single hyphens"
-        );
-    }
-    let (name, suffix) = match leaf.split_once('.') {
+    ensure!(
+        !slug.contains('/') && !slug.contains('\\'),
+        "Names can't contain folders; describe the file with --tag instead"
+    );
+    let (name, suffix) = match slug.split_once('.') {
         Some((name, extension)) => {
             (name, format!(".{}", extension.to_lowercase()))
         }
         None => (
-            leaf,
+            slug,
             file.extension()
                 .map(|v| format!(".{}", v.to_string_lossy().to_lowercase()))
                 .unwrap_or_default(),
@@ -108,11 +129,10 @@ fn destination_name(file: &Path, slug: &str) -> Result<(String, String)> {
         suffix.is_empty() || matches(r"^(?:\.[a-z0-9]+)+$", &suffix),
         "Unsupported file extension"
     );
-    parts.push(name);
-    Ok((parts.join("/"), suffix))
+    Ok((name.to_owned(), suffix))
 }
 
-/// Resolve date precedence without consulting the machine's local timezone.
+/// Build `YY-MM/YYMMDD-name.ext` without consulting the host timezone.
 /// An explicit date wins, followed by a pbpaste-img name, then Bangkok today.
 pub(super) fn plan(
     file: &Path,
@@ -135,26 +155,17 @@ pub(super) fn plan(
         now.with_timezone(&Bangkok).date_naive()
     };
     ensure!(day.year() >= 1, "Date year must be at least one");
-    let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", &name));
-    let directory = if parent.is_empty() {
-        String::new()
-    } else {
-        format!("{parent}/")
-    };
-    let key = format!(
-        "{}/{directory}{}-{leaf}{suffix}",
-        day.format("%y"),
-        day.format("%y%m%d")
-    );
-    if key.len() > 1024 {
-        bail!("Destination path exceeds 1024 characters");
-    }
+    let base =
+        format!("{}/{}-{name}", day.format("%y-%m"), day.format("%y%m%d"));
+    let key = format!("{base}{suffix}");
     let url = public_url(&key, origin)?;
     Ok(Plan {
         file,
         key,
         url,
-        label: leaf.replace('-', " "),
+        label: name.replace('-', " "),
+        stem: base,
+        suffix,
     })
 }
 
