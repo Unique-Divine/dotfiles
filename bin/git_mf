@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # git_mf: Git "[m]erge [f]rom". Bring the current branch up to date with
-# origin/<target>. Plain git does the clean cases; a case that needs judgment
-# either stops cleanly or, with --agent, goes to an agent CLI with the
-# instructions in git_mf.prompt.md.
+# origin/<target>. A read-only plan step decides what to do, using git's own
+# merge engine (git merge-tree) to predict conflicts; an apply step runs it.
+# Cases that need judgment stop cleanly, or with --agent go to an agent CLI
+# with the instructions in git_mf.prompt.md.
 
 set -Eeuo pipefail
 
 usage() {
   cat <<EOF
-Usage: git_mf [target_branch] [--agent] [git merge flags...]
+Usage: git_mf [target_branch] [--dry-run] [--agent] [git merge flags...]
 
 Git "[m]erge [f]rom". Bring the current branch up to date with
 origin/TARGET, or with the local TARGET when origin doesn't have it.
@@ -20,42 +21,77 @@ origin/TARGET, or with the local TARGET when origin doesn't have it.
 
 A local TARGET branch you aren't on is fast-forwarded too, when it can be.
 
+Every run prints its plan ("git_mf: plan: ...") and each command that
+changes the repository ("RUN ..."). With --dry-run, nothing but
+remote-tracking refs changes, and the exit code is the one a real run would
+return.
+
 Exit codes:
-  0  up to date
+  0  up to date, or brought up to date
+  1  error (TARGET missing, or a merge failed without conflicts)
   2  uncommitted changes; nothing was touched
   3  needs judgment (conflict, or TARGET diverged from origin); nothing was
      touched. Rerun with --agent to hand it to claude, or codex if claude is
      missing.
   4  detached at a commit that isn't on TARGET
+  5  a merge, rebase, cherry-pick, or revert is already in progress
 
 Options:
+  --dry-run     Print the plan and commands without running them.
   --agent       On exit 2 or 3, run an agent with the merge prompt instead.
   -h, --help    Show this help.
 EOF
 }
 
+require_command() {
+  local -r command_name="$1"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'ERROR: required command not found: %s\n' "$command_name" >&2
+    exit 127
+  fi
+}
+
 say() { echo "git_mf: $*" >&2; }
+
+dry_run=0
+
+# Print a command that changes the repository, then run it unless dry-run.
+run() {
+  echo "RUN $*" >&2
+  (( dry_run )) || "$@"
+}
 
 if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
   usage
   exit 0
 fi
 
-command -v git >/dev/null 2>&1 || { say "git not found"; exit 127; }
+require_command git
 
-if [[ $# -eq 0 ]]; then
-  git fetch --all --prune || true
-  git pull || true
-  exit 0
-fi
-
-target="$1"
-shift
+target=""
 use_agent=0
 merge_flags=()
 for arg in "$@"; do
-  if [[ "$arg" == "--agent" ]]; then use_agent=1; else merge_flags+=("$arg"); fi
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    --agent) use_agent=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      if [[ -z "$target" && "$arg" != -* ]]; then
+        target="$arg"
+      else
+        merge_flags+=("$arg")
+      fi
+      ;;
+  esac
 done
+
+if [[ -z "$target" ]]; then
+  run git fetch --all --prune || true
+  run git pull || true
+  exit 0
+fi
 
 script_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
 prompt_file="$script_dir/git_mf.prompt.md"
@@ -65,26 +101,35 @@ upstream="origin/$target"
 # Hand the merge to an agent CLI. Exits with the agent's status.
 run_agent() {
   local -r reason="$1"
-  local context
+  local context agent
+  if command -v claude >/dev/null 2>&1; then
+    agent=claude
+  elif command -v codex >/dev/null 2>&1; then
+    agent=codex
+  else
+    say "neither claude nor codex is installed (repair: just sync)"
+    exit 1
+  fi
+  if (( dry_run )); then
+    echo "RUN $agent < git_mf.prompt.md  # $reason" >&2
+    exit 0
+  fi
   context="$(printf '%s\n' \
     "" "## This Run" "" \
     "- Repository: $repo" \
     "- Merge from: $upstream" \
     "- Current branch: $(git branch --show-current)" \
     "- Why plain git stopped: $reason")"
-  if command -v claude >/dev/null 2>&1; then
+  if [[ "$agent" == claude ]]; then
     say "handing the merge to claude"
     { cat "$prompt_file"; echo "$context"; } | claude -p \
       --permission-mode acceptEdits \
       --allowedTools "Bash(git:*)" "Bash(just:*)" "Bash(bun:*)" \
         "Bash(cargo:*)" "Read" "Edit" "Write" "Grep" "Glob"
-  elif command -v codex >/dev/null 2>&1; then
+  else
     say "claude not found; handing the merge to codex"
     { cat "$prompt_file"; echo "$context"; } | codex exec -C "$repo" \
       -s workspace-write --approve-for-me
-  else
-    say "neither claude nor codex is installed (repair: just sync)"
-    exit 1
   fi
 }
 
@@ -100,7 +145,32 @@ needs_judgment() {
   exit 3
 }
 
+# Name an operation already in progress, if any.
+in_progress_op() {
+  local op path
+  for op in MERGE_HEAD:merge rebase-merge:rebase rebase-apply:rebase \
+    CHERRY_PICK_HEAD:cherry-pick REVERT_HEAD:revert; do
+    path="$(git rev-parse --git-path "${op%%:*}")"
+    if [[ -e "$path" ]]; then
+      echo "${op#*:}"
+      return
+    fi
+  done
+}
+
+is_ancestor() { git merge-base --is-ancestor "$1" "$2"; }
+
+# ---- Plan: read-only apart from fetching remote-tracking refs. ----
+
+op="$(in_progress_op)"
+if [[ -n "$op" ]]; then
+  say "plan: in-progress: $op"
+  say "finish or abort the $op first"
+  exit 5
+fi
+
 if [[ -n "$(git status --porcelain)" ]]; then
+  say "plan: dirty"
   if (( use_agent )); then
     run_agent "the working tree has uncommitted changes"
     exit $?
@@ -112,6 +182,7 @@ fi
 has_local_target=0
 git show-ref --verify --quiet "refs/heads/$target" && has_local_target=1
 
+echo "RUN git fetch --quiet --prune origin +refs/heads/$target:refs/remotes/$upstream" >&2
 if git fetch --quiet --prune origin \
   "+refs/heads/$target:refs/remotes/$upstream" 2>/dev/null; then
   :
@@ -119,45 +190,129 @@ elif (( has_local_target )); then
   say "origin has no $target; merging the local branch"
   upstream="$target"
 else
+  say "plan: missing-target"
   say "no branch $target on origin or locally"
   exit 1
 fi
 
 branch="$(git branch --show-current)"
+steps=()
 
 # Keep a local target you aren't on current, as the old checkout-and-pull did.
-if (( has_local_target )) && [[ "$branch" != "$target" && "$upstream" != "$target" ]]; then
-  if ! git fetch --quiet . "$upstream:$target" 2>/dev/null; then
+# A detached checkout switches to the target instead.
+if (( has_local_target )) && [[ -n "$branch" && "$branch" != "$target" \
+  && "$upstream" != "$target" ]]; then
+  if is_ancestor "$target" "$upstream"; then
+    if [[ "$(git rev-parse "$target")" != "$(git rev-parse "$upstream")" ]]; then
+      steps+=("update-local-target")
+    fi
+  else
     say "local $target has commits that $upstream doesn't; merging $upstream only"
   fi
 fi
 
 if [[ -z "$branch" ]]; then
-  if ! git merge-base --is-ancestor HEAD "$upstream"; then
+  if ! is_ancestor HEAD "$upstream"; then
+    say "plan: detached-stray"
     say "detached at $(git rev-parse --short HEAD), which isn't on $upstream; switch to a branch first"
     exit 4
   fi
-  if (( has_local_target )); then
-    git switch --quiet "$target"
-  else
-    git switch --quiet --create "$target" --track "$upstream"
+  if (( has_local_target )) && ! is_ancestor "$target" "$upstream"; then
+    say "plan: diverged"
+    needs_judgment "$target has commits that $upstream doesn't, and the reverse"
   fi
+  steps+=("detached-switch")
+  # After the switch, HEAD is the local target (or upstream for a new branch).
+  if (( has_local_target )); then head_ref="$target"; else head_ref="$upstream"; fi
   branch="$target"
+else
+  head_ref=HEAD
 fi
 
-if [[ "$branch" == "$target" ]]; then
-  if git merge --ff-only --quiet "$upstream" 2>/dev/null; then
-    say "$target is at $(git rev-parse --short HEAD) ($upstream)"
-    exit 0
-  fi
-  needs_judgment "$target has commits that $upstream doesn't, and the reverse"
+conflicts=""
+if is_ancestor "$upstream" "$head_ref"; then
+  action="up-to-date"
+elif is_ancestor "$head_ref" "$upstream"; then
+  action="fast-forward"
+elif [[ "$branch" == "$target" ]]; then
+  action="diverged"
+else
+  # Exit 0: clean merge. Exit 1: conflicts, listed after the tree id.
+  # Anything else is an error, such as unrelated histories.
+  tree_status=0
+  tree_out="$(git merge-tree --write-tree --name-only --no-messages \
+    "$head_ref" "$upstream" 2>&1)" || tree_status=$?
+  case "$tree_status" in
+    0) action="merge" ;;
+    1)
+      action="merge-conflict"
+      conflicts="$(tail -n +2 <<<"$tree_out" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+      ;;
+    *)
+      say "plan: error"
+      say "git merge-tree failed: $tree_out"
+      exit 1
+      ;;
+  esac
 fi
 
-if git merge --no-edit --quiet "${merge_flags[@]}" "$upstream" >/dev/null 2>&1; then
-  say "$branch now includes $upstream ($(git rev-parse --short "$upstream"))"
-  exit 0
+steps+=("$action")
+say "plan: ${steps[*]}${conflicts:+: $conflicts}"
+
+case "$action" in
+  diverged)
+    needs_judgment "$target has commits that $upstream doesn't, and the reverse" ;;
+  merge-conflict)
+    needs_judgment "merging $upstream into $branch conflicts in: $conflicts" ;;
+esac
+
+# ---- Apply ----
+
+for step in "${steps[@]}"; do
+  case "$step" in
+    detached-switch)
+      if (( has_local_target )); then
+        run git switch --quiet "$target"
+      else
+        run git switch --quiet --create "$target" --track "$upstream"
+      fi
+      ;;
+  esac
+done
+
+case "$action" in
+  up-to-date)
+    say "$branch already includes $upstream"
+    ;;
+  fast-forward)
+    run git merge --ff-only --quiet "$upstream"
+    ;;
+  merge)
+    # --ff overrides a merge.ff=only setting, which would refuse this merge.
+    merge_cmd=(git merge --ff --no-edit --quiet "${merge_flags[@]}" "$upstream")
+    echo "RUN ${merge_cmd[*]}" >&2
+    merge_log="$(mktemp)"
+    trap 'rm -f -- "$merge_log"' EXIT
+    if (( ! dry_run )) && ! "${merge_cmd[@]}" >"$merge_log" 2>&1; then
+      unmerged="$(git diff --name-only --diff-filter=U | paste -sd ' ' -)"
+      if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+        git merge --abort
+      fi
+      if [[ -n "$unmerged" ]]; then
+        say "warning: plan predicted a clean merge, but git found conflicts"
+        needs_judgment "merging $upstream into $branch conflicts in: $unmerged"
+      fi
+      say "merge failed without conflicts; nothing was changed:"
+      cat "$merge_log" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# Only after the merge succeeded, so a failed run changes nothing.
+if [[ " ${steps[*]} " == *" update-local-target "* ]]; then
+  run git fetch --quiet . "$upstream:$target"
 fi
 
-conflicts="$(git diff --name-only --diff-filter=U | paste -sd ' ' -)"
-git merge --abort 2>/dev/null || true
-needs_judgment "merging $upstream into $branch conflicts in: ${conflicts:-unknown files}"
+(( dry_run )) && exit 0
+say "$branch is at $(git rev-parse --short HEAD), including $upstream ($(git rev-parse --short "$upstream"))"

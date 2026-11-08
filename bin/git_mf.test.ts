@@ -1,11 +1,353 @@
+// Scenario corpus for `git_mf <target>`. Every scenario builds a real
+// repository state, runs --dry-run (which must change nothing but
+// remote-tracking refs), then runs for real and checks that the result
+// matches the plan. A disagreement means the plan logic is wrong.
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { cleanup, ok, repoPair, sh } from "./git-test-repo"
 
-const script = `${join(resolve(import.meta.dir), "git_mf")} main`
+const gitMf = join(resolve(import.meta.dir), "git_mf")
 
 afterEach(cleanup)
+
+type Repo = Awaited<ReturnType<typeof repoPair>>
+
+type Scenario = {
+  name: string
+  setup: (r: Repo) => Promise<void>
+  target?: string
+  /** Text the "git_mf: plan: ..." line must contain. */
+  plan: string
+  code: number
+  /** Exit code of --dry-run when it can't know the outcome. Default: code. */
+  dryCode?: number
+  /** Branch after a successful real run. */
+  branch?: string
+  /** Ref the real run must end up containing. Default: origin/<target>. */
+  includes?: string
+}
+
+/** Everything a run could change, apart from refs/remotes. */
+const snapshot = (dir: string) =>
+  ok(
+    dir,
+    [
+      "git rev-parse HEAD",
+      "git branch --show-current",
+      "git for-each-ref --format='%(refname) %(objectname)' refs/heads",
+      "git status --porcelain=v1 --untracked-files=all",
+      "git stash list",
+      "ls \"$(git rev-parse --git-dir)\" | grep -E 'MERGE_HEAD|rebase|CHERRY|REVERT' || true",
+    ].join(" && "),
+  )
+
+const feature = (r: Repo, file = "feature.txt", content = "f") =>
+  ok(
+    r.clone,
+    `git switch -q -c feature && printf '${content}\\n' > ${file} && git add -A && git commit -qm feature`,
+  )
+
+/** Commit a 12-line file on both sides so rename detection has material. */
+async function sharedLongFile(r: Repo) {
+  const lines = Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\\n")
+  await r.pushUpstream(lines, "long.txt")
+  await ok(r.clone, "git pull -q")
+}
+
+const scenarios: Scenario[] = [
+  {
+    name: "fast-forward on main",
+    setup: async (r) => void (await r.pushUpstream("two")),
+    plan: "fast-forward",
+    code: 0,
+    branch: "main",
+  },
+  {
+    name: "already up to date",
+    setup: async () => {},
+    plan: "up-to-date",
+    code: 0,
+    branch: "main",
+  },
+  {
+    name: "clean merge into a feature branch",
+    setup: async (r) => {
+      await feature(r)
+      await r.pushUpstream("two")
+    },
+    plan: "update-local-target merge",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "feature branch with no commits of its own fast-forwards",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q -c feature")
+      await r.pushUpstream("two")
+    },
+    plan: "fast-forward",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "rename on one side, edit on the other merges cleanly",
+    setup: async (r) => {
+      await sharedLongFile(r)
+      await ok(r.clone, "git switch -q -c feature && git mv long.txt renamed.txt && git commit -qm rename")
+      const edited = Array.from({ length: 12 }, (_, i) => (i === 5 ? "edited" : `line ${i}`)).join("\\n")
+      await r.pushUpstream(edited, "long.txt")
+    },
+    plan: "merge",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "content conflict",
+    setup: async (r) => {
+      await feature(r, "file.txt", "mine")
+      await r.pushUpstream("theirs")
+    },
+    plan: "merge-conflict: file.txt",
+    code: 3,
+  },
+  {
+    name: "modify/delete conflict",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q -c feature && git rm -q file.txt && git commit -qm delete")
+      await r.pushUpstream("changed")
+    },
+    plan: "merge-conflict: file.txt",
+    code: 3,
+  },
+  {
+    name: "add/add conflict",
+    setup: async (r) => {
+      await feature(r, "new.txt", "mine")
+      await r.pushUpstream("theirs", "new.txt")
+    },
+    plan: "merge-conflict: new.txt",
+    code: 3,
+  },
+  {
+    name: "binary conflict",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q -c feature && printf '\\000\\001mine' > bin.dat && git add . && git commit -qm bin")
+      await ok(r.peer, "printf '\\000\\002theirs' > bin.dat && git add . && git commit -qm bin && git push -q")
+    },
+    plan: "merge-conflict: bin.dat",
+    code: 3,
+  },
+  {
+    name: "main diverged from origin",
+    setup: async (r) => {
+      await ok(r.clone, "printf x > local.txt && git add . && git commit -qm local")
+      await r.pushUpstream("two")
+    },
+    plan: "diverged",
+    code: 3,
+  },
+  {
+    name: "detached behind main switches to main",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q --detach HEAD")
+      await r.pushUpstream("two")
+    },
+    plan: "detached-switch fast-forward",
+    code: 0,
+    branch: "main",
+  },
+  {
+    name: "detached with no local main creates it",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q --detach HEAD && git branch -q -D main")
+      await r.pushUpstream("two")
+    },
+    plan: "detached-switch up-to-date",
+    code: 0,
+    branch: "main",
+  },
+  {
+    name: "detached at a commit that isn't on main",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q --detach && printf x > x && git add . && git commit -qm x")
+    },
+    plan: "detached-stray",
+    code: 4,
+  },
+  {
+    name: "detached while local main has diverged",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q --detach HEAD")
+      await ok(r.clone, "git switch -q main && printf x > x && git add . && git commit -qm x && git switch -q --detach HEAD~1")
+      await r.pushUpstream("two")
+    },
+    plan: "diverged",
+    code: 3,
+  },
+  ...(["staged", "unstaged", "untracked"] as const).map((state) => ({
+    name: `${state} changes`,
+    setup: async (r: Repo) => {
+      await r.pushUpstream("two")
+      const change = {
+        staged: "printf local > file.txt && git add file.txt",
+        unstaged: "printf local > file.txt",
+        untracked: "printf local > new.txt",
+      }[state]
+      await ok(r.clone, change)
+    },
+    plan: "dirty",
+    code: 2,
+  })),
+  {
+    name: "merge already in progress",
+    setup: async (r) => {
+      await feature(r, "file.txt", "mine")
+      await r.pushUpstream("theirs")
+      await sh(r.clone, "git fetch -q && git merge origin/main")
+      await ok(r.clone, "printf resolved > file.txt && git add file.txt")
+    },
+    plan: "in-progress: merge",
+    code: 5,
+  },
+  {
+    name: "rebase already in progress",
+    setup: async (r) => {
+      await feature(r, "file.txt", "mine")
+      await r.pushUpstream("theirs")
+      await sh(r.clone, "git fetch -q && git rebase origin/main")
+    },
+    plan: "in-progress: rebase",
+    code: 5,
+  },
+  {
+    name: "target only exists locally",
+    setup: async (r) => {
+      await ok(r.clone, "git switch -q -c topic && printf t > t.txt && git add . && git commit -qm t")
+      await ok(r.clone, "git switch -q main && git switch -q -c feature")
+    },
+    target: "topic",
+    plan: "fast-forward",
+    code: 0,
+    branch: "feature",
+    includes: "topic",
+  },
+  {
+    name: "target missing everywhere",
+    setup: async () => {},
+    target: "nope",
+    plan: "missing-target",
+    code: 1,
+  },
+  {
+    name: "merge.ff=only in config still merges",
+    setup: async (r) => {
+      await ok(r.clone, "git config merge.ff only")
+      await feature(r)
+      await r.pushUpstream("two")
+    },
+    plan: "merge",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "a pre-merge-commit hook that rejects leaves the branch as it was",
+    setup: async (r) => {
+      await feature(r)
+      await r.pushUpstream("two")
+      await ok(
+        r.clone,
+        "printf '#!/bin/sh\\necho hook says no >&2\\nexit 1\\n' > .git/hooks/pre-merge-commit && chmod +x .git/hooks/pre-merge-commit",
+      )
+    },
+    plan: "merge",
+    code: 1,
+    // Hooks only run during a real merge, so a dry run can't predict this.
+    dryCode: 0,
+  },
+]
+
+describe("git_mf <target> scenarios", () => {
+  test.each(scenarios)("$name", async (s) => {
+    const r = await repoPair()
+    await s.setup(r)
+    const target = s.target ?? "main"
+    const before = await snapshot(r.clone)
+
+    const dry = await sh(r.clone, `${gitMf} ${target} --dry-run`)
+    expect(dry.stderr).toContain(`git_mf: plan: `)
+    expect(dry.stderr).toContain(s.plan)
+    expect(dry.code, dry.stderr).toBe(s.dryCode ?? s.code)
+    expect(await snapshot(r.clone)).toBe(before)
+
+    const real = await sh(r.clone, `${gitMf} ${target}`)
+    expect(real.stderr).toContain(s.plan)
+    expect(real.stderr).not.toContain("plan predicted")
+    expect(real.code, real.stderr).toBe(s.code)
+
+    if (s.code === 0) {
+      if (s.branch) {
+        expect(await ok(r.clone, "git branch --show-current")).toBe(s.branch)
+      }
+      const includes = s.includes ?? `origin/${target}`
+      expect(
+        await sh(r.clone, `git merge-base --is-ancestor ${includes} HEAD`),
+      ).toMatchObject({ code: 0 })
+      expect(await ok(r.clone, "git status --porcelain")).toBe("")
+    } else {
+      expect(await snapshot(r.clone)).toBe(before)
+    }
+  })
+
+  test("a clean merge also fast-forwards a local main you aren't on", async () => {
+    const r = await repoPair()
+    await feature(r)
+    const upstream = await r.pushUpstream("two")
+    const res = await sh(r.clone, `${gitMf} main`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(await ok(r.clone, "git rev-parse main")).toBe(upstream)
+  })
+
+  test("a conflict names the files and the --agent rerun", async () => {
+    const r = await repoPair()
+    await feature(r, "file.txt", "mine")
+    await r.pushUpstream("theirs")
+    const res = await sh(r.clone, `${gitMf} main`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("conflicts in: file.txt")
+    expect(res.stderr).toContain("git_mf main --agent")
+  })
+
+  test("a rejected merge shows git's own message", async () => {
+    const r = await repoPair()
+    await feature(r)
+    await r.pushUpstream("two")
+    await ok(
+      r.clone,
+      "printf '#!/bin/sh\\necho hook says no >&2\\nexit 1\\n' > .git/hooks/pre-merge-commit && chmod +x .git/hooks/pre-merge-commit",
+    )
+    const res = await sh(r.clone, `${gitMf} main`)
+    expect(res.stderr).toContain("merge failed without conflicts")
+    expect(res.stderr).toContain("hook says no")
+  })
+
+  test("--dry-run prints each command it would run", async () => {
+    const r = await repoPair()
+    await feature(r)
+    await r.pushUpstream("two")
+    const res = await sh(r.clone, `${gitMf} main --dry-run`)
+    expect(res.stderr).toContain("RUN git fetch --quiet . origin/main:main")
+    expect(res.stderr).toContain("RUN git merge --ff --no-edit --quiet origin/main")
+  })
+
+  test("extra flags pass through to git merge", async () => {
+    const r = await repoPair()
+    await feature(r)
+    await r.pushUpstream("two")
+    const res = await sh(r.clone, `${gitMf} main --no-ff -m 'custom message' --dry-run`)
+    expect(res.stderr).toContain("--no-ff -m custom message origin/main")
+  })
+})
 
 /** A PATH with only the system tools and the given fake agent CLIs. */
 async function fakeAgents(root: string, names: string[]) {
@@ -21,128 +363,15 @@ async function fakeAgents(root: string, names: string[]) {
   return `${bin}:/usr/bin:/bin`
 }
 
-const snapshot = (dir: string) =>
-  ok(dir, "git rev-parse HEAD && git branch --show-current && git status --porcelain")
-
-describe("git_mf main", () => {
-  test("fast-forwards main", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    const upstream = await pushUpstream("two")
-    const r = await sh(clone, script)
-    expect(r.code, r.stderr).toBe(0)
-    expect(await ok(clone, "git rev-parse HEAD")).toBe(upstream)
-    expect(await ok(clone, "git branch --show-current")).toBe("main")
-  })
-
-  test("merges origin/main into a feature branch with a merge commit", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    await ok(clone, "git switch -q -c feature")
-    await ok(clone, "printf 'f\\n' > feature.txt && git add . && git commit -qm f")
-    const upstream = await pushUpstream("two")
-
-    const r = await sh(clone, script)
-    expect(r.code, r.stderr).toBe(0)
-    expect(await ok(clone, "git branch --show-current")).toBe("feature")
-    expect(await ok(clone, "git rev-list --parents -n1 HEAD")).toContain(upstream)
-    expect(await ok(clone, "cat feature.txt file.txt")).toBe("f\ntwo")
-  })
-
-  test("from a detached checkout behind main ends on main", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    await ok(clone, "git switch -q --detach HEAD && git branch -q -D main")
-    const upstream = await pushUpstream("two")
-
-    const r = await sh(clone, script)
-    expect(r.code, r.stderr).toBe(0)
-    expect(await ok(clone, "git branch --show-current")).toBe("main")
-    expect(await ok(clone, "git rev-parse HEAD")).toBe(upstream)
-  })
-
-  test("also fast-forwards a local main you aren't on", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    await ok(clone, "git switch -q -c feature")
-    const upstream = await pushUpstream("two")
-
-    const r = await sh(clone, script)
-    expect(r.code, r.stderr).toBe(0)
-    expect(await ok(clone, "git rev-parse main")).toBe(upstream)
-  })
-
-  test("merges a local-only target branch", async () => {
-    const { clone } = await repoPair()
-    await ok(clone, "git switch -q -c topic && printf t > t.txt && git add . && git commit -qm t")
-    await ok(clone, "git switch -q main && git switch -q -c feature")
-    const topic = await ok(clone, "git rev-parse topic")
-
-    const r = await sh(clone, `${script.replace(/ main$/, "")} topic`)
-    expect(r.code, r.stderr).toBe(0)
-    expect(r.stderr).toContain("origin has no topic")
-    expect(await ok(clone, "git rev-parse HEAD")).toBe(topic)
-  })
-
-  test("refuses a detached commit that isn't on main", async () => {
-    const { clone } = await repoPair()
-    await ok(clone, "git switch -q --detach && printf x > x && git add . && git commit -qm x")
-    const before = await snapshot(clone)
-    const r = await sh(clone, script)
-    expect(r.code).toBe(4)
-    expect(await snapshot(clone)).toBe(before)
-  })
-
-  test.each(["staged", "unstaged", "untracked"])(
-    "leaves a %s working tree untouched",
-    async (state) => {
-      const { clone, pushUpstream } = await repoPair()
-      await pushUpstream("two")
-      const change = {
-        staged: "printf local > file.txt && git add file.txt",
-        unstaged: "printf local > file.txt",
-        untracked: "printf local > new.txt",
-      }[state]!
-      await ok(clone, change)
-      const before = await snapshot(clone)
-
-      const r = await sh(clone, script)
-      expect(r.code).toBe(2)
-      expect(r.stderr).toContain("uncommitted changes")
-      expect(await snapshot(clone)).toBe(before)
-    },
-  )
-
-  test("a conflict aborts cleanly with exit 3", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    await ok(clone, "git switch -q -c feature")
-    await ok(clone, "printf mine > file.txt && git commit -qam mine")
-    await pushUpstream("theirs")
-    const before = await snapshot(clone)
-
-    const r = await sh(clone, script)
-    expect(r.code).toBe(3)
-    expect(r.stderr).toContain("conflicts in: file.txt")
-    expect(r.stderr).toContain("git_mf main --agent")
-    expect(await snapshot(clone)).toBe(before)
-    expect(await sh(clone, "git rev-parse -q --verify MERGE_HEAD")).toMatchObject({ code: 1 })
-  })
-
-  test("a diverged main is left alone with exit 3", async () => {
-    const { clone, pushUpstream } = await repoPair()
-    await ok(clone, "printf x > local.txt && git add . && git commit -qm local")
-    await pushUpstream("two")
-    const before = await snapshot(clone)
-
-    const r = await sh(clone, script)
-    expect(r.code).toBe(3)
-    expect(await snapshot(clone)).toBe(before)
-  })
-
-  test("--agent hands a conflict to claude with the prompt", async () => {
+describe("git_mf --agent", () => {
+  test("hands a conflict to claude with the prompt", async () => {
     const { root, clone, pushUpstream } = await repoPair()
     await ok(clone, "git switch -q -c feature")
     await ok(clone, "printf mine > file.txt && git commit -qam mine")
     await pushUpstream("theirs")
     const PATH = await fakeAgents(root, ["claude", "codex"])
 
-    const r = await sh(clone, `${script} --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
     expect(r.code, r.stderr).toBe(0)
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
     expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
@@ -151,12 +380,12 @@ describe("git_mf main", () => {
     expect(await Bun.file(join(root, "codex.stdin")).exists()).toBe(false)
   })
 
-  test("--agent falls back to codex when claude is missing", async () => {
+  test("falls back to codex when claude is missing", async () => {
     const { root, clone } = await repoPair()
     await ok(clone, "printf local > file.txt")
     const PATH = await fakeAgents(root, ["codex"])
 
-    const r = await sh(clone, `${script} --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
     expect(r.code, r.stderr).toBe(0)
     expect(await readFile(join(root, "codex.stdin"), "utf8")).toContain(
       "uncommitted changes",
@@ -164,12 +393,23 @@ describe("git_mf main", () => {
     expect(await readFile(join(root, "codex.args"), "utf8")).toContain("exec")
   })
 
-  test("--agent with no agent installed says how to repair", async () => {
+  test("--dry-run names the agent without running it", async () => {
+    const { root, clone } = await repoPair()
+    await ok(clone, "printf local > file.txt")
+    const PATH = await fakeAgents(root, ["claude"])
+
+    const r = await sh(clone, `${gitMf} main --agent --dry-run`, { PATH })
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stderr).toContain("RUN claude")
+    expect(await Bun.file(join(root, "claude.stdin")).exists()).toBe(false)
+  })
+
+  test("with no agent installed says how to repair", async () => {
     const { root, clone } = await repoPair()
     await ok(clone, "printf local > file.txt")
     const PATH = await fakeAgents(root, [])
 
-    const r = await sh(clone, `${script} --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
     expect(r.code).toBe(1)
     expect(r.stderr).toContain("neither claude nor codex")
   })
