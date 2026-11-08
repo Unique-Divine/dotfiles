@@ -10,6 +10,7 @@ systemd/ssh-agent.service .config/systemd/user/ssh-agent.service
 bin/node .local/bin/node
 bin/git_mf .local/bin/git_mf
 bin/git_cof .local/bin/git_cof
+bin/git_merge_main .local/bin/git_merge_main
 zsh/gitconfig.ini .gitconfig
 cursor/hooks .config/git/hooks
 claude/CLAUDE.md .claude/CLAUDE.md
