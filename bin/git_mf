@@ -54,5 +54,11 @@ run git fetch --all --prune || true
 start_branch="$(git branch --show-current)"
 git checkout "$target_branch"
 git pull || true
+if [[ -z "$start_branch" ]]; then
+  # A detached checkout has no branch to merge into. Ending on the updated
+  # target is what the caller wanted.
+  echo "Started detached; now on $target_branch"
+  exit 0
+fi
 git checkout "$start_branch"
 git merge "$target_branch" "$@"
