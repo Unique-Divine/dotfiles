@@ -123,13 +123,14 @@ Older `26/…`, `YY/MM-DD-*`, and flat keys stay where they are and keep serving
 Tags, descriptions, and search use a SQLite database, `fs.db`, in the private
 versioned bucket `ud-fs-meta-876932632137`. It can't live in the public
 bucket because the file server serves any key there. Reads download it to
-`~/.cache/ud/fs/` when its GCS generation changes. Writes upload with an
+`~/.cache/ud/fs/fs-<generation>.db` when its GCS generation changes. Writes upload with an
 `ifGenerationMatch` precondition; if another machine wrote first, the command
 reloads and retries up to three times. Triggers write every add, tag, untag,
 describe, delete, and restore to a change log that `ud fs log` prints.
 
-- `publish --tag a,b --desc TEXT` records the file after a verified upload.
-  Unknown tags fail before upload and list similar existing tags; pass
+- `publish --tag a,b --desc TEXT` records the file as soon as the upload
+  lands, before the public check, and a retry with the same bytes reuses that
+  name instead of numbering a duplicate. Unknown tags fail before upload and list similar existing tags; pass
   `--new-tag` to create one. If the index write fails, the upload still counts
   and stderr prints the commands that finish it.
 - Descriptions are Markdown strings, stored and returned verbatim. JSON output

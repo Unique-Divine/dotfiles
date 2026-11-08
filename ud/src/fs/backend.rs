@@ -97,6 +97,30 @@ impl<'a> Gcs<'a> {
 
     /// Return the stored size of one object, or `None` when it is absent.
     pub fn existing_size(&self, key: &str) -> Result<Option<u64>> {
+        self.metadata(key, "size")?
+            .map(|value| object_size(&value))
+            .transpose()
+    }
+
+    /// Return the stored base64 MD5 of one object, or `None` when absent.
+    pub fn existing_md5(&self, key: &str) -> Result<Option<String>> {
+        self.metadata(key, "md5Hash")?
+            .map(|value| {
+                value
+                    .get("md5Hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .context("Storage returned no MD5 for the object")
+            })
+            .transpose()
+    }
+
+    /// Selected metadata fields of one object, or `None` when it is absent.
+    fn metadata(
+        &self,
+        key: &str,
+        fields: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let token = self.token()?;
         let mut url = Url::parse(&format!(
             "https://storage.googleapis.com/storage/v1/b/{}/o/",
@@ -107,12 +131,12 @@ impl<'a> Gcs<'a> {
             .map_err(|()| anyhow::anyhow!("Invalid storage URL"))?
             .pop_if_empty()
             .push(key);
-        url.query_pairs_mut().append_pair("fields", "size");
+        url.query_pairs_mut().append_pair("fields", fields);
         let response = self.client.get(url).bearer_auth(&token).send()?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        object_size(&response.error_for_status()?.json()?).map(Some)
+        Ok(Some(response.error_for_status()?.json()?))
     }
 
     /// Refuse existing names unless `replace` is set; MD5 also detects file

@@ -1,7 +1,7 @@
 //! SQLite schema for the file index. Triggers own the change log and the
 //! full-text table, so command code only writes `files` and `file_tags`.
 use anyhow::{Result, ensure};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Bump when the schema changes; `open` refuses newer databases.
 pub(super) const VERSION: i64 = 1;
@@ -95,30 +95,46 @@ CREATE TRIGGER IF NOT EXISTS file_tags_remove AFTER DELETE ON file_tags BEGIN
 END;
 "#;
 
-/// Create or validate the schema. Older databases are migrated in place;
-/// newer ones are refused so an old binary cannot corrupt them.
-pub(super) fn ensure(connection: &Connection) -> Result<()> {
-    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-    connection.execute_batch(SCHEMA)?;
+/// Refuse a database written by a newer `ud`, before anything touches it.
+/// Returns the stored version, or `None` for a database without one.
+pub(super) fn check_version(connection: &Connection) -> Result<Option<i64>> {
+    let has_meta: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_meta {
+        return Ok(None);
+    }
     let stored: Option<i64> = connection
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'version'",
             [],
             |row| row.get(0),
         )
-        .ok();
-    match stored {
-        None => {
-            connection.execute(
-                "INSERT INTO meta (key, value) VALUES ('version', ?1)",
-                [VERSION.to_string()],
-            )?;
-        }
-        Some(version) => ensure!(
+        .optional()?;
+    if let Some(version) = stored {
+        ensure!(
             version <= VERSION,
             "Index schema {version} is newer than this ud ({VERSION}); \
              update ud with just fs-install"
-        ),
+        );
+    }
+    Ok(stored)
+}
+
+/// Create or migrate the schema for writing. Newer databases are refused
+/// before any statement runs, so an old binary cannot alter them.
+pub(super) fn ensure(connection: &Connection) -> Result<()> {
+    let stored = check_version(connection)?;
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    connection.execute_batch(SCHEMA)?;
+    if stored.is_none() {
+        connection.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('version', ?1)",
+            [VERSION.to_string()],
+        )?;
     }
     Ok(())
 }

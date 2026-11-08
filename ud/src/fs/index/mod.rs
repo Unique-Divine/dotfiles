@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use super::{
@@ -25,76 +25,94 @@ use store::Store;
 /// Attempts at a compare-and-swap upload before giving up.
 const WRITE_ATTEMPTS: usize = 3;
 
-/// The local cache directory holding `fs.db` and its generation.
+/// The local cache directory. Each cached copy is named after its remote
+/// generation (`fs-<generation>.db`), so a file's name always matches its
+/// content even when several `ud` processes update the cache at once.
+/// Working copies are unique temp files, so a journal left by a killed
+/// process can never roll back a later download.
 pub(super) struct Cache {
     pub dir: PathBuf,
 }
 
 impl Cache {
-    fn db(&self) -> PathBuf {
-        self.dir.join(store::OBJECT)
+    fn copy_of(&self, generation: i64) -> PathBuf {
+        self.dir.join(format!("fs-{generation}.db"))
     }
 
-    fn generation_file(&self) -> PathBuf {
-        self.dir.join(format!("{}.generation", store::OBJECT))
-    }
-
-    fn generation(&self) -> Option<i64> {
-        fs::read_to_string(self.generation_file())
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-    }
-
-    /// Copy the remote database into `to` unless the cached copy already
-    /// matches `remote`; an absent remote leaves `to` absent, which SQLite
-    /// opens as a new empty database.
-    fn materialize(
-        &self,
-        store: &dyn Store,
-        remote: Option<i64>,
-        to: &Path,
-    ) -> Result<()> {
+    /// A new empty temp file in the cache directory, deleted on drop.
+    fn scratch(&self) -> Result<tempfile::TempPath> {
         fs::create_dir_all(&self.dir)?;
-        let fresh = remote.is_some()
-            && self.generation() == remote
-            && self.db().is_file();
-        if fresh && to == self.db() {
-            return Ok(());
-        }
-        let _ = fs::remove_file(to);
-        if fresh {
-            fs::copy(self.db(), to)?;
-        } else if remote.is_some() {
-            let generation = store.download(to)?;
-            if to == self.db() {
-                fs::write(self.generation_file(), generation.to_string())?;
-            }
-        } else if to == self.db() {
-            let _ = fs::remove_file(self.generation_file());
-        }
-        Ok(())
+        Ok(tempfile::Builder::new()
+            .prefix(".work-")
+            .suffix(".db")
+            .tempfile_in(&self.dir)?
+            .into_temp_path())
     }
 
-    /// Open a fresh read view of the index.
+    /// Make the cached copy of `generation` present and return its path.
+    /// Downloads land in a temp file and are renamed into place.
+    fn cached(&self, store: &dyn Store, generation: i64) -> Result<PathBuf> {
+        let path = self.copy_of(generation);
+        if path.is_file() {
+            return Ok(path);
+        }
+        let download = self.scratch()?;
+        let got = store.download(&download)?;
+        let path = self.copy_of(got);
+        download.persist(&path)?;
+        self.prune(got);
+        Ok(path)
+    }
+
+    /// Best-effort removal of cached copies older than `current`. Open
+    /// handles on Linux keep removed files readable.
+    fn prune(&self, current: i64) {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let older = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("fs-")?.strip_suffix(".db"))
+                .and_then(|g| g.parse::<i64>().ok())
+                .is_some_and(|g| g < current);
+            if older {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Open a read-only view of the current index. With nothing stored
+    /// yet, the view is an empty in-memory database.
     pub fn read(&self, store: &dyn Store) -> Result<Connection> {
-        let remote = store.generation()?;
-        self.materialize(store, remote, &self.db())?;
-        let connection = Connection::open(self.db())?;
-        schema::ensure(&connection)?;
+        let Some(generation) = store.generation()? else {
+            let connection = Connection::open_in_memory()?;
+            schema::ensure(&connection)?;
+            return Ok(connection);
+        };
+        let connection = Connection::open_with_flags(
+            self.cached(store, generation)?,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        schema::check_version(&connection)?;
         Ok(connection)
     }
 
     /// Apply `change` in one transaction and publish the result. On a
     /// conflicting remote write, rebuild from the new remote and retry.
+    /// `change` may run more than once, so it must only use the transaction.
     pub fn write<T>(
         &self,
         store: &dyn Store,
         mut change: impl FnMut(&Transaction) -> Result<T>,
     ) -> Result<T> {
-        let working = self.dir.join(format!("{}.work", store::OBJECT));
         for _ in 0..WRITE_ATTEMPTS {
             let remote = store.generation()?;
-            self.materialize(store, remote, &working)?;
+            let working = self.scratch()?;
+            if let Some(generation) = remote {
+                fs::copy(self.cached(store, generation)?, &working)?;
+            }
             let value = {
                 let mut connection = Connection::open(&working)?;
                 schema::ensure(&connection)?;
@@ -104,13 +122,12 @@ impl Cache {
                 value
             };
             if let Some(generation) = store.upload(&working, remote)? {
-                fs::rename(&working, self.db())?;
-                fs::write(self.generation_file(), generation.to_string())?;
+                working.persist(self.copy_of(generation))?;
+                self.prune(generation);
                 return Ok(value);
             }
             eprintln!("Index changed on another machine; retrying.");
         }
-        let _ = fs::remove_file(&working);
         bail!("Index kept changing during the write; run the command again")
     }
 }

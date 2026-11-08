@@ -322,3 +322,80 @@ fn backlinks_find_documents_per_key() {
     assert_eq!(b, expected);
     assert!(found["26/unused.png"].is_empty());
 }
+
+#[test]
+fn killed_writes_leave_no_state_that_reaches_later_writes() {
+    let temp = TempDir::new().unwrap();
+    let (store, machine_a, machine_b) = machines(&temp);
+    seed(&store, &machine_a);
+    // A process killed mid-transaction leaves a working copy and its hot
+    // journal behind in the cache directory.
+    let orphan = machine_a.dir.join(".work-killed.db");
+    let cached = std::fs::read_dir(&machine_a.dir)
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("fs-"))
+        .unwrap()
+        .path();
+    std::fs::copy(&cached, &orphan).unwrap();
+    let connection = rusqlite::Connection::open(&orphan).unwrap();
+    connection
+        .execute_batch("BEGIN; DELETE FROM files;")
+        .unwrap();
+    std::mem::forget(connection);
+    assert!(machine_a.dir.join(".work-killed.db-journal").exists());
+
+    // Machine B moves the remote ahead; machine A must build on that.
+    machine_b
+        .write(&store, |tx| {
+            retag(tx, "26/10-14-twitter.svg", &["b".into()], &[])
+        })
+        .unwrap();
+    machine_a
+        .write(&store, |tx| {
+            retag(tx, "26-11/261108-fee-chart.png", &["a".into()], &[])
+        })
+        .unwrap();
+    let read = machine_b.read(&store).unwrap();
+    assert_eq!(search(&read, &Query::default()).unwrap().len(), 3);
+    assert_eq!(find_tags(&read, "a"), 1);
+    assert_eq!(find_tags(&read, "b"), 1);
+    // Only the newest cached copy is kept.
+    let copies = std::fs::read_dir(&machine_a.dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("fs-"))
+        .count();
+    assert_eq!(copies, 1);
+}
+
+#[test]
+fn newer_schema_is_refused_before_any_change() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    std::fs::create_dir_all(&store.root).unwrap();
+    let future = temp.path().join("future.db");
+    let connection = rusqlite::Connection::open(&future).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('version', '99');",
+        )
+        .unwrap();
+    drop(connection);
+    assert_eq!(store.upload(&future, None).unwrap(), Some(1));
+    let error = cache.read(&store).unwrap_err().to_string();
+    assert!(error.contains("newer than this ud"), "{error}");
+    let error = cache
+        .write(&store, |tx| reconcile(tx, &[record("a.png")]))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("newer than this ud"), "{error}");
+    // The old binary created no tables in its cached copy.
+    let read = rusqlite::Connection::open(cache.dir.join("fs-1.db")).unwrap();
+    let tables: i64 = read
+        .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tables, 2); // meta and its primary-key index
+    assert_eq!(store.generation().unwrap(), Some(1));
+}

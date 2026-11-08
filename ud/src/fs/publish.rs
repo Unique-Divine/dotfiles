@@ -158,32 +158,37 @@ pub(super) const MAX_NUMBER: u32 = 9;
 
 /// Create the first free name among `slug`, `slug-2` … `slug-9`. Every
 /// attempt carries the absent-object precondition, so nothing is overwritten.
-/// Only after a refusal does a metadata read decide whether the name was
-/// taken; if that read fails, the original upload error is reported.
-fn upload_numbered(
-    backend: &Gcs,
+/// Only after a refusal does a metadata read decide what happened:
+/// - the name holds these same bytes (a retried publish): reuse it;
+/// - the name holds other bytes: try the next number;
+/// - the read fails or finds nothing: report the original upload error.
+///
+/// `upload` creates one key; `existing_md5` reads one key's stored MD5.
+pub(super) fn upload_numbered(
     plan: &Plan,
     digest: &str,
     origin: &str,
+    mut upload: impl FnMut(&Plan) -> Result<()>,
+    mut existing_md5: impl FnMut(&str) -> Result<Option<String>>,
 ) -> Result<Plan> {
     for number in 1..=MAX_NUMBER {
         let candidate = plan.numbered(number, origin)?;
-        match backend.upload(&candidate.file, &candidate.key, digest, false) {
-            Ok(()) => {
-                if number > 1 {
-                    eprintln!(
-                        "{} exists; published as {}",
-                        plan.key, candidate.key
-                    );
-                }
+        let Err(error) = upload(&candidate) else {
+            if number > 1 {
+                eprintln!("{} exists; published as {}", plan.key, candidate.key);
+            }
+            return Ok(candidate);
+        };
+        match existing_md5(&candidate.key) {
+            Ok(Some(stored)) if stored == digest => {
+                eprintln!(
+                    "{} already holds these bytes; reusing it",
+                    candidate.key
+                );
                 return Ok(candidate);
             }
-            Err(error) => {
-                if !matches!(backend.existing_size(&candidate.key), Ok(Some(_)))
-                {
-                    return Err(error);
-                }
-            }
+            Ok(Some(_)) => {}
+            _ => return Err(error),
         }
     }
     anyhow::bail!(
@@ -232,26 +237,19 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         backend.upload(&plan.file, &plan.key, &digest, true)?;
         plan
     } else {
-        upload_numbered(&backend, &plan, &digest, &config.base_url)?
+        upload_numbered(
+            &plan,
+            &digest,
+            &config.base_url,
+            |c| backend.upload(&c.file, &c.key, &digest, false),
+            |key| backend.existing_md5(key),
+        )?
     };
-    let text = output(&plan, args.md);
-    if existing.is_some() {
-        backend.purge_cdn(&plan.key).with_context(|| {
-            format!("Replaced {}, but the CDN purge failed. Cached copies expire within five minutes", plan.key)
-        })?;
-        backend.verify_digest(&plan.url, &digest).with_context(|| {
-            format!("Replaced {}, but the public URL does not serve the new bytes yet", plan.key)
-        })?;
-    } else {
-        backend.verify(&plan.url, plan.file.metadata()?.len()).with_context(|| {
-            format!("Uploaded {}, but public verification failed. The object remains in storage", plan.key)
-        })?;
-    }
-    println!("{text}");
-    std::io::stdout().flush()?;
+    // Index before verifying: the object exists even if the public check
+    // fails, and a later retry reuses the same name by MD5.
     if let Err(error) = record(&plan, &tags, args.desc.as_deref(), config) {
         eprintln!(
-            "Published, but the index was not updated: {error:#}\n\
+            "Uploaded, but the index was not updated: {error:#}\n\
              Fix with: ud fs index sync{}{}",
             if tags.is_empty() {
                 String::new()
@@ -269,6 +267,21 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
             }
         );
     }
+    let text = output(&plan, args.md);
+    if existing.is_some() {
+        backend.purge_cdn(&plan.key).with_context(|| {
+            format!("Replaced {}, but the CDN purge failed. Cached copies expire within five minutes", plan.key)
+        })?;
+        backend.verify_digest(&plan.url, &digest).with_context(|| {
+            format!("Replaced {}, but the public URL does not serve the new bytes yet", plan.key)
+        })?;
+    } else {
+        backend.verify(&plan.url, plan.file.metadata()?.len()).with_context(|| {
+            format!("Uploaded {}, but public verification failed. The object remains in storage", plan.key)
+        })?;
+    }
+    println!("{text}");
+    std::io::stdout().flush()?;
     if !args.no_clipboard
         && let Some(program) = clipboard_program()
         && copy(&program, &text, Duration::from_secs(5)).is_err()

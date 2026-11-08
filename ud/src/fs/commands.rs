@@ -245,6 +245,8 @@ pub(super) fn backlinks(
     // Only text formats can embed a URL; skipping binaries and build output
     // cuts a full ~/ki scan from about 19 s to about 3 s.
     command.args(["--glob", BACKLINK_GLOB]);
+    // Agent notes live in hidden folders such as .claude/ and .cursor/.
+    command.args(["--hidden", "--glob", "!.git"]);
     for key in keys {
         command.arg("-e").arg(format!("/f/{key}"));
     }
@@ -371,6 +373,10 @@ pub(super) fn rm(args: &RmArgs, config: &Settings) -> Result<()> {
             }
         }
     }
+    // Report deletions first: they happened even if the index write fails.
+    for key in &deleted {
+        println!("{key}");
+    }
     with_index(config, |store, cache| {
         cache.write(store, |tx| {
             for key in &deleted {
@@ -378,10 +384,14 @@ pub(super) fn rm(args: &RmArgs, config: &Settings) -> Result<()> {
             }
             Ok(())
         })
+    })
+    .with_context(|| {
+        format!(
+            "Deleted {} file(s), but the index was not updated; \
+             run ud fs index sync",
+            deleted.len()
+        )
     })?;
-    for key in &deleted {
-        println!("{key}");
-    }
     eprintln!(
         "Deleted {} file(s). CDN copies can be served for up to five \
          minutes; restore within seven days with gcloud storage restore.",

@@ -806,3 +806,80 @@ fn public_verification_compares_body_digest() {
     );
     worker.join().unwrap();
 }
+
+/// An in-memory bucket: key to stored MD5, with create-if-absent uploads.
+struct Bucket {
+    objects: std::collections::BTreeMap<String, String>,
+    lookups_fail: bool,
+}
+
+impl Bucket {
+    fn publish(
+        &mut self,
+        plan: &naming::Plan,
+        digest: &str,
+    ) -> anyhow::Result<naming::Plan> {
+        let objects = std::cell::RefCell::new(&mut self.objects);
+        let fail = self.lookups_fail;
+        publish::upload_numbered(
+            plan,
+            digest,
+            "https://example.com",
+            |candidate| {
+                let mut objects = objects.borrow_mut();
+                anyhow::ensure!(
+                    !objects.contains_key(&candidate.key),
+                    "precondition failed for {}",
+                    candidate.key
+                );
+                objects.insert(candidate.key.clone(), digest.to_owned());
+                Ok(())
+            },
+            |key| {
+                anyhow::ensure!(!fail, "metadata read failed");
+                Ok(objects.borrow().get(key).cloned())
+            },
+        )
+    }
+}
+
+#[test]
+fn numbering_skips_taken_names_and_reuses_identical_bytes() {
+    let temp = TempDir::new().unwrap();
+    let plan = naming::plan(
+        &fixture(&temp, "a.png"),
+        "chart",
+        Some("2026-11-08"),
+        "https://example.com",
+        now(),
+    )
+    .unwrap();
+    let mut bucket = Bucket {
+        objects: Default::default(),
+        lookups_fail: false,
+    };
+    let key = |p: anyhow::Result<naming::Plan>| p.unwrap().key;
+    assert_eq!(key(bucket.publish(&plan, "one")), "26-11/261108-chart.png");
+    assert_eq!(
+        key(bucket.publish(&plan, "two")),
+        "26-11/261108-chart-2.png"
+    );
+    // A retry with bytes already stored reuses that name, not a new number.
+    assert_eq!(
+        key(bucket.publish(&plan, "two")),
+        "26-11/261108-chart-2.png"
+    );
+    assert_eq!(bucket.objects.len(), 2);
+
+    // A failed metadata read reports the upload error instead of guessing.
+    bucket.lookups_fail = true;
+    let error = bucket.publish(&plan, "three").unwrap_err().to_string();
+    assert!(error.contains("precondition failed for 26-11/261108-chart.png"));
+
+    bucket.lookups_fail = false;
+    for number in 3..=publish::MAX_NUMBER {
+        bucket.publish(&plan, &format!("v{number}")).unwrap();
+    }
+    let error = bucket.publish(&plan, "ten").unwrap_err().to_string();
+    assert!(error.contains("choose another slug"), "{error}");
+}
