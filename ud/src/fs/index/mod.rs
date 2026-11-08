@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use super::{
@@ -23,7 +23,34 @@ use super::{
 use store::Store;
 
 /// Attempts at a compare-and-swap upload before giving up.
-const WRITE_ATTEMPTS: usize = 3;
+const WRITE_ATTEMPTS: u32 = 6;
+
+/// Largest description accepted, in bytes. Longer notes belong in a
+/// document that the description links to.
+pub(super) const MAX_DESCRIPTION: usize = 16 * 1024;
+
+/// SQLite file header; anything else in the cache is discarded.
+const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
+
+/// Whether `path` starts like a SQLite database. A zero-byte or truncated
+/// file would otherwise open as an empty index.
+fn looks_like_sqlite(path: &Path) -> bool {
+    let mut header = [0; 16];
+    fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+        .is_ok_and(|()| header == SQLITE_HEADER)
+}
+
+/// Wait a little longer on each retry, with jitter so racing writers
+/// spread out instead of colliding again.
+fn backoff(attempt: u32) {
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_nanos()) % 150);
+    std::thread::sleep(std::time::Duration::from_millis(
+        100 * u64::from(attempt) + jitter,
+    ));
+}
 
 /// The local cache directory. Each cached copy is named after its remote
 /// generation (`fs-<generation>.db`), so a file's name always matches its
@@ -53,11 +80,17 @@ impl Cache {
     /// Downloads land in a temp file and are renamed into place.
     fn cached(&self, store: &dyn Store, generation: i64) -> Result<PathBuf> {
         let path = self.copy_of(generation);
-        if path.is_file() {
+        if looks_like_sqlite(&path) {
             return Ok(path);
         }
+        let _ = fs::remove_file(&path);
         let download = self.scratch()?;
         let got = store.download(&download)?;
+        ensure!(
+            looks_like_sqlite(&download),
+            "The stored index (generation {got}) is not a SQLite database; \
+             restore an earlier version from the meta bucket's history"
+        );
         let path = self.copy_of(got);
         download.persist(&path)?;
         self.prune(got);
@@ -107,26 +140,41 @@ impl Cache {
         store: &dyn Store,
         mut change: impl FnMut(&Transaction) -> Result<T>,
     ) -> Result<T> {
-        for _ in 0..WRITE_ATTEMPTS {
+        for attempt in 1..=WRITE_ATTEMPTS {
             let remote = store.generation()?;
             let working = self.scratch()?;
             if let Some(generation) = remote {
-                fs::copy(self.cached(store, generation)?, &working)?;
+                let cached = self.cached(store, generation)?;
+                fs::copy(&cached, &working)?;
             }
-            let value = {
+            let (value, changed) = {
                 let mut connection = Connection::open(&working)?;
+                // A stored index always has a version; without one the copy
+                // is damaged, and rebuilding it would erase the remote index.
+                let version = schema::check_version(&connection)?;
+                ensure!(
+                    remote.is_none() || version.is_some(),
+                    "The cached index copy is not a ud index; delete {} \
+                     and run the command again",
+                    self.dir.display()
+                );
                 schema::ensure(&connection)?;
+                let before = connection.total_changes();
                 let transaction = connection.transaction()?;
                 let value = change(&transaction)?;
                 transaction.commit()?;
-                value
+                (value, connection.total_changes() != before)
             };
+            if !changed && remote.is_some() {
+                return Ok(value);
+            }
             if let Some(generation) = store.upload(&working, remote)? {
                 working.persist(self.copy_of(generation))?;
                 self.prune(generation);
                 return Ok(value);
             }
             eprintln!("Index changed on another machine; retrying.");
+            backoff(attempt);
         }
         bail!("Index kept changing during the write; run the command again")
     }
@@ -246,8 +294,10 @@ pub(super) fn check_known(
     bail!(message)
 }
 
-/// Insert a newly published file. Re-publishing a key with `--replace`
-/// updates its size and type and keeps tags and description.
+/// Insert a newly published file. Re-publishing a live key with `--replace`
+/// updates its size and type and keeps tags and description; publishing
+/// over a deleted key starts fresh, since the old notes described other
+/// bytes.
 pub(super) fn add_file(
     transaction: &Transaction,
     key: &str,
@@ -255,6 +305,21 @@ pub(super) fn add_file(
     content_type: &str,
     source: &str,
 ) -> Result<()> {
+    let was_deleted = transaction
+        .query_row(
+            "SELECT deleted_at IS NOT NULL FROM files WHERE key = ?1",
+            [key],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if was_deleted {
+        transaction.execute("DELETE FROM file_tags WHERE key = ?1", [key])?;
+        transaction.execute(
+            "UPDATE files SET description = '', source = ?2 WHERE key = ?1",
+            params![key, source],
+        )?;
+    }
     transaction.execute(
         "INSERT INTO files (key, date, slug, size, content_type, source,
                             created_at)
@@ -278,19 +343,21 @@ pub(super) fn add_file(
 
 /// Require that `key` is indexed and live.
 fn require_file(transaction: &Transaction, key: &str) -> Result<()> {
-    let found = transaction
+    let deleted = transaction
         .query_row(
-            "SELECT 1 FROM files WHERE key = ?1 AND deleted_at IS NULL",
+            "SELECT deleted_at FROM files WHERE key = ?1",
             [key],
-            |_| Ok(()),
+            |row| row.get::<_, Option<String>>(0),
         )
         .optional()?;
-    ensure!(
-        found.is_some(),
-        "{key} is not in the index; run ud fs index sync if it was uploaded \
-         another way"
-    );
-    Ok(())
+    match deleted {
+        None => bail!(
+            "{key} is not in the index; run ud fs index sync if it was \
+             uploaded another way"
+        ),
+        Some(Some(at)) => bail!("{key} was deleted at {at}"),
+        Some(None) => Ok(()),
+    }
 }
 
 /// Add and remove tags on one file, creating new tag names on the way.
@@ -326,6 +393,12 @@ pub(super) fn describe(
     key: &str,
     markdown: &str,
 ) -> Result<()> {
+    ensure!(
+        markdown.len() <= MAX_DESCRIPTION,
+        "Description is {} bytes; the limit is {MAX_DESCRIPTION}. Put longer \
+         notes in a document and link to it",
+        markdown.len()
+    );
     require_file(transaction, key)?;
     transaction.execute(
         "UPDATE files SET description = ?2 WHERE key = ?1",
@@ -353,27 +426,48 @@ pub(super) struct SyncReport {
 
 /// Make the index match a full bucket listing: add unknown objects, mark
 /// vanished ones deleted, and restore ones that reappeared.
+///
+/// The listing is older than the index it is applied to, so keys with a
+/// change logged at or after `listed_at` are left alone: a publish or
+/// `rm` that finished after the listing knows better than the listing.
 pub(super) fn reconcile(
     transaction: &Transaction,
     records: &[Record],
+    listed_at: Option<&str>,
 ) -> Result<SyncReport> {
     let mut known = BTreeMap::new();
     {
-        let mut statement =
-            transaction.prepare("SELECT key, deleted_at FROM files")?;
-        for row in statement.query_map([], |row| {
+        let mut statement = transaction.prepare(
+            "SELECT key, deleted_at FROM files f WHERE ?1 IS NULL
+               OR NOT EXISTS (SELECT 1 FROM changes c
+                              WHERE c.key = f.key AND c.at >= ?1)",
+        )?;
+        for row in statement.query_map([listed_at], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })? {
             let (key, deleted) = row?;
             known.insert(key, deleted.is_some());
         }
     }
+    let changed_since: BTreeSet<String> = match listed_at {
+        None => BTreeSet::new(),
+        Some(at) => {
+            let mut statement = transaction
+                .prepare("SELECT DISTINCT key FROM changes WHERE at >= ?1")?;
+            statement
+                .query_map([at], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        }
+    };
     let mut report = SyncReport::default();
     let live = records
         .iter()
         .map(|r| r.key.as_str())
         .collect::<BTreeSet<_>>();
     for record in records {
+        if changed_since.contains(&record.key) {
+            continue;
+        }
         match known.get(&record.key) {
             None => {
                 add_file(
@@ -396,7 +490,8 @@ pub(super) fn reconcile(
             Some(false) => {
                 transaction.execute(
                     "UPDATE files SET size = ?2, content_type = ?3
-                     WHERE key = ?1",
+                     WHERE key = ?1
+                       AND (size IS NOT ?2 OR content_type IS NOT ?3)",
                     params![record.key, record.size as i64, record.content_type],
                 )?;
             }

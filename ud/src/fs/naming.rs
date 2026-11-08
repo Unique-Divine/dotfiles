@@ -99,8 +99,9 @@ pub(super) fn resolve_key(value: &str, origin: &str) -> Result<String> {
     let trimmed = value.trim();
     let key = match trimmed.split_once("/f/") {
         Some((prefix, rest))
-            if prefix == origin.trim_end_matches('/')
-                || matches(r"^https://[^/]+$", prefix) =>
+            if prefix.is_empty()
+                || prefix == origin.trim_end_matches('/')
+                || matches(r"^https?://[^/]+$", prefix) =>
         {
             rest.split(['?', '#']).next().unwrap_or(rest)
         }

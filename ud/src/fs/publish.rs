@@ -209,6 +209,15 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
     )?;
     let tags = tag_list(&args.tag);
     index::validate_tags(&tags)?;
+    if let Some(markdown) = &args.desc {
+        anyhow::ensure!(
+            markdown.len() <= index::MAX_DESCRIPTION,
+            "--desc is {} bytes; the limit is {}. Put longer notes in a \
+             document and link to it",
+            markdown.len(),
+            index::MAX_DESCRIPTION
+        );
+    }
     let text = output(&plan, args.md);
     if args.dry_run && !args.replace {
         println!("{text}");
@@ -260,10 +269,13 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
                     tags.join(",")
                 )
             },
-            if args.desc.is_some() {
-                format!(" && ud fs desc {} TEXT", plan.key)
-            } else {
-                String::new()
+            match &args.desc {
+                Some(markdown) => format!(
+                    " && ud fs desc {} '{}'",
+                    plan.key,
+                    markdown.replace('\'', r"'\''")
+                ),
+                None => String::new(),
             }
         );
     }

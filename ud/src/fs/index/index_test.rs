@@ -48,7 +48,9 @@ fn seed(store: &DirStore, cache: &Cache) {
         "26/10-14-twitter.svg",
     ]
     .map(record);
-    let report = cache.write(store, |tx| reconcile(tx, &records)).unwrap();
+    let report = cache
+        .write(store, |tx| reconcile(tx, &records, None))
+        .unwrap();
     assert_eq!(report.added, 3);
 }
 
@@ -58,7 +60,9 @@ fn reconcile_adds_deletes_and_restores() {
     let (store, cache, _) = machines(&temp);
     seed(&store, &cache);
     let fewer = [record("26-11/261108-fee-chart.png")];
-    let report = cache.write(&store, |tx| reconcile(tx, &fewer)).unwrap();
+    let report = cache
+        .write(&store, |tx| reconcile(tx, &fewer, None))
+        .unwrap();
     assert_eq!((report.added, report.deleted, report.restored), (0, 2, 0));
     let read = cache.read(&store).unwrap();
     assert_eq!(search(&read, &Query::default()).unwrap().len(), 1);
@@ -76,7 +80,9 @@ fn reconcile_adds_deletes_and_restores() {
         record("26-11/261108-fee-chart.png"),
         record("26/10-14-twitter.svg"),
     ];
-    let report = cache.write(&store, |tx| reconcile(tx, &back)).unwrap();
+    let report = cache
+        .write(&store, |tx| reconcile(tx, &back, None))
+        .unwrap();
     assert_eq!(report.restored, 1);
 }
 
@@ -276,6 +282,8 @@ fn keys_urls_slugs_and_sources() {
             "https://uniquedivine-site.web.app/f/26/ui/a.png?x=1#y",
             "26/ui/a.png",
         ),
+        ("http://localhost:5000/f/26/ui/a.png", "26/ui/a.png"),
+        ("/f/26-11/261108-a.png", "26-11/261108-a.png"),
     ] {
         assert_eq!(resolve_key(value, ORIGIN).unwrap(), key);
     }
@@ -402,7 +410,7 @@ fn newer_schema_is_refused_before_any_change() {
     let error = cache.read(&store).unwrap_err().to_string();
     assert!(error.contains("newer than this ud"), "{error}");
     let error = cache
-        .write(&store, |tx| reconcile(tx, &[record("a.png")]))
+        .write(&store, |tx| reconcile(tx, &[record("a.png")], None))
         .unwrap_err()
         .to_string();
     assert!(error.contains("newer than this ud"), "{error}");
@@ -413,4 +421,139 @@ fn newer_schema_is_refused_before_any_change() {
         .unwrap();
     assert_eq!(tables, 2); // meta and its primary-key index
     assert_eq!(store.generation().unwrap(), Some(1));
+}
+
+#[test]
+fn sync_listing_never_overrides_newer_changes() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    seed(&store, &cache);
+    // The listing is taken before a publish and an rm finish.
+    let listed_at = "2000-01-01T00:00:00Z";
+    let stale = [
+        record("26-11/261108-fee-chart.png"),
+        record("26/sai-economics/postmortem/261030-loss-curve.png"),
+        record("26/10-14-twitter.svg"),
+    ];
+    cache
+        .write(&store, |tx| {
+            super::add_file(tx, "26-11/261108-new.png", 1, "image/png", "")?;
+            super::mark_deleted(tx, "26/10-14-twitter.svg")
+        })
+        .unwrap();
+    let report = cache
+        .write(&store, |tx| reconcile(tx, &stale, Some(listed_at)))
+        .unwrap();
+    // Every key changed after 2000, so the listing touches none of them.
+    assert_eq!((report.added, report.deleted, report.restored), (0, 0, 0));
+    let read = cache.read(&store).unwrap();
+    let live = search(&read, &Query::default())
+        .unwrap()
+        .into_iter()
+        .map(|e| e.key)
+        .collect::<Vec<_>>();
+    assert!(live.contains(&"26-11/261108-new.png".to_string()));
+    assert!(!live.contains(&"26/10-14-twitter.svg".to_string()));
+    drop(read);
+    // Without a cutoff the same listing applies normally.
+    let report = cache
+        .write(&store, |tx| reconcile(tx, &stale, None))
+        .unwrap();
+    assert_eq!((report.deleted, report.restored), (1, 1));
+}
+
+#[test]
+fn unchanged_writes_do_not_upload() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    seed(&store, &cache);
+    let records = [
+        "26-11/261108-fee-chart.png",
+        "26/sai-economics/postmortem/261030-loss-curve.png",
+        "26/10-14-twitter.svg",
+    ]
+    .map(record);
+    let report = cache
+        .write(&store, |tx| reconcile(tx, &records, None))
+        .unwrap();
+    assert_eq!(report, Default::default());
+    assert_eq!(store.generation().unwrap(), Some(1));
+}
+
+#[test]
+fn damaged_copies_are_never_uploaded() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    seed(&store, &cache);
+    cache
+        .write(&store, |tx| {
+            retag(tx, "26/10-14-twitter.svg", &["keep".into()], &[])
+        })
+        .unwrap();
+    // A truncated local copy is replaced by a fresh download.
+    std::fs::write(cache.dir.join("fs-2.db"), b"").unwrap();
+    assert_eq!(find_tags(&cache.read(&store).unwrap(), "keep"), 1);
+    std::fs::write(cache.dir.join("fs-2.db"), b"").unwrap();
+    cache
+        .write(&store, |tx| {
+            retag(tx, "26-11/261108-fee-chart.png", &["keep".into()], &[])
+        })
+        .unwrap();
+    assert_eq!(find_tags(&cache.read(&store).unwrap(), "keep"), 2);
+
+    // A damaged remote copy stops every write instead of being rebuilt.
+    std::fs::write(store.root.join("fs.db"), b"not sqlite").unwrap();
+    let other = Cache {
+        dir: temp.path().join("fresh"),
+    };
+    let error = other
+        .write(&store, |tx| reconcile(tx, &[record("a.png")], None))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not a SQLite database"), "{error}");
+    assert_eq!(store.generation().unwrap(), Some(3));
+}
+
+#[test]
+fn deleted_keys_start_fresh_and_descriptions_are_capped() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    seed(&store, &cache);
+    let key = "26/10-14-twitter.svg";
+    cache
+        .write(&store, |tx| {
+            retag(tx, key, &["old".into()], &[])?;
+            describe(tx, key, "old bytes")?;
+            super::mark_deleted(tx, key)
+        })
+        .unwrap();
+    let error = cache
+        .write(&store, |tx| retag(tx, key, &["x".into()], &[]))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("was deleted at"), "{error}");
+    cache
+        .write(&store, |tx| {
+            super::add_file(tx, key, 5, "image/svg+xml", "s")
+        })
+        .unwrap();
+    let read = cache.read(&store).unwrap();
+    let entry = search(
+        &read,
+        &Query {
+            text: "twitter".into(),
+            ..Query::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(entry[0].description, "");
+    assert_eq!(find_tags(&read, "old"), 0);
+    drop(read);
+
+    let long = "x".repeat(super::MAX_DESCRIPTION + 1);
+    let error = cache
+        .write(&store, |tx| describe(tx, key, &long))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("limit"), "{error}");
 }

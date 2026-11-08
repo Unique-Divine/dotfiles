@@ -67,6 +67,24 @@ impl Store for GcsStore<'_> {
         url.query_pairs_mut().append_pair("fields", "generation");
         let response = self.gcs.client().get(url).bearer_auth(&token).send()?;
         if response.status() == StatusCode::NOT_FOUND {
+            // A missing object means a new index; a missing bucket is a
+            // configuration error that must not look like an empty index.
+            let bucket = Url::parse(&format!(
+                "https://storage.googleapis.com/storage/v1/b/{}",
+                self.bucket
+            ))?;
+            let status = self
+                .gcs
+                .client()
+                .get(bucket)
+                .bearer_auth(&token)
+                .send()?
+                .status();
+            ensure!(
+                status != StatusCode::NOT_FOUND,
+                "Meta bucket {} does not exist; check UD_FS_META_BUCKET",
+                self.bucket
+            );
             return Ok(None);
         }
         parse_generation(&response.error_for_status()?.json()?).map(Some)

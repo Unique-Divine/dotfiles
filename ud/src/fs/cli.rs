@@ -56,7 +56,7 @@ pub(crate) struct RmArgs {
     #[arg(required_unless_present = "tag")]
     pub targets: Vec<String>,
     /// Delete every live file carrying all of these tags.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "targets")]
     pub tag: Vec<String>,
     /// Delete instead of previewing.
     #[arg(long)]

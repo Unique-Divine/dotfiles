@@ -111,7 +111,8 @@ pub(super) fn desc(args: &DescArgs, config: &Settings) -> Result<()> {
     let markdown = if args.text == "-" {
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
-        text.trim_end().to_owned()
+        // Drop the final newline a heredoc or echo adds; keep the rest.
+        text.strip_suffix('\n').unwrap_or(&text).to_owned()
     } else {
         args.text.clone()
     };
@@ -206,9 +207,13 @@ pub(super) fn log(args: &LogArgs, config: &Settings) -> Result<()> {
 
 /// `ud fs index sync`: reconcile the index with the public bucket.
 pub(super) fn sync(config: &Settings) -> Result<()> {
+    // Two minutes of slack covers clock skew between machines.
+    let listed_at = (chrono::Utc::now() - chrono::Duration::minutes(2))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     let records = Gcs::new(config)?.list("")?;
     let report = with_index(config, |store, cache| {
-        cache.write(store, |tx| index::reconcile(tx, &records))
+        cache.write(store, |tx| index::reconcile(tx, &records, Some(&listed_at)))
     })?;
     eprintln!(
         "Index sync: {} added, {} marked deleted, {} restored; {} live files.",
