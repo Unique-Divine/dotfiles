@@ -15,7 +15,9 @@ use std::{
 use super::{
     backend::Gcs,
     cli::PublishArgs,
+    commands::{self, source_label, tag_list},
     config::Settings,
+    index,
     naming::{self, Plan},
 };
 
@@ -126,6 +128,31 @@ pub(super) fn target_note(key: &str, existing: Option<u64>) -> String {
     }
 }
 
+/// Add the published file to the index with its tags and description.
+fn record(
+    plan: &Plan,
+    tags: &[String],
+    description: Option<&str>,
+    config: &Settings,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let source = source_label(&cwd, home.as_deref());
+    let size = plan.file.metadata()?.len();
+    let content_type =
+        naming::inline_type(&plan.key).unwrap_or("application/octet-stream");
+    commands::with_index(config, |store, cache| {
+        cache.write(store, |tx| {
+            index::add_file(tx, &plan.key, size, content_type, &source)?;
+            index::retag(tx, &plan.key, tags, &[])?;
+            if let Some(markdown) = description {
+                index::describe(tx, &plan.key, markdown)?;
+            }
+            Ok(())
+        })
+    })
+}
+
 /// Highest `-N` suffix tried before publishing gives up on a name.
 pub(super) const MAX_NUMBER: u32 = 9;
 
@@ -175,6 +202,8 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         &config.base_url,
         Utc::now(),
     )?;
+    let tags = tag_list(&args.tag);
+    index::validate_tags(&tags)?;
     let text = output(&plan, args.md);
     if args.dry_run && !args.replace {
         println!("{text}");
@@ -191,6 +220,12 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
     if args.dry_run {
         println!("{text}");
         return Ok(());
+    }
+    // Unknown tags fail before any bytes leave the machine.
+    if !tags.is_empty() && !args.new_tag {
+        commands::with_index(config, |store, cache| {
+            index::check_known(&cache.read(store)?, &tags, false)
+        })?;
     }
     let digest = checksum(&plan.file)?;
     let plan = if args.replace {
@@ -214,6 +249,26 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
     }
     println!("{text}");
     std::io::stdout().flush()?;
+    if let Err(error) = record(&plan, &tags, args.desc.as_deref(), config) {
+        eprintln!(
+            "Published, but the index was not updated: {error:#}\n\
+             Fix with: ud fs index sync{}{}",
+            if tags.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " && ud fs tag {} --add {} --new-tag",
+                    plan.key,
+                    tags.join(",")
+                )
+            },
+            if args.desc.is_some() {
+                format!(" && ud fs desc {} TEXT", plan.key)
+            } else {
+                String::new()
+            }
+        );
+    }
     if !args.no_clipboard
         && let Some(program) = clipboard_program()
         && copy(&program, &text, Duration::from_secs(5)).is_err()

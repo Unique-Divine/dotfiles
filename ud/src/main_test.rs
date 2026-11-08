@@ -103,6 +103,14 @@ fn every_command_has_clap_help() {
         vec!["fs", "--help"],
         vec!["fs", "publish", "--help"],
         vec!["fs", "ls", "--help"],
+        vec!["fs", "search", "--help"],
+        vec!["fs", "tag", "--help"],
+        vec!["fs", "desc", "--help"],
+        vec!["fs", "tags", "--help"],
+        vec!["fs", "log", "--help"],
+        vec!["fs", "index", "sync", "--help"],
+        vec!["fs", "refs", "--help"],
+        vec!["fs", "rm", "--help"],
         vec!["rs", "--help"],
         vec!["md", "--help"],
         vec!["nibi", "--help"],
@@ -861,4 +869,119 @@ fn fs_migration_preserves_unrelated_files_and_links() {
     fs::remove_file(&plugin).unwrap();
     assert_success(&migrate("--apply"));
     assert!(legacy.is_symlink());
+}
+
+/// Index commands run against a directory store without any Google login.
+#[test]
+fn fs_index_commands_use_a_directory_store() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let marker = temp.path().join("gcloud-called");
+    write_executable(
+        &bin.join("gcloud"),
+        "#!/bin/sh\ntouch \"$GCLOUD_MARKER\"\nexit 99\n",
+    );
+    let file = temp.path().join("file.png");
+    fs::write(&file, b"image").unwrap();
+    let ud_fs = |args: &[&str]| {
+        let mut full = vec!["fs"];
+        full.extend_from_slice(args);
+        isolated_ud(&temp)
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("UD_FS_INDEX_DIR", temp.path().join("index"))
+            .env("UD_FS_BASE_URL", "https://example.com")
+            .env("PATH", path_with(&bin))
+            .env("GCLOUD_MARKER", &marker)
+            .args(&full)
+            .output()
+            .unwrap()
+    };
+    let empty = ud_fs(&["tags"]);
+    assert_success(&empty);
+    assert_eq!(stdout(&empty), "tags: []");
+    let empty = ud_fs(&["search", "chart", "--tag", "sai"]);
+    assert_success(&empty);
+    assert_eq!(stdout(&empty), "files: []");
+    let unknown = ud_fs(&["tag", "26-11/261108-a.png", "--add", "sai"]);
+    assert!(!unknown.status.success());
+    assert!(stderr(&unknown).contains("--new-tag"));
+    let missing = ud_fs(&[
+        "tag",
+        "https://example.com/f/26-11/261108-a.png",
+        "--add",
+        "sai",
+        "--new-tag",
+    ]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("index sync"));
+    for args in [
+        vec!["search", "--tag", "Bad Tag"],
+        vec!["tag", "../x", "--add", "a"],
+        vec!["tag", "26/a.png"],
+        vec![
+            "publish",
+            file.to_str().unwrap(),
+            "a",
+            "--tag",
+            "Bad",
+            "--dry-run",
+        ],
+    ] {
+        let output = ud_fs(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert_eq!(stdout(&output), "");
+    }
+    let log = ud_fs(&["log"]);
+    assert_success(&log);
+    assert_eq!(stdout(&log), "changes: []");
+    assert!(!marker.exists(), "directory index must not call gcloud");
+}
+
+/// Deletion previews tags and backlinks and never calls gcloud without --yes.
+#[test]
+fn fs_rm_previews_backlinks_without_deleting() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let marker = temp.path().join("gcloud-called");
+    write_executable(
+        &bin.join("gcloud"),
+        "#!/bin/sh\ntouch \"$GCLOUD_MARKER\"\nexit 99\n",
+    );
+    let docs = temp.path().join("docs");
+    fs::create_dir(&docs).unwrap();
+    fs::write(
+        docs.join("post.md"),
+        "![x](https://example.com/f/26-11/261108-a.png)\n",
+    )
+    .unwrap();
+    let ud_fs = |args: &[&str]| {
+        let mut full = vec!["fs"];
+        full.extend_from_slice(args);
+        isolated_ud(&temp)
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("UD_FS_INDEX_DIR", temp.path().join("index"))
+            .env("UD_FS_REF_ROOTS", &docs)
+            .env("UD_FS_BASE_URL", "https://example.com")
+            .env("PATH", path_with(&bin))
+            .env("GCLOUD_MARKER", &marker)
+            .args(&full)
+            .output()
+            .unwrap()
+    };
+    let preview = ud_fs(&["rm", "https://example.com/f/26-11/261108-a.png"]);
+    assert_success(&preview);
+    assert_eq!(stdout(&preview), "");
+    let notes = stderr(&preview);
+    assert!(notes.contains("Would delete 1 file(s); 1 with backlinks"));
+    assert!(notes.contains("post.md"), "{notes}");
+    assert!(notes.contains("Pass --yes"));
+    let refs = ud_fs(&["refs", "26-11/261108-a.png"]);
+    assert_success(&refs);
+    assert!(stdout(&refs).starts_with("refs[1]{key,file}:"));
+    let none = ud_fs(&["rm", "--tag", "unused-group"]);
+    assert!(!none.status.success());
+    assert!(stderr(&none).contains("No live files match"));
+    assert!(!marker.exists(), "preview must not call gcloud");
 }

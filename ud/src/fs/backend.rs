@@ -33,9 +33,14 @@ impl<'a> Gcs<'a> {
         })
     }
 
+    /// The bounded HTTP client shared with the index store.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Authenticate only after validating bucket/origin; never print
     /// token output.
-    fn token(&self) -> Result<String> {
+    pub fn token(&self) -> Result<String> {
         public_url("validation", &self.config.base_url)?;
         ensure!(
             matches(r"^[a-z0-9][a-z0-9._-]*$", &self.config.bucket),
@@ -132,6 +137,29 @@ impl<'a> Gcs<'a> {
                 "Upload failed. Existing names are not overwritten without --replace; use --replace or a different slug"
             );
         }
+        Ok(())
+    }
+
+    /// Delete one object. The public bucket keeps it for seven days under
+    /// soft delete, so `gcloud storage restore` can undo this.
+    pub fn delete(&self, key: &str) -> Result<()> {
+        ensure!(
+            super::naming::safe_key(key),
+            "Refusing to delete an unsafe key: {key}"
+        );
+        let status = Command::new("gcloud")
+            .args(["storage", "rm"])
+            .arg(format!("gs://{}/{key}", self.config.bucket))
+            .args([
+                "--project",
+                &self.config.project,
+                "--account",
+                &self.config.account,
+            ])
+            .stdout(Stdio::from(std::io::stderr()))
+            .status()
+            .context("gcloud is required")?;
+        ensure!(status.success(), "Deleting {key} failed");
         Ok(())
     }
 

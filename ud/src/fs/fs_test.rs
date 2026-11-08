@@ -59,7 +59,10 @@ fn explicit_date_and_preview_origin() {
     )
     .unwrap();
     assert_eq!(plan.key, "26-09/260901-report.png");
-    assert_eq!(plan.url, "https://preview.example/f/26-09/260901-report.png");
+    assert_eq!(
+        plan.url,
+        "https://preview.example/f/26-09/260901-report.png"
+    );
 }
 
 /// Reject malformed names/dates/origins before any credential lookup can run.
@@ -233,7 +236,10 @@ fn numbered_alternatives() {
     );
     let second = plan.numbered(2, "https://example.com").unwrap();
     assert_eq!(second.key, "26-10/261012-chart-2.tar.gz");
-    assert_eq!(second.url, "https://example.com/f/26-10/261012-chart-2.tar.gz");
+    assert_eq!(
+        second.url,
+        "https://example.com/f/26-10/261012-chart-2.tar.gz"
+    );
     assert_eq!(second.label, "chart");
     let bare = naming::plan(
         &fixture(&temp, "notes"),

@@ -93,6 +93,23 @@ pub(super) fn public_url(key: &str, origin: &str) -> Result<String> {
     Ok(format!("{}/f/{key}", origin.trim_end_matches('/')))
 }
 
+/// Accept an object key or a public `/f/` URL from any origin, so a link
+/// pasted from a document works as a command argument.
+pub(super) fn resolve_key(value: &str, origin: &str) -> Result<String> {
+    let trimmed = value.trim();
+    let key = match trimmed.split_once("/f/") {
+        Some((prefix, rest))
+            if prefix == origin.trim_end_matches('/')
+                || matches(r"^https://[^/]+$", prefix) =>
+        {
+            rest.split(['?', '#']).next().unwrap_or(rest)
+        }
+        _ => trimmed,
+    };
+    ensure!(safe_key(key), "Not a published file key or URL: {value}");
+    Ok(key.to_owned())
+}
+
 /// Require a real calendar date and the documented zero-padded spelling.
 fn explicit_date(value: &str) -> Result<NaiveDate> {
     ensure!(
