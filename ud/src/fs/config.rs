@@ -1,5 +1,8 @@
 //! Credential-free settings, with compatibility for the retired `pub` tool.
-use std::{env, fs, path::Path};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -13,6 +16,13 @@ pub(super) struct Settings {
     pub bucket: String,
     /// Firebase Hosting site whose CDN caches `/f/` responses.
     pub hosting_site: String,
+    /// Private bucket holding the index database; never served publicly.
+    pub meta_bucket: String,
+    /// Local directory standing in for the meta bucket, for tests and
+    /// offline use. Unset in normal operation.
+    pub index_dir: Option<String>,
+    /// Directories `refs` and `rm` search for backlinks to published URLs.
+    pub ref_roots: Vec<PathBuf>,
     /// Google project passed explicitly to avoid changing CLI defaults.
     pub project: String,
     /// Owner login passed explicitly so another active account is not used.
@@ -88,8 +98,45 @@ impl Settings {
                 "UD_FS_HOSTING_SITE",
                 "uniquedivine-site",
             )?,
+            meta_bucket: setting(
+                "meta_bucket",
+                "UD_FS_META_BUCKET",
+                "UD_FS_META_BUCKET",
+                "ud-fs-meta-876932632137",
+            )?,
+            index_dir: lookup("UD_FS_INDEX_DIR").or_else(|| {
+                match values.get("index_dir") {
+                    Some(Value::String(value)) => Some(value.clone()),
+                    _ => None,
+                }
+            }),
+            ref_roots: ref_roots(&values, &lookup),
             project: "exalted-justice-359714".into(),
             account: "realuniquedivine@gmail.com".into(),
         })
     }
+}
+
+/// Backlink roots from `UD_FS_REF_ROOTS` (colon-separated), then the
+/// `ref_roots` config array, then `~/ki`. A leading `~/` expands to HOME.
+fn ref_roots(
+    values: &Map<String, Value>,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Vec<PathBuf> {
+    let home = lookup("HOME").map(PathBuf::from);
+    let expand = |value: &str| match (value.strip_prefix("~/"), &home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(value),
+    };
+    if let Some(value) = lookup("UD_FS_REF_ROOTS") {
+        return value
+            .split(':')
+            .filter(|v| !v.is_empty())
+            .map(expand)
+            .collect();
+    }
+    if let Some(Value::Array(items)) = values.get("ref_roots") {
+        return items.iter().filter_map(Value::as_str).map(expand).collect();
+    }
+    home.map(|h| vec![h.join("ki")]).unwrap_or_default()
 }

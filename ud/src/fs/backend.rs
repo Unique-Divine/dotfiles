@@ -4,6 +4,7 @@ use reqwest::{Url, blocking::Client};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashSet},
+    io::Write,
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -33,9 +34,14 @@ impl<'a> Gcs<'a> {
         })
     }
 
+    /// The bounded HTTP client shared with the index store.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Authenticate only after validating bucket/origin; never print
     /// token output.
-    fn token(&self) -> Result<String> {
+    pub fn token(&self) -> Result<String> {
         public_url("validation", &self.config.base_url)?;
         ensure!(
             matches(r"^[a-z0-9][a-z0-9._-]*$", &self.config.bucket),
@@ -92,6 +98,30 @@ impl<'a> Gcs<'a> {
 
     /// Return the stored size of one object, or `None` when it is absent.
     pub fn existing_size(&self, key: &str) -> Result<Option<u64>> {
+        self.metadata(key, "size")?
+            .map(|value| object_size(&value))
+            .transpose()
+    }
+
+    /// Return the stored base64 MD5 of one object, or `None` when absent.
+    pub fn existing_md5(&self, key: &str) -> Result<Option<String>> {
+        self.metadata(key, "md5Hash")?
+            .map(|value| {
+                value
+                    .get("md5Hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .context("Storage returned no MD5 for the object")
+            })
+            .transpose()
+    }
+
+    /// Selected metadata fields of one object, or `None` when it is absent.
+    fn metadata(
+        &self,
+        key: &str,
+        fields: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let token = self.token()?;
         let mut url = Url::parse(&format!(
             "https://storage.googleapis.com/storage/v1/b/{}/o/",
@@ -102,12 +132,12 @@ impl<'a> Gcs<'a> {
             .map_err(|()| anyhow::anyhow!("Invalid storage URL"))?
             .pop_if_empty()
             .push(key);
-        url.query_pairs_mut().append_pair("fields", "size");
+        url.query_pairs_mut().append_pair("fields", fields);
         let response = self.client.get(url).bearer_auth(&token).send()?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        object_size(&response.error_for_status()?.json()?).map(Some)
+        Ok(Some(response.error_for_status()?.json()?))
     }
 
     /// Refuse existing names unless `replace` is set; MD5 also detects file
@@ -119,11 +149,19 @@ impl<'a> Gcs<'a> {
         digest: &str,
         replace: bool,
     ) -> Result<()> {
-        let status =
+        let output =
             upload_command("gcloud", self.config, file, key, digest, replace)
                 .stdout(Stdio::from(std::io::stderr()))
-                .status()
+                .stderr(Stdio::piped())
+                .output()
                 .context("gcloud is required")?;
+        let status = output.status;
+        // A refused create is expected while numbering; only other
+        // failures show gcloud's own message.
+        let refused = String::from_utf8_lossy(&output.stderr).contains("412");
+        if !status.success() && !(refused && !replace) {
+            std::io::stderr().write_all(&output.stderr)?;
+        }
         if replace {
             ensure!(status.success(), "Upload failed");
         } else {
@@ -132,6 +170,29 @@ impl<'a> Gcs<'a> {
                 "Upload failed. Existing names are not overwritten without --replace; use --replace or a different slug"
             );
         }
+        Ok(())
+    }
+
+    /// Delete one object. The public bucket keeps it for seven days under
+    /// soft delete, so `gcloud storage restore` can undo this.
+    pub fn delete(&self, key: &str) -> Result<()> {
+        ensure!(
+            super::naming::safe_key(key),
+            "Refusing to delete an unsafe key: {key}"
+        );
+        let status = Command::new("gcloud")
+            .args(["storage", "rm"])
+            .arg(format!("gs://{}/{key}", self.config.bucket))
+            .args([
+                "--project",
+                &self.config.project,
+                "--account",
+                &self.config.account,
+            ])
+            .stdout(Stdio::from(std::io::stderr()))
+            .status()
+            .context("gcloud is required")?;
+        ensure!(status.success(), "Deleting {key} failed");
         Ok(())
     }
 

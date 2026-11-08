@@ -38,10 +38,10 @@ fn screenshot_date_and_markdown_url() {
         now(),
     )
     .unwrap();
-    assert_eq!(plan.key, "26/261012-trade-modal.png");
+    assert_eq!(plan.key, "26-10/261012-trade-modal.png");
     assert_eq!(
         publish::output(&plan, true),
-        "<img src=\"https://uniquedivine.com/f/26/261012-trade-modal.png\" alt=\"trade modal\" />"
+        "<img src=\"https://uniquedivine.com/f/26-10/261012-trade-modal.png\" alt=\"trade modal\" />"
     );
 }
 
@@ -58,8 +58,11 @@ fn explicit_date_and_preview_origin() {
         now(),
     )
     .unwrap();
-    assert_eq!(plan.key, "26/260901-report.png");
-    assert_eq!(plan.url, "https://preview.example/f/26/260901-report.png");
+    assert_eq!(plan.key, "26-09/260901-report.png");
+    assert_eq!(
+        plan.url,
+        "https://preview.example/f/26-09/260901-report.png"
+    );
 }
 
 /// Reject malformed names/dates/origins before any credential lookup can run.
@@ -162,7 +165,7 @@ fn explicit_extension_overrides_source() {
             naming::plan(&file, slug, None, "https://example.com", now())
                 .unwrap()
                 .key,
-            format!("26/261012-{suffix}")
+            format!("26-10/261012-{suffix}")
         );
     }
     let plan =
@@ -170,7 +173,7 @@ fn explicit_extension_overrides_source() {
             .unwrap();
     assert_eq!(
         publish::output(&plan, true),
-        "[report](https://example.com/f/26/261012-report.pdf)"
+        "[report](https://example.com/f/26-10/261012-report.pdf)"
     );
     let svg =
         naming::plan(&file, "icon.svg", None, "https://example.com", now())
@@ -188,37 +191,69 @@ fn bangkok_date_and_extensionless_file() {
         naming::plan(&file, "report", None, "https://example.com", instant)
             .unwrap()
             .key,
-        "27/270101-report"
+        "27-01/270101-report"
     );
 }
 
-/// Semantic directories remain inside the automatic year and receive no
-/// date prefix.
+/// Folders are rejected with guidance toward tags; the month folder and
+/// date prefix follow the selected date across a year boundary.
 #[test]
-fn nested_names_and_year_boundary() {
+fn flat_names_and_year_boundary() {
     let temp = TempDir::new().unwrap();
     let file = fixture(&temp, "image.png");
     assert_eq!(
         naming::plan(
             &file,
-            "ui/social/twitter.svg",
+            "twitter.svg",
             Some("2027-01-01"),
             "https://example.com",
             now()
         )
         .unwrap()
         .key,
-        "27/ui/social/270101-twitter.svg"
+        "27-01/270101-twitter.svg"
     );
-    assert!(
-        naming::plan(
-            &file,
-            &format!("{}/icon", "a/".repeat(600)),
-            None,
-            "https://example.com",
-            now()
-        )
-        .is_err()
+    for slug in ["ui/twitter.svg", "ui/social/twitter", "a\\b"] {
+        let error =
+            naming::plan(&file, slug, None, "https://example.com", now())
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("--tag"), "{slug}: {error}");
+    }
+}
+
+/// Numbered alternatives keep the extension last and the label unchanged.
+#[test]
+fn numbered_alternatives() {
+    let temp = TempDir::new().unwrap();
+    let file = fixture(&temp, "20261012-104530.png");
+    let plan =
+        naming::plan(&file, "chart.tar.gz", None, "https://example.com", now())
+            .unwrap();
+    assert_eq!(
+        plan.numbered(1, "https://example.com").unwrap().key,
+        "26-10/261012-chart.tar.gz"
+    );
+    let second = plan.numbered(2, "https://example.com").unwrap();
+    assert_eq!(second.key, "26-10/261012-chart-2.tar.gz");
+    assert_eq!(
+        second.url,
+        "https://example.com/f/26-10/261012-chart-2.tar.gz"
+    );
+    assert_eq!(second.label, "chart");
+    let bare = naming::plan(
+        &fixture(&temp, "notes"),
+        "notes",
+        Some("2026-11-08"),
+        "https://example.com",
+        now(),
+    )
+    .unwrap();
+    assert_eq!(
+        bare.numbered(publish::MAX_NUMBER, "https://example.com")
+            .unwrap()
+            .key,
+        "26-11/261108-notes-9"
     );
 }
 
@@ -393,6 +428,7 @@ fn time_filters() {
 #[test]
 fn publication_dates_across_layouts() {
     for key in [
+        "26-10/261014-twitter.svg",
         "26/ui/social/261014-twitter.svg",
         "26/10-14-twitter.svg",
         "26-10-14-twitter.svg",
@@ -402,6 +438,10 @@ fn publication_dates_across_layouts() {
     for key in [
         "26/ui/twitter.svg",
         "27/ui/261014-icon.svg",
+        "26-09/261014-wrong-month.svg",
+        "27-10/261014-wrong-year.svg",
+        "26-10/ui/261014-nested.svg",
+        "26-10/undated.svg",
         "26/260229-bad.png",
         "26/02-30-bad.png",
         "notes.pdf",
@@ -765,4 +805,81 @@ fn public_verification_compares_body_digest() {
         .is_err()
     );
     worker.join().unwrap();
+}
+
+/// An in-memory bucket: key to stored MD5, with create-if-absent uploads.
+struct Bucket {
+    objects: std::collections::BTreeMap<String, String>,
+    lookups_fail: bool,
+}
+
+impl Bucket {
+    fn publish(
+        &mut self,
+        plan: &naming::Plan,
+        digest: &str,
+    ) -> anyhow::Result<naming::Plan> {
+        let objects = std::cell::RefCell::new(&mut self.objects);
+        let fail = self.lookups_fail;
+        publish::upload_numbered(
+            plan,
+            digest,
+            "https://example.com",
+            |candidate| {
+                let mut objects = objects.borrow_mut();
+                anyhow::ensure!(
+                    !objects.contains_key(&candidate.key),
+                    "precondition failed for {}",
+                    candidate.key
+                );
+                objects.insert(candidate.key.clone(), digest.to_owned());
+                Ok(())
+            },
+            |key| {
+                anyhow::ensure!(!fail, "metadata read failed");
+                Ok(objects.borrow().get(key).cloned())
+            },
+        )
+    }
+}
+
+#[test]
+fn numbering_skips_taken_names_and_reuses_identical_bytes() {
+    let temp = TempDir::new().unwrap();
+    let plan = naming::plan(
+        &fixture(&temp, "a.png"),
+        "chart",
+        Some("2026-11-08"),
+        "https://example.com",
+        now(),
+    )
+    .unwrap();
+    let mut bucket = Bucket {
+        objects: Default::default(),
+        lookups_fail: false,
+    };
+    let key = |p: anyhow::Result<naming::Plan>| p.unwrap().key;
+    assert_eq!(key(bucket.publish(&plan, "one")), "26-11/261108-chart.png");
+    assert_eq!(
+        key(bucket.publish(&plan, "two")),
+        "26-11/261108-chart-2.png"
+    );
+    // A retry with bytes already stored reuses that name, not a new number.
+    assert_eq!(
+        key(bucket.publish(&plan, "two")),
+        "26-11/261108-chart-2.png"
+    );
+    assert_eq!(bucket.objects.len(), 2);
+
+    // A failed metadata read reports the upload error instead of guessing.
+    bucket.lookups_fail = true;
+    let error = bucket.publish(&plan, "three").unwrap_err().to_string();
+    assert!(error.contains("precondition failed for 26-11/261108-chart.png"));
+
+    bucket.lookups_fail = false;
+    for number in 3..=publish::MAX_NUMBER {
+        bucket.publish(&plan, &format!("v{number}")).unwrap();
+    }
+    let error = bucket.publish(&plan, "ten").unwrap_err().to_string();
+    assert!(error.contains("choose another slug"), "{error}");
 }

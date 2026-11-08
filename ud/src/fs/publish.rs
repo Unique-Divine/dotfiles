@@ -15,7 +15,9 @@ use std::{
 use super::{
     backend::Gcs,
     cli::PublishArgs,
+    commands::{self, source_label, tag_list},
     config::Settings,
+    index,
     naming::{self, Plan},
 };
 
@@ -126,6 +128,75 @@ pub(super) fn target_note(key: &str, existing: Option<u64>) -> String {
     }
 }
 
+/// Add the published file to the index with its tags and description.
+fn record(
+    plan: &Plan,
+    tags: &[String],
+    description: Option<&str>,
+    config: &Settings,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let source = source_label(&cwd, home.as_deref());
+    let size = plan.file.metadata()?.len();
+    let content_type =
+        naming::inline_type(&plan.key).unwrap_or("application/octet-stream");
+    commands::with_index(config, |store, cache| {
+        cache.write(store, |tx| {
+            index::add_file(tx, &plan.key, size, content_type, &source)?;
+            index::retag(tx, &plan.key, tags, &[])?;
+            if let Some(markdown) = description {
+                index::describe(tx, &plan.key, markdown)?;
+            }
+            Ok(())
+        })
+    })
+}
+
+/// Highest `-N` suffix tried before publishing gives up on a name.
+pub(super) const MAX_NUMBER: u32 = 9;
+
+/// Create the first free name among `slug`, `slug-2` … `slug-9`. Every
+/// attempt carries the absent-object precondition, so nothing is overwritten.
+/// Only after a refusal does a metadata read decide what happened:
+/// - the name holds these same bytes (a retried publish): reuse it;
+/// - the name holds other bytes: try the next number;
+/// - the read fails or finds nothing: report the original upload error.
+///
+/// `upload` creates one key; `existing_md5` reads one key's stored MD5.
+pub(super) fn upload_numbered(
+    plan: &Plan,
+    digest: &str,
+    origin: &str,
+    mut upload: impl FnMut(&Plan) -> Result<()>,
+    mut existing_md5: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<Plan> {
+    for number in 1..=MAX_NUMBER {
+        let candidate = plan.numbered(number, origin)?;
+        let Err(error) = upload(&candidate) else {
+            if number > 1 {
+                eprintln!("{} exists; published as {}", plan.key, candidate.key);
+            }
+            return Ok(candidate);
+        };
+        match existing_md5(&candidate.key) {
+            Ok(Some(stored)) if stored == digest => {
+                eprintln!(
+                    "{} already holds these bytes; reusing it",
+                    candidate.key
+                );
+                return Ok(candidate);
+            }
+            Ok(Some(_)) => {}
+            _ => return Err(error),
+        }
+    }
+    anyhow::bail!(
+        "{} and its -2 to -{MAX_NUMBER} alternatives exist; choose another slug",
+        plan.key
+    )
+}
+
 /// Dry runs stop before checksumming or upload; only `--replace` signs in
 /// to check the target.
 pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
@@ -136,6 +207,17 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         &config.base_url,
         Utc::now(),
     )?;
+    let tags = tag_list(&args.tag);
+    index::validate_tags(&tags)?;
+    if let Some(markdown) = &args.desc {
+        anyhow::ensure!(
+            markdown.len() <= index::MAX_DESCRIPTION,
+            "--desc is {} bytes; the limit is {}. Put longer notes in a \
+             document and link to it",
+            markdown.len(),
+            index::MAX_DESCRIPTION
+        );
+    }
     let text = output(&plan, args.md);
     if args.dry_run && !args.replace {
         println!("{text}");
@@ -153,8 +235,51 @@ pub(super) fn run(args: &PublishArgs, config: &Settings) -> Result<()> {
         println!("{text}");
         return Ok(());
     }
+    // Unknown tags fail before any bytes leave the machine.
+    if !tags.is_empty() && !args.new_tag {
+        commands::with_index(config, |store, cache| {
+            index::check_known(&cache.read(store)?, &tags, false)
+        })?;
+    }
     let digest = checksum(&plan.file)?;
-    backend.upload(&plan.file, &plan.key, &digest, args.replace)?;
+    let plan = if args.replace {
+        backend.upload(&plan.file, &plan.key, &digest, true)?;
+        plan
+    } else {
+        upload_numbered(
+            &plan,
+            &digest,
+            &config.base_url,
+            |c| backend.upload(&c.file, &c.key, &digest, false),
+            |key| backend.existing_md5(key),
+        )?
+    };
+    // Index before verifying: the object exists even if the public check
+    // fails, and a later retry reuses the same name by MD5.
+    if let Err(error) = record(&plan, &tags, args.desc.as_deref(), config) {
+        eprintln!(
+            "Uploaded, but the index was not updated: {error:#}\n\
+             Fix with: ud fs index sync{}{}",
+            if tags.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " && ud fs tag {} --add {} --new-tag",
+                    plan.key,
+                    tags.join(",")
+                )
+            },
+            match &args.desc {
+                Some(markdown) => format!(
+                    " && ud fs desc {} '{}'",
+                    plan.key,
+                    markdown.replace('\'', r"'\''")
+                ),
+                None => String::new(),
+            }
+        );
+    }
+    let text = output(&plan, args.md);
     if existing.is_some() {
         backend.purge_cdn(&plan.key).with_context(|| {
             format!("Replaced {}, but the CDN purge failed. Cached copies expire within five minutes", plan.key)
