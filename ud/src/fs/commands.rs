@@ -1,7 +1,7 @@
 //! Index-backed commands: tagging, descriptions, search, change log, sync.
 use anyhow::{Context, Result, bail, ensure};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     io::Read,
     path::{Path, PathBuf},
@@ -123,6 +123,16 @@ pub(super) fn desc(args: &DescArgs, config: &Settings) -> Result<()> {
 
 /// `ud fs tags`: every tag with its live file count.
 pub(super) fn tags(args: &TagsArgs, config: &Settings) -> Result<()> {
+    if args.prune {
+        let removed = with_index(config, |store, cache| {
+            cache.write(store, index::prune_tags)
+        })?;
+        eprintln!("Removed {} unused tag(s).", removed.len());
+        for name in removed {
+            println!("{name}");
+        }
+        return Ok(());
+    }
     let counts = with_index(config, |store, cache| {
         index::tag_counts(&cache.read(store)?)
     })?;
@@ -324,6 +334,21 @@ pub(super) fn rm(args: &RmArgs, config: &Settings) -> Result<()> {
     index::validate_tags(&group)?;
     let (keys, tags) = with_index(config, |store, cache| {
         let read = cache.read(store)?;
+        let live = index::search(&read, &Query::default())?
+            .into_iter()
+            .map(|e| e.key)
+            .collect::<BTreeSet<_>>();
+        let unknown = keys
+            .iter()
+            .filter(|k| !live.contains(*k))
+            .cloned()
+            .collect::<Vec<_>>();
+        ensure!(
+            unknown.is_empty(),
+            "Not live in the index: {}. Run ud fs index sync if they were \
+             uploaded another way",
+            unknown.join(", ")
+        );
         if !group.is_empty() {
             let query = Query {
                 tags: group.clone(),

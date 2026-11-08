@@ -118,7 +118,8 @@ fn explicit_date(value: &str) -> Result<NaiveDate> {
         "Date must use YYYY-MM-DD"
     );
     ensure!(!value.starts_with("0000"), "Date year must be at least one");
-    Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")?)
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("{value} is not a calendar date"))
 }
 
 /// Split a flat name into its slug and lowercase extension. Folders are

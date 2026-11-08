@@ -110,7 +110,12 @@ impl Cache {
                 .and_then(|n| n.strip_prefix("fs-")?.strip_suffix(".db"))
                 .and_then(|g| g.parse::<i64>().ok())
                 .is_some_and(|g| g < current);
-            if older {
+            // Files from the single-copy layout used before generations
+            // were part of the name.
+            let legacy = name
+                .to_str()
+                .is_some_and(|n| n == "fs.db" || n.starts_with("fs.db."));
+            if older || legacy {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -623,6 +628,27 @@ pub(super) fn tag_counts(connection: &Connection) -> Result<Vec<(String, u64)>> 
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Remove tags that no live file carries, with their links to deleted
+/// files. Returns the removed names.
+pub(super) fn prune_tags(transaction: &Transaction) -> Result<Vec<String>> {
+    let unused = {
+        let mut statement = transaction.prepare(
+            "SELECT name FROM tags t WHERE NOT EXISTS (
+               SELECT 1 FROM file_tags ft JOIN files f ON f.key = ft.key
+               WHERE ft.tag = t.name AND f.deleted_at IS NULL)
+             ORDER BY name",
+        )?;
+        statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    for name in &unused {
+        transaction.execute("DELETE FROM file_tags WHERE tag = ?1", [name])?;
+        transaction.execute("DELETE FROM tags WHERE name = ?1", [name])?;
+    }
+    Ok(unused)
+}
+
 /// One change-log row.
 #[derive(Debug, Serialize)]
 pub(super) struct Change {
@@ -698,19 +724,31 @@ pub(super) fn output(
             .join("\n"),
         _ if entries.is_empty() => "files: []".into(),
         _ => {
+            // The deletedAt column appears only when a row needs it.
+            let deleted = entries.iter().any(|e| e.deleted_at.is_some());
             let mut lines = vec![format!(
-                "files[{}]{{url,size,contentType,tags,description}}:",
-                entries.len()
+                "files[{}]{{url,size,contentType,tags,description{}}}:",
+                entries.len(),
+                if deleted { ",deletedAt" } else { "" }
             )];
             for e in entries {
-                lines.push(format!(
+                let mut line = format!(
                     "  {},{},{},{},{}",
                     toon_string(&public_url(&e.key, origin)?),
                     e.size,
                     toon_string(&e.content_type),
                     toon_string(&e.tags.join(" ")),
                     toon_string(&e.description)
-                ));
+                );
+                if deleted {
+                    line.push(',');
+                    line.push_str(
+                        &e.deleted_at
+                            .as_deref()
+                            .map_or_else(|| "null".to_owned(), toon_string),
+                    );
+                }
+                lines.push(line);
             }
             lines.join("\n")
         }

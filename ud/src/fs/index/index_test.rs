@@ -557,3 +557,37 @@ fn deleted_keys_start_fresh_and_descriptions_are_capped() {
         .to_string();
     assert!(error.contains("limit"), "{error}");
 }
+
+#[test]
+fn prune_removes_tags_without_live_files() {
+    let temp = TempDir::new().unwrap();
+    let (store, cache, _) = machines(&temp);
+    seed(&store, &cache);
+    cache
+        .write(&store, |tx| {
+            retag(
+                tx,
+                "26/10-14-twitter.svg",
+                &["gone".into(), "kept".into()],
+                &[],
+            )?;
+            retag(tx, "26-11/261108-fee-chart.png", &["kept".into()], &[])?;
+            super::mark_deleted(tx, "26/10-14-twitter.svg")
+        })
+        .unwrap();
+    let removed = cache.write(&store, super::prune_tags).unwrap();
+    assert_eq!(removed, ["gone"]);
+    let read = cache.read(&store).unwrap();
+    assert_eq!(tag_counts(&read).unwrap(), [("kept".into(), 1)]);
+    let deleted = search(
+        &read,
+        &Query {
+            deleted: true,
+            ..Query::default()
+        },
+    )
+    .unwrap();
+    let toon = output(&deleted, "toon", ORIGIN).unwrap();
+    assert!(toon.contains(",deletedAt}:"), "{toon}");
+    assert!(toon.lines().any(|l| l.ends_with(",null")), "{toon}");
+}

@@ -4,6 +4,7 @@ use reqwest::{Url, blocking::Client};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashSet},
+    io::Write,
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -148,11 +149,19 @@ impl<'a> Gcs<'a> {
         digest: &str,
         replace: bool,
     ) -> Result<()> {
-        let status =
+        let output =
             upload_command("gcloud", self.config, file, key, digest, replace)
                 .stdout(Stdio::from(std::io::stderr()))
-                .status()
+                .stderr(Stdio::piped())
+                .output()
                 .context("gcloud is required")?;
+        let status = output.status;
+        // A refused create is expected while numbering; only other
+        // failures show gcloud's own message.
+        let refused = String::from_utf8_lossy(&output.stderr).contains("412");
+        if !status.success() && !(refused && !replace) {
+            std::io::stderr().write_all(&output.stderr)?;
+        }
         if replace {
             ensure!(status.success(), "Upload failed");
         } else {

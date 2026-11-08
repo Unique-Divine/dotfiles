@@ -123,19 +123,28 @@ Older `26/…`, `YY/MM-DD-*`, and flat keys stay where they are and keep serving
 Tags, descriptions, and search use a SQLite database, `fs.db`, in the private
 versioned bucket `ud-fs-meta-876932632137`. It can't live in the public
 bucket because the file server serves any key there. Reads download it to
-`~/.cache/ud/fs/fs-<generation>.db` when its GCS generation changes. Writes upload with an
-`ifGenerationMatch` precondition; if another machine wrote first, the command
-reloads and retries up to three times. Triggers write every add, tag, untag,
+`~/.cache/ud/fs/fs-<generation>.db` when its GCS generation changes; a copy
+without a SQLite header is downloaded again. Writes work on a temp copy and
+upload with an `ifGenerationMatch` precondition. If another machine wrote
+first, the command reloads and retries up to six times with jittered backoff.
+A write that changes nothing uploads nothing. Triggers write every add, tag, untag,
 describe, delete, and restore to a change log that `ud fs log` prints.
 
 - `publish --tag a,b --desc TEXT` records the file as soon as the upload
   lands, before the public check, and a retry with the same bytes reuses that
-  name instead of numbering a duplicate. Unknown tags fail before upload and list similar existing tags; pass
-  `--new-tag` to create one. If the index write fails, the upload still counts
-  and stderr prints the commands that finish it.
-- Descriptions are Markdown strings, stored and returned verbatim. JSON output
-  keeps them unchanged; TOON escapes newlines. `desc KEY -` reads stdin.
-- `tag` and `desc` accept object keys or `/f/` URLs from any origin.
+  name instead of numbering a duplicate. Unknown tags fail before upload and
+  list similar existing tags; pass `--new-tag` to create one. `--dry-run`
+  never signs in, so it skips the tag and collision checks. If the index write
+  fails, the upload still counts (exit 0) and stderr prints the commands that
+  finish it. Publishing over a deleted key starts with no tags or
+  description.
+- Descriptions are Markdown strings up to 16 KiB, stored and returned
+  verbatim. JSON output keeps them unchanged; TOON escapes newlines.
+  `desc KEY -` reads stdin and drops only its final newline.
+- `tag`, `desc`, `refs`, and `rm` accept object keys, `/f/KEY` paths, or
+  `http(s)` `/f/` URLs from any origin.
+- `tags` lists every tag with its live file count; `tags --prune` removes tags
+  that no live file carries.
 - `search` matches every word against the slug, description, source directory,
   and tags with an FTS5 trigram index, so parts of words match. Words of one or
   two characters fall back to substring checks. Results rank by BM25 when there
@@ -144,11 +153,14 @@ describe, delete, and restore to a change log that `ud fs log` prints.
 - `refs` runs `rg` over text files under `~/ki` for each `/f/KEY` path. Set
   `ref_roots` in `config.json` or colon-separated `UD_FS_REF_ROOTS` to change
   the roots.
-- `rm KEY…` or `rm --tag T` previews each file with its tags and backlinks.
+- `rm KEY…` or `rm --tag T` (not both) previews each file with its tags and
+  backlinks; keys must be live in the index.
   Only `--yes` deletes, then marks the rows deleted. CDN copies can serve for
   five minutes; soft delete allows `gcloud storage restore` for seven days.
 - `index sync` adds bucket objects the index lacks and marks vanished ones
-  deleted. Run it after uploading outside `ud fs`.
+  deleted. Keys changed after its listing started (minus two minutes for
+  clock skew) are left alone, so a concurrent publish or `rm` wins. Run it
+  after uploading outside `ud fs`.
 
 Topic tags (`sai`, `postmortem`) and group tags (`fee-review-nov`) use the same
 table. A group tag marks files that may be deleted together.

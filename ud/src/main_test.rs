@@ -970,6 +970,22 @@ fn fs_rm_previews_backlinks_without_deleting() {
             .output()
             .unwrap()
     };
+    // Unindexed keys are refused rather than previewed as deletable.
+    let unknown = ud_fs(&["rm", "https://example.com/f/26-11/261108-a.png"]);
+    assert!(!unknown.status.success());
+    assert!(stderr(&unknown).contains("Not live in the index"));
+    // Create the index through the CLI, then add one file row directly.
+    assert_success(&ud_fs(&["tags", "--prune"]));
+    let remote = temp.path().join("index");
+    let db = rusqlite::Connection::open(remote.join("fs.db")).unwrap();
+    db.execute(
+        "INSERT INTO files (key, slug, size, content_type, created_at)
+         VALUES ('26-11/261108-a.png', 'a', 1, 'image/png', 'now')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    fs::write(remote.join("fs.db.generation"), "2").unwrap();
     let preview = ud_fs(&["rm", "https://example.com/f/26-11/261108-a.png"]);
     assert_success(&preview);
     assert_eq!(stdout(&preview), "");

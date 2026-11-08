@@ -119,6 +119,9 @@ pub(crate) struct TagsArgs {
     /// Print structured JSON.
     #[arg(long)]
     pub json: bool,
+    /// Remove tags that no live file carries.
+    #[arg(long, conflicts_with = "json")]
+    pub prune: bool,
 }
 
 #[derive(Debug, Args)]
