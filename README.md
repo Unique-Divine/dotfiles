@@ -105,8 +105,8 @@ just i-brew
 # Install development tools
 bun install
 
-# Create and repair configuration links. Command `just sync` refreshes Jiyuu
-# from `origin/main` before building `gh-rev`; it stops if Jiyuu has local changes.
+# Create and repair configuration links. Command `just sync` merges Jiyuu's
+# `origin/main` into its current branch before building `gh-rev`.
 just sync
 just list
 ```
@@ -160,6 +160,24 @@ and Cursor CLI defaults, and synchronizes managed AI skills. `just health`
 does not write: it checks required commands, Mason packages, and Codex,
 Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
 installation remains an explicit action.
+
+`just sync` installs the Claude and Codex CLIs with their vendors' installers
+when either is missing (`claude/native.sh`, `codex/native.sh`).
+
+It also merges `origin/main` into whatever branch Jiyuu is on, using
+[`git_merge_main`](bin/git_merge_main). Uncommitted changes, a conflict, or a
+`main` that has diverged from `origin` leave Jiyuu untouched with a warning, and
+the rest of the sync still runs.
+
+### Merging From main
+
+`git_merge_main` brings the current branch up to date with `origin/main`:
+a fast-forward on `main`, and a merge commit on any other branch. When that
+needs judgment, it stops without changing anything. `git_merge_main --agent`
+then hands the merge to `claude -p`, or `codex exec` when Claude is missing,
+with the instructions in
+[`git_merge_main.prompt.md`](bin/git_merge_main.prompt.md). Those instructions
+also work when pasted into any agent chat.
 
 ### AI agent skills
 
