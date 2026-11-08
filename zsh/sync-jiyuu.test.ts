@@ -153,6 +153,24 @@ describe("sync-jiyuu.sh", () => {
     expect(await expectOk(boku, "git -C jiyuu status --porcelain")).toBe("")
   })
 
+  test("a rebase in progress in Jiyuu is left alone and the sync continues", async () => {
+    const { boku, root, source } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "git -C jiyuu switch -q -c feature")
+    await expectOk(
+      boku,
+      "printf mine > jiyuu/gh-rev/LATEST && git -C jiyuu commit -qam mine",
+    )
+    await writeFile(join(source, "gh-rev", "LATEST"), "theirs\n")
+    await expectOk(source, "git commit -qam theirs && git push -q")
+    await run(boku, "git -C jiyuu fetch -q && git -C jiyuu rebase origin/main")
+
+    const result = await syncOnce(root)
+    expect(result.exitCode, result.stderr).toBe(0)
+    expect(result.stderr).toContain("in-progress: rebase")
+    expect(result.stderr).toContain("left Jiyuu as it is")
+  })
+
   test.each(["staged", "unstaged", "untracked"])(
     "leaves a %s Jiyuu checkout untouched",
     async (state) => {

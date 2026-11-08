@@ -33,7 +33,7 @@ merge_status=0
 (cd "$jiyuu_dir" && "$dotfiles_dir/bin/git_mf" main) || merge_status=$?
 case "$merge_status" in
   0) ;;
-  2|3|4) echo "sync-jiyuu: left Jiyuu as it is (see above); continuing" >&2 ;;
+  2|3|4|5) echo "sync-jiyuu: left Jiyuu as it is (see above); continuing" >&2 ;;
   *) fail "merging origin/main into Jiyuu failed (exit $merge_status)" ;;
 esac
 
