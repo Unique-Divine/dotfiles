@@ -227,6 +227,11 @@ sync:
 health:
   bash zsh/health.sh
 
+# Check domain registration (RDAP) and DNS; exits 1 on any FAIL finding.
+# Default: uniquedivine.com dsn-braids.com. Add --json for machine output.
+domain-health *ARGS:
+  bun run domain/health.ts {{ARGS}}
+
 # Restore the locked global Bun packages and their command and plugin links.
 bun-sync:
   bun --no-install bun/sync.ts --run
