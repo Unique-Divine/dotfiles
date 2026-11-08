@@ -187,10 +187,8 @@ sync:
       curl -fsSL https://bun.com/install | bash
     )
   fi
-  if ! command -v codex >/dev/null 2>&1; then
-    curl -fsSL https://chatgpt.com/codex/install.sh | \
-      CODEX_NON_INTERACTIVE=1 sh
-  fi
+  just claude-install
+  just codex-install
   just i-jiyuu
   bun install
   source zsh/bashlib.sh
@@ -230,6 +228,10 @@ claude-install:
 # Check the native Claude installation without installing or updating it.
 claude-health:
   bash claude/native.sh --check
+
+# Install the standalone Codex CLI when it's missing, then verify it runs.
+codex-install:
+  bash codex/native.sh --run
 
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
@@ -308,10 +310,7 @@ i-bash:
       curl -fsSL https://bun.com/install | bash
     )
   fi
-  if ! command -v codex >/dev/null 2>&1; then
-    curl -fsSL https://chatgpt.com/codex/install.sh | \
-      CODEX_NON_INTERACTIVE=1 sh
-  fi
+  bash codex/native.sh --run
   i_bash_cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles"
   mkdir -p "$i_bash_cache_dir"
   touch "$i_bash_cache_dir/i-bash.stamp"
