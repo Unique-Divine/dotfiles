@@ -24,14 +24,19 @@ if [[ ! -e "$jiyuu_dir/.git" ]] || ! git -C "$jiyuu_dir" rev-parse --is-inside-w
   fail "Jiyuu is not a Git checkout at $jiyuu_dir"
 fi
 
-if [[ -n "$(git -C "$jiyuu_dir" status --porcelain)" ]]; then
-  fail "Jiyuu has local changes; commit, stash, or remove them before running just sync"
-fi
+dotfiles_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
-git -C "$jiyuu_dir" fetch --prune origin \
-  '+refs/heads/main:refs/remotes/origin/main'
-git -C "$jiyuu_dir" checkout --detach origin/main
+# Merge origin/main into whatever branch Jiyuu is on. Uncommitted work,
+# conflicts, and stray detached commits are left alone with a warning so the
+# rest of the sync still runs; gh-rev then builds from the current checkout.
+merge_status=0
+(cd "$jiyuu_dir" && "$dotfiles_dir/bin/git_merge_main") || merge_status=$?
+case "$merge_status" in
+  0) ;;
+  2|3|4) echo "sync-jiyuu: left Jiyuu as it is (see above); continuing" >&2 ;;
+  *) fail "merging origin/main into Jiyuu failed (exit $merge_status)" ;;
+esac
 
 if [[ ! -f "$jiyuu_dir/gh-rev/Cargo.toml" ]]; then
-  fail "Jiyuu origin/main does not contain gh-rev/Cargo.toml"
+  fail "Jiyuu does not contain gh-rev/Cargo.toml"
 fi
