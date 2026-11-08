@@ -1,8 +1,9 @@
-# Merge origin/main Into the Current Branch
+# Merge a Branch From origin Into the Current Branch
 
-Bring the current branch up to date with the base branch on `origin`
-(usually `main`). Work in the repository you were started in. The section at
-the end says which base, which branch, and why plain git stopped.
+Bring the current branch up to date with a branch from `origin`, usually
+`main`. Work in the repository you were started in. The section at the end
+says which branch to merge from, the current branch, and why plain git
+stopped. Below, `<base>` means the branch to merge from.
 
 1. Run `git status`. If there are uncommitted changes, keep them: stash them
    with a message, and restore them after the merge. If restoring conflicts,

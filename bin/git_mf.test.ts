@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { cleanup, ok, repoPair, sh } from "./git-test-repo"
 
-const script = join(resolve(import.meta.dir), "git_merge_main")
+const script = `${join(resolve(import.meta.dir), "git_mf")} main`
 
 afterEach(cleanup)
 
@@ -24,7 +24,7 @@ async function fakeAgents(root: string, names: string[]) {
 const snapshot = (dir: string) =>
   ok(dir, "git rev-parse HEAD && git branch --show-current && git status --porcelain")
 
-describe("git_merge_main", () => {
+describe("git_mf main", () => {
   test("fast-forwards main", async () => {
     const { clone, pushUpstream } = await repoPair()
     const upstream = await pushUpstream("two")
@@ -56,6 +56,28 @@ describe("git_merge_main", () => {
     expect(r.code, r.stderr).toBe(0)
     expect(await ok(clone, "git branch --show-current")).toBe("main")
     expect(await ok(clone, "git rev-parse HEAD")).toBe(upstream)
+  })
+
+  test("also fast-forwards a local main you aren't on", async () => {
+    const { clone, pushUpstream } = await repoPair()
+    await ok(clone, "git switch -q -c feature")
+    const upstream = await pushUpstream("two")
+
+    const r = await sh(clone, script)
+    expect(r.code, r.stderr).toBe(0)
+    expect(await ok(clone, "git rev-parse main")).toBe(upstream)
+  })
+
+  test("merges a local-only target branch", async () => {
+    const { clone } = await repoPair()
+    await ok(clone, "git switch -q -c topic && printf t > t.txt && git add . && git commit -qm t")
+    await ok(clone, "git switch -q main && git switch -q -c feature")
+    const topic = await ok(clone, "git rev-parse topic")
+
+    const r = await sh(clone, `${script.replace(/ main$/, "")} topic`)
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stderr).toContain("origin has no topic")
+    expect(await ok(clone, "git rev-parse HEAD")).toBe(topic)
   })
 
   test("refuses a detached commit that isn't on main", async () => {
@@ -97,7 +119,7 @@ describe("git_merge_main", () => {
     const r = await sh(clone, script)
     expect(r.code).toBe(3)
     expect(r.stderr).toContain("conflicts in: file.txt")
-    expect(r.stderr).toContain("git_merge_main --agent")
+    expect(r.stderr).toContain("git_mf main --agent")
     expect(await snapshot(clone)).toBe(before)
     expect(await sh(clone, "git rev-parse -q --verify MERGE_HEAD")).toMatchObject({ code: 1 })
   })
@@ -123,7 +145,7 @@ describe("git_merge_main", () => {
     const r = await sh(clone, `${script} --agent`, { PATH })
     expect(r.code, r.stderr).toBe(0)
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
-    expect(stdin).toContain("# Merge origin/main Into the Current Branch")
+    expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
     expect(stdin).toContain("conflicts in: file.txt")
     expect(await readFile(join(root, "claude.args"), "utf8")).toContain("-p")
     expect(await Bun.file(join(root, "codex.stdin")).exists()).toBe(false)

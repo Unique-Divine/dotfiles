@@ -165,18 +165,18 @@ installation remains an explicit action.
 when either is missing (`claude/native.sh`, `codex/native.sh`).
 
 It also merges `origin/main` into whatever branch Jiyuu is on, using
-[`git_merge_main`](bin/git_merge_main). Uncommitted changes, a conflict, or a
+[`git_mf main`](bin/git_mf). Uncommitted changes, a conflict, or a
 `main` that has diverged from `origin` leave Jiyuu untouched with a warning, and
 the rest of the sync still runs.
 
 ### Merging From main
 
-`git_merge_main` brings the current branch up to date with `origin/main`:
-a fast-forward on `main`, and a merge commit on any other branch. When that
-needs judgment, it stops without changing anything. `git_merge_main --agent`
-then hands the merge to `claude -p`, or `codex exec` when Claude is missing,
-with the instructions in
-[`git_merge_main.prompt.md`](bin/git_merge_main.prompt.md). Those instructions
+`git_mf main` brings the current branch up to date with `origin/main`: a
+fast-forward on `main`, and a merge commit on any other branch. Any other
+target works the same way. When the merge needs judgment, it stops without
+changing anything. `git_mf main --agent` then hands the merge to `claude -p`,
+or `codex exec` when Claude is missing, with the instructions in
+[`git_mf.prompt.md`](bin/git_mf.prompt.md). Those instructions
 also work when pasted into any agent chat.
 
 ### AI agent skills

@@ -30,7 +30,7 @@ dotfiles_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # conflicts, and stray detached commits are left alone with a warning so the
 # rest of the sync still runs; gh-rev then builds from the current checkout.
 merge_status=0
-(cd "$jiyuu_dir" && "$dotfiles_dir/bin/git_merge_main") || merge_status=$?
+(cd "$jiyuu_dir" && "$dotfiles_dir/bin/git_mf" main) || merge_status=$?
 case "$merge_status" in
   0) ;;
   2|3|4) echo "sync-jiyuu: left Jiyuu as it is (see above); continuing" >&2 ;;
