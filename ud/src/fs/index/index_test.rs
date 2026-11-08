@@ -428,11 +428,18 @@ fn sync_listing_never_overrides_newer_changes() {
     let temp = TempDir::new().unwrap();
     let (store, cache, _) = machines(&temp);
     seed(&store, &cache);
-    // The listing is taken before a publish and an rm finish.
-    let listed_at = "2000-01-01T00:00:00Z";
+    // The seeded rows are old; the listing starts after them.
+    cache
+        .write(&store, |tx| {
+            tx.execute("UPDATE changes SET at = '2001-01-01T00:00:00Z'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let listed_at = "2020-01-01T00:00:00Z";
+    // The listing lacks the loss curve (truly gone) and the new file (published
+    // after the listing), and still shows the twitter file (removed after it).
     let stale = [
         record("26-11/261108-fee-chart.png"),
-        record("26/sai-economics/postmortem/261030-loss-curve.png"),
         record("26/10-14-twitter.svg"),
     ];
     cache
@@ -444,18 +451,19 @@ fn sync_listing_never_overrides_newer_changes() {
     let report = cache
         .write(&store, |tx| reconcile(tx, &stale, Some(listed_at)))
         .unwrap();
-    // Every key changed after 2000, so the listing touches none of them.
-    assert_eq!((report.added, report.deleted, report.restored), (0, 0, 0));
+    // Only the old key is reconciled; the recent changes win.
+    assert_eq!((report.added, report.deleted, report.restored), (0, 1, 0));
     let read = cache.read(&store).unwrap();
     let live = search(&read, &Query::default())
         .unwrap()
         .into_iter()
         .map(|e| e.key)
         .collect::<Vec<_>>();
+    assert_eq!(live.len(), 2, "{live:?}");
     assert!(live.contains(&"26-11/261108-new.png".to_string()));
-    assert!(!live.contains(&"26/10-14-twitter.svg".to_string()));
+    assert!(live.contains(&"26-11/261108-fee-chart.png".to_string()));
     drop(read);
-    // Without a cutoff the same listing applies normally.
+    // Without a cutoff the same listing applies to every key.
     let report = cache
         .write(&store, |tx| reconcile(tx, &stale, None))
         .unwrap();
