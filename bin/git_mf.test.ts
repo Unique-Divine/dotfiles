@@ -372,7 +372,10 @@ describe("git_mf --agent", () => {
     const PATH = await fakeAgents(root, ["claude", "codex"])
 
     const r = await sh(clone, `${gitMf} main --agent`, { PATH })
-    expect(r.code, r.stderr).toBe(0)
+    // The fake agent merges nothing, and git_mf checks the repo rather than
+    // trusting the agent's exit 0.
+    expect(r.code, r.stderr).toBe(3)
+    expect(r.stderr).toContain("agent outcome: no-change")
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
     expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
     expect(stdin).toContain("conflicts in: file.txt")

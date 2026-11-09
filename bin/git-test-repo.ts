@@ -1,8 +1,12 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
+import { mkdtempSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+
+/** Run-log home for these tests, so nothing writes into the real ~/.boku. */
+export const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 
 export type Result = { code: number; stdout: string; stderr: string }
 
@@ -22,7 +26,7 @@ export async function sh(
 ): Promise<Result> {
   const proc = Bun.spawn(["bash", "-c", command], {
     cwd,
-    env: { ...process.env, ...gitEnv, ...env },
+    env: { ...process.env, ...gitEnv, BOKU_HOME: testBokuHome, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })
