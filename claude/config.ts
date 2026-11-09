@@ -102,7 +102,8 @@ export const managedAllowRules: readonly string[] = [
   "mcp__superhuman-mail__unsubscribe",
   "mcp__superhuman-mail__trash_thread",
   // Read-only Google Cloud commands: account, project, DNS, storage
-  // listings, Cloud Run, Cloud SQL, and logs.
+  // listings, Cloud Run, Cloud SQL, and logs. `gcloud run services describe`
+  // stays out: it prints environment variable values, often API keys.
   "Bash(gcloud --version)",
   "Bash(gcloud config list:*)",
   "Bash(gcloud config get:*)",
@@ -116,7 +117,6 @@ export const managedAllowRules: readonly string[] = [
   "Bash(gcloud dns record-sets describe:*)",
   "Bash(gcloud storage ls:*)",
   "Bash(gcloud run services list:*)",
-  "Bash(gcloud run services describe:*)",
   "Bash(gcloud sql instances list:*)",
   "Bash(gcloud sql instances describe:*)",
   "Bash(gcloud logging read:*)",
@@ -154,6 +154,7 @@ export const managedAskRules: readonly string[] = [
   "Bash(gcloud alpha secrets versions access:*)",
   "Bash(gcloud beta secrets versions access:*)",
   "Bash(gcloud iam service-accounts keys create:*)",
+  "Bash(gcloud run services describe:*)",
   "Bash(firebase deploy:*)",
   "Bash(firebase hosting:disable:*)",
   "Bash(firebase firestore:delete:*)",
