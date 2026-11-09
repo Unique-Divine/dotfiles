@@ -21,6 +21,11 @@
 # process (BOKU_RUNLOG_DEBUG=1 prints why). BOKU_RUNLOG=0 turns it off. It
 # sets no traps itself; callers run `runlog_end` from their own exit
 # handler, and may call `runlog_trap_signals` so a kill logs 128+N.
+#
+# Before runlog_start, a caller may set the shell variable
+# RUNLOG_START_GIT to a JSON object; its `repo`, `branch`, and `head` go
+# on the start event as `git`. With BOKU_RUNLOG_STDOUT=1, events also
+# print to the stdout runlog_start found, even under a later `>&2`.
 
 # Folder holding this file and redact-patterns.json, found at source time.
 _runlog_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null \
@@ -31,21 +36,50 @@ _runlog_on="${_runlog_on:-0}"           # 1: run started, events are built
 _runlog_file_on="${_runlog_file_on:-0}" # 1: events go to the run file
 _runlog_broken="${_runlog_broken:-0}"   # 1: an error turned the writer off
 _runlog_stdout="${_runlog_stdout:-0}"   # 1: events are also printed
+_runlog_out_fd="${_runlog_out_fd:-}"    # stdout as runlog_start found it
+_runlog_skip="${_runlog_skip:-}"        # JSON array: patterns jq rejects
+_runlog_bad_kinds=""                    # their kinds, for the start warns
+_runlog_redact_capped=0                 # 1: the jq fallback capped a file
 _runlog_line=""
 _runlog_ms=0
+
+# The jq redaction fallback keeps at most this many bytes (1 MiB): it runs
+# about 12 s per MiB, and git_mf waits on it.
+_runlog_fallback_max=1048576
 
 # Artifact copies keep at most this many bytes (20 MiB, as the tap does).
 _runlog_artifact_max_default=20971520
 
-# The jq `redact` def both jq paths share. Every pattern applies
-# case-insensitively ("gi"), as in runlog.ts; see redact-patterns.md.
+# The jq `redact` def both jq paths share, as redact in runlog.ts. Every
+# pattern applies case-insensitively ("gi"); a `keep` group stays readable
+# in front of the marker. `pem_lines` replaces the base64 body lines after
+# a PEM private key header and stops at the first line that is not a body
+# line, a blank line, or a Proc-Type/DEK-Info header. `pats` drops the
+# patterns `_runlog_check_patterns` found jq can't compile. See
+# redact-patterns.md.
 # shellcheck disable=SC2016
-_runlog_jq_redact='def redact($p): reduce $p[] as $r (.;
-  gsub($r.regex; "[redacted:\($r.kind)]"; "gi"));'
+_runlog_jq_redact='
+def pem_begin: test("-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----"; "i");
+def pem_lines: [foreach .[] as $l ({in: false};
+  if ($l | contains("-----")) and ($l | pem_begin) then {in: true, out: $l}
+  elif .in | not then {in: false, out: $l}
+  elif $l | test("^[-+ ]?[A-Za-z0-9+/=]{16,100}\r?$") then
+    {in: true, out: ($l | sub("^(?<p>[-+ ]?)[A-Za-z0-9+/=]{16,100}(?<r>\r?)$";
+      "\(.p)[redacted:pem]\(.r)"))}
+  elif $l | test("^[-+ ]?(?:(?:Proc-Type|DEK-Info):[^\n]*)?\r?$"; "i") then
+    {in: true, out: $l}
+  else {in: false, out: $l} end; .out)];
+def pem_text: if contains("\n") and pem_begin
+  then split("\n") | pem_lines | join("\n") else . end;
+def pats: [$pats[0] | to_entries[]
+  | select(.key as $i | $skip | any(.[]; . == $i) | not) | .value];
+def redact($p): pem_text | reduce $p[] as $r (.;
+  gsub($r.regex; "\(.keep // "")[redacted:\($r.kind)]"; "gi"));'
 
 # The jq `redact_lines` def behind _runlog_redact_file, as redactLines in
-# runlog.ts. A line whose first non-blank character is `{` or `[` and that
-# parses as JSON first has its decoded strings redacted, so `KEY=\"value\"`
+# runlog.ts. PEM body lines are redacted across the whole text first. A
+# line whose first non-blank character is `{` or `[` and that parses as
+# JSON first has its decoded strings redacted, so `KEY=\"value\"`
 # reads as `KEY="value"`, and is re-encoded only when a string changed. The
 # text is then redacted in blocks of 2,000 lines, which catches
 # `"password": "..."` pairs. No pattern matches across a newline, so blocks
@@ -67,7 +101,8 @@ def decode_line($p): . as $line
           | if $r == $v then $line else $r | tojson end
         end
     else $line end;
-def redact_lines($p): split("\n") | map(decode_line($p))
+def redact_lines($p): (if pem_begin then split("\n") | pem_lines
+    else split("\n") end) | map(decode_line($p))
   | [range(0; length; 2000) as $i | .[$i:$i + 2000] | join("\n")
     | redact($p)]
   | join("\n");'
@@ -79,7 +114,8 @@ def redact_lines($p): split("\n") | map(decode_line($p))
 # shellcheck disable=SC2016
 _runlog_jq_line="${_runlog_jq_redact}"'
 def cut: if length > 512 then .[:512] + "[cut]" else . end;
-def clean: walk(if type == "string" then redact($pats[0]) | cut else . end);
+def clean: pats as $p
+  | walk(if type == "string" then redact($p) | cut else . end);
 def ts: ($ms / 1000 | floor | strftime("%Y-%m-%dT%H:%M:%S")) + "."
   + (($ms % 1000) + 1000 | tostring | .[1:]) + "Z";
 ({v: 1, ts: ts, source: $source, run_id: $run_id,
@@ -114,8 +150,9 @@ _runlog_fail() {
   return 0
 }
 
-# _runlog_now: sets _runlog_ms to the epoch time in ms, without a fork
-# when bash has EPOCHREALTIME.
+# _runlog_now: sets _runlog_ms to the epoch time in ms from EPOCHREALTIME,
+# without a fork. Bash before 5.0 lacks it and gets whole seconds from the
+# printf builtin; `date +%s%3N` is never used, since BSD date has no %N.
 _runlog_now() {
   local -r rt="${EPOCHREALTIME:-}"
   local sec frac
@@ -124,7 +161,7 @@ _runlog_now() {
     frac="${BASH_REMATCH[2]}"
     _runlog_ms=$(( sec * 1000 + 10#$frac ))
   else
-    sec="$(date +%s 2>/dev/null)" || sec=0
+    printf -v sec '%(%s)T' -1 2>/dev/null || sec=0
     [[ "$sec" =~ ^[0-9]+$ ]] || sec=0
     _runlog_ms=$(( sec * 1000 ))
   fi
@@ -150,6 +187,7 @@ _runlog_build_at() {
   local line
   line="$(jq -nr \
     --slurpfile pats "${_runlog_patterns:-}" \
+    --argjson skip "${_runlog_skip:-[]}" \
     --argjson ms "$ms" \
     --arg source "dotfiles" \
     --arg run_id "${_runlog_run_id:-}" \
@@ -184,25 +222,48 @@ _runlog_precut() {
   return 0
 }
 
-# _runlog_emit: prints _runlog_line when asked and appends it to the run
-# file with one printf, so a line up to 4 KiB lands in one write().
+# _runlog_emit: appends _runlog_line to the run file with one printf, so
+# a line up to 4 KiB lands in one write(), then prints it when asked. The
+# file comes first, so a closed stdout can't cost the line.
 _runlog_emit() {
-  if [[ "${_runlog_stdout}" == 1 ]]; then
-    printf '%s\n' "$_runlog_line" 2>/dev/null || true
-  fi
   if [[ "${_runlog_file_on}" == 1 ]]; then
-    { printf '%s\n' "$_runlog_line" >>"${_runlog_run_file:-}"; } \
-      2>/dev/null || _runlog_fail "cannot append to the run file" 1
+    if [[ -L "${_runlog_run_file:-}" || -L "${_runlog_run_file%/*}" \
+      || -L "${_runlog_runs_dir:-}" ]]; then
+      _runlog_fail "the run file or its folder is a symlink" 1
+    else
+      { printf '%s\n' "$_runlog_line" >>"${_runlog_run_file:-}"; } \
+        2>/dev/null || _runlog_fail "cannot append to the run file" 1
+    fi
+  fi
+  _runlog_print
+  return 0
+}
+
+# _runlog_print: prints _runlog_line to the stdout runlog_start saved, so a
+# caller's `>&2` around runlog_step can't divert it. The printf runs in a
+# subshell that ignores SIGPIPE, so a closed reader (`| head -n1`) fails
+# the print instead of killing the caller, and children never inherit the
+# ignored signal. A failed print turns printing off for this process.
+_runlog_print() {
+  [[ "${_runlog_stdout}" == 1 && -n "${_runlog_out_fd:-}" ]] || return 0
+  if ! ( trap '' PIPE
+    printf '%s\n' "$_runlog_line" >&"$_runlog_out_fd" ) 2>/dev/null; then
+    _runlog_stdout=0
   fi
   return 0
 }
 
-# _runlog_mkdir DIR: creates DIR with mode 0700 unless it exists.
+# _runlog_mkdir DIR [LINK_OK]: creates DIR with mode 0700 unless it
+# exists. A symlink fails, so nothing is written through one, unless
+# LINK_OK is 1 (BOKU_HOME itself may be a link).
 _runlog_mkdir() {
-  local -r dir="${1:-}"
+  local -r dir="${1:-}" link_ok="${2:-0}"
   [[ -n "$dir" ]] || return 1
+  if [[ "$link_ok" != 1 && -L "$dir" ]]; then
+    return 1
+  fi
   [[ -d "$dir" ]] && return 0
-  mkdir -m 700 -- "$dir" 2>/dev/null || [[ -d "$dir" ]]
+  mkdir -m 700 -- "$dir" 2>/dev/null || [[ -d "$dir" && ! -L "$dir" ]]
 }
 
 # _runlog_new_id TOOL: sets _runlog_run_id to <yymmddTHHMMSSZ>-<tool>-<hex4>
@@ -226,11 +287,12 @@ _runlog_new_id() {
 }
 
 # _runlog_open_files: creates the day folder and claims a new run file
-# with an exclusive create (mode 0600), picking a new id on a clash.
+# with an exclusive create (mode 0600), picking a new id on a clash. The
+# runs and day folders and the run file must not be symlinks.
 _runlog_open_files() {
   local -r home="${BOKU_HOME:-${HOME:-}/.boku}"
   [[ -n "${HOME:-}" || -n "${BOKU_HOME:-}" ]] || return 1
-  _runlog_mkdir "$home" || return 1
+  _runlog_mkdir "$home" 1 || return 1
   _runlog_mkdir "$home/runs" || return 1
   local try file
   for try in 1 2 3 4 5 6 7 8; do
@@ -239,6 +301,8 @@ _runlog_open_files() {
     fi
     _runlog_mkdir "$home/runs/${_runlog_day}" || return 1
     file="$home/runs/${_runlog_day}/${_runlog_run_id}.jsonl"
+    # noclobber still opens a link to a non-regular file such as a fifo.
+    [[ -L "$file" ]] && continue
     if ( umask 077 && set -o noclobber && : >"$file" ) 2>/dev/null; then
       _runlog_runs_dir="$home/runs"
       _runlog_run_file="$file"
@@ -269,6 +333,38 @@ _runlog_pid_start() {
   else
     printf 'null'
   fi
+  return 0
+}
+
+# _runlog_check_patterns: compiles each pattern in jq once, on its own,
+# and sets _runlog_skip to the indexes of those jq rejects (a regex valid
+# in JS may not be, such as a variable-width lookbehind) and
+# _runlog_bad_kinds to their kinds. Returns 1 when the patterns file
+# can't be read as a list, so nothing is written unredacted.
+_runlog_check_patterns() {
+  local out=""
+  # shellcheck disable=SC2016
+  out="$(jq -r 'if type != "array" then error("not a list") else . end
+    | [to_entries[] | select(.value.regex as $re
+        | try ("" | test($re; "i") | false) catch true)
+      | {i: .key, kind: (.value.kind | tostring)}]
+    | "\(map(.i) | tojson)\t\(map(.kind) | join(" "))"' \
+    <"${_runlog_patterns:-}" 2>/dev/null)" || out=""
+  [[ "$out" =~ ^(\[[0-9,]*\])$'\t'(.*)$ ]] || return 1
+  _runlog_skip="${BASH_REMATCH[1]}"
+  _runlog_bad_kinds="${BASH_REMATCH[2]}"
+  return 0
+}
+
+# _runlog_start_git: prints RUNLOG_START_GIT as a {repo, branch, head}
+# object for the start event, or nothing. Other keys are dropped, so a
+# remote URL can't reach the log through it.
+_runlog_start_git() {
+  [[ -n "${RUNLOG_START_GIT:-}" ]] || return 0
+  # shellcheck disable=SC2016
+  jq -c 'select(type == "object") | {repo, branch, head}
+    | with_entries(select(.value != null))' \
+    <<<"$RUNLOG_START_GIT" 2>/dev/null || true
   return 0
 }
 
@@ -303,11 +399,17 @@ runlog_start() {
     _runlog_fail "jq not found"
     return 0
   fi
-  # Never write unredacted: no patterns file, no run.
+  # Never write unredacted: no patterns file, no run. A single pattern jq
+  # can't compile is dropped with a warning instead.
   _runlog_patterns="${_runlog_lib_dir}/redact-patterns.json"
-  if [[ ! -r "$_runlog_patterns" ]]; then
+  if [[ ! -r "$_runlog_patterns" ]] || ! _runlog_check_patterns; then
     _runlog_fail "cannot read $_runlog_patterns"
     return 0
+  fi
+  # Events print to stdout as it is now, even inside a caller's `>&2`.
+  if [[ "${_runlog_stdout}" == 1 && -z "${_runlog_out_fd:-}" ]]; then
+    { exec {_runlog_out_fd}>&1; } 2>/dev/null || _runlog_out_fd=""
+    [[ -n "${_runlog_out_fd}" ]] || _runlog_stdout=0
   fi
 
   _runlog_now
@@ -360,12 +462,37 @@ runlog_start() {
   else
     fields+=("rev:=null")
   fi
+  local git=""
+  git="$(_runlog_start_git)" || git=""
+  [[ -z "$git" ]] || fields+=("git:=$git")
 
-  _runlog_build_at "$_runlog_start_ms" start "${fields[@]}" || return 0
+  local -r claimed="${_runlog_file_on}"
+  if ! _runlog_build_at "$_runlog_start_ms" start "${fields[@]}"; then
+    _runlog_drop_claim "$claimed"
+    return 0
+  fi
   _runlog_emit
+  if [[ "${_runlog_file_on}" != 1 ]]; then
+    _runlog_drop_claim "$claimed"
+  fi
   if [[ "${_runlog_file_on}" == 1 ]]; then
     export BOKU_RUN_ID="$_runlog_run_id"
     export BOKU_ROOT_RUN_ID="$_runlog_root"
+  fi
+  local kind
+  local -a kinds=()
+  read -r -a kinds <<<"${_runlog_bad_kinds:-}" || true
+  for kind in ${kinds[@]+"${kinds[@]}"}; do
+    runlog_event warn code=redact-pattern-invalid "kind=$kind" || true
+  done
+  return 0
+}
+
+# _runlog_drop_claim CLAIMED: deletes the run file runlog_start claimed
+# when its start line never landed, so no empty run is listed.
+_runlog_drop_claim() {
+  if [[ "${1:-0}" == 1 && -n "${_runlog_run_file:-}" ]]; then
+    rm -f -- "$_runlog_run_file" 2>/dev/null || true
   fi
   return 0
 }
@@ -400,7 +527,8 @@ runlog_event() {
 }
 
 # runlog_step NAME CMD [ARG...]: runs an external command, logs a step
-# with `cmd`, `exit`, and `dur_ms`, and returns the command's status.
+# with `cmd` (the argv as a JSON array), `exit`, and `dur_ms`, and returns
+# the command's status.
 # Wrap external commands only; functions and `source` run unwrapped.
 runlog_step() {
   local -r name="${1:-step}"
@@ -411,8 +539,17 @@ runlog_step() {
   "$@" || rc=$?
   if [[ "${_runlog_on}" == 1 ]]; then
     _runlog_now
-    runlog_event step name="$name" cmd="$*" exit:="$rc" \
-      dur_ms:="$(( _runlog_ms - t0 ))" || true
+    local -r dur=$(( _runlog_ms - t0 ))
+    local cmd=""
+    local -a args=()
+    _runlog_precut "$@"
+    # `--` keeps an argument such as `-f` or `--quiet` from being a jq
+    # option.
+    cmd="$(jq -nc '$ARGS.positional' \
+      --args -- ${args[@]+"${args[@]}"} 2>/dev/null)" || cmd=""
+    [[ -n "$cmd" ]] || cmd="[]"
+    runlog_event step name="$name" cmd:="$cmd" exit:="$rc" \
+      dur_ms:="$dur" || true
   fi
   return "$rc"
 }
@@ -458,32 +595,69 @@ _runlog_artifact_name() {
   return 0
 }
 
+# _runlog_head_lines SRC MAX DEST: copies at most MAX bytes of SRC to
+# DEST, ending at the last full line, so no token is left half cut.
+_runlog_head_lines() {
+  local -r src="${1:-}" max="${2:-0}" dest="${3:-}"
+  head -c "$max" -- "$src" >"$dest" 2>/dev/null || return 1
+  local last=""
+  last="$(tail -c 1 -- "$dest" 2>/dev/null; printf x)" || return 1
+  [[ "$last" == $'\nx' || "$last" == x ]] && return 0
+  { ( umask 077 && : >"$dest.cut" ) \
+    && LC_ALL=C awk '{ if (NR > 1) print prev; prev = $0 }' "$dest" \
+    >"$dest.cut" && mv -f -- "$dest.cut" "$dest"; } 2>/dev/null && return 0
+  rm -f -- "$dest.cut" 2>/dev/null || true
+  return 1
+}
+
 # _runlog_redact_file FILE: redacts FILE in place, with `ud runs
 # redact-file` (cli.ts beside this file, or BOKU_RUNS_CLI) when it works,
 # else the shared patterns through jq. A broken CLI must not cost the
-# artifact.
+# artifact. The jq fallback keeps the first 1 MiB of FILE, cut at a line,
+# and sets _runlog_redact_capped=1 when it cut.
 _runlog_redact_file() {
   local -r file="${1:-}"
   local -r cli="${BOKU_RUNS_CLI:-${_runlog_lib_dir:-.}/cli.ts}"
+  _runlog_redact_capped=0
   if [[ -x "$cli" ]] && "$cli" redact-file "$file" >/dev/null 2>&1; then
     return 0
   fi
-  local -r out="${file}.redact"
+  if [[ -z "${_runlog_skip:-}" ]]; then
+    _runlog_check_patterns || return 1
+  fi
+  local -r out="${file}.redact" capped="${file}.cap"
   ( umask 077 && : >"$out" ) 2>/dev/null || return 1
+  local input="$file" size=""
+  size="$(wc -c <"$file" 2>/dev/null)" || size=""
+  size="${size//[^0-9]/}"
+  if [[ -n "$size" ]] && (( size > _runlog_fallback_max )); then
+    if ! { ( umask 077 && : >"$capped" ) 2>/dev/null \
+      && _runlog_head_lines "$file" "$_runlog_fallback_max" "$capped"; }
+    then
+      rm -f -- "$out" "$capped" 2>/dev/null || true
+      return 1
+    fi
+    input="$capped"
+    _runlog_redact_capped=1
+  fi
   if jq -Rsj --slurpfile pats "${_runlog_patterns:-}" \
-    "${_runlog_jq_redact_lines} redact_lines(\$pats[0])" \
-    <"$file" >"$out" 2>/dev/null && mv -f -- "$out" "$file" 2>/dev/null
+    --argjson skip "${_runlog_skip:-[]}" \
+    "${_runlog_jq_redact_lines} redact_lines(pats)" \
+    <"$input" >"$out" 2>/dev/null && mv -f -- "$out" "$file" 2>/dev/null
   then
+    rm -f -- "$capped" 2>/dev/null || true
     return 0
   fi
-  rm -f -- "$out" 2>/dev/null || true
+  rm -f -- "$out" "$capped" 2>/dev/null || true
+  _runlog_redact_capped=0
   return 1
 }
 
 # runlog_artifact KIND FILE: copies FILE into the run folder, capped at
 # BOKU_RUNLOG_ARTIFACT_MAX bytes (default 20 MiB) and redacted, then logs
 # an `artifact` event. A capped copy ends at its last full line, so no
-# token is left half cut. A FILE already in the run folder is replaced.
+# token is left half cut. A FILE already in the run folder is replaced,
+# or deleted when it can't be saved redacted.
 runlog_artifact() {
   runlog_active || return 0
   local -r kind="${1:-artifact}" src="${2:-}"
@@ -506,26 +680,26 @@ runlog_artifact() {
   size="${size//[^0-9]/}"
   if [[ -n "$size" ]] && (( size > max )); then
     truncated=true
-    head -c "$max" -- "$src" >"$tmp" 2>/dev/null || truncated=error
-    # Drop the partial last line so a cut token can't leak.
-    local last=""
-    last="$(tail -c 1 -- "$tmp" 2>/dev/null; printf x)" || last=""
-    if [[ "$truncated" == true && "$last" != $'\nx' ]]; then
-      { ( umask 077 && : >"$tmp.cut" ) \
-        && LC_ALL=C awk '{ if (NR > 1) print prev; prev = $0 }' "$tmp" \
-        >"$tmp.cut" && mv -f -- "$tmp.cut" "$tmp"; } 2>/dev/null \
-        || truncated=error
-    fi
+    _runlog_head_lines "$src" "$max" "$tmp" || truncated=error
   else
     cat -- "$src" >"$tmp" 2>/dev/null || truncated=error
   fi
   if [[ "$truncated" == error ]] || ! _runlog_redact_file "$tmp" \
     || ! mv -f -- "$tmp" "$dest" 2>/dev/null; then
     rm -f -- "$tmp" "$tmp.cut" 2>/dev/null || true
+    # Never leave an unredacted source in the run folder.
+    if [[ "$src" == "$dir"/* ]]; then
+      rm -f -- "$src" 2>/dev/null || true
+    fi
     # One lost artifact is worth a warning, not the rest of the run's log.
     runlog_event warn code=artifact-failed msg="cannot save artifact $kind" \
       || true
     return 0
+  fi
+  if [[ "${_runlog_redact_capped}" == 1 ]]; then
+    truncated=true
+    runlog_event warn code=redact-fallback-capped \
+      msg="$kind: kept the first $_runlog_fallback_max bytes" || true
   fi
   chmod 600 -- "$dest" 2>/dev/null || true
   # A source inside the run folder is now replaced by its redacted copy.
@@ -614,8 +788,12 @@ runlog_end() {
         2>/dev/null)" || agent="null"
       [[ -n "$agent" ]] || agent="null"
     fi
-    local -r index="${_runlog_runs_dir:-}/${_runlog_day:-}/index.jsonl"
-    if _runlog_build_at "${_runlog_start_ms:-0}" "" \
+    local -r day_dir="${_runlog_runs_dir:-}/${_runlog_day:-}"
+    local -r index="$day_dir/index.jsonl"
+    if [[ -L "${_runlog_runs_dir:-}" || -L "$day_dir" || -L "$index" ]]
+    then
+      _runlog_fail "index.jsonl or its folder is a symlink" 1
+    elif _runlog_build_at "${_runlog_start_ms:-0}" "" \
       "dur_ms:=$dur" "exit:=${code:-null}" "status=$status" \
       "warns:=$warns" "errors:=$errors" "agent:=$agent"
     then
@@ -626,6 +804,10 @@ runlog_end() {
   fi
   _runlog_on=0
   _runlog_file_on=0
+  if [[ -n "${_runlog_out_fd:-}" ]]; then
+    { exec {_runlog_out_fd}>&-; } 2>/dev/null || true
+    _runlog_out_fd=""
+  fi
   return 0
 }
 

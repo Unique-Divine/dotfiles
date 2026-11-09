@@ -443,7 +443,7 @@ runlog_end 0`)
     expect(r.stdout).toBe("rc=7\n")
     const steps = (await events()).filter((e) => e.event === "step")
     expect(steps[0]).toMatchObject({ name: "fails", exit: 7,
-      cmd: "bash -c exit 7" })
+      cmd: ["bash", "-c", "exit 7"] })
     expect(steps[0]!.dur_ms).toEqual(expect.any(Number))
     expect(steps[1]).toMatchObject({ name: "sleeps", exit: 0 })
     expect(steps[1]!.dur_ms as number).toBeGreaterThanOrEqual(150)
@@ -464,6 +464,15 @@ echo unreachable`)
     expect(evs.at(-1)).toMatchObject({ event: "end", exit: 101,
       status: "failed" })
     expect(await indexLines()).toHaveLength(1)
+  })
+
+  test("cmd is the argv, with option-like arguments kept", async () => {
+    const r = await runBash(`runlog_start steps
+runlog_step quiet true --quiet -f --args -n
+runlog_end 0`)
+    expect(r.stderr).toBe("")
+    const steps = (await events()).filter((e) => e.event === "step")
+    expect(steps[0]!.cmd).toEqual(["true", "--quiet", "-f", "--args", "-n"])
   })
 
   test("runs the command when logging is off", async () => {
@@ -788,4 +797,240 @@ runlog_end 0`, env)
       }
     }
   })
+})
+
+/** Writes an executable `jq` wrapper that fails when `when` matches. */
+const jqWrapper = async (when: string): Promise<string> => {
+  const bin = join(tmp, "jq-bin")
+  await mkdir(bin, { recursive: true })
+  const real = Bun.which("jq")!
+  await writeFile(join(bin, "jq"), `#!/usr/bin/env bash
+case " $* " in ${when}) exit 5 ;; esac
+exec ${JSON.stringify(real)} "$@"
+`, { mode: 0o755 })
+  return `${bin}:${process.env.PATH ?? ""}`
+}
+
+/** The UTC day folder name a run started now gets. */
+const today = (): string =>
+  new Date().toISOString().slice(2, 10).replaceAll("-", "")
+
+describe("stdout under BOKU_RUNLOG_STDOUT", () => {
+  test("a closed reader stops printing, not the run", async () => {
+    const path = await writeScript("head.sh", `runlog_start mf
+for i in 1 2 3; do runlog_event probe "i=$i"; done
+runlog_step sleeps sleep 0.3
+for i in 4 5 6; do runlog_event probe "i=$i"; done
+sed -n 's/^SigIgn:[[:space:]]*/sigign=/p' /proc/self/status >&2 || true
+echo "survived" >&2
+runlog_end 0`)
+    const proc = Bun.spawn(["bash", "-c",
+      `bash ${sq(path)} | head -n 1; echo "rc=\${PIPESTATUS[0]}" >&2`], {
+      cwd: tmp, env: baseEnv({ BOKU_RUNLOG_STDOUT: "1" }),
+      stdout: "pipe", stderr: "pipe",
+    })
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+    ])
+    await proc.exited
+    expect(stdout.trim().split("\n")).toHaveLength(1)
+    expect(JSON.parse(stdout).event).toBe("start")
+    expect(stderr).toContain("survived")
+    expect(stderr).toContain("rc=0")
+    // The child sed doesn't inherit an ignored SIGPIPE (bit 13).
+    const sigign = /sigign=([0-9a-f]+)/.exec(stderr)
+    if (sigign) expect(BigInt(`0x${sigign[1]}`) & 0x1000n).toBe(0n)
+    const evs = await events()
+    expect(evs.map((e) => e.event)).toEqual([
+      "start", "probe", "probe", "probe", "step", "probe", "probe", "probe",
+      "end",
+    ])
+    expect(await indexLines()).toHaveLength(1)
+  })
+
+  test("a step whose output goes to stderr still prints to stdout",
+    async () => {
+      const r = await runBash(`runlog_start mf
+runlog_step say bash -c 'echo said' >&2
+runlog_end 0`, baseEnv({ BOKU_RUNLOG_STDOUT: "1" }))
+      expect(r.stderr).toBe("said\n")
+      const printed = r.stdout.trim().split("\n").map((l) => JSON.parse(l))
+      expect(printed.map((e) => e.event)).toEqual(["start", "step", "end"])
+      expect(printed[1]).toMatchObject({ name: "say",
+        cmd: ["bash", "-c", "echo said"] })
+      expect(await events()).toEqual(printed)
+    })
+})
+
+describe("runlog_start", () => {
+  test("a pattern jq can't compile is dropped with a warning", async () => {
+    const lib = join(tmp, "lib")
+    await mkdir(lib)
+    await writeFile(join(lib, "runlog.sh"), await readFile(writerPath))
+    const patterns = JSON.parse(await readFile(
+      join(import.meta.dir, "redact-patterns.json"), "utf8")) as unknown[]
+    patterns.splice(1, 0, { kind: "bad-lookbehind", regex: "(?<=a|bc)x" })
+    await writeFile(join(lib, "redact-patterns.json"),
+      JSON.stringify(patterns))
+    const planted = plantTokens()[0]!
+    const path = join(tmp, "bad.sh")
+    await writeFile(path, `set -Eeuo pipefail
+source ${sq(join(lib, "runlog.sh"))}
+runlog_start bad
+runlog_event probe ${sq(`s=${planted.text}`)}
+runlog_end 0
+`)
+    const r = await runScript(path, baseEnv({ BOKU_RUNLOG_DEBUG: "1" }))
+    expect(r.stderr).toBe("")
+    const evs = await events()
+    expect(evs.map((e) => e.event)).toEqual(["start", "warn", "probe", "end"])
+    expect(evs[1]).toMatchObject({ code: "redact-pattern-invalid",
+      kind: "bad-lookbehind" })
+    expect(evs.at(-1)).toMatchObject({ warns: 1 })
+    expect(await allStoredText()).not.toContain(planted.secret)
+  })
+
+  test("a start line that can't be built leaves no run file", async () => {
+    const r = await runBash(`runlog_start t
+echo "id=\${BOKU_RUN_ID:-none}"
+runlog_end 0`, baseEnv({ PATH: await jqWrapper("*' -nr '*") }))
+    expect(r.stdout).toBe("id=none\n")
+    const files = (await walk(join(home, "runs")))
+      .filter((f) => f.endsWith(".jsonl"))
+    expect(files).toEqual([])
+  })
+
+  test("RUNLOG_START_GIT adds git with repo, branch, and head only",
+    async () => {
+      const git = JSON.stringify({ repo: "/r", branch: "main", head: "abc",
+        remote: "https://u:p@example.com/x" })
+      await runBash(`RUNLOG_START_GIT=${sq(git)}
+runlog_start one
+runlog_end 0
+RUNLOG_START_GIT='not json'
+runlog_start two
+runlog_end 0`)
+      const starts = (await events()).filter((e) => e.event === "start")
+      const byTool = Object.fromEntries(starts.map((e) => [e.tool, e]))
+      expect(byTool.one!.git).toEqual({ repo: "/r", branch: "main",
+        head: "abc" })
+      expect("git" in byTool.two!).toBe(false)
+    })
+})
+
+describe("symlinks under BOKU_HOME", () => {
+  const producer = `runlog_start sl
+runlog_event probe a=1
+printf 'x\\n' > art.txt
+runlog_artifact report art.txt
+runlog_end 0`
+
+  /** Runs `body` with debug on; returns stderr and what landed outside. */
+  const plantAndRun = async (
+    plant: (outside: string) => Promise<void>, body = producer,
+  ): Promise<{ stderr: string; outside: string[] }> => {
+    const outside = join(tmp, "outside")
+    await mkdir(outside, { recursive: true })
+    await plant(outside)
+    const r = await runBash(body, baseEnv({ BOKU_RUNLOG_DEBUG: "1" }))
+    return { stderr: r.stderr, outside: await walk(outside) }
+  }
+
+  test("a symlinked runs folder is refused", async () => {
+    const r = await plantAndRun((o) => symlink(o, join(home, "runs")))
+    expect(r.outside).toEqual([])
+    expect(r.stderr).toContain("runlog: off:")
+  })
+
+  test("a symlinked day folder is refused", async () => {
+    const r = await plantAndRun(async (o) => {
+      await mkdir(join(home, "runs"), { mode: 0o700 })
+      await symlink(o, join(home, "runs", today()))
+    })
+    expect(r.outside).toEqual([])
+    expect(r.stderr).toContain("runlog: off:")
+  })
+
+  test("a symlinked run folder or run file is refused", async () => {
+    for (const target of ["dir", "file"]) {
+      await rm(join(home, "runs"), { recursive: true, force: true })
+      await rm(join(tmp, "outside"), { recursive: true, force: true })
+      const r = await plantAndRun(async () => {}, `runlog_start sl
+f="$(runlog_file)"
+if [[ ${target} == dir ]]; then
+  ln -s "${join(tmp, "outside")}" "\${f%.jsonl}"
+else
+  mv "$f" "${join(tmp, "outside", "moved.jsonl")}"
+  ln -s "${join(tmp, "outside", "moved.jsonl")}" "$f"
+fi
+printf 'x\\n' > art.txt
+runlog_artifact report art.txt
+runlog_event probe a=1
+runlog_end 0`)
+      expect(r.stderr).toContain("runlog: off:")
+      if (target === "dir") {
+        expect(r.outside).toEqual([])
+      } else {
+        const moved = await readFile(join(tmp, "outside", "moved.jsonl"),
+          "utf8")
+        expect(moved.trim().split("\n")).toHaveLength(1)
+      }
+    }
+  })
+
+  test("a symlinked index is refused", async () => {
+    const r = await plantAndRun(async (o) => {
+      await mkdir(join(home, "runs", today()), { recursive: true,
+        mode: 0o700 })
+      await writeFile(join(o, "index.jsonl"), "")
+      await symlink(join(o, "index.jsonl"),
+        join(home, "runs", today(), "index.jsonl"))
+    })
+    expect(await readFile(join(tmp, "outside", "index.jsonl"), "utf8"))
+      .toBe("")
+    expect(r.stderr).toContain("runlog: off:")
+  })
+})
+
+describe("the jq redaction fallback", () => {
+  test("caps an artifact at 1 MiB and warns", async () => {
+    const planted = plantTokens()[0]!
+    const line = `+ ${"w".repeat(90)} ${planted.text}\n`
+    const big = line.repeat(Math.ceil(1.5 * 1024 * 1024 / line.length))
+    await writeFile(join(tmp, "big.diff"), big)
+    await runBash(`runlog_start cap
+runlog_artifact remerge-diff big.diff
+runlog_end 0`, baseEnv({ BOKU_RUNS_CLI: "/bin/false" }))
+    const evs = await events()
+    expect(evs.map((e) => [e.event, e.code ?? e.kind ?? null])).toEqual([
+      ["start", null], ["warn", "redact-fallback-capped"],
+      ["artifact", "remerge-diff"], ["end", null],
+    ])
+    const art = evs.find((e) => e.event === "artifact")!
+    expect(art.truncated).toBe(true)
+    expect(art.bytes as number).toBeLessThanOrEqual(1024 * 1024)
+    const runFile = (await walk(join(home, "runs")))
+      .find((f) => f.endsWith("remerge.diff"))!
+    const kept = await readFile(runFile, "utf8")
+    expect(kept.endsWith("\n")).toBe(true)
+    expect(kept).not.toContain(planted.secret)
+  }, 60_000)
+
+  test("a source in the run folder is deleted when redaction fails",
+    async () => {
+      const planted = plantTokens()[0]!
+      const r = await runBash(`runlog_start fail
+d="$(runlog_dir)"
+printf '%s\\n' ${sq(planted.text)} > "$d/report.md"
+runlog_artifact report "$d/report.md"
+ls -A "$d"
+runlog_end 0`, baseEnv({ BOKU_RUNS_CLI: "/bin/false",
+        PATH: await jqWrapper("*' -Rsj '*") }))
+      expect(r.stdout).toBe("")
+      const evs = await events()
+      expect(evs.map((e) => e.code ?? e.event)).toEqual([
+        "start", "artifact-failed", "end",
+      ])
+      expect(await allStoredText()).not.toContain(planted.secret)
+    })
 })
