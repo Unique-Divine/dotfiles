@@ -215,7 +215,8 @@ describe("pure helpers", () => {
 
   test("printable escapes C0, DEL, and C1 but keeps newline and tab", () => {
     expect(printable("a\tb\nc")).toBe("a\tb\nc")
-    expect(printable(`${esc}]52;c;cHduZWQK\x07`)).toBe("\\x1b]52;c;cHduZWQK\\x07")
+    expect(printable(`${esc}]52;c;cHduZWQK\x07`))
+      .toBe("\\x1b]52;c;cHduZWQK\\x07")
     expect(printable("\x00\r\x7f\x9b\u00a0é😀"))
       .toBe("\\x00\\x0d\\x7f\\x9b\u00a0é😀")
     expect(printable(printable(`${esc}[31m`))).toBe("\\x1b[31m")

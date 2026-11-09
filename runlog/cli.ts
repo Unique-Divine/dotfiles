@@ -665,8 +665,9 @@ export const extractChallenges = (markdown: string): string | null => {
 /** The longest `--since` window: about ten years. */
 export const maxSinceDays = 3650
 
-const isoSince =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/
+/** `YYYY-MM-DD`, then optionally `[T ]HH:MM[:SS[.fff]]` and a zone. */
+const isoSince = new RegExp("^(\\d{4})-(\\d{2})-(\\d{2})"
+  + "(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:\\d{2})?)?$")
 
 /**
  * `Nd`, `Nh`, or an ISO date or datetime (`2026-11-01`,
