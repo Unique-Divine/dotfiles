@@ -1,18 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  statSync, writeFileSync,
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
   cutStreamLine, dayOf, extractChallenges, liveStatus, parseExitCode,
-  parseSince, pathBytes, tapNotice, unwrapShell, type Event, type LiveProbe,
+  parseSince, pathBytes, pruneSummary, renderStreamLine, tapNotice,
+  unwrapShell, type Event, type LiveProbe,
 } from "./cli.ts"
 import {
-  buildEvent, indexPath, runFilePath, startRun, type Env,
+  buildEvent, indexLine, indexPath, runFilePath, startRun, type Env,
   type RunIdentity, type RunLog,
 } from "./runlog.ts"
 
@@ -78,14 +79,16 @@ const dayAgo = (n: number): string => dayOf(new Date(Date.now() - n * dayMs))
 const plantRun = (
   home: string, runId: string, opts: {
     parent?: string | null; end?: { exit: number; status: string } | null
-    pid?: number; pidStart?: number
+    pid?: number; pidStart?: number; ts?: Date
+    /** Also append the run's line to the day's index. */
+    indexed?: boolean
   } = {},
 ): void => {
   const id: RunIdentity = {
     source: "dotfiles", runId, parentRunId: opts.parent ?? null,
     rootRunId: opts.parent ?? runId, tool: runId.split("-")[1]!,
   }
-  const startTs = new Date(Date.UTC(
+  const startTs = opts.ts ?? new Date(Date.UTC(
     2000 + Number(runId.slice(0, 2)), Number(runId.slice(2, 4)) - 1,
     Number(runId.slice(4, 6)), 12,
   ))
@@ -101,11 +104,49 @@ const plantRun = (
   const dir = join(home, "runs", runId.slice(0, 6))
   mkdirSync(dir, { recursive: true })
   writeFileSync(runFilePath(home, runId), `${lines.join("\n")}\n`)
+  if (opts.indexed) {
+    appendFileSync(indexPath(home, runId.slice(0, 6)), `${indexLine({
+      id, ts: startTs.toISOString(), durMs: 5, exit: opts.end?.exit ?? null,
+      status: opts.end?.status ?? "incomplete", warns: 0, errors: 0,
+      agent: null,
+    })}\n`)
+  }
 }
+
+/** Noon UTC of a day plus `ms`, for runs started in the same second. */
+const noonPlus = (day: string, ms: number): Date =>
+  new Date(Date.UTC(2000 + Number(day.slice(0, 2)),
+    Number(day.slice(2, 4)) - 1, Number(day.slice(4, 6)), 12, 0, 0, ms))
 
 const stampFor = (day: string): string => `${day}T120000Z`
 
 describe("pure helpers", () => {
+  test("renderStreamLine prints Codex items and unknown lines", () => {
+    const item = JSON.stringify({ type: "item.completed", item: {
+      type: "command_execution", command: "/usr/bin/bash -lc 'just test'",
+      aggregated_output: "ok 1\nok 2\n", exit_code: 0,
+    } })
+    expect(renderStreamLine(item)).toEqual([
+      "item.completed command_execution exit=0",
+      "  $ just test", "  ok 1", "  ok 2",
+    ])
+    expect(renderStreamLine('{"type":"turn.started"}')).toEqual([
+      "turn.started", "  {", "    \"type\": \"turn.started\"", "  }",
+    ])
+    expect(renderStreamLine("not json")).toEqual(["not json"])
+  })
+
+  test("pruneSummary is one line", () => {
+    const base = {
+      removedDays: ["261001"], bytesFreed: 2150, cappedDays: [], bytesLeft: 0,
+      reindexedDays: [],
+    }
+    expect(pruneSummary(base)).toBe("removed 1 day (2.1 KB freed)")
+    expect(pruneSummary({
+      ...base, removedDays: [], bytesFreed: 0, reindexedDays: ["a", "b"],
+    })).toBe("removed 0 days (0 B freed); reindexed 2 days")
+  })
+
   test("unwrapShell undoes Codex's login-shell wrapper", () => {
     expect(unwrapShell("/usr/bin/bash -lc 'just test'")).toBe("just test")
     expect(unwrapShell("/usr/bin/zsh -lc 'echo '\"'\"'hi'\"'\"''"))
@@ -310,6 +351,19 @@ describe("tap", () => {
       expect(events.at(-1)!.event).toBe("end")
     }))
 
+  test("a crafted run id writes nothing outside BOKU_HOME",
+    withHome(async (dir) => {
+      const home = join(dir, "home")
+      mkdirSync(home)
+      const result = await runCli(["tap", "--cli", "claude"], baseEnv(home, {
+        BOKU_RUN_ID: "261109T000000Z-x/../../../../escaped",
+      }), fixture("claude-stream.jsonl"))
+      expect(result.exitCode).toBe(0)
+      expect(result.stderr).toContain("agent: Bash just test")
+      expect(readdirSync(dir)).toEqual(["home"])
+      expect(readdirSync(home)).toEqual([])
+    }))
+
   test("without a run it only shows progress", withHome(async (home) => {
     const result = await runCli(["tap", "--cli", "codex"], baseEnv(home),
       fixture("codex-stream.jsonl"))
@@ -348,13 +402,95 @@ describe("reader", () => {
     expect(missing.stderr).toContain("no run matches")
   }))
 
-  test("an ambiguous suffix lists its matches", withHome(async (home) => {
-    const day = dayAgo(0)
-    plantRun(home, `${stampFor(day)}-a-0abc`, { end: { exit: 0, status: "ok" } })
-    plantRun(home, `${stampFor(day)}-b-1abc`, { end: { exit: 0, status: "ok" } })
-    const result = await runCli(["show", "abc"], baseEnv(home))
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("matches 2 runs")
+  test("runs in one second sort by start time, not by hex",
+    withHome(async (home) => {
+      for (const day of [dayAgo(0), dayAgo(10)]) {
+        const stamp = stampFor(day)
+        const ended = { exit: 0, status: "ok" }
+        // Start order is ffff, aaaa, 0000: the reverse of the id order.
+        for (const [hex, ms] of [["ffff", 100], ["aaaa", 200], ["0000", 300]]) {
+          plantRun(home, `${stamp}-top-${hex}`, {
+            end: ended, ts: noonPlus(day, Number(ms)), indexed: true,
+          })
+        }
+        const parent = `${stamp}-top-0000`
+        for (const [hex, ms] of [["fff1", 400], ["0001", 500]]) {
+          plantRun(home, `${stamp}-kid-${hex}`, {
+            parent, end: ended, ts: noonPlus(day, Number(ms)), indexed: true,
+          })
+        }
+      }
+      const list = await runCli([], baseEnv(home))
+      const ids = list.stdout.trimEnd().split("\n")
+        .map((row) => row.split("  ").at(-1)!.slice(-4))
+      expect(ids).toEqual(["0000", "aaaa", "ffff", "0000", "aaaa", "ffff"])
+      expect(list.stdout.split("\n")[0]).toContain(stampFor(dayAgo(0)))
+
+      const last = await runCli(["show", "last", "--tree"], baseEnv(home))
+      const heads = last.stdout.split("\n")
+        .filter((l) => /^ *\d{6}T\d{6}Z-/.test(l)).map((l) => l.trim())
+      expect(heads.map((h) => h.split(" ")[0]!.slice(-8))).toEqual([
+        "top-0000", "kid-fff1", "kid-0001",
+      ])
+      expect(heads[0]).toContain(stampFor(dayAgo(0)))
+    }))
+
+  test("index lines with a bad run id are ignored", withHome(async (home) => {
+    const past = dayAgo(10)
+    plantRun(home, `${stampFor(past)}-good-aaaa`, {
+      end: { exit: 0, status: "ok" }, indexed: true,
+    })
+    appendFileSync(indexPath(home, past), `${JSON.stringify({
+      run_id: `${stampFor(past)}-x/../../../../escaped`, parent_run_id: null,
+      ts: noonPlus(past, 1).toISOString(), status: "ok",
+    })}\n`)
+    const list = await runCli([], baseEnv(home))
+    expect(list.stdout).toContain("good-aaaa")
+    expect(list.stdout).not.toContain("escaped")
+    const show = await runCli(["show", "escaped"], baseEnv(home))
+    expect(show.exitCode).toBe(1)
+    expect(show.stderr).toContain("no run matches")
+  }))
+
+  test("an ambiguous id picks the newest and names the others",
+    withHome(async (home) => {
+      const day = dayAgo(0)
+      const ok = { exit: 0, status: "ok" }
+      const older = `${stampFor(day)}-b-1abc`
+      const newer = `${stampFor(day)}-a-0abc`
+      plantRun(home, older, { end: ok, ts: noonPlus(day, 1) })
+      plantRun(home, newer, { end: ok, ts: noonPlus(day, 2) })
+      const result = await runCli(["show", "abc"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.split("\n")[0]).toContain(newer)
+      expect(result.stderr).toBe(`boku-runs: "abc" matches 2 runs; showing ${
+        newer}; others: ${older}\n`)
+    }))
+
+  test("ids match by prefix or any substring", withHome(async (home) => {
+    const ok = { exit: 0, status: "ok" }
+    const today = `${stampFor(dayAgo(0))}-git_mf-28b9`
+    const past = `${stampFor(dayAgo(10))}-sync-28b9`
+    plantRun(home, today, { end: ok })
+    plantRun(home, past, { end: ok })
+    for (const [query, want] of [
+      [dayAgo(10), past], [`${dayAgo(0)}T12`, today], ["git_mf", today],
+      ["sync-28", past], ["28b9", today],
+    ] as const) {
+      const result = await runCli(["show", query], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.split("\n")[0]).toContain(want)
+    }
+  }))
+
+  test("an empty log says so", withHome(async (home) => {
+    for (const args of [[], ["list"]]) {
+      const result = await runCli(args, baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe("")
+      expect(result.stderr).toBe(
+        `boku-runs: no runs yet in ${join(home, "runs")}\n`)
+    }
   }))
 
   test("no end: running, then incomplete", withHome(async (home) => {
@@ -408,16 +544,46 @@ describe("reader", () => {
     expect(refused.exitCode).toBe(1)
     expect(existsSync(indexPath(home, today))).toBe(false)
 
-    // Past days are read from their index.
+    const missing = await runCli(["reindex", "251231"], baseEnv(home))
+    expect(missing.exitCode).toBe(0)
+    expect(missing.stderr).toBe("no runs for 251231\n")
+    expect(existsSync(join(home, "runs", "251231"))).toBe(false)
+
+    // Past days are read from their index, plus run files it lacks.
     writeFileSync(indexPath(home, past), `${JSON.stringify({
-      run_id: `${stampFor(past)}-from-dddd`, parent_run_id: null,
+      run_id: `${stampFor(past)}-git_mf-aaaa`, parent_run_id: null,
       ts: `${new Date(Date.now() - 10 * dayMs).toISOString()}`,
-      status: "ok", exit: 0, dur_ms: 1, warns: 0, errors: 0,
+      status: "from-index", exit: 0, dur_ms: 1, warns: 0, errors: 0,
     })}\n`)
     const list = await runCli([], baseEnv(home))
-    expect(list.stdout).toContain("from-dddd")
-    expect(list.stdout).not.toContain("git_mf-aaaa")
+    expect(list.stdout).toMatch(/from-index .*git_mf-aaaa/)
+    expect(list.stdout).toMatch(/incomplete .*sync-bbbb/)
   }))
+
+  test("a past day shows killed runs its index lacks, with children",
+    withHome(async (home) => {
+      const past = dayAgo(10)
+      const stamp = stampFor(past)
+      const done = { exit: 0, status: "ok" }
+      plantRun(home, `${stamp}-done-aaaa`, {
+        end: done, indexed: true, ts: noonPlus(past, 1),
+      })
+      const killed = `${stamp}-sync-bbbb`
+      plantRun(home, killed, { ts: noonPlus(past, 2) })
+      plantRun(home, `${stamp}-git_mf-cccc`, {
+        parent: killed, end: { exit: 3, status: "stopped" }, indexed: true,
+        ts: noonPlus(past, 3),
+      })
+      const list = await runCli([], baseEnv(home))
+      const rows = list.stdout.trimEnd().split("\n")
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toMatch(new RegExp(`incomplete .*${killed}`))
+      expect(rows[1]).toContain("done-aaaa")
+
+      const tree = await runCli(["show", "sync-bbbb", "--tree"], baseEnv(home))
+      expect(tree.exitCode).toBe(0)
+      expect(tree.stdout).toContain(`  ${stamp}-git_mf-cccc  git_mf  stopped`)
+    }))
 
   test("agent --at shows the line with context", withHome(async (home) => {
     const run = hostRun(home)
@@ -432,11 +598,51 @@ describe("reader", () => {
     const lines = at.stdout.split("\n")
     expect(lines[0]).toMatch(/^ {4}7 {2}assistant Bash: curl/)
     expect(at.stdout).toMatch(/> {2}10 {2}user result error: Exit code 1/)
-    expect(at.stdout).toContain("\"tool_use_id\": \"toolu_04\"")
+    // The line itself: a header, then its text with real newlines.
+    const at10 = lines.findIndex((l) => l.startsWith(">  10"))
+    expect(lines.slice(at10 + 1, at10 + 5)).toEqual([
+      "        user tool_result toolu_04 error",
+      "          Exit code 1",
+      "          error[E0425]: cannot find value `x` in this scope",
+      "           --> src/a.rs:3:5",
+    ])
+    expect(at.stdout).not.toContain("\\n")
     expect(at.stdout).toMatch(/ {3}13 {2}result success/)
+
+    const tool = await runCli(
+      ["agent", run.runId!.slice(-4), "--at", "7", "-C", "0"], baseEnv(home))
+    expect(tool.stdout.split("\n").slice(1, 4)).toEqual([
+      "        assistant tool_use Bash toolu_03",
+      "          command: curl -s 'https://ci.example.com/status?token="
+        + "[redacted:token-value]'",
+      "          description: Check CI status",
+    ])
+
+    const raw = await runCli(
+      ["agent", run.runId!.slice(-4), "--at", "10", "--raw"], baseEnv(home))
+    expect(raw.stdout).toContain("\"tool_use_id\": \"toolu_04\"")
+    expect(raw.stdout).not.toContain("user tool_result toolu_04")
     const bad = await runCli(
       ["agent", run.runId!.slice(-4), "--at", "99"], baseEnv(home))
     expect(bad.exitCode).toBe(1)
+  }))
+
+  test("agent last is the newest run with an agent", withHome(async (home) => {
+    const none = await runCli(["agent", "last"], baseEnv(home))
+    expect(none.exitCode).toBe(1)
+    expect(none.stderr).toContain("no agent runs yet")
+
+    const run = hostRun(home)
+    await runCli(["tap", "--cli", "claude"],
+      baseEnv(home, { BOKU_RUN_ID: run.runId! }), fixture("claude-stream.jsonl"))
+    run.end(0)
+    const later = hostRun(home, "plain")
+    later.end(0)
+    const result = await runCli(["agent", "last"], baseEnv(home))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trimEnd().split("\n")).toHaveLength(13)
+    const show = await runCli(["show", "last"], baseEnv(home))
+    expect(show.stdout.split("\n")[0]).toContain(later.runId!)
   }))
 
   test("challenges prints each section, newest first", withHome(async (home) => {
@@ -484,6 +690,9 @@ describe("maintenance", () => {
     const result = await runCli(["prune", "30"],
       baseEnv(home, { BOKU_RUN_ID: parent, BOKU_ROOT_RUN_ID: parent }))
     expect(result.exitCode).toBe(0)
+    // The planted days have no index, so prune rebuilds the two it keeps.
+    expect(result.stderr).toMatch(
+      /^removed 2 days \(\d+\.\d KB freed\); reindexed 2 days\n$/)
     const days = readdirSync(join(home, "runs")).sort()
     expect(days).toEqual([30, 10, 1, 0].map(dayAgo).sort())
 
@@ -498,6 +707,36 @@ describe("maintenance", () => {
     expect(step.bytes_freed).toBeGreaterThan(2000)
     expect(events.at(-1)).toMatchObject({ event: "end", exit: 0, status: "ok" })
   }))
+
+  test("prune reindexes past days with a missing or partial index",
+    withHome(async (home) => {
+      const partial = dayAgo(10)
+      const none = dayAgo(12)
+      const done = { exit: 0, status: "ok" }
+      plantRun(home, `${stampFor(partial)}-done-aaaa`,
+        { end: done, indexed: true })
+      plantRun(home, `${stampFor(partial)}-killed-bbbb`)
+      plantRun(home, `${stampFor(none)}-done-cccc`, { end: done })
+      const full = dayAgo(14)
+      plantRun(home, `${stampFor(full)}-done-dddd`, { end: done, indexed: true })
+      const fullIndex = readFileSync(indexPath(home, full), "utf8")
+
+      const result = await runCli(["prune", "30"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(readEvents(indexPath(home, partial))
+        .map((l) => [l.run_id, l.status])).toEqual([
+        [`${stampFor(partial)}-done-aaaa`, "ok"],
+        [`${stampFor(partial)}-killed-bbbb`, "incomplete"],
+      ])
+      expect(readEvents(indexPath(home, none)).map((l) => l.run_id))
+        .toEqual([`${stampFor(none)}-done-cccc`])
+      expect(readFileSync(indexPath(home, full), "utf8")).toBe(fullIndex)
+      const pruneFile = readdirSync(join(home, "runs", dayAgo(0)))
+        .find((n) => n.includes("-prune-") && n.endsWith(".jsonl"))!
+      const step = readEvents(join(home, "runs", dayAgo(0), pruneFile))
+        .find((e) => e.event === "step")!
+      expect(step).toMatchObject({ removed_days: 0, reindexed_days: 2 })
+    }))
 
   test("prune enforces the size cap, oldest first", withHome(async (home) => {
     plantDay(home, dayAgo(5), 10000)

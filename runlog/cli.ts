@@ -11,8 +11,8 @@ import { dirname, join } from "node:path"
 import { Command } from "commander"
 
 import {
-  attachRun, bokuHome, cutString, ensureDir, indexLine,
-  indexPath, readBootId, readPidStart, redact, runDirPath, runFilePath,
+  attachRun, bokuHome, checkedRunPaths, cutString, ensureDir, indexLine,
+  indexPath, isRunId, readBootId, readPidStart, redact, runFilePath,
   startRun, type Env, type Fields, type RunIdentity,
 } from "./runlog.ts"
 
@@ -79,7 +79,7 @@ export const dayAge = (day: string, now: Date): number =>
 
 const isDay = (name: string): boolean => /^\d{6}$/.test(name)
 const isRunFile = (name: string): boolean =>
-  /^\d{6}T\d{6}Z-.+\.jsonl$/.test(name)
+  name.endsWith(".jsonl") && isRunId(name.slice(0, -".jsonl".length))
 
 export const listDays = (home: string): string[] => {
   try {
@@ -165,7 +165,8 @@ export const summarizeEvents = (
 
 export const summaryFromIndex = (line: Event): RunSummary | null => {
   const runId = str(line.run_id)
-  if (!runId) return null
+  // An id that isn't the exact shape could name a path outside runs/.
+  if (!runId || !isRunId(runId)) return null
   return {
     runId,
     parentRunId: str(line.parent_run_id),
@@ -181,26 +182,48 @@ export const summaryFromIndex = (line: Event): RunSummary | null => {
   }
 }
 
-/** Summaries from a day's run files, read directly. */
-export const scanDay = (
-  home: string, day: string, noEnd: (start: Event) => ListStatus,
-): RunSummary[] => {
-  let names: string[] = []
+/** Ids of a day's run files, sorted. */
+export const runFileIds = (home: string, day: string): string[] => {
   try {
-    names = readdirSync(join(home, "runs", day)).filter(isRunFile)
+    return readdirSync(join(home, "runs", day)).filter(isRunFile)
+      .map((name) => name.slice(0, -".jsonl".length)).sort()
   } catch {
     return []
   }
-  return names.sort().map((name) => {
-    const runId = name.slice(0, -".jsonl".length)
-    const events = readJsonl(join(home, "runs", day, name))
-    return summarizeEvents(runId, events, noEnd)
-  })
+}
+
+/** Summaries from a day's run files, read directly, except `skip`. */
+export const scanDay = (
+  home: string, day: string, noEnd: (start: Event) => ListStatus,
+  skip: ReadonlySet<string> = new Set(),
+): RunSummary[] => runFileIds(home, day)
+  .filter((runId) => !skip.has(runId))
+  .map((runId) => summarizeEvents(
+    runId, readJsonl(runFilePath(home, runId)), noEnd))
+
+/** A past day's index summaries, one per run id. */
+const indexSummaries = (home: string, day: string): RunSummary[] => {
+  const byId = new Map<string, RunSummary>()
+  for (const line of readJsonl(indexPath(home, day))) {
+    const summary = summaryFromIndex(line)
+    if (summary && !byId.has(summary.runId)) byId.set(summary.runId, summary)
+  }
+  return [...byId.values()]
+}
+
+/** True when a day has run files its index is missing, or no index. */
+export const indexIncomplete = (home: string, day: string): boolean => {
+  const ids = runFileIds(home, day)
+  if (!ids.length) return false
+  if (!existsSync(indexPath(home, day))) return true
+  const listed = new Set(indexSummaries(home, day).map((r) => r.runId))
+  return ids.some((runId) => !listed.has(runId))
 }
 
 /**
- * Every run, oldest first. Today and yesterday are read from run files;
- * older days from their index, or their run files when it is missing.
+ * Every run, oldest first. Today and yesterday are read from run files.
+ * Older days come from their index, plus any run file the index lacks: a
+ * killed run never writes its index line.
  */
 export const loadRuns = (
   home: string, now: Date = new Date(), probe: LiveProbe = systemProbe(),
@@ -209,36 +232,77 @@ export const loadRuns = (
   const live = (start: Event): ListStatus => liveStatus(start, probe, now)
   const runs: RunSummary[] = []
   for (const day of listDays(home)) {
-    const index = indexPath(home, day)
-    if (recent.has(day) || !existsSync(index)) {
-      const noEnd = recent.has(day) ? live : (): ListStatus => "incomplete"
-      runs.push(...scanDay(home, day, noEnd))
+    if (recent.has(day)) {
+      runs.push(...scanDay(home, day, live))
       continue
     }
-    for (const line of readJsonl(index)) {
-      const summary = summaryFromIndex(line)
-      if (summary) runs.push(summary)
-    }
+    const indexed = indexSummaries(home, day)
+    runs.push(...indexed)
+    const skip = new Set(indexed.map((r) => r.runId))
+    runs.push(...scanDay(home, day, () => "incomplete", skip))
   }
-  return runs.sort((a, b) => a.runId.localeCompare(b.runId))
+  return runs.sort(compareRuns)
 }
 
-/** Resolves `last` or any unique suffix of a run id. */
-export const resolveRunId = (runs: RunSummary[], query: string): string => {
+/** Milliseconds of the `yymmddTHHMMSSZ` stamp a run id starts with. */
+export const stampMs = (runId: string): number => {
+  const m = /^(\d{2})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(runId)
+  if (!m) return 0
+  const [y, mo, d, h, mi, se] = m.slice(1).map(Number) as number[]
+  return Date.UTC(2000 + y!, mo! - 1, d!, h!, mi!, se!)
+}
+
+/** A run's start time in ms: its `ts`, else the stamp in its id. */
+export const startMs = (run: RunSummary): number => {
+  const ms = Date.parse(run.ts)
+  return Number.isFinite(ms) ? ms : stampMs(run.runId)
+}
+
+/**
+ * Oldest first by start time. The id only breaks ties: its 4 hex digits
+ * are random, so runs started in the same second would sort at random.
+ */
+export const compareRuns = (a: RunSummary, b: RunSummary): number =>
+  startMs(a) - startMs(b)
+    || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0)
+
+export interface ResolveOptions {
+  /** `last` means the newest run with an `agent` or `agent-session`. */
+  agent?: boolean
+  /** Gets a one-line note when a query matches several runs. */
+  note?: (text: string) => void
+}
+
+/**
+ * Resolves `last`, a whole id, or any part of one (a prefix such as the
+ * time, a suffix such as the hex, or any substring). `runs` must be oldest
+ * first. Several matches resolve to the newest, with a note naming the
+ * others.
+ */
+export const resolveRunId = (
+  runs: RunSummary[], query: string, opts: ResolveOptions = {},
+): string => {
   if (query === "last") {
-    const top = runs.filter((r) => r.parentRunId === null)
-    const last = top.at(-1)
-    if (!last) throw new Error("no runs yet")
+    const pool = opts.agent
+      ? runs.filter((r) => r.agent !== null)
+      : runs.filter((r) => r.parentRunId === null)
+    const last = pool.at(-1)
+    if (!last) throw new Error(opts.agent ? "no agent runs yet" : "no runs yet")
     return last.runId
   }
   const ids = [...new Set(runs.map((r) => r.runId))]
-  const exact = ids.find((id) => id === query)
-  if (exact) return exact
-  const matches = ids.filter((id) => id.endsWith(query))
-  if (matches.length === 1) return matches[0]!
-  if (matches.length === 0) throw new Error(`no run matches "${query}"`)
-  throw new Error(`"${query}" matches ${matches.length} runs:\n  ${
-    matches.join("\n  ")}`)
+  if (ids.includes(query)) return query
+  const matches = ids.filter((id) => id.includes(query))
+  const newest = matches.at(-1)
+  if (!newest) throw new Error(`no run matches "${query}"`)
+  if (matches.length > 1) {
+    const others = matches.slice(0, -1).reverse()
+    const shown = others.slice(0, 5).join(", ")
+    const more = others.length > 5 ? `, and ${others.length - 5} more` : ""
+    opts.note?.(`"${query}" matches ${matches.length} runs; showing ${
+      newest}; others: ${shown}${more}`)
+  }
+  return newest
 }
 
 // ---------------------------------------------------------------- format
@@ -326,7 +390,7 @@ export const showLines = (
       formatDuration(run.durMs)}`
     : runId
   const lines = [`${pad}${header}`]
-  for (const event of readJsonl(runFilePath(home, runId))) {
+  for (const event of readJsonl(checkedRunPaths(home, runId).file)) {
     lines.push(`${pad}  ${formatEvent(event)}`)
   }
   if (tree) {
@@ -408,8 +472,83 @@ export const describeStreamLine = (line: string): string => {
   return type
 }
 
+const indentLines = (text: string, pad: string): string[] =>
+  text.replace(/\n$/, "").split("\n").map((line) => `${pad}${line}`)
+
+/** A tool call's input: one `key: value` each, long strings below. */
+const inputText = (input: unknown): string => {
+  if (!input || typeof input !== "object") return JSON.stringify(input)
+  return Object.entries(input as Fields).map(([key, value]) => {
+    if (typeof value !== "string") return `${key}: ${JSON.stringify(value)}`
+    if (!value.includes("\n")) return `${key}: ${value}`
+    return [`${key}:`, ...indentLines(value, "  ")].join("\n")
+  }).join("\n")
+}
+
+/**
+ * A stream line, readable: a header per part (the event type, block type,
+ * and tool name or id), then its text with real newlines, indented.
+ * Lines this doesn't know print as indented JSON.
+ */
+export const renderStreamLine = (line: string): string[] => {
+  let obj: Fields
+  try {
+    obj = JSON.parse(line) as Fields
+  } catch {
+    return [line]
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [line]
+  const out: string[] = []
+  const part = (header: string, body: string | null): void => {
+    out.push(header)
+    if (body) out.push(...indentLines(body, "  "))
+  }
+  const json = (value: unknown): string => JSON.stringify(value, null, 2)
+  const type = str(obj.type) ?? "?"
+  const message = (obj.message ?? {}) as Fields
+  const item = (obj.item ?? {}) as Fields
+  if (type === "assistant" || type === "user") {
+    if (typeof message.content === "string") {
+      part(`${type} text`, message.content)
+    }
+    const blocks = Array.isArray(message.content) ? message.content : []
+    for (const block of blocks as Fields[]) {
+      const kind = str(block?.type) ?? "?"
+      if (kind === "text") {
+        part(`${type} text`, str(block.text))
+      } else if (kind === "thinking") {
+        part(`${type} thinking`, str(block.thinking))
+      } else if (kind === "tool_use") {
+        const name = `${block.name ?? "?"} ${block.id ?? ""}`.trimEnd()
+        part(`${type} tool_use ${name}`, inputText(block.input))
+      } else if (kind === "tool_result") {
+        const flag = block.is_error ? " error" : ""
+        part(`${type} tool_result ${block.tool_use_id ?? ""}${flag}`,
+          textOf(block.content))
+      } else {
+        part(`${type} ${kind}`, json(block))
+      }
+    }
+    if (!out.length) part(type, json(obj))
+  } else if (type === "result") {
+    part(`result ${obj.subtype ?? ""}`.trimEnd(), str(obj.result))
+  } else if (type.startsWith("item.") && item.type === "command_execution") {
+    const exit = item.exit_code === null || item.exit_code === undefined
+      ? "" : ` exit=${item.exit_code}`
+    const cmd = `$ ${unwrapShell(str(item.command) ?? "")}`
+    const output = str(item.aggregated_output) ?? ""
+    part(`${type} command_execution${exit}`,
+      output ? `${cmd}\n${output}` : cmd)
+  } else if (type.startsWith("item.") && typeof item.text === "string") {
+    part(`${type} ${item.type ?? "?"}`, item.text)
+  } else {
+    part(type, json(obj))
+  }
+  return out
+}
+
 export const agentLines = (
-  stream: string, at: number | null, context = 3,
+  stream: string, at: number | null, context = 3, raw = false,
 ): string[] => {
   const lines = stream.split("\n")
   if (lines.at(-1) === "") lines.pop()
@@ -427,7 +566,7 @@ export const agentLines = (
     const mark = n === at ? ">" : " "
     const text = describeStreamLine(lines[n - 1]!)
     out.push(`${mark}${String(n).padStart(4)}  ${text}`)
-    if (n === at) {
+    if (n === at && raw) {
       let full = lines[n - 1]!
       try {
         full = JSON.stringify(JSON.parse(full), null, 2)
@@ -435,6 +574,8 @@ export const agentLines = (
         // Show the raw line.
       }
       out.push(...full.split("\n").map((l) => `        ${l}`))
+    } else if (n === at) {
+      out.push(...renderStreamLine(lines[n - 1]!).map((l) => `        ${l}`))
     }
   }
   return out
@@ -473,7 +614,7 @@ export const challengeLines = (
     if (Date.parse(run.ts) < since.getTime()) continue
     let report: string
     try {
-      const file = join(runDirPath(home, run.runId), "report.md")
+      const file = join(checkedRunPaths(home, run.runId).dir, "report.md")
       report = readFileSync(file, "utf8")
     } catch {
       continue
@@ -513,13 +654,15 @@ export const pathBytes = (path: string): number => {
 /**
  * Rebuilds a past day's index from its run files: temp file, then rename.
  * Today and yesterday are refused, since their files may still grow.
+ * Returns the run count, or null when the day has no folder.
  */
 export const reindexDay = (
   home: string, day: string, now: Date = new Date(),
-): number => {
+): number | null => {
   if (recentDays(now).has(day)) {
     throw new Error(`${day} is today or yesterday; its files are read directly`)
   }
+  if (!existsSync(join(home, "runs", day))) return null
   const runs = scanDay(home, day, () => "incomplete")
   const lines = runs.map((r) => {
     const id: RunIdentity = {
@@ -553,11 +696,14 @@ export interface PruneResult {
   cappedDays: string[]
   /** Bytes left in `runs/`. */
   bytesLeft: number
+  /** Past days whose index was missing a run, rebuilt. */
+  reindexedDays: string[]
 }
 
 /**
  * Deletes day folders older than `days`, then the oldest days while `runs/`
- * is over `maxBytes`. Never touches today or yesterday (UTC).
+ * is over `maxBytes`. Never touches today or yesterday (UTC). Then rebuilds
+ * the index of each kept past day that is missing one or lacks a run.
  */
 export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
   const runs = join(home, "runs")
@@ -565,6 +711,7 @@ export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
   const candidates = listDays(home).filter((day) => !keep.has(day))
   const result: PruneResult = {
     removedDays: [], bytesFreed: 0, cappedDays: [], bytesLeft: 0,
+    reindexedDays: [],
   }
   const remove = (day: string): void => {
     const path = join(runs, day)
@@ -586,6 +733,12 @@ export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
     total -= result.bytesFreed - before
   }
   result.bytesLeft = total
+  for (const day of candidates) {
+    if (result.removedDays.includes(day)) continue
+    if (!indexIncomplete(home, day)) continue
+    reindexDay(home, day, opts.now)
+    result.reindexedDays.push(day)
+  }
   return result
 }
 
@@ -864,6 +1017,27 @@ const print = (lines: string[]): void => {
   if (lines.length) process.stdout.write(`${lines.join("\n")}\n`)
 }
 
+const note = (text: string): void => {
+  process.stderr.write(`boku-runs: ${text}\n`)
+}
+
+/** `512 B`, `2.1 KB`, `3.4 MB`. */
+export const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** Prune's one-line summary. */
+export const pruneSummary = (result: PruneResult): string => {
+  const n = result.removedDays.length
+  const parts = [`removed ${n} day${n === 1 ? "" : "s"} (${
+    formatBytes(result.bytesFreed)} freed)`]
+  const r = result.reindexedDays.length
+  if (r) parts.push(`reindexed ${r} day${r === 1 ? "" : "s"}`)
+  return parts.join("; ")
+}
+
 const guard = (fn: () => void | Promise<void>) => async (): Promise<void> => {
   try {
     await fn()
@@ -886,7 +1060,12 @@ export const createProgram = (env: Env = process.env): Command => {
   const program = new Command()
   const home = (): string => bokuHome(env)
   const listAction = (opts: { limit: string }) => guard(() => {
-    print(listLines(loadRuns(home()), parseIntArg(opts.limit, "--limit")))
+    const runs = loadRuns(home())
+    if (!runs.some((r) => r.parentRunId === null)) {
+      note(`no runs yet in ${join(home(), "runs")}`)
+      return
+    }
+    print(listLines(runs, parseIntArg(opts.limit, "--limit")))
   })
 
   program
@@ -901,26 +1080,32 @@ export const createProgram = (env: Env = process.env): Command => {
     .action((opts: { limit: string }) => listAction(opts)())
 
   program.command("show <id>")
-    .description("a run's events; <id> is last or any unique suffix")
+    .description("a run's events; <id> is last or any part of a run id")
     .option("--tree", "include child runs")
     .action((query: string, opts: { tree?: boolean }) => guard(() => {
       const runs = loadRuns(home())
-      const runId = resolveRunId(runs, query)
+      const runId = resolveRunId(runs, query, { note })
       print(showLines(home(), runs, runId, opts.tree === true))
     })())
 
   program.command("agent <id>")
-    .description("the agent stream, one readable line each")
+    .description("the agent stream, one readable line each; last is the "
+      + "newest agent run")
     .option("--at <n>", "jump to stream line N, with context")
     .option("-C, --context <n>", "lines of context around --at", "3")
-    .action((query: string, opts: { at?: string; context: string }) =>
+    .option("--raw", "print line N as JSON")
+    .action((query: string, opts: {
+      at?: string; context: string; raw?: boolean
+    }) =>
       guard(() => {
-        const runId = resolveRunId(loadRuns(home()), query)
-        const file = join(runDirPath(home(), runId), "agent.jsonl")
+        const runId = resolveRunId(loadRuns(home()), query, {
+          agent: true, note,
+        })
+        const file = join(checkedRunPaths(home(), runId).dir, "agent.jsonl")
         if (!existsSync(file)) throw new Error(`${runId} has no agent.jsonl`)
         const at = opts.at === undefined ? null : parseIntArg(opts.at, "--at")
         print(agentLines(readFileSync(file, "utf8"), at,
-          parseIntArg(opts.context, "--context")))
+          parseIntArg(opts.context, "--context"), opts.raw === true))
       })())
 
   program.command("challenges")
@@ -946,7 +1131,8 @@ export const createProgram = (env: Env = process.env): Command => {
       for (const day of targets) {
         if (!isDay(day)) throw new Error(`bad day "${day}": use yymmdd`)
         const count = reindexDay(home(), day, now)
-        process.stderr.write(`reindexed ${day}: ${count} runs\n`)
+        process.stderr.write(count === null
+          ? `no runs for ${day}\n` : `reindexed ${day}: ${count} runs\n`)
       }
     })())
 
@@ -982,8 +1168,10 @@ export const createProgram = (env: Env = process.env): Command => {
             name: "prune", exit: 0, dur_ms: Date.now() - t0,
             removed_days: result.removedDays.length,
             bytes_freed: result.bytesFreed,
+            reindexed_days: result.reindexedDays.length,
           })
           run.end(0)
+          process.stderr.write(`${pruneSummary(result)}\n`)
         } catch (error) {
           run.event("error", {
             code: "prune-failed",

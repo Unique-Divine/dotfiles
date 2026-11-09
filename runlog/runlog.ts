@@ -1,16 +1,18 @@
 /**
  * TS writer for the Boku run log. See docs/run-log-design.md.
  *
- * Every writer function fails open: the first error turns the writer off for
- * the rest of this process, and nothing here ever throws to the caller.
+ * Every writer function fails open: the first write error turns the writer
+ * off for the rest of this process, and nothing here ever throws to the
+ * caller. A failed artifact only logs `warn artifact-failed`.
  */
 import { createHash, randomBytes } from "node:crypto"
 import {
-  appendFileSync, chmodSync, mkdirSync, readFileSync,
-  renameSync, statSync, writeFileSync,
+  accessSync, appendFileSync, chmodSync, closeSync, constants, mkdirSync,
+  openSync, readFileSync, readSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from "node:fs"
 import { homedir, hostname } from "node:os"
-import { basename, join } from "node:path"
+import { join, resolve, sep } from "node:path"
 
 import patternsJson from "./redact-patterns.json"
 
@@ -96,8 +98,9 @@ const writerState = { disabled: false }
 
 export const redactPatterns: RedactPattern[] = patternsJson
 
+/** Every pattern matches case-insensitively, in both writers. */
 const compiledPatterns = (patterns: RedactPattern[]): [RegExp, string][] =>
-  patterns.map((p) => [new RegExp(p.regex, "g"), `[redacted:${p.kind}]`])
+  patterns.map((p) => [new RegExp(p.regex, "gi"), `[redacted:${p.kind}]`])
 
 const defaultCompiled = compiledPatterns(redactPatterns)
 
@@ -146,9 +149,17 @@ export const statusFor = (exit: number, status?: RunStatus): RunStatus => {
 export const compactStamp = (date: Date): string =>
   date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").slice(2)
 
-/** Keeps a tool name safe for file names. */
+/**
+ * Keeps a tool name safe for file names, as `_runlog_new_id` does: other
+ * characters become `-`, 40 characters at most, `run` when empty.
+ */
 export const safeToolName = (tool: string): string =>
-  tool.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64) || "tool"
+  tool.replace(/[^A-Za-z0-9_.-]/gu, "-").slice(0, 40) || "run"
+
+/** The exact run id shape both writers emit. */
+export const runIdPattern = /^\d{6}T\d{6}Z-[A-Za-z0-9_.-]{1,40}-[0-9a-f]{4}$/
+
+export const isRunId = (value: string): boolean => runIdPattern.test(value)
 
 /** `<yymmddTHHMMSSZ>-<tool>-<4 hex>`. */
 export const newRunId = (
@@ -204,6 +215,26 @@ export const runDirPath = (home: string, runId: string): string =>
 export const indexPath = (home: string, day: string): string =>
   join(home, "runs", day, "index.jsonl")
 
+/**
+ * A run's file and folder, after checking the whole id and that both paths
+ * stay under `<home>/runs/`. Throws on anything else, so an id read from
+ * the environment or an index line can't point outside the run log.
+ */
+export const checkedRunPaths = (
+  home: string, runId: string,
+): { file: string; dir: string } => {
+  if (!isRunId(runId)) {
+    throw new Error(`not a run id: ${JSON.stringify(cutString(runId, 80))}`)
+  }
+  const root = `${resolve(home, "runs")}${sep}`
+  const file = resolve(runFilePath(home, runId))
+  const dir = resolve(runDirPath(home, runId))
+  if (!file.startsWith(root) || !dir.startsWith(root)) {
+    throw new Error(`run id ${runId} leaves ${root}`)
+  }
+  return { file, dir }
+}
+
 /** Field 22 of `/proc/<pid>/stat`: start time in clock ticks since boot. */
 export const readPidStart = (pid: number): number | null => {
   try {
@@ -253,6 +284,85 @@ export const appendLine = (file: string, line: string): void => {
 }
 
 export const isLoggingOff = (env: Env): boolean => env.BOKU_RUNLOG === "0"
+
+/** The artifact cap: `BOKU_RUNLOG_ARTIFACT_MAX` bytes, else 20 MiB. */
+export const artifactMax = (env: Env): number => {
+  const value = env.BOKU_RUNLOG_ARTIFACT_MAX ?? ""
+  return /^\d+$/.test(value) ? Number(value) : maxArtifactBytes
+}
+
+/**
+ * The file name an artifact gets, as `_runlog_artifact_name` names it. The
+ * kind's last `-` becomes `.` (`remerge-diff` is `remerge.diff`); a kind
+ * without `-` takes the source's extension, if any (`prompt` and `x.md`
+ * give `prompt.md`).
+ */
+export const artifactName = (kind: string, src: string): string => {
+  let name = (kind || "artifact").replace(/[^A-Za-z0-9_.-]/gu, "-")
+  if (name.startsWith(".")) name = name.slice(1)
+  // Bash would use these too; here they'd name the folder itself.
+  if (name === "" || name === "." || name === "..") name = "artifact"
+  const dash = name.lastIndexOf("-")
+  if (dash >= 0) return `${name.slice(0, dash)}.${name.slice(dash + 1)}`
+  const base = src.slice(src.lastIndexOf("/") + 1)
+  const dot = base.lastIndexOf(".")
+  const ext = base.slice(dot + 1)
+  return dot >= 1 && /^[A-Za-z0-9]+$/.test(ext) ? `${name}.${ext}` : name
+}
+
+/**
+ * Reads up to `max` bytes of a file. A capped copy ends at its last full
+ * line, so no token is left half cut for redaction to miss.
+ */
+export const readCapped = (
+  file: string, max: number,
+): { data: Buffer; truncated: boolean } => {
+  const size = statSync(file).size
+  if (size <= max) return { data: readFileSync(file), truncated: false }
+  const data = Buffer.alloc(max)
+  const fd = openSync(file, "r")
+  let got = 0
+  try {
+    while (got < max) {
+      const n = readSync(fd, data, got, max - got, got)
+      if (n === 0) break
+      got += n
+    }
+  } finally {
+    closeSync(fd)
+  }
+  const head = data.subarray(0, got)
+  if (head.at(-1) === 0x0a) return { data: head, truncated: true }
+  return { data: head.subarray(0, head.lastIndexOf(0x0a) + 1), truncated: true }
+}
+
+export interface ProblemCounts {
+  warns: number
+  errors: number
+}
+
+/** Counts `warn` and `error` lines in a run file; null if unreadable. */
+export const countProblems = (file: string): ProblemCounts | null => {
+  let text: string
+  try {
+    text = readFileSync(file, "utf8")
+  } catch {
+    return null
+  }
+  const counts: ProblemCounts = { warns: 0, errors: 0 }
+  for (const line of text.split("\n")) {
+    if (!line.includes('"event"')) continue
+    let kind: unknown
+    try {
+      kind = (JSON.parse(line) as Fields).event
+    } catch {
+      continue
+    }
+    if (kind === "warn") counts.warns += 1
+    if (kind === "error") counts.errors += 1
+  }
+  return counts
+}
 
 /** Writes this run's events; shared by `startRun` and `attachRun`. */
 interface Sink {
@@ -318,7 +428,7 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
   const home = bokuHome(env)
   const sink = makeSink(env, home, id, now)
   const runDir = runDirPath(home, runId)
-  const counts = { warns: 0, errors: 0 }
+  const counts: ProblemCounts = { warns: 0, errors: 0 }
   let agent: { cli: unknown; session_id: unknown } | null = null
   let ended = false
 
@@ -381,40 +491,60 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
     artifact(kind: string, src: string): void {
       if (ended || writerState.disabled) return
       try {
+        if (!statSync(src).isFile()) throw new Error("not a file")
+        accessSync(src, constants.R_OK)
+      } catch {
+        event("warn", { code: "artifact-missing", msg: `${kind}: ${src}` })
+        return
+      }
+      let tmp: string | null = null
+      try {
         ensureDir(runDir)
-        const dest = join(runDir, basename(src))
-        const size = statSync(src).size
-        const truncated = size > maxArtifactBytes
-        const raw = readFileSync(src).subarray(0, maxArtifactBytes)
-        const text = redact(raw.toString("utf8"))
-        const tmp = `${dest}.tmp-${process.pid}`
+        const name = artifactName(kind, src)
+        const dest = join(runDir, name)
+        const { data, truncated } = readCapped(src, artifactMax(env))
+        const text = redact(data.toString("utf8"))
+        tmp = join(runDir, `.artifact.${process.pid}.${
+          randomBytes(3).toString("hex")}`)
         writeFileSync(tmp, text, { mode: 0o600 })
         renameSync(tmp, dest)
+        tmp = null
         chmodSync(dest, 0o600)
+        // A source inside the run folder is now replaced by its copy.
+        const from = resolve(src)
+        if (from.startsWith(`${resolve(runDir)}${sep}`) && from !== dest) {
+          rmSync(from, { force: true })
+        }
         event("artifact", {
           kind,
-          path: basename(dest),
+          path: name,
           bytes: Buffer.byteLength(text),
           sha256: createHash("sha256").update(text).digest("hex"),
           truncated,
         })
       } catch (error) {
-        writerState.disabled = true
+        if (tmp) rmSync(tmp, { force: true })
         debug(env, error)
+        // One lost artifact is worth a warning, not the rest of the log.
+        event("warn", {
+          code: "artifact-failed", msg: `cannot save artifact ${kind}`,
+        })
       }
     },
     end(exit: number, endOpts: EndOptions = {}): void {
       if (ended) return
       const status = statusFor(exit, endOpts.status)
       const durMs = now().getTime() - startedAt.getTime()
+      // Other processes (the tap) write warns too; the file has them all.
+      const total = countProblems(runFilePath(home, id.runId)) ?? counts
       const wrote = sink.write("end", {
-        exit, status, dur_ms: durMs, warns: counts.warns, errors: counts.errors,
+        exit, status, dur_ms: durMs, warns: total.warns, errors: total.errors,
       })
       ended = true
       if (!wrote) return
       const index = indexLine({
         id, ts: startedAt.toISOString(), durMs, exit, status,
-        warns: counts.warns, errors: counts.errors, agent,
+        warns: total.warns, errors: total.errors, agent,
       })
       try {
         appendLine(indexPath(home, dayOfRunId(id.runId)), index)
@@ -495,17 +625,25 @@ export interface AttachedRun {
  * `BOKU_RUN_ID`. Used by the tap; it writes neither `start` nor `end`.
  */
 export const attachRun = (env: Env = process.env): AttachedRun => {
-  const runId = env.BOKU_RUN_ID
-  if (isLoggingOff(env) || !runId || !/^\d{6}T\d{6}Z-/.test(runId)) {
-    return { active: false, runId: null, runDir: null, event() {} }
+  const inactive: AttachedRun = {
+    active: false, runId: null, runDir: null, event() {},
   }
+  const runId = env.BOKU_RUN_ID
+  if (isLoggingOff(env) || !runId) return inactive
   const home = bokuHome(env)
+  let paths: { file: string; dir: string }
+  try {
+    paths = checkedRunPaths(home, runId)
+  } catch (error) {
+    debug(env, error)
+    return inactive
+  }
   const id = readRunIdentity(home, runId, env.BOKU_ROOT_RUN_ID)
   const sink = makeSink(env, home, id, () => new Date())
   return {
     active: true,
     runId,
-    runDir: runDirPath(home, runId),
+    runDir: paths.dir,
     event(kind, fields = {}) {
       sink.write(kind, fields)
     },

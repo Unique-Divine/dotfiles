@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
-  writeFileSync,
+  appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  buildEvent, indexPath, maxLineBytes, newRunId, redact, runFilePath, startRun,
-  statusFor, type Env, type RunIdentity,
+  artifactName, attachRun, buildEvent, checkedRunPaths, indexPath, isRunId,
+  maxLineBytes, newRunId, readCapped, redact, runFilePath, safeToolName,
+  startRun, statusFor, type Env, type RunIdentity,
 } from "./runlog.ts"
 
 const writerPath = join(import.meta.dir, "runlog.ts")
@@ -86,7 +87,27 @@ describe("pure helpers", () => {
     const at = new Date("2026-11-09T14:20:30.101Z")
     const runId = newRunId("git_mf", at, "8b9c")
     expect(runId).toBe("261109T142030Z-git_mf-8b9c")
-    expect(newRunId("a b/c")).toMatch(/^\d{6}T\d{6}Z-a_b_c-[0-9a-f]{4}$/)
+    expect(newRunId("a b/c")).toMatch(/^\d{6}T\d{6}Z-a-b-c-[0-9a-f]{4}$/)
+  })
+
+  test("safeToolName matches the bash writer", () => {
+    expect(safeToolName("git_mf")).toBe("git_mf")
+    expect(safeToolName("a b/c:d")).toBe("a-b-c-d")
+    expect(safeToolName("naïve😀")).toBe("na-ve-")
+    expect(safeToolName("x".repeat(50))).toBe("x".repeat(40))
+    expect(safeToolName("")).toBe("run")
+  })
+
+  test("isRunId takes only the exact id shape", () => {
+    for (const ok of [
+      "261109T142030Z-git_mf-8b9c", "261109T142030Z-a.b-c-0000",
+      `261109T142030Z-${"x".repeat(40)}-ffff`, "261109T142030Z-..-abcd",
+    ]) expect(isRunId(ok)).toBe(true)
+    for (const bad of [
+      "261109T000000Z-x/../../../../escaped", "261109T142030Z-git_mf-8B9C",
+      "261109T142030Z--8b9c", `261109T142030Z-${"x".repeat(41)}-ffff`,
+      "261109T142030Z-git_mf-8b9c\n", "../261109T142030Z-git_mf-8b9c",
+    ]) expect(isRunId(bad)).toBe(false)
   })
 
   test("redact replaces every planted token", () => {
@@ -100,6 +121,14 @@ describe("pure helpers", () => {
     }
     expect(out).toContain("Bearer [redacted:bearer]")
     expect(out).toContain("token=[redacted:token-value]&x=1")
+  })
+
+  test("redact ignores case", () => {
+    const out = redact("API_TOKEN=abcdef123456 PASSWORD=hunter2hunter2 "
+      + "Authorization: bearer abcdefgh12345")
+    expect(out).toBe("API_TOKEN=[redacted:token-value] "
+      + "PASSWORD=[redacted:password-value] "
+      + "Authorization: bearer [redacted:bearer]")
   })
 
   test("buildEvent cuts strings and keeps multibyte lines in the cap", () => {
@@ -168,6 +197,25 @@ describe("startRun", () => {
     expect(statSync(home).mode & 0o777).toBe(0o700)
     expect(statSync(join(home, "runs")).mode & 0o777).toBe(0o700)
   }))
+
+  test("end counts warns and errors other processes wrote",
+    withHome((home) => {
+      const run = startRun("git_mf", { env: { BOKU_HOME: home }, rev: null })
+      run.event("warn", { code: "own" })
+      const tap = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: run.runId! })
+      tap.event("warn", { code: "session-mismatch" })
+      tap.event("error", { code: "tap-failed" })
+      // A torn line doesn't count or break the count.
+      appendFileSync(runFilePath(home, run.runId!), '{"event":"warn"\n')
+      run.end(0)
+      const last = readFileSync(runFilePath(home, run.runId!), "utf8")
+        .trimEnd().split("\n").at(-1)!
+      expect(JSON.parse(last)).toMatchObject({
+        event: "end", warns: 2, errors: 1,
+      })
+      const index = readLines(indexPath(home, run.runId!.slice(0, 6)))
+      expect(index[0]).toMatchObject({ warns: 2, errors: 1 })
+    }))
 
   test("explicit end status wins over the exit mapping", withHome((home) => {
     const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
@@ -243,6 +291,85 @@ describe("startRun", () => {
     expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/)
   }))
 
+  test("artifact names follow the kind, as in bash", () => {
+    expect(artifactName("remerge-diff", "/tmp/x")).toBe("remerge.diff")
+    expect(artifactName("conflict-diff", "/tmp/a.txt")).toBe("conflict.diff")
+    expect(artifactName("prompt", "/tmp/tmp.Xy12.md")).toBe("prompt.md")
+    expect(artifactName("report", "/tmp/a.tar.gz")).toBe("report.gz")
+    expect(artifactName("report", "/tmp/.bashrc")).toBe("report")
+    expect(artifactName("report", "/tmp/noext")).toBe("report")
+    expect(artifactName("report", "/tmp/x.m-d")).toBe("report")
+    expect(artifactName("a b-c d", "")).toBe("a-b-c.d")
+    expect(artifactName(".hidden", "x.md")).toBe("hidden.md")
+    expect(artifactName("", "x")).toBe("artifact")
+  })
+
+  test("a capped artifact ends at its last full line", withHome((home) => {
+    const tokens = fakeTokens()
+    const src = join(home, "big.log")
+    const first = "line one\n"
+    // The cap falls inside the token on line two.
+    writeFileSync(src, `${first}key ${tokens["github-token"]} tail\nthree\n`)
+    const env: Env = {
+      BOKU_HOME: home, BOKU_RUNLOG_ARTIFACT_MAX: String(first.length + 12),
+    }
+    const run = startRun("demo", { env, rev: null })
+    run.artifact("big-log", src)
+    run.end(0)
+    expect(readFileSync(join(run.runDir!, "big.log"), "utf8")).toBe(first)
+    const artifact = readLines(runFilePath(home, run.runId!))
+      .find((e) => e.event === "artifact")!
+    expect(artifact).toMatchObject({
+      kind: "big-log", path: "big.log", truncated: true, bytes: first.length,
+    })
+  }))
+
+  test("a capped one-line artifact is empty", () => {
+    const dir = mkdtempSync(join(tmpdir(), "boku-runlog-"))
+    try {
+      const src = join(dir, "one")
+      writeFileSync(src, "x".repeat(100))
+      expect(readCapped(src, 10)).toEqual({
+        data: Buffer.alloc(0), truncated: true,
+      })
+      writeFileSync(src, "abc\ndef\n")
+      expect(readCapped(src, 8).data.toString()).toBe("abc\ndef\n")
+      expect(readCapped(src, 4).data.toString()).toBe("abc\n")
+    } finally {
+      rmSync(dir, { force: true, recursive: true })
+    }
+  })
+
+  test("a failed artifact warns and the writer stays on", withHome((home) => {
+    const src = join(home, "report.md")
+    writeFileSync(src, "# Report\n")
+    const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+    // A folder in the way makes the final rename fail.
+    mkdirSync(join(run.runDir!, "report.md", "x"), { recursive: true })
+    run.artifact("report", src)
+    run.artifact("gone", join(home, "missing.txt"))
+    run.event("step", { name: "after" })
+    run.end(0)
+    const events = readLines(runFilePath(home, run.runId!))
+    expect(events.map((e) => [e.event, e.code ?? e.name ?? null])).toEqual([
+      ["start", null], ["warn", "artifact-failed"],
+      ["warn", "artifact-missing"], ["step", "after"], ["end", null],
+    ])
+    expect(events.at(-1)).toMatchObject({ warns: 2 })
+    expect(readdirSync(run.runDir!)).toEqual(["report.md"])
+  }))
+
+  test("an artifact from the run folder replaces its source",
+    withHome((home) => {
+      const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+      mkdirSync(run.runDir!, { recursive: true })
+      const src = join(run.runDir!, "draft.txt")
+      writeFileSync(src, "draft\n")
+      run.artifact("prompt", src)
+      run.end(0)
+      expect(readdirSync(run.runDir!)).toEqual(["prompt.txt"])
+    }))
+
   test("BOKU_RUNLOG=0 writes nothing and exports nothing", withHome((home) => {
     const env: Env = { BOKU_HOME: home, BOKU_RUNLOG: "0" }
     const run = startRun("demo", { env, rev: null })
@@ -251,6 +378,30 @@ describe("startRun", () => {
     expect(run.active).toBe(false)
     expect(env.BOKU_RUN_ID).toBeUndefined()
     expect(readdirSync(home)).toEqual([])
+  }))
+})
+
+describe("attachRun", () => {
+  test("a crafted BOKU_RUN_ID writes nothing outside BOKU_HOME",
+    withHome((dir) => {
+      const home = join(dir, "home")
+      const runId = "261109T000000Z-x/../../../../escaped"
+      const run = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: runId })
+      run.event("warn", { code: "x" })
+      expect(run.active).toBe(false)
+      expect(run.runDir).toBeNull()
+      expect(readdirSync(dir)).toEqual([])
+      expect(() => checkedRunPaths(home, runId)).toThrow("not a run id")
+    }))
+
+  test("a valid id writes into its run file", withHome((home) => {
+    const host = startRun("git_mf", { env: { BOKU_HOME: home }, rev: null })
+    const run = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: host.runId! })
+    run.event("agent-session", { cli: "claude", session_id: "s1" })
+    host.end(0)
+    expect(run.runDir).toBe(host.runDir)
+    const events = readLines(runFilePath(home, host.runId!))
+    expect(events.map((e) => e.event)).toEqual(["start", "agent-session", "end"])
   }))
 })
 
