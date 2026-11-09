@@ -16,13 +16,18 @@
   stays the same in both engines. Each key has these forms:
   - `-value`: `KEY=value`, `KEY="value"`, `KEY='value'`, and the escaped
     `KEY=\"value\"`. Keys: `token`, `secret`, `secret_key`, `password`,
-    and `api_key`.
+    `api_key`, `private_key`, `access_key` (covers
+    `AWS_SECRET_ACCESS_KEY`), and `mnemonic`.
   - `-json`: `"key": "value"`, plain or escaped inside a JSON string.
-    Keys: `token`, `secret`, `password`, and `api_key`.
+    Keys: `token`, `secret`, `password`, `api_key`, `private_key`,
+    `access_key`, and `mnemonic`.
+  - `-yaml`: `key: value`, quoted as in `-value`. Keys: `token`,
+    `secret`, `password`, `api_key`, `private_key`, and `mnemonic`.
 - A bare value ends at whitespace, `&`, a quote, or a backslash. A quoted
   value ends at its closing quote, a backslash, or a line break, so
-  `PASSWORD="two words"` is redacted whole. No value pattern consumes a
-  backslash or a quote, so redacting JSON text keeps it valid.
+  `PASSWORD="two words"` is redacted whole. A bare `mnemonic` value runs to
+  the end of the line, since a seed phrase has spaces. No value pattern
+  consumes a backslash or a quote, so redacting JSON text keeps it valid.
 - Files and the tap's `agent.jsonl` copy are redacted line by line
   (`redactLines` in `runlog.ts`, `redact_lines` in `runlog.sh`). A line
   whose first non-blank character is `{` or `[` and that parses as JSON

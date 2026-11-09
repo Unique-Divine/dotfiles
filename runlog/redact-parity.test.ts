@@ -79,6 +79,35 @@ const jsonForms = (): string[] => {
   return out
 }
 
+/** Key names added for wallet and cloud keys, in env, JSON, and YAML. */
+const keyForms = (): string[] => {
+  const hex = (n: number): string => randAlnum(n, "0123456789abcdef")
+  const words = (): string => Array.from({ length: 12 },
+    () => randAlnum(6, "abcdefghijklmnopqrstuvwxyz")).join(" ")
+  return [
+    `PRIVATE_KEY=0x${hex(64)}`,
+    `export DEPLOYER_PRIVATE_KEY="0x${hex(64)}"`,
+    `private_key='${hex(64)}' next=1`,
+    `AWS_SECRET_ACCESS_KEY=${randAlnum(40)}`,
+    `aws_access_key=${randAlnum(20)}`,
+    `MNEMONIC="${words()}"`,
+    `mnemonic='${words()}'`,
+    `MNEMONIC=${words()}`,
+    `{"private_key": "0x${hex(64)}"}`,
+    `{"Access_Key":"${randAlnum(20)}"}`,
+    `{"mnemonic": "${words()}"}`,
+    `password: ${randAlnum(16)}`,
+    `  db_password: "${randAlnum(16)} two"`,
+    `token: '${randAlnum(16)}'`,
+    `- api_token: ${randAlnum(16)}`,
+    `secret: ${randAlnum(16)}`,
+    `API_KEY: ${randAlnum(16)}`,
+    `private_key: 0x${hex(64)}`,
+    `mnemonic: ${words()}`,
+    `mnemonic: "${words()}"`,
+  ]
+}
+
 /**
  * Agent stream lines: JSON whose strings hold `KEY="value"` and quoted
  * URLs, so the raw line reads `KEY=\"value\"`.
@@ -87,7 +116,7 @@ const streamForms = (): string[] => [
   JSON.stringify({ type: "user", message: { content: [{
     type: "tool_result", tool_use_id: "t1",
     content: `DB_PASSWORD="hunter2-${randAlnum(12)}"\n`
-      + `API_KEY="${randAlnum(12)}"`,
+      + `API_KEY="${randAlnum(12)}"\nPRIVATE_KEY="0x${randAlnum(40)}"`,
   }] } }),
   JSON.stringify({ type: "assistant", message: { content: [{
     type: "tool_use", id: "t2", name: "Bash",
@@ -115,7 +144,7 @@ const whitespace = ["\t", "\r", "\v", "\f", "\u0085", " ", " ",
   "﻿"]
 
 const corpus = (): string[] => {
-  const out = [...tokens(), ...envForms(), ...jsonForms(),
+  const out = [...tokens(), ...envForms(), ...jsonForms(), ...keyForms(),
     ...streamForms(), ...lookalikes]
   for (const ws of whitespace) {
     out.push(`token=${randAlnum(12)}${ws}after`)
@@ -232,7 +261,7 @@ describe("jq and JS redact the same way", () => {
       const out = redactLines(form)
       expect(out).not.toMatch(/hunter2-[A-Za-z0-9]/)
       expect(out).not.toMatch(
-        /(token|secret|password|api_key)=\\?["']?[A-Za-z0-9]/i)
+        /(token|secret|password|api_key|private_key)=\\?["']?[A-Za-z0-9]/i)
     }
   })
 
@@ -245,13 +274,18 @@ describe("jq and JS redact the same way", () => {
   })
 
   test("every token, env, and JSON secret is redacted", () => {
-    const keyNames = "(token|secret|secret_key|password|api_key)"
+    const keyNames = "(token|secret|secret_key|password|api_key|private_key"
+      + "|access_key|mnemonic)"
     const out = jq.events.join("\n")
     expect(out).not.toMatch(/gh[pousr]_[A-Za-z0-9]{20}/i)
     expect(out).not.toMatch(/npm_[A-Za-z0-9]{36}/i)
     expect(out).not.toMatch(/bearer [A-Za-z0-9]{8}/i)
     expect(out).not.toMatch(
       new RegExp(`${keyNames}=\\\\?["']?[A-Za-z0-9]`, "i"))
+    expect(out).not.toMatch(new RegExp(
+      "(token|secret|password|api_key|private_key|mnemonic): [\"']?[A-Za-z0-9]",
+      "i"))
+    expect(out).not.toMatch(/0x[0-9a-f]{64}/i)
     expect(out).not.toMatch(
       new RegExp(`${keyNames}\\\\?": ?\\\\?"[A-Za-z0-9]`, "i"))
   })
