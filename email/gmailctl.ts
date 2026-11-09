@@ -8,8 +8,8 @@
  *
  * Usage: bun run email/gmailctl.ts <config.ts> <out/config.jsonnet>
  */
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 /** A filter node: one operator or one or more match fields. */
 export interface FilterNode {
@@ -175,10 +175,19 @@ export async function buildConfig(
   if (problems.length > 0) {
     throw new Error(`invalid config ${source}:\n  ${problems.join("\n  ")}`);
   }
-  await mkdir(dirname(outPath), { recursive: true });
-  // Replace rather than write through an old symlink to a source file.
-  await rm(outPath, { force: true });
-  await writeFile(outPath, renderConfig(mod.default, source));
+  const dir = dirname(outPath);
+  await mkdir(dir, { recursive: true });
+  // Write a sibling temp file, then rename it over the output. The rename
+  // replaces an old symlink instead of writing through it to a source file,
+  // and a failed write leaves the previous config in place.
+  const temp = join(dir, `.${basename(outPath)}.${process.pid}.tmp`);
+  try {
+    await writeFile(temp, renderConfig(mod.default, source));
+    await rename(temp, outPath);
+  } catch (err) {
+    await rm(temp, { force: true });
+    throw err;
+  }
 }
 
 if (import.meta.main) {
