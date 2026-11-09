@@ -156,7 +156,11 @@ writing state.
 ### Sync and health checks
 
 `just sync` runs the established shell bootstrap, applies portable Codex
-and Cursor CLI defaults, and synchronizes managed AI skills. `just health`
+and Cursor CLI defaults, and synchronizes managed AI skills. It also links
+[`zsh/cargo-config.toml`](zsh/cargo-config.toml) to `~/.cargo/config.toml`,
+which builds Rust dev and test profiles with `debug = "line-tables-only"`:
+backtraces keep file and line numbers, but debugger variable info is
+dropped to keep `target/` small. `just health`
 does not write: it checks required commands, Mason packages, and Codex,
 Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
 installation remains an explicit action.

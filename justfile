@@ -166,8 +166,8 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, portable Codex, Cursor CLI, and Claude Code config, and
-# managed AI skills for Cursor, Codex, and Claude Code.
+# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI, and
+# Claude Code config, and managed AI skills for Cursor, Codex, and Claude Code.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
