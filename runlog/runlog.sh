@@ -44,24 +44,33 @@ _runlog_jq_redact='def redact($p): reduce $p[] as $r (.;
   gsub($r.regex; "[redacted:\($r.kind)]"; "gi"));'
 
 # The jq `redact_lines` def behind _runlog_redact_file, as redactLines in
-# runlog.ts. A line that parses as a JSON object or array first has its
-# decoded strings redacted, so `KEY=\"value\"` reads as `KEY="value"`, and
-# is re-encoded only when a string changed. Every line is then redacted as
-# text, which catches `"password": "..."` pairs.
+# runlog.ts. A line whose first non-blank character is `{` or `[` and that
+# parses as JSON first has its decoded strings redacted, so `KEY=\"value\"`
+# reads as `KEY="value"`, and is re-encoded only when a string changed. The
+# text is then redacted in blocks of 2,000 lines, which catches
+# `"password": "..."` pairs. No pattern matches across a newline, so blocks
+# give the same result as single lines; jq compiles each regex per call, so
+# one call per line made a 1 MiB diff take nearly a minute.
 # shellcheck disable=SC2016
 _runlog_jq_redact_lines="${_runlog_jq_redact}"'
 def redact_deep($p): if type == "string" then redact($p)
   elif type == "array" then map(redact_deep($p))
   elif type == "object" then map_values(redact_deep($p))
   else . end;
-def redact_line($p): . as $line
-  | (if test("^[ \\t\\r]*[{\\[]") then (fromjson? // null) else null end)
-  | if . == null then $line
-    else redact_deep($p) as $r
-      | if $r == . then $line else $r | tojson end
-    end
-  | redact($p);
-def redact_lines($p): split("\n") | map(redact_line($p)) | join("\n");'
+def decode_line($p): . as $line
+  | (explode | map(select(. != 32 and . != 9 and . != 13)) | .[0:1]
+    | implode) as $first
+  | if $first == "{" or $first == "[" then
+      (fromjson? // null) as $v
+      | if $v == null then $line
+        else ($v | redact_deep($p)) as $r
+          | if $r == $v then $line else $r | tojson end
+        end
+    else $line end;
+def redact_lines($p): split("\n") | map(decode_line($p))
+  | [range(0; length; 2000) as $i | .[$i:$i + 2000] | join("\n")
+    | redact($p)]
+  | join("\n");'
 
 # The jq program behind every line. `redact` applies each shared pattern,
 # `cut` keeps 512 characters, and a line over 4,095 bytes falls back to

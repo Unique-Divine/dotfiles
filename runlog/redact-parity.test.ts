@@ -318,4 +318,32 @@ _runlog_redact_file ${JSON.stringify(file)}
     expect(redactLines(long)).toBe(long)
     expect(performance.now() - started).toBeLessThan(2000)
   }, 60_000)
+
+  // A 1 MiB, 16,000-line diff: one jq gsub per line took about 52 s, which
+  // stalled git_mf after the merge whenever boku-runs was broken.
+  test("jq redacts a 1 MiB many-line diff in under 15 s, same as JS", async () => {
+    const lines = Array.from({ length: 16_000 }, (_, i) =>
+      `+ line ${i} of a diff with some words and paths/like/this.ts x=${i}`)
+    lines[500] = "+ API_TOKEN=supersecretvalue123"
+    lines[900] = JSON.stringify({ content: 'DB_PASSWORD="hunter2-xyz" ok' })
+    const text = `${lines.join("\n")}\n`
+    const file = join(tmp, "big.diff")
+    await writeFile(file, text)
+    const script = `set -Eeuo pipefail
+source ${JSON.stringify(writerPath)}
+boku-runs() { return 1; }
+_runlog_patterns=${JSON.stringify(join(import.meta.dir, "redact-patterns.json"))}
+_runlog_redact_file ${JSON.stringify(file)}
+`
+    const started = performance.now()
+    const proc = Bun.spawn(["bash", "-c", script], {
+      stdout: "pipe", stderr: "pipe",
+    })
+    expect(await proc.exited).toBe(0)
+    expect(performance.now() - started).toBeLessThan(15_000)
+    const out = await readFile(file, "utf8")
+    expect(out).not.toContain("supersecretvalue123")
+    expect(out).not.toContain("hunter2-xyz")
+    expect(out).toBe(redactLines(text))
+  }, 120_000)
 })
