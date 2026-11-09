@@ -252,6 +252,89 @@ fn shell_backed_commands_receive_only_the_selected_operation() {
     assert_eq!(stdout(&output), "<docker>\n<start>");
 }
 
+/// Run `ud docker kill-all` through the real helper with a fake docker that
+/// lists `compose` projects and container `ids`, and record each docker call
+/// with every argument in angle brackets.
+fn docker_kill_all(compose: &str, ids: &str) -> (Output, Vec<String>) {
+    let temp = TempDir::new().unwrap();
+    let compose_file = temp.path().join("compose");
+    let ids_file = temp.path().join("ids");
+    let calls_file = temp.path().join("calls");
+    fs::write(&compose_file, compose).unwrap();
+    fs::write(&ids_file, ids).unwrap();
+    write_executable(
+        &temp.path().join("docker"),
+        "#!/usr/bin/env bash\n\
+         printf '<%s>' \"$@\" >> \"$DOCKER_CALLS_FILE\"\n\
+         printf '\\n' >> \"$DOCKER_CALLS_FILE\"\n\
+         case \"$1\" in\n\
+         \x20 ps)\n\
+         \x20   if [[ \"$*\" == *com.docker.compose.project* ]]; then\n\
+         \x20     cat \"$DOCKER_COMPOSE_FILE\"\n\
+         \x20   else\n\
+         \x20     cat \"$DOCKER_IDS_FILE\"\n\
+         \x20   fi\n\
+         \x20   ;;\n\
+         esac\n",
+    );
+    let helper =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../zsh/ud/shell.sh");
+    let output = ud()
+        .env("UD_SHELL_HELPER", helper)
+        .env("PATH", path_with(temp.path()))
+        .env("DOCKER_CALLS_FILE", &calls_file)
+        .env("DOCKER_COMPOSE_FILE", &compose_file)
+        .env("DOCKER_IDS_FILE", &ids_file)
+        .args(["docker", "kill-all"])
+        .output()
+        .unwrap();
+    let calls = fs::read_to_string(calls_file)
+        .unwrap()
+        .lines()
+        .filter(|call| !call.starts_with("<info>") && !call.starts_with("<ps>"))
+        .map(str::to_owned)
+        .collect();
+    (output, calls)
+}
+
+/// With no running containers, kill-all must not call docker stop.
+#[test]
+fn docker_kill_all_skips_stop_without_containers() {
+    let (output, calls) = docker_kill_all("", "");
+    assert_success(&output);
+    assert!(calls.is_empty(), "calls: {calls:?}");
+    assert!(stdout(&output).contains("No remaining running containers found."));
+}
+
+/// One container ID is passed as one docker stop argument.
+#[test]
+fn docker_kill_all_stops_one_container() {
+    let (output, calls) = docker_kill_all("", "abc123\n");
+    assert_success(&output);
+    assert_eq!(calls, ["<stop><abc123>"]);
+}
+
+/// Each container ID is its own argument, and Compose projects still get
+/// `docker compose down -v` with their directory and config files.
+#[test]
+fn docker_kill_all_tears_down_compose_and_stops_many_containers() {
+    let (output, calls) = docker_kill_all(
+        "app|/work dir|/work dir/compose.yml,/work dir/override.yml\n",
+        "abc123\ndef456\n789abc\n",
+    );
+    assert_success(&output);
+    assert_eq!(
+        calls,
+        [
+            "<compose><--project-directory></work dir>\
+             <-f></work dir/compose.yml><-f></work dir/override.yml>\
+             <down><-v>",
+            "<stop><abc123><def456><789abc>",
+        ]
+    );
+    assert!(stdout(&output).contains("Docker compose app: app"));
+}
+
 /// Notes must resolve the configured repository before launching the editor.
 #[test]
 fn quick_shell_helper_runs_the_existing_notes_function() {
