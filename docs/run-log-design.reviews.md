@@ -56,3 +56,54 @@ with cron jobs and things on my machine."
   `boku-runs agent <id> [--at N]`, redaction, and fixture tests.
 - Open questions answered and turned into a Decisions section.
 - Trimmed toward a 10-minute read.
+
+## Round 2
+
+Three reviews (spec, security, correctness) found gaps between the spec
+and the code. The fixes are in the code and the spec. Two findings needed
+the user's call, and one rename came from the user.
+
+### Comment C, on Agent-Command Coverage
+
+Round 1 agreed on logging only failed agent commands. The spec and the tap
+log every command, and the security review argued for failed-only, since
+command lines land in the events file.
+
+"Uh, i think it can be successes. Agents should not be reading my shell
+history honestly. And they should know better than to use riate keys liek
+that unless it's for a testing account."
+
+Result: every command stays logged (Decision 6).
+
+### Comment D, on the Allowlist
+
+The security review noted that the merge agent's allowlist (`git`, `just`,
+`bun`, `cargo`, and file edits) amounts to a shell, so prompt injection in
+merged content could read local files.
+
+"Yeah, keep it broad so that the agent can run the checks every bot needs.
+I want it to be in YOLO mode if that's what you're asking."
+
+Result: the allowlist stays broad, and the risk is stated (Decision 7).
+
+### Comment E, on the Reader's Name
+
+"Feels like we could just build it as a part of the UD command line or
+make it a plugin for the UD command line."
+
+Result: `boku-runs` on PATH became the `ud runs` plugin. `runlog/cli.ts`
+is linked as `~/.local/share/ud/plugins/ud-runs`, and `git_mf` and
+`runlog.sh` call it by path (`BOKU_RUNS_CLI` overrides). Round 1's
+`boku-runs` mentions above are kept as history.
+
+### How the Draft Changed
+
+- Status is implemented; Phase 1 boxes are checked. TS `--json` and the
+  gated real-agent test moved to Later.
+- Privacy states the threat model and the rule that agents and the
+  terminal see real data while everything under `BOKU_HOME` is redacted.
+  It points to `redact-patterns.md` for patterns and gaps.
+- The agent reads the raw prompt; Codex's report reaches the run folder
+  only redacted.
+- The schema, `--json`, reader, size limits, and a full table of codes
+  match the code.
