@@ -1195,26 +1195,38 @@ fn sigterm_during_inspection_stops_the_plugin_group() {
 
 /// ud blocks SIGINT and SIGTERM around spawn; the plugin must not inherit
 /// that block. A plugin that SIGTERMs itself must die before printing. The
-/// plugin is Python because bash resets its signal mask at startup.
+/// plugin is Python because bash resets its signal mask at startup. It
+/// writes a marker first, which proves it ran up to the self-signal.
 #[test]
 fn plugin_inspection_starts_with_termination_signals_unblocked() {
+    let python = std::process::Command::new("python3")
+        .args(["-c", ""])
+        .status();
+    assert!(
+        python.is_ok_and(|status| status.success()),
+        "this test needs python3 on PATH to run its probe plugin"
+    );
     let temp = TempDir::new().unwrap();
     let plugins = temp.path().join("plugins");
+    let marker = temp.path().join("marker");
     write_plugin(
         &plugins,
         "example",
         r#"#!/usr/bin/env python3
 import os, signal
+open(os.environ["PLUGIN_MARKER"], "w").close()
 os.kill(os.getpid(), signal.SIGTERM)
 print('{"apiVersion":1,"name":"example","description":"Survived"}')
 "#,
     );
     let output = isolated_ud(&temp)
         .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_MARKER", &marker)
         .args(["plugin", "info", "example"])
         .timeout(Duration::from_secs(10))
         .output()
         .unwrap();
+    assert!(marker.is_file(), "the probe plugin did not run");
     assert!(!output.status.success(), "stdout: {}", stdout(&output));
     assert!(stderr(&output).contains("metadata command failed: example"));
 }
