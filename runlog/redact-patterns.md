@@ -26,6 +26,9 @@
     (`KEY=\"value\"`). Keys: `token`, `secret`, `secret_key`, `password`,
     `api_key`, `private_key`, `access_key` (covers
     `AWS_SECRET_ACCESS_KEY`), `mnemonic`, `seed_phrase`, and `seedphrase`.
+    `mnemonic-value` also takes the `--mnemonic` flag of `cast` and
+    `forge`: `--mnemonic "<phrase>"`, `--mnemonic=<phrase>`, or
+    `--mnemonic <phrase>` to the end of the line.
   - `-json`: `"key": "value"`, plain or escaped inside a JSON string. Keys
     as above, plus the camelCase `secretKey`, `apiKey`, `privateKey`, and
     `accessKey`. `accessToken` and `clientSecret` end in `token` and
@@ -39,13 +42,24 @@
   pattern consumes a backslash or a quote, so redacting JSON text keeps it
   valid.
 - `evm-key` takes a 64-hex key only after a key word: `private_key`,
-  `privateKey`, `privkey`, `*_PK`, `pk`, `--private-key`, or `accounts`,
+  `privateKey`, `privkey`, `*_PK`, `pk`, `--private-key`,
+  `--private-keys`, or `accounts`,
   with optional quotes, `:` or `=`, `[`, and `0x` between. A bare
   `0x<64 hex>` is never redacted: tx hashes, block hashes, event topics,
   storage slots, and `bytes32` constants must stay readable.
-- `url-password` replaces only the password in
-  `scheme://user:password@`. `ssh://git@host:22`,
-  `https://host:8080/a@v1`, and `git@github.com:o/r` don't match.
+- URL userinfo:
+  - `url-password` replaces the password in `scheme://user:password@`,
+    with an empty user too (`redis://:<pass>@`). The password may hold
+    `/`, but not as a port and path: `https://host:8080/a@v1` stays.
+  - `url-token` replaces a user of 20 to 64 `[A-Za-z0-9_-]` characters,
+    which is a token used as the username: `https://<token>@host` and
+    `https://<token>:x-oauth-basic@host`. It runs after `url-password`,
+    so neither part survives.
+  - `ssh://git@host:22`, `https://host:8080/a@v1`, and
+    `git@github.com:o/r` don't match.
+- `user-password` replaces the password in curl's `-u user:pass` and
+  `--user user:pass` (or `--user=`), quoted or not, keeping the user. An
+  all-digit password is left, so `docker run -u 1000:1000` stays.
 - `authorization` covers `Authorization: Basic <v>` and
   `Authorization: token <v>`. A bare `basic` never matches, so prose like
   "basic configuration" stays. `bearer` covers `Bearer <v>` anywhere.
@@ -125,6 +139,15 @@ These are not redacted. Read a run log with them in mind.
 - A key with no key word before it, such as the bare hex that
   `nibid keys export --unarmored-hex` prints, or the second key in an
   `accounts: [...]` list.
+- A seed phrase on its own line, with no key word, such as the phrase
+  `nibid keys add` or `--recover` prints.
+- URL userinfo the URL rules don't take:
+  - a token as the username under 20 characters, or with characters
+    outside `[A-Za-z0-9_-]`;
+  - a password holding whitespace, a quote, or a backslash, or one that
+    starts with 1 to 5 digits and a `/`, `?`, or `#`, which reads as a
+    port.
+- curl's `-uuser:pass` with no space, and an all-digit `-u` password.
 - Base64-, URL-, or otherwise encoded secrets, and fullwidth forms such as
   `token＝value`.
 - A PEM body without its BEGIN line in the same text.

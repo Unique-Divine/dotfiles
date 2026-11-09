@@ -222,6 +222,16 @@ const secretForms = (): Secret[] => {
     pgpBlock(),
     pgpBlock("    "),
     { text: JSON.stringify({ content: pgp.text }), secrets: pgp.secrets },
+    one('cast wallet address --mnemonic "', words(), '"'),
+    one("cast wallet address --mnemonic=", words()),
+    one('{"command": "cast wallet address --mnemonic \\"', words(), '\\""}'),
+    one("forge script --private-keys 0x", hex(64), " --broadcast"),
+    one("REDIS_URL=redis://:", randAlnum(16), "@cache:6379"),
+    one("https://", randAlnum(40), ":x-oauth-basic@github.com/o/r"),
+    one("git clone https://", randAlnum(40), "@github.com/o/r.git"),
+    one("https://u:", `${randAlnum(8)}/${randAlnum(8)}`, "@h/x"),
+    one("curl -u admin:", randAlnum(16), " https://x"),
+    one('curl --user "admin:', randAlnum(16), '" https://x'),
   ]
 }
 
@@ -253,6 +263,8 @@ const survivors = (): string[] => {
       + "\tif err := parse(b); err != nil {\n\t\treturn err\n\t}",
     "def main():\n    configureLogging()\n    return run_everything_now",
     "     1\tpackage main\n     2\t\n     3\tfunc main() {}",
+    "docker run -u 1000:1000 img",
+    "http://localhost-development-box:3000/a@b",
   ]
 }
 
