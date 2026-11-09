@@ -87,25 +87,77 @@ const ownedTopLevelFields = [
 /**
  * Rules sync adds to `permissions.allow`. Unlike owned keys, the runtime rules
  * stay, because `/permissions` and permission prompts also write that list.
+ *
+ * Cloud CLIs get an allow-list of read-only commands, not a broad
+ * `Bash(gcloud:*)`. A `Bash(prefix:*)` rule matches the command's leading
+ * words, so a flag placed before the subcommand defeats it:
+ * `gcloud --project=p storage rm` does not start with `gcloud storage rm`.
+ * Deny-by-prefix cannot guard a broad allow, so every other gcloud or
+ * firebase command falls back to asking. Widening this list is a deliberate
+ * choice; prefer adding one read-only verb at a time.
  */
 export const managedAllowRules: readonly string[] = [
   "Bash(rg:*)",
   // Superhuman Mail inbox cleanup: unsubscribe and move threads to Trash.
   "mcp__superhuman-mail__unsubscribe",
   "mcp__superhuman-mail__trash_thread",
-  // Google Cloud and Firebase work (DNS, IAM, hosting) without auto mode
-  // holding each command for approval. Bucket deletes stay in
-  // managedAskRules.
+  // Read-only Google Cloud commands: account, project, DNS, storage
+  // listings, Cloud Run, Cloud SQL, and logs.
+  "Bash(gcloud --version)",
+  "Bash(gcloud config list:*)",
+  "Bash(gcloud config get:*)",
+  "Bash(gcloud config get-value:*)",
+  "Bash(gcloud auth list:*)",
+  "Bash(gcloud projects list:*)",
+  "Bash(gcloud projects describe:*)",
+  "Bash(gcloud dns managed-zones list:*)",
+  "Bash(gcloud dns managed-zones describe:*)",
+  "Bash(gcloud dns record-sets list:*)",
+  "Bash(gcloud dns record-sets describe:*)",
+  "Bash(gcloud storage ls:*)",
+  "Bash(gcloud run services list:*)",
+  "Bash(gcloud run services describe:*)",
+  "Bash(gcloud sql instances list:*)",
+  "Bash(gcloud sql instances describe:*)",
+  "Bash(gcloud logging read:*)",
+  // Read-only Firebase commands.
+  "Bash(firebase --version)",
+  "Bash(firebase projects:list:*)",
+  "Bash(firebase hosting:channel:list:*)",
+  "Bash(firebase hosting:sites:list:*)",
+]
+
+/**
+ * Rules sync removes from `permissions.allow`. Earlier syncs wrote these broad
+ * rules, and appending the narrower list above would leave them in force.
+ */
+export const retiredAllowRules: readonly string[] = [
   "Bash(gcloud:*)",
   "Bash(firebase:*)",
 ]
 
 /**
  * Rules sync adds to `permissions.ask`. An ask rule outranks a matching allow
- * rule, so these carve exceptions out of the broad allows above.
+ * rule. None of these match an allow rule above; they are a backstop for auto
+ * mode and for broader rules a user adds at runtime. Because of the flag
+ * placement gap described above, they catch only the plain spelling.
  */
 export const managedAskRules: readonly string[] = [
   "Bash(gcloud storage rm:*)",
+  "Bash(gcloud alpha storage rm:*)",
+  "Bash(gcloud beta storage rm:*)",
+  "Bash(gcloud storage buckets delete:*)",
+  "Bash(gcloud projects delete:*)",
+  "Bash(gcloud dns record-sets delete:*)",
+  "Bash(gcloud dns managed-zones delete:*)",
+  "Bash(gcloud secrets versions access:*)",
+  "Bash(gcloud alpha secrets versions access:*)",
+  "Bash(gcloud beta secrets versions access:*)",
+  "Bash(gcloud iam service-accounts keys create:*)",
+  "Bash(firebase deploy:*)",
+  "Bash(firebase hosting:disable:*)",
+  "Bash(firebase firestore:delete:*)",
+  "Bash(firebase database:remove:*)",
 ]
 
 /** Appends each rule missing from a runtime rule list, keeping its order. */
@@ -119,22 +171,24 @@ const mergeRuleList = (
 }
 
 /**
- * Returns runtime `permissions` with every managed allow rule present, and
- * every ask rule when `askRules` is non-empty. Other fields, such as `deny`
- * and `defaultMode`, and existing rule order are kept.
+ * Returns runtime `permissions` with every managed allow rule present, every
+ * retired allow rule removed, and every ask rule when `askRules` is
+ * non-empty. Other fields, such as `deny` and `defaultMode`, and existing rule
+ * order are kept.
  */
 export const mergePermissions = (
   runtimePermissions: JsonValue | undefined,
   rules: readonly string[] = managedAllowRules,
   askRules: readonly string[] = [],
+  retiredRules: readonly string[] = retiredAllowRules,
 ): JsonObject => {
   const permissions = isJsonObject(runtimePermissions)
     ? runtimePermissions
     : {}
-  const out: JsonObject = {
-    ...permissions,
-    allow: mergeRuleList(permissions.allow, rules),
-  }
+  const allow = mergeRuleList(permissions.allow, rules).filter(
+    (rule) => typeof rule !== "string" || !retiredRules.includes(rule),
+  )
+  const out: JsonObject = { ...permissions, allow }
   if (askRules.length > 0) out.ask = mergeRuleList(permissions.ask, askRules)
 
   return out

@@ -14,6 +14,7 @@ import {
   mergePermissions,
   mergeRuntimeSettings,
   ownedView,
+  retiredAllowRules,
   runtimeSettingsPath,
   runtimeStatePath,
   statusLinePath,
@@ -27,6 +28,34 @@ const freshSettings = {
     ask: [...managedAskRules],
   },
 }
+
+/**
+ * Mirrors Claude Code's `Bash(...)` rule matching for one simple command.
+ * `Bash(prefix:*)` matches commands that start with `prefix`, and a rule
+ * without `:*` matches only the exact command. Mode "word" requires the
+ * prefix to end at a word boundary; mode "loose" is a plain string prefix,
+ * which matches a superset, so a command it rejects is rejected either way.
+ */
+const ruleMatches = (
+  rule: string,
+  command: string,
+  mode: "word" | "loose",
+): boolean => {
+  const body = /^Bash\((.*)\)$/.exec(rule)?.[1]
+  if (body === undefined) return false
+  if (!body.endsWith(":*")) return command === body
+  const prefix = body.slice(0, -2)
+  if (!command.startsWith(prefix)) return false
+  return mode === "loose" || command.length === prefix.length ||
+    command[prefix.length] === " "
+}
+
+const allowRulesMatching = (
+  command: string,
+  mode: "word" | "loose",
+): string[] => managedAllowRules.filter((rule) =>
+  ruleMatches(rule, command, mode),
+)
 
 const scriptPath = join(import.meta.dir, "config.ts")
 
@@ -204,10 +233,76 @@ describe("claude settings", () => {
     })
   })
 
-  test("allows gcloud and firebase but still asks before bucket deletes", () => {
-    expect(managedAllowRules).toContain("Bash(gcloud:*)")
-    expect(managedAllowRules).toContain("Bash(firebase:*)")
-    expect(managedAskRules).toEqual(["Bash(gcloud storage rm:*)"])
+  describe("cloud CLI rules", () => {
+    const destructive = [
+      "gcloud projects delete x",
+      "gcloud --project=p storage rm gs://b/x",
+      "gcloud -q storage rm gs://b/**",
+      "gcloud alpha storage rm gs://b/x",
+      "gcloud storage rm gs://b/x",
+      "gcloud storage buckets delete gs://b",
+      "gcloud storage cp ./x gs://b/x",
+      "gcloud dns record-sets delete www.example.com. --zone=z --type=A",
+      "gcloud dns managed-zones delete z",
+      "gcloud secrets versions access latest --secret=s",
+      "gcloud iam service-accounts keys create k.json --iam-account=a",
+      "gcloud auth print-access-token",
+      "gcloud config set project p",
+      "gcloud run deploy svc",
+      "firebase deploy",
+      "firebase deploy --only hosting",
+      "firebase hosting:disable",
+      "firebase firestore:delete --all-collections",
+      "firebase database:remove /",
+    ]
+    const readOnly = [
+      "gcloud --version",
+      "gcloud config list",
+      "gcloud config get-value project",
+      "gcloud auth list --filter=status:ACTIVE",
+      "gcloud projects list",
+      "gcloud projects describe p",
+      "gcloud dns managed-zones list --project=p",
+      "gcloud dns record-sets list --zone=z",
+      "gcloud storage ls gs://b",
+      "gcloud run services describe svc --region=r",
+      "gcloud sql instances list --project=p",
+      "gcloud logging read 'severity>=ERROR' --limit=10",
+      "firebase --version",
+      "firebase projects:list",
+      "firebase hosting:channel:list",
+      "firebase hosting:sites:list",
+    ]
+
+    test.each(destructive)("never auto-allows %p", (command) => {
+      expect(allowRulesMatching(command, "loose")).toEqual([])
+    })
+
+    test.each(readOnly)("allows %p", (command) => {
+      expect(allowRulesMatching(command, "word").length).toBeGreaterThan(0)
+    })
+
+    test("asks before the plain spelling of destructive commands", () => {
+      for (const command of [
+        "gcloud storage rm gs://b/x",
+        "gcloud beta storage rm gs://b/x",
+        "gcloud projects delete x",
+        "gcloud secrets versions access latest --secret=s",
+        "firebase deploy --only hosting",
+      ]) {
+        expect(
+          managedAskRules.some((rule) => ruleMatches(rule, command, "word")),
+        ).toBe(true)
+      }
+    })
+
+    test("sync removes the retired broad rules", () => {
+      expect(retiredAllowRules).toEqual(["Bash(gcloud:*)", "Bash(firebase:*)"])
+      const merged = mergePermissions({
+        allow: ["Bash(ls)", "Bash(gcloud:*)", "Bash(firebase:*)"],
+      })
+      expect(merged.allow).toEqual(["Bash(ls)", ...managedAllowRules])
+    })
   })
 
   test("adds managed ask rules and keeps runtime ask rules", () => {
