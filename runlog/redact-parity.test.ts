@@ -141,11 +141,28 @@ interface Secret {
 }
 
 const pemBlock = (label: string, prefix = "", headers: string[] = []) => {
+  const name = label ? `${label} PRIVATE KEY` : "PRIVATE KEY"
   const body = [b64(64), b64(64), `${b64(20)}==`]
-  const text = [`${prefix}-----BEGIN ${label} PRIVATE KEY-----`,
+  const text = [`${prefix}-----BEGIN ${name}-----`,
     ...headers.map((h) => `${prefix}${h}`),
     ...body.map((l) => `${prefix}${l}`),
-    `${prefix}-----END ${label} PRIVATE KEY-----`].join("\n")
+    `${prefix}-----END ${name}-----`].join("\n")
+  return { text, secrets: body }
+}
+
+/** A PEM block as Claude's Read tool prints it: `     2\t<line>`. */
+const lineNumbered = ({ text, secrets }: Secret): Secret => ({
+  text: text.split("\n").map((l, i) => `${String(i + 1).padStart(6)}\t${l}`)
+    .join("\n"),
+  secrets,
+})
+
+/** An armored PGP secret key, with a header, a blank line, and a CRC. */
+const pgpBlock = (prefix = ""): Secret => {
+  const body = [b64(64), b64(64), `${b64(30)}=`]
+  const text = ["-----BEGIN PGP PRIVATE KEY BLOCK-----", "Version: x 1",
+    "", ...body, `=${b64(4)}`, "-----END PGP PRIVATE KEY BLOCK-----"]
+    .map((l) => `${prefix}${l}`).join("\n")
   return { text, secrets: body }
 }
 
@@ -155,6 +172,13 @@ const secretForms = (): Secret[] => {
     ({ text: `${pre}${secret}${post}`, secrets: [secret] })
   const pem = pemBlock("OPENSSH")
   const nested = pemBlock("RSA")
+  const pgp = pgpBlock()
+  // A key in a YAML `|` block, as Kubernetes Secrets and Helm values hold it.
+  const indented = pemBlock("", "  ")
+  const yamlPem: Secret = {
+    text: `tls.key: |\n${indented.text}\ntls.crt: x`,
+    secrets: indented.secrets,
+  }
   return [
     one("cast send --private-key 0x", hex(64), " --rpc-url x"),
     one("PRIVATE_KEY = 0x", hex(64)),
@@ -192,6 +216,12 @@ const secretForms = (): Secret[] => {
     one('password := "', randAlnum(24), '"'),
     one("API_KEY = '", randAlnum(24), "'"),
     one("token := ", randAlnum(24)),
+    yamlPem,
+    lineNumbered(pemBlock("RSA")),
+    pemBlock("RSA", "+  "),
+    pgpBlock(),
+    pgpBlock("    "),
+    { text: JSON.stringify({ content: pgp.text }), secrets: pgp.secrets },
   ]
 }
 
@@ -219,6 +249,10 @@ const survivors = (): string[] => {
     "git@github.com:o/r.git",
     "seed=42 rng seed=1234 torch.manual_seed(42)",
     "pkg: 0x01, pk_index=3",
+    'const armor = "-----BEGIN PGP PRIVATE KEY BLOCK-----"\n'
+      + "\tif err := parse(b); err != nil {\n\t\treturn err\n\t}",
+    "def main():\n    configureLogging()\n    return run_everything_now",
+    "     1\tpackage main\n     2\t\n     3\tfunc main() {}",
   ]
 }
 
@@ -391,7 +425,8 @@ describe("jq and JS redact the same way", () => {
         expect(out).toContain("[redacted:")
       }
     }
-    expect(jq.file).not.toMatch(/^[-+ ]?[A-Za-z0-9+/]{64}$/m)
+    expect(jq.file).not.toMatch(
+      /^[-+ ]?[ \t]*(?:[0-9]+\t)?[A-Za-z0-9+/]{30,}={0,2}$/m)
   })
 
   test("every token, env, and JSON secret is redacted", () => {

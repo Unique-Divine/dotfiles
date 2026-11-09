@@ -57,19 +57,25 @@
 PEM bodies span lines, so the rule is code, not a pattern: `redactPemLines`
 in `runlog.ts` and `pem_lines` in `runlog.sh`.
 
-- After a line holding `-----BEGIN <label> PRIVATE KEY-----`, each line
-  matching `^[-+ ]?[A-Za-z0-9+/=]{16,100}\r?$` becomes `[redacted:pem]`,
-  keeping a diff prefix (`+`, `-`, or a space).
-- Blank lines and `Proc-Type:` or `DEK-Info:` headers keep the block
-  open. The block ends at the END line or at the first line that fits
-  none of these, so a header string in Go code never eats the code after
-  it, and nothing is deleted to the end of the file.
+- After a line holding `-----BEGIN <label> PRIVATE KEY-----` or the PGP
+  `-----BEGIN PGP PRIVATE KEY BLOCK-----`, each line matching
+  `^[-+ ]?[ \t]*(?:[0-9]+\t)?[A-Za-z0-9+/=]{16,100}\r?$` becomes
+  `[redacted:pem]`. The prefix stays: a diff mark (`+`, `-`, or a space),
+  indentation, as in a YAML `|` block, and a line number as Claude's Read
+  tool prints it (`     2\t`).
+- Blank lines and the armor headers `Proc-Type:`, `DEK-Info:`,
+  `Version:`, `Comment:`, `Charset:`, and `Hash:`, with the same prefix,
+  keep the block open. The block ends at the END line or at the first
+  line that fits none of these, so a header string in Go code never eats
+  the code after it, and nothing is deleted to the end of the file.
 - It runs over a whole file before the per-line passes, and over every
   multi-line string before the patterns.
-- The `pem` pattern catches a PEM inside a JSON string, where its line
-  breaks are an escaped `\n`. It replaces everything between the BEGIN
-  and END markers and keeps both. It needs the END marker within 8,192
-  characters on the same line.
+- A body line under 16 characters, such as a short last line or a PGP
+  `=XXXX` checksum, isn't redacted.
+- The `pem` pattern catches a PEM or PGP key inside a JSON string, where
+  its line breaks are an escaped `\n`. It replaces everything between the
+  BEGIN and END markers and keeps both. It needs the END marker within
+  8,192 characters on the same line.
 
 ## Lines and Files
 
