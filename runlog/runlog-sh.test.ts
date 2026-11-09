@@ -543,6 +543,37 @@ runlog_end 0`)
     })
 })
 
+describe("runlog_trap_signals", () => {
+  const cases: [NodeJS.Signals, number][] = [
+    ["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129],
+  ]
+  for (const [signal, exit] of cases) {
+    test(`${signal} ends the run with exit=${exit} status=failed`,
+      async () => {
+        const path = await writeScript(`sig-${signal}.sh`, `runlog_start sig
+runlog_trap_signals
+trap 'runlog_end $?' EXIT
+runlog_event step name=ready
+while :; do sleep 0.05; done`)
+        const proc = Bun.spawn(["bash", path], {
+          cwd: tmp, env: baseEnv(), stdout: "ignore", stderr: "pipe",
+        })
+        const deadline = Date.now() + 10_000
+        while (!(await events().catch(() => [])).some(
+          (e) => e.event === "step")) {
+          if (Date.now() > deadline) throw new Error("script never started")
+          await Bun.sleep(20)
+        }
+        proc.kill(signal)
+        expect(await proc.exited).toBe(exit)
+        const end = (await events()).at(-1)!
+        expect(end).toMatchObject({ event: "end", exit, status: "failed" })
+        const [idx] = await indexLines()
+        expect(idx).toMatchObject({ exit, status: "failed" })
+      }, 15_000)
+  }
+})
+
 describe("redaction", () => {
   test("no planted token survives in events or artifacts", async () => {
     const planted = plantTokens()

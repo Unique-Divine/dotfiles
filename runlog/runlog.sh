@@ -13,12 +13,14 @@
 #   runlog_dir                       prints the run folder (creates it)
 #   runlog_file                      prints the run's events file
 #   runlog_end EXIT [status=...]     writes end and the day's index line
+#   runlog_trap_signals              traps INT, TERM, HUP to exit 128+N
 #
 # Safe under `set -Eeuo pipefail`: every internal command ends in `|| true`
 # or sits in a condition, and no unset variable is read bare. The writer
 # fails open: after its first error it turns off for the rest of this
 # process (BOKU_RUNLOG_DEBUG=1 prints why). BOKU_RUNLOG=0 turns it off. It
-# sets no traps; callers run `runlog_end` from their own exit handler.
+# sets no traps itself; callers run `runlog_end` from their own exit
+# handler, and may call `runlog_trap_signals` so a kill logs 128+N.
 
 # Folder holding this file and redact-patterns.json, found at source time.
 _runlog_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null \
@@ -597,3 +599,14 @@ runlog_end() {
   return 0
 }
 
+# runlog_trap_signals: traps INT, TERM, and HUP to `exit 128+N`, so the
+# caller's EXIT handler sees 130, 143, or 129 in `$?` and `runlog_end $?`
+# logs a failed run instead of the last command's status. Bash runs the
+# trap once a foreground child returns. Call it once, next to the
+# caller's `trap ... EXIT`; it replaces any INT, TERM, or HUP trap.
+runlog_trap_signals() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  return 0
+}
