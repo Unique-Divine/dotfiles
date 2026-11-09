@@ -1,16 +1,18 @@
 /**
  * TS writer for the Boku run log. See docs/run-log-design.md.
  *
- * Every writer function fails open: the first error turns the writer off for
- * the rest of this process, and nothing here ever throws to the caller.
+ * Every writer function fails open: the first write error turns the writer
+ * off for the rest of this process, and nothing here ever throws to the
+ * caller. A failed artifact only logs `warn artifact-failed`.
  */
 import { createHash, randomBytes } from "node:crypto"
 import {
-  appendFileSync, chmodSync, mkdirSync, readFileSync,
-  renameSync, statSync, writeFileSync,
+  accessSync, appendFileSync, chmodSync, closeSync, constants, mkdirSync,
+  openSync, readFileSync, readSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from "node:fs"
 import { homedir, hostname } from "node:os"
-import { basename, join, resolve, sep } from "node:path"
+import { join, resolve, sep } from "node:path"
 
 import patternsJson from "./redact-patterns.json"
 
@@ -283,6 +285,57 @@ export const appendLine = (file: string, line: string): void => {
 
 export const isLoggingOff = (env: Env): boolean => env.BOKU_RUNLOG === "0"
 
+/** The artifact cap: `BOKU_RUNLOG_ARTIFACT_MAX` bytes, else 20 MiB. */
+export const artifactMax = (env: Env): number => {
+  const value = env.BOKU_RUNLOG_ARTIFACT_MAX ?? ""
+  return /^\d+$/.test(value) ? Number(value) : maxArtifactBytes
+}
+
+/**
+ * The file name an artifact gets, as `_runlog_artifact_name` names it. The
+ * kind's last `-` becomes `.` (`remerge-diff` is `remerge.diff`); a kind
+ * without `-` takes the source's extension, if any (`prompt` and `x.md`
+ * give `prompt.md`).
+ */
+export const artifactName = (kind: string, src: string): string => {
+  let name = (kind || "artifact").replace(/[^A-Za-z0-9_.-]/gu, "-")
+  if (name.startsWith(".")) name = name.slice(1)
+  // Bash would use these too; here they'd name the folder itself.
+  if (name === "" || name === "." || name === "..") name = "artifact"
+  const dash = name.lastIndexOf("-")
+  if (dash >= 0) return `${name.slice(0, dash)}.${name.slice(dash + 1)}`
+  const base = src.slice(src.lastIndexOf("/") + 1)
+  const dot = base.lastIndexOf(".")
+  const ext = base.slice(dot + 1)
+  return dot >= 1 && /^[A-Za-z0-9]+$/.test(ext) ? `${name}.${ext}` : name
+}
+
+/**
+ * Reads up to `max` bytes of a file. A capped copy ends at its last full
+ * line, so no token is left half cut for redaction to miss.
+ */
+export const readCapped = (
+  file: string, max: number,
+): { data: Buffer; truncated: boolean } => {
+  const size = statSync(file).size
+  if (size <= max) return { data: readFileSync(file), truncated: false }
+  const data = Buffer.alloc(max)
+  const fd = openSync(file, "r")
+  let got = 0
+  try {
+    while (got < max) {
+      const n = readSync(fd, data, got, max - got, got)
+      if (n === 0) break
+      got += n
+    }
+  } finally {
+    closeSync(fd)
+  }
+  const head = data.subarray(0, got)
+  if (head.at(-1) === 0x0a) return { data: head, truncated: true }
+  return { data: head.subarray(0, head.lastIndexOf(0x0a) + 1), truncated: true }
+}
+
 /** Writes this run's events; shared by `startRun` and `attachRun`. */
 interface Sink {
   write(kind: string, fields: Fields): boolean
@@ -410,26 +463,44 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
     artifact(kind: string, src: string): void {
       if (ended || writerState.disabled) return
       try {
+        if (!statSync(src).isFile()) throw new Error("not a file")
+        accessSync(src, constants.R_OK)
+      } catch {
+        event("warn", { code: "artifact-missing", msg: `${kind}: ${src}` })
+        return
+      }
+      let tmp: string | null = null
+      try {
         ensureDir(runDir)
-        const dest = join(runDir, basename(src))
-        const size = statSync(src).size
-        const truncated = size > maxArtifactBytes
-        const raw = readFileSync(src).subarray(0, maxArtifactBytes)
-        const text = redact(raw.toString("utf8"))
-        const tmp = `${dest}.tmp-${process.pid}`
+        const name = artifactName(kind, src)
+        const dest = join(runDir, name)
+        const { data, truncated } = readCapped(src, artifactMax(env))
+        const text = redact(data.toString("utf8"))
+        tmp = join(runDir, `.artifact.${process.pid}.${
+          randomBytes(3).toString("hex")}`)
         writeFileSync(tmp, text, { mode: 0o600 })
         renameSync(tmp, dest)
+        tmp = null
         chmodSync(dest, 0o600)
+        // A source inside the run folder is now replaced by its copy.
+        const from = resolve(src)
+        if (from.startsWith(`${resolve(runDir)}${sep}`) && from !== dest) {
+          rmSync(from, { force: true })
+        }
         event("artifact", {
           kind,
-          path: basename(dest),
+          path: name,
           bytes: Buffer.byteLength(text),
           sha256: createHash("sha256").update(text).digest("hex"),
           truncated,
         })
       } catch (error) {
-        writerState.disabled = true
+        if (tmp) rmSync(tmp, { force: true })
         debug(env, error)
+        // One lost artifact is worth a warning, not the rest of the log.
+        event("warn", {
+          code: "artifact-failed", msg: `cannot save artifact ${kind}`,
+        })
       }
     },
     end(exit: number, endOpts: EndOptions = {}): void {

@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
-  writeFileSync,
+  chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+  statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  attachRun, buildEvent, checkedRunPaths, indexPath, isRunId, maxLineBytes,
-  newRunId, redact, runFilePath, safeToolName, startRun, statusFor, type Env,
+  artifactName, attachRun, buildEvent, checkedRunPaths, indexPath, isRunId, maxLineBytes,
+  newRunId, readCapped, redact, runFilePath, safeToolName, startRun, statusFor, type Env,
   type RunIdentity,
 } from "./runlog.ts"
 
@@ -271,6 +271,85 @@ describe("startRun", () => {
     })
     expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/)
   }))
+
+  test("artifact names follow the kind, as in bash", () => {
+    expect(artifactName("remerge-diff", "/tmp/x")).toBe("remerge.diff")
+    expect(artifactName("conflict-diff", "/tmp/a.txt")).toBe("conflict.diff")
+    expect(artifactName("prompt", "/tmp/tmp.Xy12.md")).toBe("prompt.md")
+    expect(artifactName("report", "/tmp/a.tar.gz")).toBe("report.gz")
+    expect(artifactName("report", "/tmp/.bashrc")).toBe("report")
+    expect(artifactName("report", "/tmp/noext")).toBe("report")
+    expect(artifactName("report", "/tmp/x.m-d")).toBe("report")
+    expect(artifactName("a b-c d", "")).toBe("a-b-c.d")
+    expect(artifactName(".hidden", "x.md")).toBe("hidden.md")
+    expect(artifactName("", "x")).toBe("artifact")
+  })
+
+  test("a capped artifact ends at its last full line", withHome((home) => {
+    const tokens = fakeTokens()
+    const src = join(home, "big.log")
+    const first = "line one\n"
+    // The cap falls inside the token on line two.
+    writeFileSync(src, `${first}key ${tokens["github-token"]} tail\nthree\n`)
+    const env: Env = {
+      BOKU_HOME: home, BOKU_RUNLOG_ARTIFACT_MAX: String(first.length + 12),
+    }
+    const run = startRun("demo", { env, rev: null })
+    run.artifact("big-log", src)
+    run.end(0)
+    expect(readFileSync(join(run.runDir!, "big.log"), "utf8")).toBe(first)
+    const artifact = readLines(runFilePath(home, run.runId!))
+      .find((e) => e.event === "artifact")!
+    expect(artifact).toMatchObject({
+      kind: "big-log", path: "big.log", truncated: true, bytes: first.length,
+    })
+  }))
+
+  test("a capped one-line artifact is empty", () => {
+    const dir = mkdtempSync(join(tmpdir(), "boku-runlog-"))
+    try {
+      const src = join(dir, "one")
+      writeFileSync(src, "x".repeat(100))
+      expect(readCapped(src, 10)).toEqual({
+        data: Buffer.alloc(0), truncated: true,
+      })
+      writeFileSync(src, "abc\ndef\n")
+      expect(readCapped(src, 8).data.toString()).toBe("abc\ndef\n")
+      expect(readCapped(src, 4).data.toString()).toBe("abc\n")
+    } finally {
+      rmSync(dir, { force: true, recursive: true })
+    }
+  })
+
+  test("a failed artifact warns and the writer stays on", withHome((home) => {
+    const src = join(home, "report.md")
+    writeFileSync(src, "# Report\n")
+    const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+    // A folder in the way makes the final rename fail.
+    mkdirSync(join(run.runDir!, "report.md", "x"), { recursive: true })
+    run.artifact("report", src)
+    run.artifact("gone", join(home, "missing.txt"))
+    run.event("step", { name: "after" })
+    run.end(0)
+    const events = readLines(runFilePath(home, run.runId!))
+    expect(events.map((e) => [e.event, e.code ?? e.name ?? null])).toEqual([
+      ["start", null], ["warn", "artifact-failed"],
+      ["warn", "artifact-missing"], ["step", "after"], ["end", null],
+    ])
+    expect(events.at(-1)).toMatchObject({ warns: 2 })
+    expect(readdirSync(run.runDir!)).toEqual(["report.md"])
+  }))
+
+  test("an artifact from the run folder replaces its source",
+    withHome((home) => {
+      const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+      mkdirSync(run.runDir!, { recursive: true })
+      const src = join(run.runDir!, "draft.txt")
+      writeFileSync(src, "draft\n")
+      run.artifact("prompt", src)
+      run.end(0)
+      expect(readdirSync(run.runDir!)).toEqual(["prompt.txt"])
+    }))
 
   test("BOKU_RUNLOG=0 writes nothing and exports nothing", withHome((home) => {
     const env: Env = { BOKU_HOME: home, BOKU_RUNLOG: "0" }
