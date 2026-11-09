@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+  appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -197,6 +197,25 @@ describe("startRun", () => {
     expect(statSync(home).mode & 0o777).toBe(0o700)
     expect(statSync(join(home, "runs")).mode & 0o777).toBe(0o700)
   }))
+
+  test("end counts warns and errors other processes wrote",
+    withHome((home) => {
+      const run = startRun("git_mf", { env: { BOKU_HOME: home }, rev: null })
+      run.event("warn", { code: "own" })
+      const tap = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: run.runId! })
+      tap.event("warn", { code: "session-mismatch" })
+      tap.event("error", { code: "tap-failed" })
+      // A torn line doesn't count or break the count.
+      appendFileSync(runFilePath(home, run.runId!), '{"event":"warn"\n')
+      run.end(0)
+      const last = readFileSync(runFilePath(home, run.runId!), "utf8")
+        .trimEnd().split("\n").at(-1)!
+      expect(JSON.parse(last)).toMatchObject({
+        event: "end", warns: 2, errors: 1,
+      })
+      const index = readLines(indexPath(home, run.runId!.slice(0, 6)))
+      expect(index[0]).toMatchObject({ warns: 2, errors: 1 })
+    }))
 
   test("explicit end status wins over the exit mapping", withHome((home) => {
     const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })

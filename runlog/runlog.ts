@@ -336,6 +336,34 @@ export const readCapped = (
   return { data: head.subarray(0, head.lastIndexOf(0x0a) + 1), truncated: true }
 }
 
+export interface ProblemCounts {
+  warns: number
+  errors: number
+}
+
+/** Counts `warn` and `error` lines in a run file; null if unreadable. */
+export const countProblems = (file: string): ProblemCounts | null => {
+  let text: string
+  try {
+    text = readFileSync(file, "utf8")
+  } catch {
+    return null
+  }
+  const counts: ProblemCounts = { warns: 0, errors: 0 }
+  for (const line of text.split("\n")) {
+    if (!line.includes('"event"')) continue
+    let kind: unknown
+    try {
+      kind = (JSON.parse(line) as Fields).event
+    } catch {
+      continue
+    }
+    if (kind === "warn") counts.warns += 1
+    if (kind === "error") counts.errors += 1
+  }
+  return counts
+}
+
 /** Writes this run's events; shared by `startRun` and `attachRun`. */
 interface Sink {
   write(kind: string, fields: Fields): boolean
@@ -400,7 +428,7 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
   const home = bokuHome(env)
   const sink = makeSink(env, home, id, now)
   const runDir = runDirPath(home, runId)
-  const counts = { warns: 0, errors: 0 }
+  const counts: ProblemCounts = { warns: 0, errors: 0 }
   let agent: { cli: unknown; session_id: unknown } | null = null
   let ended = false
 
@@ -507,14 +535,16 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
       if (ended) return
       const status = statusFor(exit, endOpts.status)
       const durMs = now().getTime() - startedAt.getTime()
+      // Other processes (the tap) write warns too; the file has them all.
+      const total = countProblems(runFilePath(home, id.runId)) ?? counts
       const wrote = sink.write("end", {
-        exit, status, dur_ms: durMs, warns: counts.warns, errors: counts.errors,
+        exit, status, dur_ms: durMs, warns: total.warns, errors: total.errors,
       })
       ended = true
       if (!wrote) return
       const index = indexLine({
         id, ts: startedAt.toISOString(), durMs, exit, status,
-        warns: counts.warns, errors: counts.errors, agent,
+        warns: total.warns, errors: total.errors, agent,
       })
       try {
         appendLine(indexPath(home, dayOfRunId(id.runId)), index)
