@@ -102,6 +102,14 @@ describe("pure helpers", () => {
     expect(out).toContain("token=[redacted:token-value]&x=1")
   })
 
+  test("redact ignores case", () => {
+    const out = redact("API_TOKEN=abcdef123456 PASSWORD=hunter2hunter2 "
+      + "Authorization: bearer abcdefgh12345")
+    expect(out).toBe("API_TOKEN=[redacted:token-value] "
+      + "PASSWORD=[redacted:password-value] "
+      + "Authorization: bearer [redacted:bearer]")
+  })
+
   test("buildEvent cuts strings and keeps multibyte lines in the cap", () => {
     const msg = "ü€😀".repeat(100 * 1024 / 9)
     const line = buildEvent(id, "step", { name: "big", msg })

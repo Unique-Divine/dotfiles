@@ -96,8 +96,9 @@ const writerState = { disabled: false }
 
 export const redactPatterns: RedactPattern[] = patternsJson
 
+/** Every pattern matches case-insensitively, in both writers. */
 const compiledPatterns = (patterns: RedactPattern[]): [RegExp, string][] =>
-  patterns.map((p) => [new RegExp(p.regex, "g"), `[redacted:${p.kind}]`])
+  patterns.map((p) => [new RegExp(p.regex, "gi"), `[redacted:${p.kind}]`])
 
 const defaultCompiled = compiledPatterns(redactPatterns)
 
