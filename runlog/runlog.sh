@@ -13,12 +13,14 @@
 #   runlog_dir                       prints the run folder (creates it)
 #   runlog_file                      prints the run's events file
 #   runlog_end EXIT [status=...]     writes end and the day's index line
+#   runlog_trap_signals              traps INT, TERM, HUP to exit 128+N
 #
 # Safe under `set -Eeuo pipefail`: every internal command ends in `|| true`
 # or sits in a condition, and no unset variable is read bare. The writer
 # fails open: after its first error it turns off for the rest of this
 # process (BOKU_RUNLOG_DEBUG=1 prints why). BOKU_RUNLOG=0 turns it off. It
-# sets no traps; callers run `runlog_end` from their own exit handler.
+# sets no traps itself; callers run `runlog_end` from their own exit
+# handler, and may call `runlog_trap_signals` so a kill logs 128+N.
 
 # Folder holding this file and redact-patterns.json, found at source time.
 _runlog_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null \
@@ -35,13 +37,18 @@ _runlog_ms=0
 # Artifact copies keep at most this many bytes (20 MiB, as the tap does).
 _runlog_artifact_max_default=20971520
 
+# The jq `redact` def both jq paths share. Every pattern applies
+# case-insensitively ("gi"), as in runlog.ts; see redact-patterns.md.
+# shellcheck disable=SC2016
+_runlog_jq_redact='def redact($p): reduce $p[] as $r (.;
+  gsub($r.regex; "[redacted:\($r.kind)]"; "gi"));'
+
 # The jq program behind every line. `redact` applies each shared pattern,
 # `cut` keeps 512 characters, and a line over 4,095 bytes falls back to
 # the common fields plus `truncated: true`. Positional args are KEY=VAL
 # (string) or KEY:=JSON (raw, kept as a string if it doesn't parse).
 # shellcheck disable=SC2016
-_runlog_jq_line='
-def redact($p): reduce $p[] as $r (.; gsub($r.regex; "[redacted:\($r.kind)]"));
+_runlog_jq_line="${_runlog_jq_redact}"'
 def cut: if length > 512 then .[:512] + "[cut]" else . end;
 def clean: walk(if type == "string" then redact($pats[0]) | cut else . end);
 def ts: ($ms / 1000 | floor | strftime("%Y-%m-%dT%H:%M:%S")) + "."
@@ -433,9 +440,8 @@ _runlog_redact_file() {
   fi
   local -r out="${file}.redact"
   ( umask 077 && : >"$out" ) 2>/dev/null || return 1
-  # shellcheck disable=SC2016
   if jq -Rsj --slurpfile pats "${_runlog_patterns:-}" \
-    'reduce $pats[0][] as $r (.; gsub($r.regex; "[redacted:\($r.kind)]"))' \
+    "${_runlog_jq_redact} redact(\$pats[0])" \
     <"$file" >"$out" 2>/dev/null && mv -f -- "$out" "$file" 2>/dev/null
   then
     return 0
@@ -522,9 +528,30 @@ _runlog_status_for() {
   return 0
 }
 
+# _runlog_count_file WARNS_VAR ERRORS_VAR: sets the named variables to the
+# run file's `warn` and `error` line counts, or returns 1 and leaves them.
+# The file holds events from subshells and from the tap process, which
+# this process's counters never see.
+_runlog_count_file() {
+  runlog_active || return 1
+  local counts=""
+  # shellcheck disable=SC2016
+  counts="$(jq -Rrn '[inputs | fromjson? | objects | .event] as $e
+    | "\($e | map(select(. == "warn")) | length)"
+      + " \($e | map(select(. == "error")) | length)"' \
+    <"${_runlog_run_file:-}" 2>/dev/null)" || counts=""
+  [[ "$counts" =~ ^([0-9]+)\ ([0-9]+)$ ]] || return 1
+  printf -v "$1" '%s' "${BASH_REMATCH[1]}" || return 1
+  printf -v "$2" '%s' "${BASH_REMATCH[2]}" || return 1
+  return 0
+}
+
 # runlog_end EXIT [status=...]: writes end, then the run's line in the
 # day's index.jsonl. An explicit status= wins over the exit-code mapping.
-# The run is finished afterwards; later calls do nothing.
+# `warns` and `errors` count the run file's lines, so subshells and the
+# tap count too; this process's own counters are the fallback when the
+# file can't be read. The run is finished afterwards; later calls do
+# nothing.
 runlog_end() {
   [[ "${_runlog_on}" == 1 ]] || return 0
   local code="${1:-}"
@@ -539,7 +566,8 @@ runlog_end() {
   [[ -n "$status" ]] || status="$(_runlog_status_for "$code")"
   _runlog_now
   local -r dur=$(( _runlog_ms - ${_runlog_start_ms:-$_runlog_ms} ))
-  local -r warns="${_runlog_warns:-0}" errors="${_runlog_errors:-0}"
+  local warns="${_runlog_warns:-0}" errors="${_runlog_errors:-0}"
+  _runlog_count_file warns errors || true
 
   if _runlog_build_at "$_runlog_ms" end "exit:=${code:-null}" \
     "status=$status" "dur_ms:=$dur" "warns:=$warns" "errors:=$errors"
@@ -568,5 +596,17 @@ runlog_end() {
   fi
   _runlog_on=0
   _runlog_file_on=0
+  return 0
+}
+
+# runlog_trap_signals: traps INT, TERM, and HUP to `exit 128+N`, so the
+# caller's EXIT handler sees 130, 143, or 129 in `$?` and `runlog_end $?`
+# logs a failed run instead of the last command's status. Bash runs the
+# trap once a foreground child returns. Call it once, next to the
+# caller's `trap ... EXIT`; it replaces any INT, TERM, or HUP trap.
+runlog_trap_signals() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   return 0
 }

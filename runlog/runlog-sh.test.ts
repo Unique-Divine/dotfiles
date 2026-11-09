@@ -193,11 +193,22 @@ const plantTokens = (): Planted[] => {
     tok("AKIA", randAlnum(16, upper)),
     tok("glpat-", randAlnum(20)),
     tok("eyJ", `${randAlnum(20)}.eyJ${randAlnum(30)}.${randAlnum(40)}`),
+    tok("npm_", randAlnum(36)),
     tok("Bearer ", randAlnum(32)),
+    tok("bearer ", randAlnum(32)),
     tok("token=", randAlnum(24)),
     tok("secret=", randAlnum(24)),
     tok("password=", randAlnum(24)),
     tok("api_key=", randAlnum(24)),
+    tok("API_TOKEN=", randAlnum(24)),
+    tok("PASSWORD=", randAlnum(24)),
+    tok("SECRET_KEY=", randAlnum(24)),
+    tok("Deploy_Secret=", randAlnum(24)),
+    tok("X_API_KEY=", randAlnum(24)),
+    tok('"password": "', randAlnum(24)),
+    tok('"Token":"', randAlnum(24)),
+    tok('"secret": "', randAlnum(24)),
+    tok('"API_KEY": "', randAlnum(24)),
   ]
 }
 
@@ -492,6 +503,77 @@ runlog_end 1`)
   })
 })
 
+describe("end counts warnings in the run file", () => {
+  const cliPath = join(import.meta.dir, "cli.ts")
+
+  test("warns from a subshell and the tap process count", async () => {
+    const stream = JSON.stringify({ type: "system", subtype: "init",
+      session_id: "other-session" })
+    const r = await runBash(`runlog_start wc
+trap 'runlog_end $?' EXIT
+( runlog_event warn code=from-subshell )
+( runlog_event error code=from-subshell )
+printf '%s\\n' ${sq(stream)} \\
+  | bun ${sq(cliPath)} tap --cli claude --session-id my-session
+runlog_event warn code=from-main
+runlog_event step name=nested detail:='{"event":"warn"}'`)
+    expect(r.code).toBe(0)
+    const evs = await events()
+    const warns = evs.filter((e) => e.event === "warn").map((e) => e.code)
+    expect(warns.sort()).toEqual(
+      ["from-main", "from-subshell", "session-mismatch"])
+    const end = evs.at(-1)!
+    expect(end).toMatchObject({ event: "end", warns: 3, errors: 1 })
+    const [idx] = await indexLines()
+    expect(idx).toMatchObject({ warns: 3, errors: 1 })
+  }, 30_000)
+
+  test("falls back to this process's counters without the file",
+    async () => {
+      const r = await runBash(`runlog_start wc
+( runlog_event warn code=lost )
+runlog_event warn code=kept
+runlog_event error code=kept
+rm -f -- "$(runlog_file)"
+runlog_end 0`)
+      expect(r.code).toBe(0)
+      const evs = await events()
+      expect(evs).toHaveLength(1)
+      expect(evs[0]).toMatchObject({ event: "end", warns: 1, errors: 1 })
+    })
+})
+
+describe("runlog_trap_signals", () => {
+  const cases: [NodeJS.Signals, number][] = [
+    ["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129],
+  ]
+  for (const [signal, exit] of cases) {
+    test(`${signal} ends the run with exit=${exit} status=failed`,
+      async () => {
+        const path = await writeScript(`sig-${signal}.sh`, `runlog_start sig
+runlog_trap_signals
+trap 'runlog_end $?' EXIT
+runlog_event step name=ready
+while :; do sleep 0.05; done`)
+        const proc = Bun.spawn(["bash", path], {
+          cwd: tmp, env: baseEnv(), stdout: "ignore", stderr: "pipe",
+        })
+        const deadline = Date.now() + 10_000
+        while (!(await events().catch(() => [])).some(
+          (e) => e.event === "step")) {
+          if (Date.now() > deadline) throw new Error("script never started")
+          await Bun.sleep(20)
+        }
+        proc.kill(signal)
+        expect(await proc.exited).toBe(exit)
+        const end = (await events()).at(-1)!
+        expect(end).toMatchObject({ event: "end", exit, status: "failed" })
+        const [idx] = await indexLines()
+        expect(idx).toMatchObject({ exit, status: "failed" })
+      }, 15_000)
+  }
+})
+
 describe("redaction", () => {
   test("no planted token survives in events or artifacts", async () => {
     const planted = plantTokens()
@@ -518,8 +600,10 @@ runlog_end 0`)
       (m) => m[1],
     )
     for (const k of ["github-token", "github-pat", "anthropic-key",
-      "api-key", "slack-token", "aws-key", "gitlab-token", "jwt", "bearer",
-      "token-value", "secret-value", "password-value", "api-key-value"]) {
+      "api-key", "slack-token", "aws-key", "gitlab-token", "npm-token",
+      "jwt", "bearer", "token-value", "secret-value", "secret-key-value",
+      "password-value", "api-key-value", "token-json", "secret-json",
+      "password-json", "api-key-json"]) {
       expect(kinds).toContain(k)
     }
   })
