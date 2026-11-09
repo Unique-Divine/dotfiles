@@ -131,7 +131,7 @@ export const redactValue = (value: unknown): unknown => {
   return value
 }
 
-/** A line that may be a JSON object or array, as jq's `redact_line` tests. */
+/** A line that may be a JSON object or array, as jq's `decode_line` checks. */
 const jsonCandidate = /^[ \t\r]*[{[]/
 
 /**
@@ -139,7 +139,8 @@ const jsonCandidate = /^[ \t\r]*[{[]/
  * redacted, so `KEY=\"value\"` is seen as `KEY="value"`, and is re-encoded
  * only when a string changed. Every line is then redacted as text, which
  * catches `"password": "..."` pairs; no pattern consumes a backslash or
- * quote, so JSON stays valid. Matches `redact_line` in runlog.sh.
+ * quote, so JSON stays valid. Matches `decode_line` and `redact_lines` in
+ * runlog.sh.
  */
 export const redactLine = (line: string): string => {
   let text = line
