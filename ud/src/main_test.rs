@@ -256,6 +256,16 @@ fn shell_backed_commands_receive_only_the_selected_operation() {
 /// lists `compose` projects and container `ids`, and record each docker call
 /// with every argument in angle brackets.
 fn docker_kill_all(compose: &str, ids: &str) -> (Output, Vec<String>) {
+    docker_kill_all_failing(compose, ids, "")
+}
+
+/// Like `docker_kill_all`, but the fake docker exits 1 for the subcommand
+/// named in `fail` (`ps-ids` for the ID listing, or `stop`).
+fn docker_kill_all_failing(
+    compose: &str,
+    ids: &str,
+    fail: &str,
+) -> (Output, Vec<String>) {
     let temp = TempDir::new().unwrap();
     let compose_file = temp.path().join("compose");
     let ids_file = temp.path().join("ids");
@@ -271,9 +281,14 @@ fn docker_kill_all(compose: &str, ids: &str) -> (Output, Vec<String>) {
          \x20 ps)\n\
          \x20   if [[ \"$*\" == *com.docker.compose.project* ]]; then\n\
          \x20     cat \"$DOCKER_COMPOSE_FILE\"\n\
+         \x20   elif [[ \"$DOCKER_FAIL\" == ps-ids ]]; then\n\
+         \x20     exit 1\n\
          \x20   else\n\
          \x20     cat \"$DOCKER_IDS_FILE\"\n\
          \x20   fi\n\
+         \x20   ;;\n\
+         \x20 stop)\n\
+         \x20   [[ \"$DOCKER_FAIL\" != stop ]]\n\
          \x20   ;;\n\
          esac\n",
     );
@@ -285,6 +300,7 @@ fn docker_kill_all(compose: &str, ids: &str) -> (Output, Vec<String>) {
         .env("DOCKER_CALLS_FILE", &calls_file)
         .env("DOCKER_COMPOSE_FILE", &compose_file)
         .env("DOCKER_IDS_FILE", &ids_file)
+        .env("DOCKER_FAIL", fail)
         .args(["docker", "kill-all"])
         .output()
         .unwrap();
@@ -333,6 +349,25 @@ fn docker_kill_all_tears_down_compose_and_stops_many_containers() {
         ]
     );
     assert!(stdout(&output).contains("Docker compose app: app"));
+}
+
+/// A failed container listing ends the command without calling docker stop.
+#[test]
+fn docker_kill_all_fails_when_listing_containers_fails() {
+    let (output, calls) = docker_kill_all_failing("", "abc123\n", "ps-ids");
+    assert!(!output.status.success());
+    assert!(stdout(&output).contains("Failed to list running containers."));
+    assert!(calls.is_empty(), "calls: {calls:?}");
+}
+
+/// A failed docker stop fails the command instead of reporting success.
+#[test]
+fn docker_kill_all_fails_when_docker_stop_fails() {
+    let (output, calls) = docker_kill_all_failing("", "abc123\n", "stop");
+    assert!(!output.status.success());
+    assert_eq!(calls, ["<stop><abc123>"]);
+    assert!(stdout(&output).contains("Failed to stop running containers."));
+    assert!(!stdout(&output).contains("Done."));
 }
 
 /// Notes must resolve the configured repository before launching the editor.

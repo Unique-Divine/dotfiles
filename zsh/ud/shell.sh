@@ -165,7 +165,10 @@ ud_shell_docker_kill_all() {
   fi
   if [[ "${#container_ids[@]}" -gt 0 ]]; then
     echo "Stopping remaining running containers..."
-    docker stop "${container_ids[@]}"
+    if ! docker stop "${container_ids[@]}"; then
+      echo "Failed to stop running containers."
+      return 1
+    fi
   else
     echo "No remaining running containers found."
   fi
