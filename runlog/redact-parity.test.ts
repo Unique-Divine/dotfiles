@@ -228,6 +228,21 @@ const secretForms = (): Secret[] => {
     one("cast wallet address --mnemonic=", words()),
     one('{"command": "cast wallet address --mnemonic \\"', words(), '\\""}'),
     one("forge script --private-keys 0x", hex(64), " --broadcast"),
+    // Key lists: every key after the first must go too.
+    ((a = hex(64), b = hex(64), c = hex(64)): Secret => ({
+      text: `forge script --private-keys 0x${a},0x${b},0x${c} --broadcast`,
+      secrets: [a, b, c],
+    }))(),
+    ((a = hex(64), b = hex(64)): Secret => ({
+      text: `accounts: ["0x${a}", "0x${b}"],`, secrets: [a, b],
+    }))(),
+    ((a = hex(64), b = hex(64)): Secret => ({
+      text: `PRIVATE_KEYS=0x${a},0x${b}`, secrets: [a, b],
+    }))(),
+    ((a = hex(64), b = hex(64)): Secret => ({
+      text: JSON.stringify({ privateKeys: [`0x${a}`, `0x${b}`] }),
+      secrets: [a, b],
+    }))(),
     one("REDIS_URL=redis://:", randAlnum(16), "@cache:6379"),
     one("https://", randAlnum(40), ":x-oauth-basic@github.com/o/r"),
     one("git clone https://", randAlnum(40), "@github.com/o/r.git"),
