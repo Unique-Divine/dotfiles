@@ -59,16 +59,24 @@ The state folders are empty in phase 1. Later examples:
 shared, not under `dotfiles/`, because that cron run must link to the
 `git_mf` runs it starts. `source` names the producer.
 
-Run id: `<yymmddTHHMMSSZ>-<tool>-<4 hex>`. It sorts by time, names the tool,
-and contains its day folder, so the reader finds a file from the id alone.
+Run id: `<yymmddTHHMMSSZ>-<tool>-<4 hex>`. It names the tool and contains
+its day folder, so the reader finds a file from the id alone. `tool` keeps
+`[A-Za-z0-9_.-]`, up to 40 characters. Ids only sort to the second, so the
+reader orders runs by their start `ts`, with the id as a tiebreaker. Any
+unique part of an id selects a run; when several match, the newest wins
+and the others are named on stderr.
 
 Why the index is per day: pruning deletes whole day folders and never
 edits a file. The rule is that no process rewrites a file a run might
 still append to, so today's and yesterday's files are append-only. A
 killed run never writes its index line, so run files are the truth. For
 today and yesterday, `boku-runs` reads the run files directly; the index
-is a fast path for older days only. `boku-runs reindex` rebuilds an older
-day's index, writing a temp file and renaming it over the old one.
+is a fast path for older days, and run files missing from it still show,
+as `incomplete`. `boku-runs reindex` rebuilds an older day's index, writing
+a temp file and renaming it over the old one. Prune does the same for any
+kept past day whose index is missing or partial. `end.warns` and
+`end.errors` are counted from the run file, so warnings written by the tap
+or a subshell are included.
 
 ## Event Schema
 
@@ -527,8 +535,11 @@ rebuild goes in `XDG_CACHE_HOME`, which pruning never touches.
 Never log the environment. `argv`, string fields, artifacts, and every
 `agent.jsonl` line are redacted. The patterns live in one file,
 `runlog/redact-patterns.json`, as `{kind, regex}` entries: token shapes
-(`ghp_`, `github_pat_`, `sk-`, `xox[abpr]-`, `AKIA`, `glpat-`, JWTs) and
-values after `token=`, `secret=`, `password=`, or `Bearer `. The TS
+(`ghp_`, `github_pat_`, `sk-`, `xox[abpr]-`, `AKIA`, `glpat-`, `npm_`,
+JWTs) and the values of `token`, `secret`, `secret_key`, `password`, and
+`api_key` in env style (`API_TOKEN=...`) or JSON style, plus `Bearer `.
+Every pattern applies case-insensitively (see
+`runlog/redact-patterns.md`). The TS
 `redact()` loads it, and the bash writer applies it in jq with `gsub`. The
 regexes stick to the subset both JS and jq's Oniguruma accept, and a test
 runs every fixture through both writers and compares the output. Diffs
