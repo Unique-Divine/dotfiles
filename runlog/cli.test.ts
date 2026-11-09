@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -12,7 +12,7 @@ import {
   parseSince, pathBytes, tapNotice, unwrapShell, type Event, type LiveProbe,
 } from "./cli.ts"
 import {
-  buildEvent, indexPath, runFilePath, startRun, type Env,
+  buildEvent, indexLine, indexPath, runFilePath, startRun, type Env,
   type RunIdentity, type RunLog,
 } from "./runlog.ts"
 
@@ -78,14 +78,16 @@ const dayAgo = (n: number): string => dayOf(new Date(Date.now() - n * dayMs))
 const plantRun = (
   home: string, runId: string, opts: {
     parent?: string | null; end?: { exit: number; status: string } | null
-    pid?: number; pidStart?: number
+    pid?: number; pidStart?: number; ts?: Date
+    /** Also append the run's line to the day's index. */
+    indexed?: boolean
   } = {},
 ): void => {
   const id: RunIdentity = {
     source: "dotfiles", runId, parentRunId: opts.parent ?? null,
     rootRunId: opts.parent ?? runId, tool: runId.split("-")[1]!,
   }
-  const startTs = new Date(Date.UTC(
+  const startTs = opts.ts ?? new Date(Date.UTC(
     2000 + Number(runId.slice(0, 2)), Number(runId.slice(2, 4)) - 1,
     Number(runId.slice(4, 6)), 12,
   ))
@@ -101,7 +103,19 @@ const plantRun = (
   const dir = join(home, "runs", runId.slice(0, 6))
   mkdirSync(dir, { recursive: true })
   writeFileSync(runFilePath(home, runId), `${lines.join("\n")}\n`)
+  if (opts.indexed) {
+    appendFileSync(indexPath(home, runId.slice(0, 6)), `${indexLine({
+      id, ts: startTs.toISOString(), durMs: 5, exit: opts.end?.exit ?? null,
+      status: opts.end?.status ?? "incomplete", warns: 0, errors: 0,
+      agent: null,
+    })}\n`)
+  }
 }
+
+/** Noon UTC of a day plus `ms`, for runs started in the same second. */
+const noonPlus = (day: string, ms: number): Date =>
+  new Date(Date.UTC(2000 + Number(day.slice(0, 2)),
+    Number(day.slice(2, 4)) - 1, Number(day.slice(4, 6)), 12, 0, 0, ms))
 
 const stampFor = (day: string): string => `${day}T120000Z`
 
@@ -359,6 +373,56 @@ describe("reader", () => {
     const missing = await runCli(["show", "zzzz"], baseEnv(home))
     expect(missing.exitCode).toBe(1)
     expect(missing.stderr).toContain("no run matches")
+  }))
+
+  test("runs in one second sort by start time, not by hex",
+    withHome(async (home) => {
+      for (const day of [dayAgo(0), dayAgo(10)]) {
+        const stamp = stampFor(day)
+        const ended = { exit: 0, status: "ok" }
+        // Start order is ffff, aaaa, 0000: the reverse of the id order.
+        for (const [hex, ms] of [["ffff", 100], ["aaaa", 200], ["0000", 300]]) {
+          plantRun(home, `${stamp}-top-${hex}`, {
+            end: ended, ts: noonPlus(day, Number(ms)), indexed: true,
+          })
+        }
+        const parent = `${stamp}-top-0000`
+        for (const [hex, ms] of [["fff1", 400], ["0001", 500]]) {
+          plantRun(home, `${stamp}-kid-${hex}`, {
+            parent, end: ended, ts: noonPlus(day, Number(ms)), indexed: true,
+          })
+        }
+      }
+      const list = await runCli([], baseEnv(home))
+      const ids = list.stdout.trimEnd().split("\n")
+        .map((row) => row.split("  ").at(-1)!.slice(-4))
+      expect(ids).toEqual(["0000", "aaaa", "ffff", "0000", "aaaa", "ffff"])
+      expect(list.stdout.split("\n")[0]).toContain(stampFor(dayAgo(0)))
+
+      const last = await runCli(["show", "last", "--tree"], baseEnv(home))
+      const heads = last.stdout.split("\n")
+        .filter((l) => /^ *\d{6}T\d{6}Z-/.test(l)).map((l) => l.trim())
+      expect(heads.map((h) => h.split(" ")[0]!.slice(-8))).toEqual([
+        "top-0000", "kid-fff1", "kid-0001",
+      ])
+      expect(heads[0]).toContain(stampFor(dayAgo(0)))
+    }))
+
+  test("index lines with a bad run id are ignored", withHome(async (home) => {
+    const past = dayAgo(10)
+    plantRun(home, `${stampFor(past)}-good-aaaa`, {
+      end: { exit: 0, status: "ok" }, indexed: true,
+    })
+    appendFileSync(indexPath(home, past), `${JSON.stringify({
+      run_id: `${stampFor(past)}-x/../../../../escaped`, parent_run_id: null,
+      ts: noonPlus(past, 1).toISOString(), status: "ok",
+    })}\n`)
+    const list = await runCli([], baseEnv(home))
+    expect(list.stdout).toContain("good-aaaa")
+    expect(list.stdout).not.toContain("escaped")
+    const show = await runCli(["show", "escaped"], baseEnv(home))
+    expect(show.exitCode).toBe(1)
+    expect(show.stderr).toContain("no run matches")
   }))
 
   test("an ambiguous suffix lists its matches", withHome(async (home) => {

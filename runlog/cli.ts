@@ -11,8 +11,8 @@ import { dirname, join } from "node:path"
 import { Command } from "commander"
 
 import {
-  attachRun, bokuHome, cutString, ensureDir, indexLine,
-  indexPath, readBootId, readPidStart, redact, runDirPath, runFilePath,
+  attachRun, bokuHome, checkedRunPaths, cutString, ensureDir, indexLine,
+  indexPath, isRunId, readBootId, readPidStart, redact, runFilePath,
   startRun, type Env, type Fields, type RunIdentity,
 } from "./runlog.ts"
 
@@ -79,7 +79,7 @@ export const dayAge = (day: string, now: Date): number =>
 
 const isDay = (name: string): boolean => /^\d{6}$/.test(name)
 const isRunFile = (name: string): boolean =>
-  /^\d{6}T\d{6}Z-.+\.jsonl$/.test(name)
+  name.endsWith(".jsonl") && isRunId(name.slice(0, -".jsonl".length))
 
 export const listDays = (home: string): string[] => {
   try {
@@ -165,7 +165,8 @@ export const summarizeEvents = (
 
 export const summaryFromIndex = (line: Event): RunSummary | null => {
   const runId = str(line.run_id)
-  if (!runId) return null
+  // An id that isn't the exact shape could name a path outside runs/.
+  if (!runId || !isRunId(runId)) return null
   return {
     runId,
     parentRunId: str(line.parent_run_id),
@@ -220,8 +221,30 @@ export const loadRuns = (
       if (summary) runs.push(summary)
     }
   }
-  return runs.sort((a, b) => a.runId.localeCompare(b.runId))
+  return runs.sort(compareRuns)
 }
+
+/** Milliseconds of the `yymmddTHHMMSSZ` stamp a run id starts with. */
+export const stampMs = (runId: string): number => {
+  const m = /^(\d{2})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(runId)
+  if (!m) return 0
+  const [y, mo, d, h, mi, se] = m.slice(1).map(Number) as number[]
+  return Date.UTC(2000 + y!, mo! - 1, d!, h!, mi!, se!)
+}
+
+/** A run's start time in ms: its `ts`, else the stamp in its id. */
+export const startMs = (run: RunSummary): number => {
+  const ms = Date.parse(run.ts)
+  return Number.isFinite(ms) ? ms : stampMs(run.runId)
+}
+
+/**
+ * Oldest first by start time. The id only breaks ties: its 4 hex digits
+ * are random, so runs started in the same second would sort at random.
+ */
+export const compareRuns = (a: RunSummary, b: RunSummary): number =>
+  startMs(a) - startMs(b)
+    || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0)
 
 /** Resolves `last` or any unique suffix of a run id. */
 export const resolveRunId = (runs: RunSummary[], query: string): string => {
@@ -326,7 +349,7 @@ export const showLines = (
       formatDuration(run.durMs)}`
     : runId
   const lines = [`${pad}${header}`]
-  for (const event of readJsonl(runFilePath(home, runId))) {
+  for (const event of readJsonl(checkedRunPaths(home, runId).file)) {
     lines.push(`${pad}  ${formatEvent(event)}`)
   }
   if (tree) {
@@ -473,7 +496,7 @@ export const challengeLines = (
     if (Date.parse(run.ts) < since.getTime()) continue
     let report: string
     try {
-      const file = join(runDirPath(home, run.runId), "report.md")
+      const file = join(checkedRunPaths(home, run.runId).dir, "report.md")
       report = readFileSync(file, "utf8")
     } catch {
       continue
@@ -916,7 +939,7 @@ export const createProgram = (env: Env = process.env): Command => {
     .action((query: string, opts: { at?: string; context: string }) =>
       guard(() => {
         const runId = resolveRunId(loadRuns(home()), query)
-        const file = join(runDirPath(home(), runId), "agent.jsonl")
+        const file = join(checkedRunPaths(home(), runId).dir, "agent.jsonl")
         if (!existsSync(file)) throw new Error(`${runId} has no agent.jsonl`)
         const at = opts.at === undefined ? null : parseIntArg(opts.at, "--at")
         print(agentLines(readFileSync(file, "utf8"), at,
