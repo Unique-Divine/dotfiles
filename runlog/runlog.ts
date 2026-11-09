@@ -450,6 +450,20 @@ export const appendLine = (file: string, line: string): void => {
   }
 }
 
+/**
+ * Writes `text` over `file` (`0600`), creating it if needed.
+ * `O_NOFOLLOW` refuses a symlinked file.
+ */
+export const writeNoFollow = (file: string, text: string): void => {
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT
+    | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600)
+  try {
+    writeSync(fd, text)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 /** Creates `file` (`0600`) and fails if anything, a link too, is there. */
 export const createExclusive = (file: string): void => {
   closeSync(openSync(file, constants.O_WRONLY | constants.O_CREAT
