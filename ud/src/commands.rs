@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -382,14 +382,32 @@ fn configure_nibi(network: NibiNetwork) -> Result<i32> {
 }
 
 fn run_nibi_keys(command: NibiKeysCommand) -> Result<i32> {
-    let (name, mnemonic) = command.into_parts();
-    run_shell_helper([
-        OsStr::new("nibi-keys-add-mnem"),
-        OsStr::new("--name"),
-        OsStr::new(&name),
-        OsStr::new("--mnem"),
-        OsStr::new(&mnemonic),
-    ])
+    let name = command.key_name();
+    let stdin = io::stdin();
+    if stdin.is_terminal() {
+        bail!(
+            "add-mnem reads the mnemonic from standard input; pipe it in, \
+             for example: pass show path/to/mnemonic | ud nibi keys add-mnem \
+             --name {name} --stdin"
+        );
+    }
+    let mut input = String::new();
+    stdin
+        .lock()
+        .read_to_string(&mut input)
+        .context("failed to read the mnemonic from standard input")?;
+    let mnemonic = input.trim();
+    if mnemonic.is_empty() {
+        bail!("standard input did not contain a mnemonic");
+    }
+    run_shell_helper_with_input(
+        [
+            OsStr::new("nibi-keys-add-mnem"),
+            OsStr::new("--name"),
+            OsStr::new(&name),
+        ],
+        format!("{mnemonic}\n").as_bytes(),
+    )
 }
 
 /// Process names that `ud nibi stop --all` matches exactly with pgrep.
@@ -544,4 +562,30 @@ where
     let mut command = Command::new("bash");
     command.arg(&helper).args(args);
     process::run_quiet(command)
+}
+
+/// Run the shell helper with `input` as its standard input. Data that must
+/// not appear in process arguments goes here.
+fn run_shell_helper_with_input<I, S>(args: I, input: &[u8]) -> Result<i32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let helper = shell_helper_path()?;
+    if !helper.is_file() {
+        bail!("ud shell helper is missing: {}", helper.display());
+    }
+    let mut child = Command::new("bash")
+        .arg(&helper)
+        .args(args)
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to run bash")?;
+    let mut child_stdin =
+        child.stdin.take().context("failed to open helper stdin")?;
+    let written = child_stdin.write_all(input);
+    drop(child_stdin);
+    let status = child.wait().context("failed to wait for bash")?;
+    written.context("failed to write helper stdin")?;
+    Ok(process::exit_code(status))
 }

@@ -158,8 +158,11 @@ fn help_command_accepts_a_nested_path() {
         .output()
         .unwrap();
     assert_success(&output);
-    assert!(stdout(&output).contains("--mnem <MNEM>"));
-    assert!(stdout(&output).contains("shell history"));
+    assert!(stdout(&output).contains("--stdin"));
+    assert!(!stdout(&output).contains("--mnem"));
+    assert!(stdout(&output).contains(
+        "pass show path/to/mnemonic | ud nibi keys add-mnem --name alice --stdin"
+    ));
 }
 
 /// Preview mode must expose commands without running Cargo or Go.
@@ -603,82 +606,144 @@ fn nibi_stop_help_documents_all() {
     assert!(stdout(&output).contains("Without --all"));
 }
 
-/// Mnemonic import must preserve the selected network, wallet name and input.
+/// The helper receives the key name as an argument and the mnemonic only on
+/// stdin.
 #[test]
 fn mnemonic_import_forwards_to_the_shell_helper() {
     let temp = TempDir::new().unwrap();
     let helper = temp.path().join("helper.sh");
     write_executable(
         &helper,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$HELPER_ARGS_FILE\"\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$HELPER_ARGS_FILE\"\ncat > \"$HELPER_STDIN_FILE\"\n",
     );
     let args_file = temp.path().join("args");
+    let stdin_file = temp.path().join("stdin");
     let mnemonic = "word1 word2 word3";
 
     let output = ud()
         .env("UD_SHELL_HELPER", helper)
         .env("HELPER_ARGS_FILE", &args_file)
-        .args([
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", mnemonic,
-        ])
+        .env("HELPER_STDIN_FILE", &stdin_file)
+        .args(["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"])
+        .write_stdin(format!("{mnemonic}\n"))
         .output()
         .unwrap();
     assert_success(&output);
     assert_eq!(
         fs::read_to_string(args_file).unwrap(),
-        format!("nibi-keys-add-mnem\n--name\nalice\n--mnem\n{mnemonic}\n")
+        "nibi-keys-add-mnem\n--name\nalice\n"
+    );
+    assert_eq!(
+        fs::read_to_string(stdin_file).unwrap(),
+        format!("{mnemonic}\n")
     );
 }
 
-/// Invalid mnemonic arguments must fail before launching an importing process.
+/// Invalid arguments, a missing input mode, and empty stdin must fail before
+/// launching an importing process.
 #[test]
 fn mnemonic_import_rejects_invalid_arguments() {
-    for args in [
-        vec!["nibi", "keys", "add-mnem", "--name", "alice"],
-        vec!["nibi", "keys", "add-mnem", "--mnem", "words"],
-        vec![
-            "nibi", "keys", "add-mnem", "--name", "alice", "--name", "bob",
-            "--mnem", "words",
-        ],
-        vec![
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", "words",
-            "extra",
-        ],
+    let temp = TempDir::new().unwrap();
+    let helper = temp.path().join("helper.sh");
+    let called = temp.path().join("called");
+    write_executable(
+        &helper,
+        "#!/usr/bin/env bash\ntouch \"$HELPER_CALLED_FILE\"\n",
+    );
+    for (args, input) in [
+        (
+            vec!["nibi", "keys", "add-mnem", "--name", "alice"],
+            "words\n",
+        ),
+        (vec!["nibi", "keys", "add-mnem", "--stdin"], "words\n"),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", "words",
+            ],
+            "",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--stdin",
+                "--mnem", "words",
+            ],
+            "",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--name", "bob",
+                "--stdin",
+            ],
+            "words\n",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--stdin",
+                "extra",
+            ],
+            "words\n",
+        ),
+        (
+            vec!["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"],
+            " \n\n",
+        ),
     ] {
-        let output = run(&args);
+        let output = ud()
+            .env("UD_SHELL_HELPER", &helper)
+            .env("HELPER_CALLED_FILE", &called)
+            .args(&args)
+            .write_stdin(input)
+            .output()
+            .unwrap();
         assert!(!output.status.success(), "args: {args:?}");
+        assert!(!called.exists(), "args: {args:?}");
     }
 }
 
-/// Mnemonic material belongs on stdin rather than the child command line.
+/// Mnemonic material reaches nibiru on stdin and never appears in the
+/// argument list of ud, the Bash helper, or nibiru.
 #[test]
 fn mnemonic_shell_helper_pipes_the_secret_to_nibiru() {
     let temp = TempDir::new().unwrap();
     let nibiru = temp.path().join("nibiru");
     let args_file = temp.path().join("args");
+    let parent_args_file = temp.path().join("parent-args");
     let stdin_file = temp.path().join("stdin");
+    // The fake also records its parent's argv, which is the Bash helper.
     write_executable(
         &nibiru,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$NIBIRU_ARGS_FILE\"\ncat > \"$NIBIRU_STDIN_FILE\"\n",
+        "#!/usr/bin/env bash\n\
+         printf '%s\\n' \"$@\" > \"$NIBIRU_ARGS_FILE\"\n\
+         tr '\\0' '\\n' < \"/proc/$PPID/cmdline\" > \"$NIBIRU_PARENT_ARGS_FILE\"\n\
+         cat > \"$NIBIRU_STDIN_FILE\"\n",
     );
     let helper =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../zsh/ud/shell.sh");
     let mnemonic = "word1 word2 word3";
+    let ud_args = ["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"];
 
     let output = ud()
-        .env("UD_SHELL_HELPER", helper)
+        .env("UD_SHELL_HELPER", &helper)
         .env("PATH", path_with(temp.path()))
         .env("NIBIRU_ARGS_FILE", &args_file)
+        .env("NIBIRU_PARENT_ARGS_FILE", &parent_args_file)
         .env("NIBIRU_STDIN_FILE", &stdin_file)
-        .args([
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", mnemonic,
-        ])
+        .args(ud_args)
+        .write_stdin(format!("{mnemonic}\n"))
         .output()
         .unwrap();
     assert_success(&output);
+    assert!(!ud_args.join(" ").contains("word1"));
     assert_eq!(
         fs::read_to_string(args_file).unwrap(),
         "keys\nadd\nalice\n--recover\n--keyring-backend=test\n"
+    );
+    assert_eq!(
+        fs::read_to_string(parent_args_file).unwrap(),
+        format!(
+            "bash\n{}\nnibi-keys-add-mnem\n--name\nalice\n",
+            helper.display()
+        )
     );
     assert_eq!(
         fs::read_to_string(stdin_file).unwrap(),
