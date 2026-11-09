@@ -6,7 +6,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { redact, redactLines } from "./runlog.ts"
+import { cutString, redact, redactLines } from "./runlog.ts"
 
 // Runs one corpus through both redaction paths and asserts they agree:
 // the bash writer's jq filters (event lines and _runlog_redact_file) and
@@ -128,6 +128,100 @@ const streamForms = (): string[] => [
   `{"broken": "json, token=\"${randAlnum(12)}\"`,
 ]
 
+const hex = (n: number): string => randAlnum(n, "0123456789abcdef")
+const b64 = (n: number): string => randAlnum(n,
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+const words = (): string => Array.from({ length: 12 },
+  () => randAlnum(6, "abcdefghijklmnopqrstuvwxyz")).join(" ")
+
+interface Secret {
+  text: string
+  /** Parts that must not survive redaction. */
+  secrets: string[]
+}
+
+const pemBlock = (label: string, prefix = "", headers: string[] = []) => {
+  const body = [b64(64), b64(64), `${b64(20)}==`]
+  const text = [`${prefix}-----BEGIN ${label} PRIVATE KEY-----`,
+    ...headers.map((h) => `${prefix}${h}`),
+    ...body.map((l) => `${prefix}${l}`),
+    `${prefix}-----END ${label} PRIVATE KEY-----`].join("\n")
+  return { text, secrets: body }
+}
+
+/** EVM keys, PEM keys, URL passwords, auth headers, and seed phrases. */
+const secretForms = (): Secret[] => {
+  const one = (pre: string, secret: string, post = ""): Secret =>
+    ({ text: `${pre}${secret}${post}`, secrets: [secret] })
+  const pem = pemBlock("OPENSSH")
+  const nested = pemBlock("RSA")
+  return [
+    one("cast send --private-key 0x", hex(64), " --rpc-url x"),
+    one("PRIVATE_KEY = 0x", hex(64)),
+    one("export DEPLOYER_PK=0x", hex(64)),
+    one('{"privateKey": "0x', hex(64), '"}'),
+    one('{"PRIVKEY":"', hex(64), '"}'),
+    one('accounts: ["0x', hex(64), '"]'),
+    one("pk: ", hex(64)),
+    one('private_key = "0x', hex(64), '"'),
+    pem,
+    pemBlock("RSA", "+"),
+    pemBlock("RSA", " ", ["Proc-Type: 4,ENCRYPTED",
+      "DEK-Info: AES-128-CBC,0011223344556677", ""]),
+    { text: JSON.stringify({ type: "tool_result", content: pem.text }),
+      secrets: pem.secrets },
+    { text: JSON.stringify({ msg: JSON.stringify({ key: nested.text }) }),
+      secrets: nested.secrets },
+    { text: `echo ${JSON.stringify(nested.text)}`, secrets: nested.secrets },
+    one("git clone https://ud:", randAlnum(20), "@github.com/o/r.git"),
+    one("DATABASE_URL=postgres://app:", randAlnum(16), "@db:5432/x"),
+    one("Authorization: Basic ", b64(24)),
+    one('curl -H "authorization: basic ', b64(24), '" x'),
+    one("Authorization: token ", randAlnum(40)),
+    one('SEED_PHRASE="', words(), '"'),
+    one("seed phrase: ", words()),
+    one('{"seed_phrase": "', words(), '"}'),
+    one("seedphrase=", words()),
+    one('{"secret_key": "', randAlnum(24), '"}'),
+    one("secret_key: ", randAlnum(24)),
+    one('{"apiKey":"', randAlnum(24), '"}'),
+    one('{"secretKey": "', randAlnum(24), '"}'),
+    one('{"accessKey":"', randAlnum(24), '"}'),
+    one("  access_key: ", randAlnum(24)),
+    one("PASSWORD = ", randAlnum(24)),
+    one('password := "', randAlnum(24), '"'),
+    one("API_KEY = '", randAlnum(24), "'"),
+    one("token := ", randAlnum(24)),
+  ]
+}
+
+/** Normal Nibiru, EVM, and code lines that must come through untouched. */
+const survivors = (): string[] => {
+  const h = () => `0x${hex(64)}`
+  const addr = () => `0x${hex(40)}`
+  return [
+    `nibid q tx ${h().slice(2).toUpperCase()}`,
+    `cast tx ${h()} --rpc-url https://evm-rpc.nibiru.fi`,
+    JSON.stringify({ transactionHash: h(), blockHash: h(), topics: [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      `0x000000000000000000000000${hex(40)}`] }),
+    `cast storage ${addr()} ${h()}`,
+    `+    bytes32 public constant MINTER_ROLE = ${h()};`,
+    JSON.stringify({ event: "artifact", sha256: hex(64), bytes: 10 }),
+    `${hex(64)}  remerge.diff`,
+    `{"pubkey":"${hex(64)}","topic0":"${h()}"}`,
+    `accounts: ["${addr()}"]`,
+    `merge ${hex(40)} into main`,
+    "basic configuration error in the Basic functionality test",
+    'const header = "-----BEGIN RSA PRIVATE KEY-----"\n'
+      + "func parse(b []byte) error {\n\treturn nil\n}",
+    "ssh://git@host:22/repo.git and https://host:8080/a@v1",
+    "git@github.com:o/r.git",
+    "seed=42 rng seed=1234 torch.manual_seed(42)",
+    "pkg: 0x01, pk_index=3",
+  ]
+}
+
 /** Words that hold a token prefix after other word characters. */
 const lookalikes = [
   "task-add-run-log-feature-for-sync",
@@ -145,7 +239,8 @@ const whitespace = ["\t", "\r", "\v", "\f", "\u0085", " ", " ",
 
 const corpus = (): string[] => {
   const out = [...tokens(), ...envForms(), ...jsonForms(), ...keyForms(),
-    ...streamForms(), ...lookalikes]
+    ...streamForms(), ...lookalikes, ...secrets.map((x) => x.text),
+    ...survivals]
   for (const ws of whitespace) {
     out.push(`token=${randAlnum(12)}${ws}after`)
     out.push(`PASSWORD=${randAlnum(12)}${ws}after`)
@@ -163,6 +258,8 @@ interface JqOutputs {
 
 let tmp: string
 let items: string[]
+let secrets: Secret[]
+let survivals: string[]
 let jq: JqOutputs
 
 /** Runs `items` through the bash writer's two jq paths. */
@@ -208,6 +305,8 @@ runlog_end 0
 
 beforeAll(async () => {
   tmp = await mkdtemp(join(tmpdir(), "redact-parity-"))
+  secrets = secretForms()
+  survivals = survivors()
   items = corpus()
   jq = await runJq()
 }, 60_000)
@@ -273,10 +372,33 @@ describe("jq and JS redact the same way", () => {
     }
   })
 
+  test("normal hashes, topics, and code come through untouched", () => {
+    const lines = fileLine()
+    for (const item of survivals) {
+      expect(jq.events[items.indexOf(item)]).toBe(item)
+      expect(redact(item)).toBe(item)
+      expect(redactLines(item)).toBe(item)
+      if (!item.includes("\n")) expect(lines.get(item)).toBe(item)
+    }
+  })
+
+  test("EVM, PEM, URL, auth, and seed secrets are redacted", () => {
+    for (const { text, secrets: parts } of secrets) {
+      const outs = [jq.events[items.indexOf(text)]!, redact(text),
+        redactLines(text)]
+      for (const out of outs) {
+        for (const part of parts) expect(out).not.toContain(part)
+        expect(out).toContain("[redacted:")
+      }
+    }
+    expect(jq.file).not.toMatch(/^[-+ ]?[A-Za-z0-9+/]{64}$/m)
+  })
+
   test("every token, env, and JSON secret is redacted", () => {
     const keyNames = "(token|secret|secret_key|password|api_key|private_key"
       + "|access_key|mnemonic)"
-    const out = jq.events.join("\n")
+    const out = jq.events.filter((_, i) => !survivals.includes(items[i]!))
+      .join("\n")
     expect(out).not.toMatch(/gh[pousr]_[A-Za-z0-9]{20}/i)
     expect(out).not.toMatch(/npm_[A-Za-z0-9]{36}/i)
     expect(out).not.toMatch(/bearer [A-Za-z0-9]{8}/i)
@@ -319,10 +441,11 @@ _runlog_redact_file ${JSON.stringify(file)}
     expect(performance.now() - started).toBeLessThan(2000)
   }, 60_000)
 
-  // A 1 MiB, 16,000-line diff: one jq gsub per line took about 52 s, which
-  // stalled git_mf after the merge whenever the runs CLI was broken.
-  test("jq redacts a 1 MiB many-line diff in under 15 s, same as JS", async () => {
-    const lines = Array.from({ length: 16_000 }, (_, i) =>
+  // A 14,000-line diff, just under the 1 MiB fallback cap. One jq gsub per
+  // line took about 52 s for 1 MiB, which stalled git_mf after the merge
+  // whenever the runs CLI was broken.
+  test("jq redacts a diff under the cap in under 15 s, as JS", async () => {
+    const lines = Array.from({ length: 14_000 }, (_, i) =>
       `+ line ${i} of a diff with some words and paths/like/this.ts x=${i}`)
     lines[500] = "+ API_TOKEN=supersecretvalue123"
     lines[900] = JSON.stringify({ content: 'DB_PASSWORD="hunter2-xyz" ok' })
@@ -346,4 +469,54 @@ _runlog_redact_file ${JSON.stringify(file)}
     expect(out).not.toContain("hunter2-xyz")
     expect(out).toBe(redactLines(text))
   }, 120_000)
+})
+
+describe("the 512-character cut", () => {
+  test("both writers cut at 512 code points, never inside a pair",
+    async () => {
+      const msg = `a${"😀".repeat(600)}`
+      const home = join(tmp, "cut-home")
+      await mkdir(home, { mode: 0o700 })
+      const script = `set -Eeuo pipefail
+source ${JSON.stringify(writerPath)}
+runlog_start cut
+runlog_event probe ${JSON.stringify(`s=${msg}`)}
+runlog_end 0
+`
+      const env: Record<string, string> = {}
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !k.startsWith("BOKU_")) env[k] = v
+      }
+      const proc = Bun.spawn(["bash", "-c", script], {
+        env: { ...env, BOKU_HOME: home }, stdout: "pipe", stderr: "pipe",
+      })
+      expect(await proc.exited).toBe(0)
+      const day = (await readdir(join(home, "runs")))[0]!
+      const runFile = (await readdir(join(home, "runs", day)))
+        .find((f) => f.endsWith(".jsonl") && f !== "index.jsonl")!
+      const probe = (await readFile(join(home, "runs", day, runFile), "utf8"))
+        .trimEnd().split("\n").map((l) => JSON.parse(l))
+        .find((l) => l.event === "probe")
+      expect(probe.s).toBe(cutString(redact(msg)))
+    })
+})
+
+describe("redact-patterns.json", () => {
+  test("every pattern compiles in jq and JS on its own", async () => {
+    const patterns = JSON.parse(await readFile(
+      join(import.meta.dir, "redact-patterns.json"), "utf8",
+    )) as { kind: string; regex: string }[]
+    const failed: string[] = []
+    for (const p of patterns) {
+      const proc = Bun.spawn(["jq", "-n", "--arg", "re", p.regex,
+        '"" | test($re; "gi")'], { stdout: "pipe", stderr: "pipe" })
+      if (await proc.exited !== 0) failed.push(`jq: ${p.kind}`)
+      try {
+        new RegExp(p.regex, "gi")
+      } catch {
+        failed.push(`js: ${p.kind}`)
+      }
+    }
+    expect(failed).toEqual([])
+  })
 })
