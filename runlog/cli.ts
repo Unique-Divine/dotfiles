@@ -182,26 +182,48 @@ export const summaryFromIndex = (line: Event): RunSummary | null => {
   }
 }
 
-/** Summaries from a day's run files, read directly. */
-export const scanDay = (
-  home: string, day: string, noEnd: (start: Event) => ListStatus,
-): RunSummary[] => {
-  let names: string[] = []
+/** Ids of a day's run files, sorted. */
+export const runFileIds = (home: string, day: string): string[] => {
   try {
-    names = readdirSync(join(home, "runs", day)).filter(isRunFile)
+    return readdirSync(join(home, "runs", day)).filter(isRunFile)
+      .map((name) => name.slice(0, -".jsonl".length)).sort()
   } catch {
     return []
   }
-  return names.sort().map((name) => {
-    const runId = name.slice(0, -".jsonl".length)
-    const events = readJsonl(join(home, "runs", day, name))
-    return summarizeEvents(runId, events, noEnd)
-  })
+}
+
+/** Summaries from a day's run files, read directly, except `skip`. */
+export const scanDay = (
+  home: string, day: string, noEnd: (start: Event) => ListStatus,
+  skip: ReadonlySet<string> = new Set(),
+): RunSummary[] => runFileIds(home, day)
+  .filter((runId) => !skip.has(runId))
+  .map((runId) => summarizeEvents(
+    runId, readJsonl(runFilePath(home, runId)), noEnd))
+
+/** A past day's index summaries, one per run id. */
+const indexSummaries = (home: string, day: string): RunSummary[] => {
+  const byId = new Map<string, RunSummary>()
+  for (const line of readJsonl(indexPath(home, day))) {
+    const summary = summaryFromIndex(line)
+    if (summary && !byId.has(summary.runId)) byId.set(summary.runId, summary)
+  }
+  return [...byId.values()]
+}
+
+/** True when a day has run files its index is missing, or no index. */
+export const indexIncomplete = (home: string, day: string): boolean => {
+  const ids = runFileIds(home, day)
+  if (!ids.length) return false
+  if (!existsSync(indexPath(home, day))) return true
+  const listed = new Set(indexSummaries(home, day).map((r) => r.runId))
+  return ids.some((runId) => !listed.has(runId))
 }
 
 /**
- * Every run, oldest first. Today and yesterday are read from run files;
- * older days from their index, or their run files when it is missing.
+ * Every run, oldest first. Today and yesterday are read from run files.
+ * Older days come from their index, plus any run file the index lacks: a
+ * killed run never writes its index line.
  */
 export const loadRuns = (
   home: string, now: Date = new Date(), probe: LiveProbe = systemProbe(),
@@ -210,16 +232,14 @@ export const loadRuns = (
   const live = (start: Event): ListStatus => liveStatus(start, probe, now)
   const runs: RunSummary[] = []
   for (const day of listDays(home)) {
-    const index = indexPath(home, day)
-    if (recent.has(day) || !existsSync(index)) {
-      const noEnd = recent.has(day) ? live : (): ListStatus => "incomplete"
-      runs.push(...scanDay(home, day, noEnd))
+    if (recent.has(day)) {
+      runs.push(...scanDay(home, day, live))
       continue
     }
-    for (const line of readJsonl(index)) {
-      const summary = summaryFromIndex(line)
-      if (summary) runs.push(summary)
-    }
+    const indexed = indexSummaries(home, day)
+    runs.push(...indexed)
+    const skip = new Set(indexed.map((r) => r.runId))
+    runs.push(...scanDay(home, day, () => "incomplete", skip))
   }
   return runs.sort(compareRuns)
 }
@@ -576,11 +596,14 @@ export interface PruneResult {
   cappedDays: string[]
   /** Bytes left in `runs/`. */
   bytesLeft: number
+  /** Past days whose index was missing a run, rebuilt. */
+  reindexedDays: string[]
 }
 
 /**
  * Deletes day folders older than `days`, then the oldest days while `runs/`
- * is over `maxBytes`. Never touches today or yesterday (UTC).
+ * is over `maxBytes`. Never touches today or yesterday (UTC). Then rebuilds
+ * the index of each kept past day that is missing one or lacks a run.
  */
 export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
   const runs = join(home, "runs")
@@ -588,6 +611,7 @@ export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
   const candidates = listDays(home).filter((day) => !keep.has(day))
   const result: PruneResult = {
     removedDays: [], bytesFreed: 0, cappedDays: [], bytesLeft: 0,
+    reindexedDays: [],
   }
   const remove = (day: string): void => {
     const path = join(runs, day)
@@ -609,6 +633,12 @@ export const pruneRuns = (home: string, opts: PruneOptions): PruneResult => {
     total -= result.bytesFreed - before
   }
   result.bytesLeft = total
+  for (const day of candidates) {
+    if (result.removedDays.includes(day)) continue
+    if (!indexIncomplete(home, day)) continue
+    reindexDay(home, day, opts.now)
+    result.reindexedDays.push(day)
+  }
   return result
 }
 
@@ -1005,6 +1035,7 @@ export const createProgram = (env: Env = process.env): Command => {
             name: "prune", exit: 0, dur_ms: Date.now() - t0,
             removed_days: result.removedDays.length,
             bytes_freed: result.bytesFreed,
+            reindexed_days: result.reindexedDays.length,
           })
           run.end(0)
         } catch (error) {

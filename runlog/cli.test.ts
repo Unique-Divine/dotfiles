@@ -485,16 +485,41 @@ describe("reader", () => {
     expect(refused.exitCode).toBe(1)
     expect(existsSync(indexPath(home, today))).toBe(false)
 
-    // Past days are read from their index.
+    // Past days are read from their index, plus run files it lacks.
     writeFileSync(indexPath(home, past), `${JSON.stringify({
-      run_id: `${stampFor(past)}-from-dddd`, parent_run_id: null,
+      run_id: `${stampFor(past)}-git_mf-aaaa`, parent_run_id: null,
       ts: `${new Date(Date.now() - 10 * dayMs).toISOString()}`,
-      status: "ok", exit: 0, dur_ms: 1, warns: 0, errors: 0,
+      status: "from-index", exit: 0, dur_ms: 1, warns: 0, errors: 0,
     })}\n`)
     const list = await runCli([], baseEnv(home))
-    expect(list.stdout).toContain("from-dddd")
-    expect(list.stdout).not.toContain("git_mf-aaaa")
+    expect(list.stdout).toMatch(/from-index .*git_mf-aaaa/)
+    expect(list.stdout).toMatch(/incomplete .*sync-bbbb/)
   }))
+
+  test("a past day shows killed runs its index lacks, with children",
+    withHome(async (home) => {
+      const past = dayAgo(10)
+      const stamp = stampFor(past)
+      const done = { exit: 0, status: "ok" }
+      plantRun(home, `${stamp}-done-aaaa`, {
+        end: done, indexed: true, ts: noonPlus(past, 1),
+      })
+      const killed = `${stamp}-sync-bbbb`
+      plantRun(home, killed, { ts: noonPlus(past, 2) })
+      plantRun(home, `${stamp}-git_mf-cccc`, {
+        parent: killed, end: { exit: 3, status: "stopped" }, indexed: true,
+        ts: noonPlus(past, 3),
+      })
+      const list = await runCli([], baseEnv(home))
+      const rows = list.stdout.trimEnd().split("\n")
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toMatch(new RegExp(`incomplete .*${killed}`))
+      expect(rows[1]).toContain("done-aaaa")
+
+      const tree = await runCli(["show", "sync-bbbb", "--tree"], baseEnv(home))
+      expect(tree.exitCode).toBe(0)
+      expect(tree.stdout).toContain(`  ${stamp}-git_mf-cccc  git_mf  stopped`)
+    }))
 
   test("agent --at shows the line with context", withHome(async (home) => {
     const run = hostRun(home)
@@ -575,6 +600,36 @@ describe("maintenance", () => {
     expect(step.bytes_freed).toBeGreaterThan(2000)
     expect(events.at(-1)).toMatchObject({ event: "end", exit: 0, status: "ok" })
   }))
+
+  test("prune reindexes past days with a missing or partial index",
+    withHome(async (home) => {
+      const partial = dayAgo(10)
+      const none = dayAgo(12)
+      const done = { exit: 0, status: "ok" }
+      plantRun(home, `${stampFor(partial)}-done-aaaa`,
+        { end: done, indexed: true })
+      plantRun(home, `${stampFor(partial)}-killed-bbbb`)
+      plantRun(home, `${stampFor(none)}-done-cccc`, { end: done })
+      const full = dayAgo(14)
+      plantRun(home, `${stampFor(full)}-done-dddd`, { end: done, indexed: true })
+      const fullIndex = readFileSync(indexPath(home, full), "utf8")
+
+      const result = await runCli(["prune", "30"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(readEvents(indexPath(home, partial))
+        .map((l) => [l.run_id, l.status])).toEqual([
+        [`${stampFor(partial)}-done-aaaa`, "ok"],
+        [`${stampFor(partial)}-killed-bbbb`, "incomplete"],
+      ])
+      expect(readEvents(indexPath(home, none)).map((l) => l.run_id))
+        .toEqual([`${stampFor(none)}-done-cccc`])
+      expect(readFileSync(indexPath(home, full), "utf8")).toBe(fullIndex)
+      const pruneFile = readdirSync(join(home, "runs", dayAgo(0)))
+        .find((n) => n.includes("-prune-") && n.endsWith(".jsonl"))!
+      const step = readEvents(join(home, "runs", dayAgo(0), pruneFile))
+        .find((e) => e.event === "step")!
+      expect(step).toMatchObject({ removed_days: 0, reindexed_days: 2 })
+    }))
 
   test("prune enforces the size cap, oldest first", withHome(async (home) => {
     plantDay(home, dayAgo(5), 10000)
