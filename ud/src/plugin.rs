@@ -2,11 +2,14 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, Permissions};
+use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -20,6 +23,10 @@ const RESERVED_NAMES: &[&str] = &[
     "go", "rs", "md", "nibi", "docker", "health", "quick", "q", "cfg", "plugin",
     "help", "h", "fs",
 ];
+
+/// Bound `--plugin-info` so one broken plugin cannot hang help or doctor.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
+const METADATA_POLL: Duration = Duration::from_millis(5);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,18 +130,80 @@ fn load_metadata(
         return Ok((plugin, metadata));
     }
 
-    let output = Command::new(&plugin)
-        .arg("--plugin-info")
-        .output()
-        .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
-    if !output.status.success() {
+    let (status, stdout) = inspect_plugin(name, &plugin)?;
+    if !status.success() {
         bail!("ud plugin metadata command failed: {name}");
     }
-    let metadata: PluginMetadata = serde_json::from_slice(&output.stdout)
+    let metadata: PluginMetadata = serde_json::from_slice(&stdout)
         .with_context(|| format!("Invalid metadata from ud plugin: {name}"))?;
     validate_metadata(name, &metadata)?;
     let _ = write_cache(name, &plugin_path, fingerprint, &metadata);
     Ok((plugin, metadata))
+}
+
+/// Run `plugin --plugin-info` and return its status and stdout, or fail
+/// after `METADATA_TIMEOUT`. The plugin runs in its own process group so a
+/// timeout also kills helpers that inherited its stdout.
+fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
+    let mut child = Command::new(plugin)
+        .arg("--plugin-info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
+    let deadline = Instant::now() + METADATA_TIMEOUT;
+    let mut pipe = child
+        .stdout
+        .take()
+        .context("ud plugin metadata command has no stdout")?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = Vec::new();
+        let result = pipe.read_to_end(&mut stdout).map(|_| stdout);
+        let _ = sender.send(result);
+    });
+
+    // Stdout closes when the plugin and every helper holding it exit.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let Ok(stdout) = receiver.recv_timeout(remaining) else {
+        stop_process_group(&mut child);
+        bail!(metadata_timeout(name));
+    };
+    let stdout = stdout.with_context(|| {
+        format!("failed to read metadata from ud plugin: {name}")
+    })?;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok((status, stdout));
+        }
+        if Instant::now() >= deadline {
+            stop_process_group(&mut child);
+            bail!(metadata_timeout(name));
+        }
+        thread::sleep(METADATA_POLL);
+    }
+}
+
+fn metadata_timeout(name: &str) -> String {
+    format!(
+        "ud plugin metadata command timed out after {}s: {name}",
+        METADATA_TIMEOUT.as_secs()
+    )
+}
+
+/// SIGKILL the plugin's process group, then reap the plugin itself.
+fn stop_process_group(child: &mut Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    // Fall back to the direct child if kill(1) is unavailable.
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn validate_metadata(name: &str, metadata: &PluginMetadata) -> Result<()> {
