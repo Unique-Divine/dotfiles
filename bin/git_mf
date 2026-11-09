@@ -61,6 +61,18 @@ require_command() {
 
 say() { echo "git_mf: $*" >&2; }
 
+# Milliseconds since the epoch, from bash's EPOCHREALTIME (date %N isn't
+# portable). Falls back to whole seconds.
+now_ms() {
+  local t="${EPOCHREALTIME:-}"
+  t="${t//[.,]/}"
+  if [[ "$t" =~ ^[0-9]{10,}$ ]]; then
+    echo $(( 10#$t / 1000 ))
+  else
+    printf '%(%s)T000\n' -1
+  fi
+}
+
 dry_run=0
 json_out=0
 
@@ -138,6 +150,7 @@ done
 
 merge_log=""
 prompt_tmp=""
+report_tmp=""
 status=""
 
 # One exit handler: clean up temp files and close the run with its status.
@@ -145,9 +158,16 @@ on_exit() {
   local -r code=$?
   [[ -n "$merge_log" ]] && rm -f -- "$merge_log"
   [[ -n "$prompt_tmp" ]] && rm -f -- "$prompt_tmp"
+  [[ -n "$report_tmp" ]] && rm -f -- "$report_tmp"
   runlog_end "$code" ${status:+status="$status"}
 }
 
+# shellcheck disable=SC2034 # read by runlog_start
+RUNLOG_START_GIT="$(jq -nc \
+  --arg repo "$(git rev-parse --show-toplevel 2>/dev/null)" \
+  --arg branch "$(git branch --show-current 2>/dev/null)" \
+  --arg head "$(git rev-parse --short HEAD 2>/dev/null)" \
+  '{repo: $repo, branch: $branch, head: $head}' 2>/dev/null || true)"
 runlog_start git_mf "$@"
 trap on_exit EXIT
 runlog_trap_signals
@@ -183,12 +203,15 @@ outcome=""
 code=0
 challenges=""
 
-# Write the prompt and this run's context. With the run log on, it's saved
-# as the run's prompt.md artifact (redacted, 0600); otherwise a temp file.
+# Write the prompt and this run's context to a 0600 temp file, which the
+# agent reads as is. With the run log on, a redacted copy is saved as the
+# run's prompt.md; redacting what the agent reads would corrupt names such
+# as tools/sk-learn-*.py.
 write_prompt() {
   local -r reason="$1"
   run_dir="$(runlog_dir)" || run_dir=""
   prompt_tmp="$(mktemp --suffix=.md)"
+  report_tmp="$(mktemp --suffix=.md)"
   prompt_path="$prompt_tmp"
   {
     cat "$prompt_file"
@@ -200,7 +223,6 @@ write_prompt() {
   } >"$prompt_path"
   if [[ -n "$run_dir" ]]; then
     runlog_artifact prompt "$prompt_tmp"
-    [[ -s "$run_dir/prompt.md" ]] && prompt_path="$run_dir/prompt.md"
   fi
 }
 
@@ -232,16 +254,13 @@ run_stream_pipeline() {
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   else
-    codex "${codex_args[@]}" --json -o "$run_dir/report.md" <"$prompt_path" \
+    codex "${codex_args[@]}" --json -o "$report_tmp" <"$prompt_path" \
       | { "$runs_cli" tap --cli codex \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   fi
   set -e
   if [[ "$agent" == codex ]]; then
-    if [[ -s "$run_dir/report.md" ]]; then
-      "$runs_cli" redact-file "$run_dir/report.md" || true
-    fi
     local run_file
     if run_file="$(runlog_file)"; then
       session_id="$(jq -r 'select(.event == "agent-session")
@@ -256,7 +275,7 @@ run_plain_agent() {
   if [[ "$agent" == claude ]]; then
     agent_cmd=(claude "${claude_args[@]}")
   else
-    agent_cmd=(codex "${codex_args[@]}" ${run_dir:+-o "$run_dir/report.md"})
+    agent_cmd=(codex "${codex_args[@]}" -o "$report_tmp")
   fi
   set +e
   if (( json_out )); then
@@ -317,15 +336,27 @@ verify() {
 }
 
 # Paths whose contents never go into a saved diff.
-# '*.env*' also matches .env, .envrc, .env-prod, and app.env.local.
+# '*.env*' also matches .env, .envrc, .env-prod, and app.env.local. Key
+# files are named exactly, so src/id_generator.go still shows.
 secret_excludes=(
-  . ':(exclude,glob)**/secrets/**' ':(exclude,glob)**/*.env*'
+  . ':(exclude,glob)**/secrets/**' ':(exclude,glob)**/.secrets/**'
+  ':(exclude,glob)**/*.env*' ':(exclude,glob)**/*.pem'
+  ':(exclude,glob)**/*.key' ':(exclude,glob)**/id_rsa*'
+  ':(exclude,glob)**/id_ed25519*' ':(exclude,glob)**/id_ecdsa*'
+  ':(exclude,glob)**/.npmrc' ':(exclude,glob)**/.pypirc'
+  ':(exclude,glob)**/.netrc' ':(exclude,glob)**/.aws/**'
+  ':(exclude,glob)**/keystore/**'
 )
 
 # Check the report and save the diffs that show what the agent decided.
 save_artifacts() {
   local report="" tmp
   runlog_active || return 0
+  # A run folder never holds an unredacted file: codex's report arrives from
+  # a temp file outside it, and runlog_artifact deletes what it can't redact.
+  if [[ -n "$report_tmp" && -s "$report_tmp" ]]; then
+    runlog_artifact report "$report_tmp"
+  fi
   if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
     # Redact (and chmod 0600) in place, whoever wrote it: the tap, or codex
     # through -o. The writer falls back to jq if `ud runs` can't.
@@ -340,7 +371,7 @@ save_artifacts() {
   else
     challenges="$(awk '/^## Challenges/ { f = 1; next } /^## / { f = 0 }
       f && !started && /^[[:space:]]*$/ { next }
-      f { started = 1; print }' "$report" | head -c 512)"
+      f { started = 1; print }' "$report")"
   fi
   tmp="$(mktemp)"
   if [[ "$outcome" == merged ]] \
@@ -375,7 +406,7 @@ run_agent() {
   write_prompt "$reason"
   record_before
   say "handing the merge to $agent"
-  t0="$(date +%s%3N)"
+  t0="$(now_ms)"
   if runlog_active && [[ -n "$run_dir" ]] \
     && [[ -x "$runs_cli" ]]; then
     run_stream_pipeline
@@ -386,11 +417,13 @@ run_agent() {
   save_artifacts
   runlog_event agent cli="$agent" cli_version="$cli_version" \
     session_id="$session_id" exit:="$agent_status" \
-    dur_ms:="$(( $(date +%s%3N) - t0 ))" outcome="$outcome" \
+    dur_ms:="$(( $(now_ms) - t0 ))" outcome="$outcome" \
     challenges="$challenges"
   if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
     echo "----- agent report ($run_dir/report.md) -----" >&2
-    cat "$run_dir/report.md" >&2
+    # Drop terminal control characters (keep tab and newline): the report
+    # is agent output.
+    LC_ALL=C tr -d '\000-\010\013-\037\177' <"$run_dir/report.md" >&2
     echo "-----" >&2
   fi
   say "agent outcome: $outcome (git_mf exits $code)"
@@ -403,11 +436,11 @@ run_agent() {
 # Stop with exit 3, or hand over to the agent.
 needs_judgment() {
   local -r reason="$1"
+  runlog_event warn code=needs-judgment msg="$reason"
   if (( use_agent )); then
     run_agent "$reason" || exit $?
     exit 0
   fi
-  runlog_event warn code=needs-judgment msg="$reason"
   say "$reason"
   say "nothing was changed; run: git_mf $target --agent"
   exit 3
@@ -437,17 +470,18 @@ resolve_upstream_sha() {
 
 # Print the arguments as a JSON array of strings; [] without jq.
 json_array() {
-  jq -nc '$ARGS.positional' --args "$@" 2>/dev/null || echo '[]'
+  jq -nc '$ARGS.positional' --args -- "$@" 2>/dev/null || echo '[]'
 }
 
-# Log the plan as one step. Sets upstream_sha for verify.
+# Log the plan as one step, with at most 200 conflicted paths (the total is
+# in conflicts_total). Sets upstream_sha for verify.
 log_plan() {
   local -r action="$1"
   shift
   upstream_sha="$(resolve_upstream_sha)"
   runlog_event step name=plan action="$action" target="$target" \
     upstream="$upstream" upstream_sha="$upstream_sha" \
-    conflicts:="$(json_array "$@")"
+    conflicts:="$(json_array "${@:1:200}")" conflicts_total:="$#"
 }
 
 # ---- Plan: read-only apart from fetching remote-tracking refs. ----
@@ -478,10 +512,10 @@ echo "RUN git fetch --quiet --prune origin +refs/heads/$target:refs/remotes/$ups
 fetch_cmd=(git fetch --quiet --prune origin
   "+refs/heads/$target:refs/remotes/$upstream")
 fetch_rc=0
-fetch_t0="$(date +%s%3N)"
+fetch_t0="$(now_ms)"
 "${fetch_cmd[@]}" 2>/dev/null || fetch_rc=$?
 runlog_event step name=fetch-target cmd:="$(json_array "${fetch_cmd[@]}")" \
-  exit:="$fetch_rc" dur_ms:="$(( $(date +%s%3N) - fetch_t0 ))" \
+  exit:="$fetch_rc" dur_ms:="$(( $(now_ms) - fetch_t0 ))" \
   ref="$upstream"
 if (( fetch_rc == 0 )); then
   :
@@ -532,6 +566,7 @@ else
 fi
 
 conflicts=""
+conflict_list=()
 if is_ancestor "$upstream" "$head_ref"; then
   action="up-to-date"
 elif is_ancestor "$head_ref" "$upstream"; then
@@ -542,13 +577,16 @@ else
   # Exit 0: clean merge. Exit 1: conflicts, listed after the tree id.
   # Anything else is an error, such as unrelated histories.
   tree_status=0
-  tree_out="$(git merge-tree --write-tree --name-only --no-messages \
-    "$head_ref" "$upstream" 2>&1)" || tree_status=$?
+  tree_out="$(git merge-tree --write-tree --name-only --no-messages -z \
+    "$head_ref" "$upstream" 2>/dev/null | tr '\0' '\n')" || tree_status=$?
   case "$tree_status" in
     0) action="merge" ;;
     1)
       action="merge-conflict"
-      conflicts="$(tail -n +2 <<<"$tree_out" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+      # -z output: tree id, then one path per entry (paths may hold spaces).
+      mapfile -t conflict_list < <(tail -n +2 <<<"$tree_out" | sed '/^$/d' \
+        | sort -u)
+      conflicts="${conflict_list[*]}"
       ;;
     *)
       say "plan: error"
@@ -562,8 +600,7 @@ fi
 
 steps+=("$action")
 say "plan: ${steps[*]}${conflicts:+: $conflicts}"
-# shellcheck disable=SC2086 # conflicts is a space-separated file list
-log_plan "${steps[*]}" $conflicts
+log_plan "${steps[*]}" "${conflict_list[@]}"
 
 case "$action" in
   diverged)
@@ -602,11 +639,11 @@ case "$action" in
     if (( dry_run )); then
       runlog_event step name="git merge" msg=dry-run
     else
-      merge_t0="$(date +%s%3N)"
+      merge_t0="$(now_ms)"
       "${merge_cmd[@]}" >"$merge_log" 2>&1 || merge_rc=$?
       runlog_event step name="git merge" \
         cmd:="$(json_array "${merge_cmd[@]}")" exit:="$merge_rc" \
-        dur_ms:="$(( $(date +%s%3N) - merge_t0 ))"
+        dur_ms:="$(( $(now_ms) - merge_t0 ))"
     fi
     if (( merge_rc != 0 )); then
       unmerged="$(git diff --name-only --diff-filter=U | paste -sd ' ' -)"

@@ -416,3 +416,125 @@ describe("git_mf --json", () => {
     expect(JSON.parse(lines.at(-1)!)).toMatchObject({ event: "end" })
   })
 })
+
+describe("git_mf round-2 review fixes", () => {
+  test("the agent reads the raw prompt; prompt.md is the redacted copy", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c feature")
+    await ok(r.clone, "printf mine > 'sk-learn-feature-extractor-module.py' && git add . && git commit -qm mine")
+    await r.pushUpstream("theirs", "sk-learn-feature-extractor-module.py")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "claude", "cat > /dev/null; true")
+    // Capture what the fake agent reads on stdin.
+    const fake = join(r.root, "fake-bin", "claude")
+    await writeFile(fake, (await readFile(fake, "utf8"))
+      .replace("cat > /dev/null", `cat > ${join(r.root, "agent-stdin")}`), { mode: 0o755 })
+    await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
+    const seen = await readFile(join(r.root, "agent-stdin"), "utf8")
+    expect(seen).toContain("sk-learn-feature-extractor-module.py")
+    expect(seen).not.toContain("[redacted:")
+    expect(await runFile(home, "prompt.md")).toContain("[redacted:")
+  })
+
+  test("codex's report never sits unredacted in the run folder", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "codex", resolveTheirs)
+    // Both redactors fail: the CLI, and jq for -Rsj (the file filter).
+    const realJq = Bun.which("jq")!
+    await writeFile(join(r.root, "fake-bin", "jq"),
+      `#!/bin/bash\nfor a in "$@"; do [[ "$a" == -Rsj ]] && exit 3; done\nexec ${realJq} "$@"\n`,
+      { mode: 0o755 })
+    const res = await sh(r.clone, `${gitMf} main --agent`, {
+      PATH, BOKU_HOME: home, BOKU_RUNS_CLI: "/bin/false",
+    })
+    expect(res.code, res.stderr).toBe(0)
+    const day = (await readdir(join(home, "runs")))[0]!
+    const runId = (await runEvents(home))[0]!.run_id
+    const files = await readdir(join(home, "runs", day, runId))
+    if (files.includes("report.md")) {
+      expect(await runFile(home, "report.md")).not.toContain("abcdefghij0123456789")
+    }
+    expect(res.stderr).not.toContain("abcdefghij0123456789")
+  })
+
+  test("conflicted paths with spaces or globs are logged exactly", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c feature")
+    await ok(r.clone, "printf mine > 'my notes.txt' && printf mine > '*' && git add . && git commit -qm mine")
+    await r.pushUpstream("theirs", "'my notes.txt'")
+    await r.pushUpstream("theirs", "'*'")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const res = await sh(r.clone, `${gitMf} main`, { BOKU_HOME: home })
+    expect(res.code).toBe(3)
+    const plan = (await runEvents(home)).find((e) => e.name === "plan")!
+    expect(plan.conflicts.sort()).toEqual(["*", "my notes.txt"])
+    expect(plan.conflicts_total).toBe(2)
+  })
+
+  test("steps record their real argv, and start records the repo", async () => {
+    const r = await repoPair()
+    await r.pushUpstream("two")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    await sh(r.clone, `${gitMf} main`, { BOKU_HOME: home })
+    const events = await runEvents(home)
+    const fetch = events.find((e) => e.name === "fetch-target")!
+    expect(fetch.cmd).toContain("--quiet")
+    expect(events[0]!.git).toMatchObject({ repo: r.clone, branch: "main" })
+    expect(JSON.stringify(events[0]!.git)).not.toContain("remote")
+  })
+
+  test("agent mode still logs needs-judgment", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "claude", resolveTheirs)
+    await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
+    expect((await runEvents(home)).some((e) => e.code === "needs-judgment")).toBe(true)
+  })
+
+  test("timing works where date has no %N", async () => {
+    const r = await repoPair()
+    await r.pushUpstream("two")
+    const bin = join(r.root, "no-n-bin")
+    await mkdir(bin)
+    await writeFile(join(bin, "date"),
+      `#!/bin/bash\n[[ "$*" =~ %[0-9]*N ]] && { echo 'value too great'; exit 1; }\nexec /bin/date "$@"\n`,
+      { mode: 0o755 })
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const res = await sh(r.clone, `${gitMf} main`, {
+      BOKU_HOME: home, PATH: `${bin}:${process.env.PATH}`,
+    })
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).not.toContain("value too great")
+    expect((await runEvents(home)).some((e) => e.name === "fetch-target")).toBe(true)
+  })
+
+  test("the printed report has no terminal control characters", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "codex", resolveTheirs)
+    const fake = join(r.root, "fake-bin", "codex")
+    await writeFile(fake, (await readFile(fake, "utf8"))
+      .replace("# Report", "# Report \\033]52;c;cHduZWQK\\007"), { mode: 0o755 })
+    const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
+    expect(res.stderr).toContain("----- agent report")
+    expect(res.stderr).not.toContain("\x1b")
+  })
+
+  test("key files never reach a saved diff", async () => {
+    const r = await repoPair()
+    await r.pushUpstream("base", "deploy.pem")
+    await ok(r.clone, "git pull -q && git switch -q -c feature")
+    await ok(r.clone, "printf 'KEYBODY-mine-0005\\n' > deploy.pem && printf mine > file.txt && git commit -qam mine")
+    await r.pushUpstream("KEYBODY-theirs-0006", "deploy.pem")
+    await r.pushUpstream("theirs")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "claude",
+      "git merge -q origin/main >/dev/null 2>&1; git checkout -q --theirs deploy.pem file.txt && git add . && git commit -q --no-edit")
+    const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
+    expect(res.code, res.stderr).toBe(0)
+    const diff = await runFile(home, "remerge.diff")
+    expect(diff).toContain("file.txt")
+    expect(diff).not.toContain("KEYBODY")
+  })
+})
