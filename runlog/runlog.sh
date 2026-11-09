@@ -35,13 +35,18 @@ _runlog_ms=0
 # Artifact copies keep at most this many bytes (20 MiB, as the tap does).
 _runlog_artifact_max_default=20971520
 
+# The jq `redact` def both jq paths share. Every pattern applies
+# case-insensitively ("gi"), as in runlog.ts; see redact-patterns.md.
+# shellcheck disable=SC2016
+_runlog_jq_redact='def redact($p): reduce $p[] as $r (.;
+  gsub($r.regex; "[redacted:\($r.kind)]"; "gi"));'
+
 # The jq program behind every line. `redact` applies each shared pattern,
 # `cut` keeps 512 characters, and a line over 4,095 bytes falls back to
 # the common fields plus `truncated: true`. Positional args are KEY=VAL
 # (string) or KEY:=JSON (raw, kept as a string if it doesn't parse).
 # shellcheck disable=SC2016
-_runlog_jq_line='
-def redact($p): reduce $p[] as $r (.; gsub($r.regex; "[redacted:\($r.kind)]"));
+_runlog_jq_line="${_runlog_jq_redact}"'
 def cut: if length > 512 then .[:512] + "[cut]" else . end;
 def clean: walk(if type == "string" then redact($pats[0]) | cut else . end);
 def ts: ($ms / 1000 | floor | strftime("%Y-%m-%dT%H:%M:%S")) + "."
@@ -433,9 +438,8 @@ _runlog_redact_file() {
   fi
   local -r out="${file}.redact"
   ( umask 077 && : >"$out" ) 2>/dev/null || return 1
-  # shellcheck disable=SC2016
   if jq -Rsj --slurpfile pats "${_runlog_patterns:-}" \
-    'reduce $pats[0][] as $r (.; gsub($r.regex; "[redacted:\($r.kind)]"))' \
+    "${_runlog_jq_redact} redact(\$pats[0])" \
     <"$file" >"$out" 2>/dev/null && mv -f -- "$out" "$file" 2>/dev/null
   then
     return 0
@@ -570,3 +574,4 @@ runlog_end() {
   _runlog_file_on=0
   return 0
 }
+

@@ -193,11 +193,22 @@ const plantTokens = (): Planted[] => {
     tok("AKIA", randAlnum(16, upper)),
     tok("glpat-", randAlnum(20)),
     tok("eyJ", `${randAlnum(20)}.eyJ${randAlnum(30)}.${randAlnum(40)}`),
+    tok("npm_", randAlnum(36)),
     tok("Bearer ", randAlnum(32)),
+    tok("bearer ", randAlnum(32)),
     tok("token=", randAlnum(24)),
     tok("secret=", randAlnum(24)),
     tok("password=", randAlnum(24)),
     tok("api_key=", randAlnum(24)),
+    tok("API_TOKEN=", randAlnum(24)),
+    tok("PASSWORD=", randAlnum(24)),
+    tok("SECRET_KEY=", randAlnum(24)),
+    tok("Deploy_Secret=", randAlnum(24)),
+    tok("X_API_KEY=", randAlnum(24)),
+    tok('"password": "', randAlnum(24)),
+    tok('"Token":"', randAlnum(24)),
+    tok('"secret": "', randAlnum(24)),
+    tok('"API_KEY": "', randAlnum(24)),
   ]
 }
 
@@ -518,8 +529,10 @@ runlog_end 0`)
       (m) => m[1],
     )
     for (const k of ["github-token", "github-pat", "anthropic-key",
-      "api-key", "slack-token", "aws-key", "gitlab-token", "jwt", "bearer",
-      "token-value", "secret-value", "password-value", "api-key-value"]) {
+      "api-key", "slack-token", "aws-key", "gitlab-token", "npm-token",
+      "jwt", "bearer", "token-value", "secret-value", "secret-key-value",
+      "password-value", "api-key-value", "token-json", "secret-json",
+      "password-json", "api-key-json"]) {
       expect(kinds).toContain(k)
     }
   })

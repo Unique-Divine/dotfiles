@@ -6,10 +6,16 @@
   { "kind": "slack-token", "regex": "xox[abpr]-[A-Za-z0-9-]{10,}" },
   { "kind": "aws-key", "regex": "AKIA[0-9A-Z]{16}" },
   { "kind": "gitlab-token", "regex": "glpat-[A-Za-z0-9_-]{20,}" },
+  { "kind": "npm-token", "regex": "npm_[A-Za-z0-9]{36}" },
   { "kind": "jwt", "regex": "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}" },
   { "kind": "bearer", "regex": "(?<=Bearer )[A-Za-z0-9._~+/=-]{8,}" },
-  { "kind": "token-value", "regex": "(?<=token=)[^\\s&\"']+" },
-  { "kind": "secret-value", "regex": "(?<=secret=)[^\\s&\"']+" },
-  { "kind": "password-value", "regex": "(?<=password=)[^\\s&\"']+" },
-  { "kind": "api-key-value", "regex": "(?<=api_key=)[^\\s&\"']+" }
+  { "kind": "token-value", "regex": "(?:(?<=token=)|(?<=token=[\"']))(?!\\[redacted:)[^\\t\\n\\x0b\\f\\r &\"'\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+" },
+  { "kind": "secret-value", "regex": "(?:(?<=secret=)|(?<=secret=[\"']))(?!\\[redacted:)[^\\t\\n\\x0b\\f\\r &\"'\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+" },
+  { "kind": "secret-key-value", "regex": "(?:(?<=secret_key=)|(?<=secret_key=[\"']))(?!\\[redacted:)[^\\t\\n\\x0b\\f\\r &\"'\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+" },
+  { "kind": "password-value", "regex": "(?:(?<=password=)|(?<=password=[\"']))(?!\\[redacted:)[^\\t\\n\\x0b\\f\\r &\"'\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+" },
+  { "kind": "api-key-value", "regex": "(?:(?<=api_key=)|(?<=api_key=[\"']))(?!\\[redacted:)[^\\t\\n\\x0b\\f\\r &\"'\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+" },
+  { "kind": "token-json", "regex": "(?:(?<=token\":\")|(?<=token\": \"))(?!\\[redacted:)(?:[^\"\\\\\\n]|\\\\[^\\n])+|(?:(?<=token\\\\\":\\\\\")|(?<=token\\\\\": \\\\\"))(?!\\[redacted:)[^\"\\\\\\n]+" },
+  { "kind": "secret-json", "regex": "(?:(?<=secret\":\")|(?<=secret\": \"))(?!\\[redacted:)(?:[^\"\\\\\\n]|\\\\[^\\n])+|(?:(?<=secret\\\\\":\\\\\")|(?<=secret\\\\\": \\\\\"))(?!\\[redacted:)[^\"\\\\\\n]+" },
+  { "kind": "password-json", "regex": "(?:(?<=password\":\")|(?<=password\": \"))(?!\\[redacted:)(?:[^\"\\\\\\n]|\\\\[^\\n])+|(?:(?<=password\\\\\":\\\\\")|(?<=password\\\\\": \\\\\"))(?!\\[redacted:)[^\"\\\\\\n]+" },
+  { "kind": "api-key-json", "regex": "(?:(?<=api_key\":\")|(?<=api_key\": \"))(?!\\[redacted:)(?:[^\"\\\\\\n]|\\\\[^\\n])+|(?:(?<=api_key\\\\\":\\\\\")|(?<=api_key\\\\\": \\\\\"))(?!\\[redacted:)[^\"\\\\\\n]+" }
 ]
