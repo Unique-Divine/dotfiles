@@ -1,10 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const dotfilesRoot = join(import.meta.dir, "..")
+
+// Each test runs the real sync-jiyuu.sh and git_mf, with run logging on,
+// once or twice. That takes about 2 s locally and over 5 s (bun's
+// default) on CI runners.
+setDefaultTimeout(30_000)
 /** Run-log home for these tests, so nothing writes into the real ~/.boku. */
 const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 const scriptPath = join(dotfilesRoot, "zsh", "sync-jiyuu.sh")
