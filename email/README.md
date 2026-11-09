@@ -48,7 +48,7 @@ This renders each private config that exists and skips the rest:
 | Private source | Generated file |
 |---|---|
 | `$BOKU/priv-skills/ud/email/gmailctl-nibi.ts` | `~/.config/gmailctl/config.jsonnet` |
-| `$BOKU/priv-skills/ud/email/gmailctl-personal.ts` | `~/.config/gmailctl-personal/config.jsonnet` |
+| `$BOKU/priv-skills/ud/email/gmailctl-ud.ts` | `~/.config/gmailctl-ud/config.jsonnet` |
 
 `$BOKU` defaults to `~/ki/boku`. `just sync` runs `email-sync` too. The
 generated files are never edited or committed; change the TypeScript and
@@ -64,8 +64,8 @@ Credentials (`credentials.json`) and tokens (`token.json`) stay in each
    the scopes `gmail.settings.basic` and `gmail.labels`.
 3. Create an OAuth client ID of type Desktop app. Save the JSON as
    `credentials.json` in the config directory.
-4. Run `gmailctl init` (add `--config ~/.config/gmailctl-personal` for the
-   personal mailbox).
+4. Run `gmailctl init` (add `--config ~/.config/gmailctl-ud` for the
+   `ud@` mailbox).
 
 ## Everyday Use
 

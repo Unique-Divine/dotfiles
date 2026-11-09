@@ -254,7 +254,7 @@ email-sync:
     bun run email/gmailctl.ts "$src" "$HOME/.config/$2/config.jsonnet"
   }
   email_build gmailctl-nibi.ts gmailctl
-  email_build gmailctl-personal.ts gmailctl-personal
+  email_build gmailctl-ud.ts gmailctl-ud
 
 # Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
 # while WSL is down. WSL only.
