@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const dotfilesRoot = join(import.meta.dir, "..")
+/** Run-log home for these tests, so nothing writes into the real ~/.boku. */
+const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 const scriptPath = join(dotfilesRoot, "zsh", "sync-jiyuu.sh")
 const temporaryRoots: string[] = []
 
@@ -23,6 +26,7 @@ const run = async (
     env: {
       ...process.env,
       GIT_CONFIG_GLOBAL: "/dev/null",
+      BOKU_HOME: testBokuHome,
       GIT_AUTHOR_NAME: "Test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test",
