@@ -266,12 +266,12 @@ pipeline, Claude shown:
 ```bash
 session_id="$(cat /proc/sys/kernel/random/uuid)"
 set +e
-claude -p --strict-mcp-config --permission-mode acceptEdits \
+runlog_exec claude -p --strict-mcp-config --permission-mode acceptEdits \
     --allowedTools "Bash(git:*)" "Bash(just:*)" "Bash(bun:*)" \
       "Bash(cargo:*)" "Read" "Edit" "Write" "Grep" "Glob" \
     --session-id "$session_id" --output-format stream-json --verbose \
     < "$prompt_tmp" \
-  | { "$runs_cli" tap --cli claude --session-id "$session_id" \
+  | { runlog_exec "$runs_cli" tap --cli claude --session-id "$session_id" \
       || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
 agent_status="${PIPESTATUS[0]}"
 set -e
@@ -396,8 +396,9 @@ Rules for both writers:
   start their own root runs. `BOKU_RUNLOG=0` turns logging off.
 - Files are `0600`, folders `0700`. Both writers and the tap refuse a
   symlink below `BOKU_HOME`: the runs folder, a day folder, the run
-  folder, the run file, `index.jsonl`, `agent.jsonl`, or `report.md`. The run file is claimed with an exclusive
-  create, so run ids are unique.
+  folder, the run file, `index.jsonl`, `agent.jsonl`, or `report.md`.
+  The run file is claimed with an exclusive create, so run ids are
+  unique.
 - A failed start leaves no run file, so no empty run is listed.
 
 ### Bash: `runlog/runlog.sh`
@@ -408,6 +409,7 @@ runlog_start TOOL [ARG...]       # writes start; exports BOKU_RUN_ID,
 runlog_active                    # 0 if this process's run is logging
 runlog_event KIND [KEY=VAL ...]  # KEY=VAL is a string; KEY:=JSON is raw
 runlog_step NAME CMD [ARG...]    # external commands only; see below
+runlog_exec CMD [ARG...]         # CMD without the --json stdout copy
 runlog_artifact KIND FILE        # copy (capped, redacted) into run folder
 runlog_dir                       # print the run folder, creating it
 runlog_file                      # print the run's events file
@@ -423,7 +425,7 @@ runlog_step() {
   local -r name="$1"; shift
   local rc=0 t0
   _runlog_now; t0="$_runlog_ms"   # from EPOCHREALTIME, no fork
-  "$@" || rc=$?
+  runlog_exec "$@" || rc=$?
   _runlog_now
   runlog_event step name="$name" cmd:="$(json_argv "$@")" \
     exit:="$rc" dur_ms:="$(( _runlog_ms - t0 ))"
@@ -607,6 +609,11 @@ works with `BOKU_RUNLOG=0`. `git_mf` parses `--json` as its own flag.
 
 - `runlog_start` duplicates stdout to a saved fd, so a later `>&2` around
   `runlog_step` can't divert events.
+- External commands run through `runlog_exec`, which closes the saved
+  copy for that child. Otherwise a child, or anything it leaves running
+  in the background (an agent's server, git's `gc --auto`), would hold
+  the copy open, and `git_mf --json | jq` would wait for EOF. A shell
+  function runs with the copy open, so its own events still print.
 - Each event goes to the file first, then to that fd.
 - The print runs in a subshell that ignores SIGPIPE for that `printf`
   only, so children never inherit the ignored signal.

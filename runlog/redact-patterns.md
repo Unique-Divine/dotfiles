@@ -145,13 +145,14 @@ EVM lines that must come through untouched.
 These are not redacted. Read a run log with them in mind.
 
 - A key with no key word before it, such as the bare hex that
-  `nibid keys export --unarmored-hex` prints, or the second key in an
-  `accounts: [...]` list.
+  `nibid keys export --unarmored-hex` prints. Lists after a key word
+  (`--private-keys 0xA,0xB`, `accounts: [...]`, `PRIVATE_KEYS=`,
+  `"privateKeys": [...]`) are redacted whole.
 - A seed phrase on its own line, with no key word, such as the phrase
   `nibid keys add` or `--recover` prints.
 - URL userinfo the URL rules don't take:
-  - a token as the username under 20 characters, or with characters
-    outside `[A-Za-z0-9_-]`;
+  - a token as the username under 20 or over 64 characters, or with
+    characters outside `[A-Za-z0-9_-]`, such as a `.`;
   - a password holding whitespace, a quote, or a backslash, or one that
     starts with 1 to 5 digits and a `/`, `?`, or `#`, which reads as a
     port.
@@ -160,7 +161,10 @@ These are not redacted. Read a run log with them in mind.
   with other characters, such as `password = p@ss!`.
 - Base64-, URL-, or otherwise encoded secrets, and fullwidth forms such as
   `token＝value`.
-- A PEM body without its BEGIN line in the same text.
+- A PEM body without its BEGIN line directly above it in the same text:
+  a diff hunk that starts mid-key, or body lines behind prefixes the
+  rule doesn't take, such as `rg -n -A` context (`13-`), `git grep -n`
+  (`path:2:`), or a `> ` blockquote.
 - A token cut across two lines, or one right after a word character, `-`,
   or `_` (`x-sk-...`).
 - `Cookie:` and `Set-Cookie:` values, and headers other than
