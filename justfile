@@ -212,6 +212,7 @@ sync:
   just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install
+    just win-sync
   fi
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
@@ -222,6 +223,17 @@ sync:
     bun run claude/mcp.ts --run
   fi
   bun run skillsSync.ts --run
+
+# Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
+# while WSL is down. WSL only.
+win-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+  dest="$(wslpath -u "$win_home")/.files/windows"
+  mkdir -p "$dest"
+  rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
+  echo "synced windows/ -> $win_home\\.files\\windows"
 
 # Check required tools and drift without changing dotfile-managed state.
 health:
