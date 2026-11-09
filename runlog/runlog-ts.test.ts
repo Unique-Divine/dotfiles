@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  statSync, writeFileSync,
+  appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  artifactName, attachRun, buildEvent, checkedRunPaths, indexPath, isRunId, maxLineBytes,
-  newRunId, readCapped, redact, runFilePath, safeToolName, startRun, statusFor, type Env,
-  type RunIdentity,
+  artifactName, attachRun, buildEvent, checkedRunPaths, indexPath, isRunId,
+  maxLineBytes, newRunId, readCapped, redact, runFilePath, safeToolName,
+  startRun, statusFor, type Env, type RunIdentity,
 } from "./runlog.ts"
 
 const writerPath = join(import.meta.dir, "runlog.ts")

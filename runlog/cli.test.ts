@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
-  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  statSync, writeFileSync,
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
   cutStreamLine, dayOf, extractChallenges, liveStatus, parseExitCode,
-  parseSince, pathBytes, tapNotice, unwrapShell, type Event, type LiveProbe,
+  parseSince, pathBytes, pruneSummary, renderStreamLine, tapNotice,
+  unwrapShell, type Event, type LiveProbe,
 } from "./cli.ts"
 import {
   buildEvent, indexLine, indexPath, runFilePath, startRun, type Env,
@@ -120,6 +121,32 @@ const noonPlus = (day: string, ms: number): Date =>
 const stampFor = (day: string): string => `${day}T120000Z`
 
 describe("pure helpers", () => {
+  test("renderStreamLine prints Codex items and unknown lines", () => {
+    const item = JSON.stringify({ type: "item.completed", item: {
+      type: "command_execution", command: "/usr/bin/bash -lc 'just test'",
+      aggregated_output: "ok 1\nok 2\n", exit_code: 0,
+    } })
+    expect(renderStreamLine(item)).toEqual([
+      "item.completed command_execution exit=0",
+      "  $ just test", "  ok 1", "  ok 2",
+    ])
+    expect(renderStreamLine('{"type":"turn.started"}')).toEqual([
+      "turn.started", "  {", "    \"type\": \"turn.started\"", "  }",
+    ])
+    expect(renderStreamLine("not json")).toEqual(["not json"])
+  })
+
+  test("pruneSummary is one line", () => {
+    const base = {
+      removedDays: ["261001"], bytesFreed: 2150, cappedDays: [], bytesLeft: 0,
+      reindexedDays: [],
+    }
+    expect(pruneSummary(base)).toBe("removed 1 day (2.1 KB freed)")
+    expect(pruneSummary({
+      ...base, removedDays: [], bytesFreed: 0, reindexedDays: ["a", "b"],
+    })).toBe("removed 0 days (0 B freed); reindexed 2 days")
+  })
+
   test("unwrapShell undoes Codex's login-shell wrapper", () => {
     expect(unwrapShell("/usr/bin/bash -lc 'just test'")).toBe("just test")
     expect(unwrapShell("/usr/bin/zsh -lc 'echo '\"'\"'hi'\"'\"''"))
@@ -425,13 +452,45 @@ describe("reader", () => {
     expect(show.stderr).toContain("no run matches")
   }))
 
-  test("an ambiguous suffix lists its matches", withHome(async (home) => {
-    const day = dayAgo(0)
-    plantRun(home, `${stampFor(day)}-a-0abc`, { end: { exit: 0, status: "ok" } })
-    plantRun(home, `${stampFor(day)}-b-1abc`, { end: { exit: 0, status: "ok" } })
-    const result = await runCli(["show", "abc"], baseEnv(home))
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("matches 2 runs")
+  test("an ambiguous id picks the newest and names the others",
+    withHome(async (home) => {
+      const day = dayAgo(0)
+      const ok = { exit: 0, status: "ok" }
+      const older = `${stampFor(day)}-b-1abc`
+      const newer = `${stampFor(day)}-a-0abc`
+      plantRun(home, older, { end: ok, ts: noonPlus(day, 1) })
+      plantRun(home, newer, { end: ok, ts: noonPlus(day, 2) })
+      const result = await runCli(["show", "abc"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.split("\n")[0]).toContain(newer)
+      expect(result.stderr).toBe(`boku-runs: "abc" matches 2 runs; showing ${
+        newer}; others: ${older}\n`)
+    }))
+
+  test("ids match by prefix or any substring", withHome(async (home) => {
+    const ok = { exit: 0, status: "ok" }
+    const today = `${stampFor(dayAgo(0))}-git_mf-28b9`
+    const past = `${stampFor(dayAgo(10))}-sync-28b9`
+    plantRun(home, today, { end: ok })
+    plantRun(home, past, { end: ok })
+    for (const [query, want] of [
+      [dayAgo(10), past], [`${dayAgo(0)}T12`, today], ["git_mf", today],
+      ["sync-28", past], ["28b9", today],
+    ] as const) {
+      const result = await runCli(["show", query], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.split("\n")[0]).toContain(want)
+    }
+  }))
+
+  test("an empty log says so", withHome(async (home) => {
+    for (const args of [[], ["list"]]) {
+      const result = await runCli(args, baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe("")
+      expect(result.stderr).toBe(
+        `boku-runs: no runs yet in ${join(home, "runs")}\n`)
+    }
   }))
 
   test("no end: running, then incomplete", withHome(async (home) => {
@@ -485,6 +544,11 @@ describe("reader", () => {
     expect(refused.exitCode).toBe(1)
     expect(existsSync(indexPath(home, today))).toBe(false)
 
+    const missing = await runCli(["reindex", "251231"], baseEnv(home))
+    expect(missing.exitCode).toBe(0)
+    expect(missing.stderr).toBe("no runs for 251231\n")
+    expect(existsSync(join(home, "runs", "251231"))).toBe(false)
+
     // Past days are read from their index, plus run files it lacks.
     writeFileSync(indexPath(home, past), `${JSON.stringify({
       run_id: `${stampFor(past)}-git_mf-aaaa`, parent_run_id: null,
@@ -534,11 +598,51 @@ describe("reader", () => {
     const lines = at.stdout.split("\n")
     expect(lines[0]).toMatch(/^ {4}7 {2}assistant Bash: curl/)
     expect(at.stdout).toMatch(/> {2}10 {2}user result error: Exit code 1/)
-    expect(at.stdout).toContain("\"tool_use_id\": \"toolu_04\"")
+    // The line itself: a header, then its text with real newlines.
+    const at10 = lines.findIndex((l) => l.startsWith(">  10"))
+    expect(lines.slice(at10 + 1, at10 + 5)).toEqual([
+      "        user tool_result toolu_04 error",
+      "          Exit code 1",
+      "          error[E0425]: cannot find value `x` in this scope",
+      "           --> src/a.rs:3:5",
+    ])
+    expect(at.stdout).not.toContain("\\n")
     expect(at.stdout).toMatch(/ {3}13 {2}result success/)
+
+    const tool = await runCli(
+      ["agent", run.runId!.slice(-4), "--at", "7", "-C", "0"], baseEnv(home))
+    expect(tool.stdout.split("\n").slice(1, 4)).toEqual([
+      "        assistant tool_use Bash toolu_03",
+      "          command: curl -s 'https://ci.example.com/status?token="
+        + "[redacted:token-value]'",
+      "          description: Check CI status",
+    ])
+
+    const raw = await runCli(
+      ["agent", run.runId!.slice(-4), "--at", "10", "--raw"], baseEnv(home))
+    expect(raw.stdout).toContain("\"tool_use_id\": \"toolu_04\"")
+    expect(raw.stdout).not.toContain("user tool_result toolu_04")
     const bad = await runCli(
       ["agent", run.runId!.slice(-4), "--at", "99"], baseEnv(home))
     expect(bad.exitCode).toBe(1)
+  }))
+
+  test("agent last is the newest run with an agent", withHome(async (home) => {
+    const none = await runCli(["agent", "last"], baseEnv(home))
+    expect(none.exitCode).toBe(1)
+    expect(none.stderr).toContain("no agent runs yet")
+
+    const run = hostRun(home)
+    await runCli(["tap", "--cli", "claude"],
+      baseEnv(home, { BOKU_RUN_ID: run.runId! }), fixture("claude-stream.jsonl"))
+    run.end(0)
+    const later = hostRun(home, "plain")
+    later.end(0)
+    const result = await runCli(["agent", "last"], baseEnv(home))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trimEnd().split("\n")).toHaveLength(13)
+    const show = await runCli(["show", "last"], baseEnv(home))
+    expect(show.stdout.split("\n")[0]).toContain(later.runId!)
   }))
 
   test("challenges prints each section, newest first", withHome(async (home) => {
@@ -586,6 +690,9 @@ describe("maintenance", () => {
     const result = await runCli(["prune", "30"],
       baseEnv(home, { BOKU_RUN_ID: parent, BOKU_ROOT_RUN_ID: parent }))
     expect(result.exitCode).toBe(0)
+    // The planted days have no index, so prune rebuilds the two it keeps.
+    expect(result.stderr).toMatch(
+      /^removed 2 days \(\d+\.\d KB freed\); reindexed 2 days\n$/)
     const days = readdirSync(join(home, "runs")).sort()
     expect(days).toEqual([30, 10, 1, 0].map(dayAgo).sort())
 

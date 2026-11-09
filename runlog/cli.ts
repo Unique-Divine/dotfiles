@@ -266,22 +266,43 @@ export const compareRuns = (a: RunSummary, b: RunSummary): number =>
   startMs(a) - startMs(b)
     || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0)
 
-/** Resolves `last` or any unique suffix of a run id. */
-export const resolveRunId = (runs: RunSummary[], query: string): string => {
+export interface ResolveOptions {
+  /** `last` means the newest run with an `agent` or `agent-session`. */
+  agent?: boolean
+  /** Gets a one-line note when a query matches several runs. */
+  note?: (text: string) => void
+}
+
+/**
+ * Resolves `last`, a whole id, or any part of one (a prefix such as the
+ * time, a suffix such as the hex, or any substring). `runs` must be oldest
+ * first. Several matches resolve to the newest, with a note naming the
+ * others.
+ */
+export const resolveRunId = (
+  runs: RunSummary[], query: string, opts: ResolveOptions = {},
+): string => {
   if (query === "last") {
-    const top = runs.filter((r) => r.parentRunId === null)
-    const last = top.at(-1)
-    if (!last) throw new Error("no runs yet")
+    const pool = opts.agent
+      ? runs.filter((r) => r.agent !== null)
+      : runs.filter((r) => r.parentRunId === null)
+    const last = pool.at(-1)
+    if (!last) throw new Error(opts.agent ? "no agent runs yet" : "no runs yet")
     return last.runId
   }
   const ids = [...new Set(runs.map((r) => r.runId))]
-  const exact = ids.find((id) => id === query)
-  if (exact) return exact
-  const matches = ids.filter((id) => id.endsWith(query))
-  if (matches.length === 1) return matches[0]!
-  if (matches.length === 0) throw new Error(`no run matches "${query}"`)
-  throw new Error(`"${query}" matches ${matches.length} runs:\n  ${
-    matches.join("\n  ")}`)
+  if (ids.includes(query)) return query
+  const matches = ids.filter((id) => id.includes(query))
+  const newest = matches.at(-1)
+  if (!newest) throw new Error(`no run matches "${query}"`)
+  if (matches.length > 1) {
+    const others = matches.slice(0, -1).reverse()
+    const shown = others.slice(0, 5).join(", ")
+    const more = others.length > 5 ? `, and ${others.length - 5} more` : ""
+    opts.note?.(`"${query}" matches ${matches.length} runs; showing ${
+      newest}; others: ${shown}${more}`)
+  }
+  return newest
 }
 
 // ---------------------------------------------------------------- format
@@ -451,8 +472,83 @@ export const describeStreamLine = (line: string): string => {
   return type
 }
 
+const indentLines = (text: string, pad: string): string[] =>
+  text.replace(/\n$/, "").split("\n").map((line) => `${pad}${line}`)
+
+/** A tool call's input: one `key: value` each, long strings below. */
+const inputText = (input: unknown): string => {
+  if (!input || typeof input !== "object") return JSON.stringify(input)
+  return Object.entries(input as Fields).map(([key, value]) => {
+    if (typeof value !== "string") return `${key}: ${JSON.stringify(value)}`
+    if (!value.includes("\n")) return `${key}: ${value}`
+    return [`${key}:`, ...indentLines(value, "  ")].join("\n")
+  }).join("\n")
+}
+
+/**
+ * A stream line, readable: a header per part (the event type, block type,
+ * and tool name or id), then its text with real newlines, indented.
+ * Lines this doesn't know print as indented JSON.
+ */
+export const renderStreamLine = (line: string): string[] => {
+  let obj: Fields
+  try {
+    obj = JSON.parse(line) as Fields
+  } catch {
+    return [line]
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [line]
+  const out: string[] = []
+  const part = (header: string, body: string | null): void => {
+    out.push(header)
+    if (body) out.push(...indentLines(body, "  "))
+  }
+  const json = (value: unknown): string => JSON.stringify(value, null, 2)
+  const type = str(obj.type) ?? "?"
+  const message = (obj.message ?? {}) as Fields
+  const item = (obj.item ?? {}) as Fields
+  if (type === "assistant" || type === "user") {
+    if (typeof message.content === "string") {
+      part(`${type} text`, message.content)
+    }
+    const blocks = Array.isArray(message.content) ? message.content : []
+    for (const block of blocks as Fields[]) {
+      const kind = str(block?.type) ?? "?"
+      if (kind === "text") {
+        part(`${type} text`, str(block.text))
+      } else if (kind === "thinking") {
+        part(`${type} thinking`, str(block.thinking))
+      } else if (kind === "tool_use") {
+        const name = `${block.name ?? "?"} ${block.id ?? ""}`.trimEnd()
+        part(`${type} tool_use ${name}`, inputText(block.input))
+      } else if (kind === "tool_result") {
+        const flag = block.is_error ? " error" : ""
+        part(`${type} tool_result ${block.tool_use_id ?? ""}${flag}`,
+          textOf(block.content))
+      } else {
+        part(`${type} ${kind}`, json(block))
+      }
+    }
+    if (!out.length) part(type, json(obj))
+  } else if (type === "result") {
+    part(`result ${obj.subtype ?? ""}`.trimEnd(), str(obj.result))
+  } else if (type.startsWith("item.") && item.type === "command_execution") {
+    const exit = item.exit_code === null || item.exit_code === undefined
+      ? "" : ` exit=${item.exit_code}`
+    const cmd = `$ ${unwrapShell(str(item.command) ?? "")}`
+    const output = str(item.aggregated_output) ?? ""
+    part(`${type} command_execution${exit}`,
+      output ? `${cmd}\n${output}` : cmd)
+  } else if (type.startsWith("item.") && typeof item.text === "string") {
+    part(`${type} ${item.type ?? "?"}`, item.text)
+  } else {
+    part(type, json(obj))
+  }
+  return out
+}
+
 export const agentLines = (
-  stream: string, at: number | null, context = 3,
+  stream: string, at: number | null, context = 3, raw = false,
 ): string[] => {
   const lines = stream.split("\n")
   if (lines.at(-1) === "") lines.pop()
@@ -470,7 +566,7 @@ export const agentLines = (
     const mark = n === at ? ">" : " "
     const text = describeStreamLine(lines[n - 1]!)
     out.push(`${mark}${String(n).padStart(4)}  ${text}`)
-    if (n === at) {
+    if (n === at && raw) {
       let full = lines[n - 1]!
       try {
         full = JSON.stringify(JSON.parse(full), null, 2)
@@ -478,6 +574,8 @@ export const agentLines = (
         // Show the raw line.
       }
       out.push(...full.split("\n").map((l) => `        ${l}`))
+    } else if (n === at) {
+      out.push(...renderStreamLine(lines[n - 1]!).map((l) => `        ${l}`))
     }
   }
   return out
@@ -556,13 +654,15 @@ export const pathBytes = (path: string): number => {
 /**
  * Rebuilds a past day's index from its run files: temp file, then rename.
  * Today and yesterday are refused, since their files may still grow.
+ * Returns the run count, or null when the day has no folder.
  */
 export const reindexDay = (
   home: string, day: string, now: Date = new Date(),
-): number => {
+): number | null => {
   if (recentDays(now).has(day)) {
     throw new Error(`${day} is today or yesterday; its files are read directly`)
   }
+  if (!existsSync(join(home, "runs", day))) return null
   const runs = scanDay(home, day, () => "incomplete")
   const lines = runs.map((r) => {
     const id: RunIdentity = {
@@ -917,6 +1017,27 @@ const print = (lines: string[]): void => {
   if (lines.length) process.stdout.write(`${lines.join("\n")}\n`)
 }
 
+const note = (text: string): void => {
+  process.stderr.write(`boku-runs: ${text}\n`)
+}
+
+/** `512 B`, `2.1 KB`, `3.4 MB`. */
+export const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** Prune's one-line summary. */
+export const pruneSummary = (result: PruneResult): string => {
+  const n = result.removedDays.length
+  const parts = [`removed ${n} day${n === 1 ? "" : "s"} (${
+    formatBytes(result.bytesFreed)} freed)`]
+  const r = result.reindexedDays.length
+  if (r) parts.push(`reindexed ${r} day${r === 1 ? "" : "s"}`)
+  return parts.join("; ")
+}
+
 const guard = (fn: () => void | Promise<void>) => async (): Promise<void> => {
   try {
     await fn()
@@ -939,7 +1060,12 @@ export const createProgram = (env: Env = process.env): Command => {
   const program = new Command()
   const home = (): string => bokuHome(env)
   const listAction = (opts: { limit: string }) => guard(() => {
-    print(listLines(loadRuns(home()), parseIntArg(opts.limit, "--limit")))
+    const runs = loadRuns(home())
+    if (!runs.some((r) => r.parentRunId === null)) {
+      note(`no runs yet in ${join(home(), "runs")}`)
+      return
+    }
+    print(listLines(runs, parseIntArg(opts.limit, "--limit")))
   })
 
   program
@@ -954,26 +1080,32 @@ export const createProgram = (env: Env = process.env): Command => {
     .action((opts: { limit: string }) => listAction(opts)())
 
   program.command("show <id>")
-    .description("a run's events; <id> is last or any unique suffix")
+    .description("a run's events; <id> is last or any part of a run id")
     .option("--tree", "include child runs")
     .action((query: string, opts: { tree?: boolean }) => guard(() => {
       const runs = loadRuns(home())
-      const runId = resolveRunId(runs, query)
+      const runId = resolveRunId(runs, query, { note })
       print(showLines(home(), runs, runId, opts.tree === true))
     })())
 
   program.command("agent <id>")
-    .description("the agent stream, one readable line each")
+    .description("the agent stream, one readable line each; last is the "
+      + "newest agent run")
     .option("--at <n>", "jump to stream line N, with context")
     .option("-C, --context <n>", "lines of context around --at", "3")
-    .action((query: string, opts: { at?: string; context: string }) =>
+    .option("--raw", "print line N as JSON")
+    .action((query: string, opts: {
+      at?: string; context: string; raw?: boolean
+    }) =>
       guard(() => {
-        const runId = resolveRunId(loadRuns(home()), query)
+        const runId = resolveRunId(loadRuns(home()), query, {
+          agent: true, note,
+        })
         const file = join(checkedRunPaths(home(), runId).dir, "agent.jsonl")
         if (!existsSync(file)) throw new Error(`${runId} has no agent.jsonl`)
         const at = opts.at === undefined ? null : parseIntArg(opts.at, "--at")
         print(agentLines(readFileSync(file, "utf8"), at,
-          parseIntArg(opts.context, "--context")))
+          parseIntArg(opts.context, "--context"), opts.raw === true))
       })())
 
   program.command("challenges")
@@ -999,7 +1131,8 @@ export const createProgram = (env: Env = process.env): Command => {
       for (const day of targets) {
         if (!isDay(day)) throw new Error(`bad day "${day}": use yymmdd`)
         const count = reindexDay(home(), day, now)
-        process.stderr.write(`reindexed ${day}: ${count} runs\n`)
+        process.stderr.write(count === null
+          ? `no runs for ${day}\n` : `reindexed ${day}: ${count} runs\n`)
       }
     })())
 
@@ -1038,6 +1171,7 @@ export const createProgram = (env: Env = process.env): Command => {
             reindexed_days: result.reindexedDays.length,
           })
           run.end(0)
+          process.stderr.write(`${pruneSummary(result)}\n`)
         } catch (error) {
           run.event("error", {
             code: "prune-failed",
