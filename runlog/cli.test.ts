@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import {
   appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
@@ -324,6 +324,19 @@ describe("tap", () => {
     expect(failed.ref).toEqual({ file: "agent.jsonl", line: 10 })
     const copied = copy.split("\n")[9]!
     expect(JSON.parse(copied).message.content[0].tool_use_id).toBe("toolu_04")
+
+    // One artifact event for the stream, after the commands, before `end`.
+    const artifacts = events.filter((e) => e.event === "artifact")
+    expect(artifacts).toEqual([expect.objectContaining({
+      kind: "agent-stream", path: "agent.jsonl",
+      bytes: Buffer.byteLength(copy),
+      sha256: createHash("sha256").update(copy).digest("hex"),
+      truncated: false,
+    })])
+    const at = events.findIndex((e) => e.event === "artifact")
+    expect(at).toBeGreaterThan(
+      events.findLastIndex((e) => e.event === "agent-command"))
+    expect(at).toBe(events.length - 2)
   }))
 
   test("codex stream: copy, commands, session", withHome(async (home) => {
@@ -444,6 +457,12 @@ describe("tap", () => {
     expect(commands[0]).toMatchObject({ ref: { line: 1 } })
     expect(commands[0]!.truncated).toBeUndefined()
     expect(commands[2]).toMatchObject({ ref: null, truncated: true })
+    const artifact = readEvents(runFilePath(home, run.runId!))
+      .find((e) => e.event === "artifact")
+    expect(artifact).toMatchObject({
+      kind: "agent-stream", path: "agent.jsonl", truncated: true,
+      bytes: statSync(join(run.runDir!, "agent.jsonl")).size,
+    })
   }))
 
   test("a run folder deleted mid-stream: tap-failed, drain, exit 0",
@@ -489,6 +508,15 @@ describe("tap", () => {
       expect(readdirSync(dir)).toEqual(["home"])
       expect(readdirSync(home)).toEqual([])
     }))
+
+  test("an empty stream writes no artifact event", withHome(async (home) => {
+    const run = hostRun(home)
+    await runCli(["tap", "--cli", "codex"],
+      baseEnv(home, { BOKU_RUN_ID: run.runId! }), "")
+    run.end(0)
+    const events = readEvents(runFilePath(home, run.runId!))
+    expect(events.filter((e) => e.event === "artifact")).toHaveLength(0)
+  }))
 
   test("without a run it only shows progress", withHome(async (home) => {
     const result = await runCli(["tap", "--cli", "codex"], baseEnv(home),

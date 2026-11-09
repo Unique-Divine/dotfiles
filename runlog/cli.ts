@@ -3,6 +3,7 @@
  * ud runs (the ud-runs plugin): reader, tap, prune, and redact-file for the Boku run log.
  * See docs/run-log-design.md.
  */
+import { createHash } from "node:crypto"
 import {
   appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync,
   renameSync, rmSync, writeFileSync,
@@ -1023,7 +1024,7 @@ export const createTap = (opts: TapOptions): Tap => {
   const pending = new Map<string, string>()
   const state = {
     lineNo: 0, copiedBytes: 0, copying: agentFile !== null, failed: false,
-    session: false,
+    session: false, capped: false,
   }
 
   const fail = (error: unknown): void => {
@@ -1040,6 +1041,7 @@ export const createTap = (opts: TapOptions): Tap => {
     const bytes = Buffer.byteLength(line)
     if (state.copiedBytes + bytes > cap) {
       state.copying = false
+      state.capped = true
       return false
     }
     appendFileSync(agentFile, line, { mode: 0o600 })
@@ -1114,12 +1116,27 @@ export const createTap = (opts: TapOptions): Tap => {
       }
     },
     finish(): void {
-      if (state.failed) return
-      try {
-        for (const cmd of pending.values()) {
-          run.event("agent-command", { cmd, exit: null, ref: null })
+      if (!state.failed) {
+        try {
+          for (const cmd of pending.values()) {
+            run.event("agent-command", { cmd, exit: null, ref: null })
+          }
+          pending.clear()
+        } catch (error) {
+          fail(error)
         }
-        pending.clear()
+      }
+      // git_mf waits for the whole pipeline, so this lands before its `end`.
+      if (!agentFile || !existsSync(agentFile)) return
+      try {
+        const data = readFileSync(agentFile)
+        run.event("artifact", {
+          kind: "agent-stream",
+          path: "agent.jsonl",
+          bytes: data.length,
+          sha256: createHash("sha256").update(data).digest("hex"),
+          truncated: state.capped,
+        })
       } catch (error) {
         fail(error)
       }
