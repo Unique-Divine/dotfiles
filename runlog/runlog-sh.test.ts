@@ -578,6 +578,41 @@ runlog_end 0`)
     expect(evs[1]).toMatchObject({ event: "warn", code: "artifact-missing" })
     expect(evs.at(-1)).toMatchObject({ warns: 1 })
   })
+
+  test("a broken boku-runs falls back to jq and keeps the writer on", async () => {
+    const bin = join(tmp, "bin")
+    await mkdir(bin)
+    await writeFile(join(bin, "boku-runs"), "#!/bin/sh\nexit 1\n", {
+      mode: 0o755,
+    })
+    const planted = plantTokens()[0]!
+    await runBash(
+      `runlog_start broken
+printf 'x %s\\n' ${sq(planted.text)} > a.diff
+runlog_artifact remerge-diff a.diff
+runlog_event step name=after
+runlog_end 0`,
+      baseEnv({ PATH: `${bin}:${process.env.PATH}` }),
+    )
+    const evs = await events()
+    expect(evs.map((e) => e.event)).toEqual([
+      "start", "artifact", "step", "end",
+    ])
+    expect(await allStoredText()).not.toContain(planted.secret)
+  })
+})
+
+describe("field values", () => {
+  test("multi-line values and values containing = are kept whole", async () => {
+    await runBash(`runlog_start multi
+runlog_event agent challenges=$'\\nNone\\nsecond line' pair="a=b"
+runlog_end 0`)
+    const agent = (await events()).find((e) => e.event === "agent")!
+    expect(agent).toMatchObject({
+      challenges: "\nNone\nsecond line",
+      pair: "a=b",
+    })
+  })
 })
 
 describe("runlog_dir and runlog_file", () => {

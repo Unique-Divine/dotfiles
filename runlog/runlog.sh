@@ -51,7 +51,7 @@ def ts: ($ms / 1000 | floor | strftime("%Y-%m-%dT%H:%M:%S")) + "."
   root_run_id: $root, tool: $tool}
   + (if $event == "" then {} else {event: $event} end)) as $common
 | (reduce ($ARGS.positional[]
-    | capture("^(?<k>[^=]*?)(?<op>:?=)(?<v>.*)$"; "s")
+    | capture("^(?<k>[^=]*?)(?<op>:?=)(?<v>.*)$"; "p")
     | select(.k != "")) as $m ({};
     . + {($m.k): (if $m.op == ":=" then ($m.v | try fromjson catch $m.v)
       else $m.v end)})) as $own
@@ -423,12 +423,13 @@ _runlog_artifact_name() {
 }
 
 # _runlog_redact_file FILE: redacts FILE in place, with `boku-runs
-# redact-file` when on PATH, else the shared patterns through jq.
+# redact-file` when it's on PATH and works, else the shared patterns
+# through jq. A broken boku-runs must not cost the artifact.
 _runlog_redact_file() {
   local -r file="${1:-}"
-  if command -v boku-runs >/dev/null 2>&1; then
-    boku-runs redact-file "$file" >/dev/null 2>&1
-    return $?
+  if command -v boku-runs >/dev/null 2>&1 \
+    && boku-runs redact-file "$file" >/dev/null 2>&1; then
+    return 0
   fi
   local -r out="${file}.redact"
   ( umask 077 && : >"$out" ) 2>/dev/null || return 1
@@ -485,7 +486,9 @@ runlog_artifact() {
   if [[ "$truncated" == error ]] || ! _runlog_redact_file "$tmp" \
     || ! mv -f -- "$tmp" "$dest" 2>/dev/null; then
     rm -f -- "$tmp" "$tmp.cut" 2>/dev/null || true
-    _runlog_fail "cannot save artifact $kind" 1
+    # One lost artifact is worth a warning, not the rest of the run's log.
+    runlog_event warn code=artifact-failed msg="cannot save artifact $kind" \
+      || true
     return 0
   fi
   chmod 600 -- "$dest" 2>/dev/null || true
