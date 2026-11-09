@@ -205,7 +205,7 @@ run_stream_pipeline() {
     session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
     claude "${claude_args[@]}" ${session_id:+--session-id "$session_id"} \
       --output-format stream-json --verbose <"$prompt_path" \
-      | { boku-runs tap --cli claude \
+      | { boku-runs tap --cli claude ${session_id:+--session-id "$session_id"} \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   else
