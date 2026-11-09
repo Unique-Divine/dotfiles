@@ -281,13 +281,28 @@ impl Drop for BlockedTermination {
     }
 }
 
+/// Whether ud inherited `signal` as ignored, e.g. from `cmd &` in a script.
+fn is_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: a null new action only queries; `current` is written on
+    // success.
+    unsafe {
+        let mut current: libc::sigaction = mem::zeroed();
+        libc::sigaction(signal, ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
+}
+
 /// Install SIGINT and SIGTERM handlers once. Each kills the inspected
 /// plugin group, if any, then terminates ud as the default action would, so
-/// the shell still sees exit status 130 or 143.
+/// the shell still sees exit status 130 or 143. An inherited ignore stays in
+/// place, and the plugin inherits it too.
 fn forward_termination_signals() {
     FORWARD_SIGNALS.call_once(|| {
         for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
         {
+            if is_ignored(signal) {
+                continue;
+            }
             // SAFETY: the action only loads an atomic and calls kill(2) and
             // emulate_default_handler, which are async-signal-safe.
             let _ = unsafe {

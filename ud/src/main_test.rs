@@ -1219,6 +1219,55 @@ print('{"apiVersion":1,"name":"example","description":"Survived"}')
     assert!(stderr(&output).contains("metadata command failed: example"));
 }
 
+/// An inherited SIG_IGN for SIGINT, as `cmd &` gives in a script, must keep
+/// ud running until the metadata timeout.
+#[test]
+fn inherited_ignored_sigint_does_not_stop_inspection() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let started = Instant::now();
+    // bash's empty trap sets SIG_IGN, which exec passes on to ud.
+    let mut ud = std::process::Command::new("bash")
+        .args([
+            "-c",
+            "trap '' INT; exec \"$0\" plugin info example",
+            env!("CARGO_BIN_EXE_ud"),
+        ])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_plugin_pids(&mut ud, &pids_file);
+
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let output = ud.wait_with_output().unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(output.status.signal(), None, "ud died by a signal");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        elapsed >= Duration::from_millis(1900),
+        "ud took {elapsed:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ud plugin metadata command timed out after 2s: example")
+    );
+    assert_plugin_processes_stopped(&pids_file);
+}
+
 /// Ambiguous plugin paths must fail instead of silently choosing an executable.
 #[test]
 fn duplicate_plugins_are_rejected() {
