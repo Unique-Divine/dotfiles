@@ -538,3 +538,52 @@ describe("git_mf round-2 review fixes", () => {
     expect(diff).not.toContain("KEYBODY")
   })
 })
+
+describe("git_mf round-3 review fixes", () => {
+  test("an unrelated history keeps git's own error message", async () => {
+    const r = await repoPair()
+    await ok(r.peer, "git switch -q --orphan other && printf x > o.txt && git add . && git commit -qm other && git push -q origin other")
+    await ok(r.clone, "git switch -q -c feature")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const res = await sh(r.clone, `${gitMf} other`, { BOKU_HOME: home })
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("unrelated histories")
+    const err = (await runEvents(home)).find((e) => e.code === "merge-tree-failed")!
+    expect(err.msg).toContain("unrelated histories")
+  })
+
+  test("codex's report is one artifact, and no report-missing warning", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const PATH = await agentPath(r.root, "codex", resolveTheirs)
+    await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
+    const events = await runEvents(home)
+    expect(events.filter((e) => e.event === "artifact" && e.kind === "report")).toHaveLength(1)
+    expect(events.some((e) => e.code === "report-missing")).toBe(false)
+  })
+
+  test("the agent inherits no descriptor beyond stdin, stdout, and stderr", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const fds = join(r.root, "agent-fds")
+    const PATH = await agentPath(r.root, "claude",
+      `[[ " $* " == *" --version "* ]] || ls /proc/$$/fd > ${fds}`)
+    await sh(r.clone, `${gitMf} main --agent --json </dev/null >/dev/null`, { PATH, BOKU_HOME: home })
+    const open = (await readFile(fds, "utf8")).trim().split("\n").map(Number)
+    // 255 is bash's own script descriptor in the fake agent.
+    expect(open.filter((n) => n > 2 && n !== 255)).toEqual([])
+  })
+
+  test("a background child can't hold a --json reader open", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    // The fake agent leaves a 15 s sleeper behind, as a real agent's
+    // server or git's gc --auto might.
+    const PATH = await agentPath(r.root, "claude", `${resolveTheirs}; (sleep 15 >/dev/null 2>&1 &)`)
+    const started = performance.now()
+    const res = await sh(r.clone, `${gitMf} main --agent --json | wc -l`, { PATH, BOKU_HOME: home })
+    expect(res.code, res.stderr).toBe(0)
+    expect(performance.now() - started).toBeLessThan(10_000)
+    expect(Number(res.stdout.trim())).toBeGreaterThan(3)
+  }, 30_000)
+})

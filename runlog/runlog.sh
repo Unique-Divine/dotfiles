@@ -530,13 +530,25 @@ runlog_event() {
 # with `cmd` (the argv as a JSON array), `exit`, and `dur_ms`, and returns
 # the command's status.
 # Wrap external commands only; functions and `source` run unwrapped.
+# runlog_exec CMD [ARG...]: runs CMD with the stdout copy saved for
+# `--json` closed. A child, or anything it leaves running in the
+# background (an agent's server, git's `gc --auto`), would otherwise hold
+# that copy open and keep a `git_mf --json | jq` reader waiting for EOF.
+runlog_exec() {
+  if [[ -n "${_runlog_out_fd:-}" ]]; then
+    "$@" {_runlog_out_fd}>&-
+  else
+    "$@"
+  fi
+}
+
 runlog_step() {
   local -r name="${1:-step}"
   shift || true
   local rc=0 t0
   _runlog_now
   t0="$_runlog_ms"
-  "$@" || rc=$?
+  runlog_exec "$@" || rc=$?
   if [[ "${_runlog_on}" == 1 ]]; then
     _runlog_now
     local -r dur=$(( _runlog_ms - t0 ))

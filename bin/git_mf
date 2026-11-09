@@ -120,6 +120,9 @@ if ! declare -F runlog_start >/dev/null; then
   runlog_dir() { return 1; }
   runlog_file() { return 1; }
 fi
+if ! declare -F runlog_exec >/dev/null; then
+  runlog_exec() { "$@"; }
+fi
 if ! declare -F runlog_trap_signals >/dev/null; then
   # Exit with 128+N on a signal, so the EXIT handler records the real code.
   runlog_trap_signals() {
@@ -231,7 +234,8 @@ record_before() {
   stash_before="$(git stash list | wc -l)"
   clean_before=0
   [[ -z "$(git status --porcelain)" ]] && clean_before=1
-  cli_version="$("$agent" --version 2>/dev/null | head -n 1 || true)"
+  cli_version="$(runlog_exec "$agent" --version </dev/null 2>/dev/null \
+    | head -n 1 || true)"
 }
 
 # --strict-mcp-config with no --mcp-config: the merge needs no MCP servers,
@@ -248,14 +252,16 @@ run_stream_pipeline() {
   set +e
   if [[ "$agent" == claude ]]; then
     session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
-    claude "${claude_args[@]}" ${session_id:+--session-id "$session_id"} \
+    runlog_exec claude "${claude_args[@]}" \
+      ${session_id:+--session-id "$session_id"} \
       --output-format stream-json --verbose <"$prompt_path" \
-      | { "$runs_cli" tap --cli claude ${session_id:+--session-id "$session_id"} \
+      | { runlog_exec "$runs_cli" tap --cli claude ${session_id:+--session-id "$session_id"} \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   else
-    codex "${codex_args[@]}" --json -o "$report_tmp" <"$prompt_path" \
-      | { "$runs_cli" tap --cli codex \
+    runlog_exec codex "${codex_args[@]}" --json -o "$report_tmp" \
+      <"$prompt_path" \
+      | { runlog_exec "$runs_cli" tap --cli codex \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   fi
@@ -280,9 +286,9 @@ run_plain_agent() {
   set +e
   if (( json_out )); then
     # Keep stdout JSONL: the agent's text goes to stderr.
-    "${agent_cmd[@]}" <"$prompt_path" >&2
+    runlog_exec "${agent_cmd[@]}" <"$prompt_path" >&2
   else
-    "${agent_cmd[@]}" <"$prompt_path"
+    runlog_exec "${agent_cmd[@]}" <"$prompt_path"
   fi
   agent_status=$?
   set -e
@@ -356,11 +362,12 @@ save_artifacts() {
   # a temp file outside it, and runlog_artifact deletes what it can't redact.
   if [[ -n "$report_tmp" && -s "$report_tmp" ]]; then
     runlog_artifact report "$report_tmp"
+  elif [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
+    # The tap's report for claude: redact (and chmod 0600) in place. The
+    # writer falls back to jq if `ud runs` can't.
+    runlog_artifact report "$run_dir/report.md"
   fi
   if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
-    # Redact (and chmod 0600) in place, whoever wrote it: the tap, or codex
-    # through -o. The writer falls back to jq if `ud runs` can't.
-    runlog_artifact report "$run_dir/report.md"
     report="$run_dir/report.md"
   fi
   if [[ -z "$report" ]]; then
@@ -513,7 +520,7 @@ fetch_cmd=(git fetch --quiet --prune origin
   "+refs/heads/$target:refs/remotes/$upstream")
 fetch_rc=0
 fetch_t0="$(now_ms)"
-"${fetch_cmd[@]}" 2>/dev/null || fetch_rc=$?
+runlog_exec "${fetch_cmd[@]}" 2>/dev/null || fetch_rc=$?
 runlog_event step name=fetch-target cmd:="$(json_array "${fetch_cmd[@]}")" \
   exit:="$fetch_rc" dur_ms:="$(( $(now_ms) - fetch_t0 ))" \
   ref="$upstream"
@@ -577,8 +584,12 @@ else
   # Exit 0: clean merge. Exit 1: conflicts, listed after the tree id.
   # Anything else is an error, such as unrelated histories.
   tree_status=0
+  tree_err="$(mktemp)"
   tree_out="$(git merge-tree --write-tree --name-only --no-messages -z \
-    "$head_ref" "$upstream" 2>/dev/null | tr '\0' '\n')" || tree_status=$?
+    "$head_ref" "$upstream" 2>"$tree_err" | tr '\0' '\n'; \
+    exit "${PIPESTATUS[0]}")" || tree_status=$?
+  tree_msg="$(cat "$tree_err")"
+  rm -f -- "$tree_err"
   case "$tree_status" in
     0) action="merge" ;;
     1)
@@ -591,8 +602,8 @@ else
     *)
       say "plan: error"
       log_plan error
-      runlog_event error code=merge-tree-failed msg="$tree_out"
-      say "git merge-tree failed: $tree_out"
+      runlog_event error code=merge-tree-failed msg="$tree_msg"
+      say "git merge-tree failed: $tree_msg"
       exit 1
       ;;
   esac
@@ -640,7 +651,7 @@ case "$action" in
       runlog_event step name="git merge" msg=dry-run
     else
       merge_t0="$(now_ms)"
-      "${merge_cmd[@]}" >"$merge_log" 2>&1 || merge_rc=$?
+      runlog_exec "${merge_cmd[@]}" >"$merge_log" 2>&1 || merge_rc=$?
       runlog_event step name="git merge" \
         cmd:="$(json_array "${merge_cmd[@]}")" exit:="$merge_rc" \
         dur_ms:="$(( $(now_ms) - merge_t0 ))"
