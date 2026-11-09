@@ -1145,6 +1145,21 @@ fn cached_metadata_survives_a_plugin_that_starts_hanging() {
     assert_plugin_processes_stopped(&temp.path().join("pids"));
 }
 
+/// Wait until the hanging plugin records both PIDs, or kill `ud` and fail.
+fn wait_for_plugin_pids(ud: &mut std::process::Child, pids_file: &Path) {
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while fs::read_to_string(pids_file)
+        .map_or(true, |pids| pids.split_whitespace().count() < 2)
+    {
+        if Instant::now() >= deadline {
+            let _ = ud.kill();
+            let _ = ud.wait();
+            panic!("plugin did not record its PIDs before the deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// SIGTERM to ud mid-inspection must also stop the plugin's process group,
 /// which no longer shares ud's group, and ud must die by that signal.
 #[test]
@@ -1166,17 +1181,7 @@ fn sigterm_during_inspection_stops_the_plugin_group() {
         .spawn()
         .unwrap();
 
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    while fs::read_to_string(&pids_file)
-        .map_or(true, |pids| pids.split_whitespace().count() < 2)
-    {
-        if Instant::now() >= deadline {
-            let _ = ud.kill();
-            let _ = ud.wait();
-            panic!("plugin did not record its PIDs before the deadline");
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_plugin_pids(&mut ud, &pids_file);
     let sent = std::process::Command::new("kill")
         .args(["-TERM", &ud.id().to_string()])
         .status()
@@ -1186,6 +1191,32 @@ fn sigterm_during_inspection_stops_the_plugin_group() {
     let status = ud.wait().unwrap();
     assert_eq!(status.signal(), Some(15), "ud status: {status:?}");
     assert_plugin_processes_stopped(&pids_file);
+}
+
+/// ud blocks SIGINT and SIGTERM around spawn; the plugin must not inherit
+/// that block. A plugin that SIGTERMs itself must die before printing. The
+/// plugin is Python because bash resets its signal mask at startup.
+#[test]
+fn plugin_inspection_starts_with_termination_signals_unblocked() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(
+        &plugins,
+        "example",
+        r#"#!/usr/bin/env python3
+import os, signal
+os.kill(os.getpid(), signal.SIGTERM)
+print('{"apiVersion":1,"name":"example","description":"Survived"}')
+"#,
+    );
+    let output = isolated_ud(&temp)
+        .env("UD_PLUGIN_PATH", &plugins)
+        .args(["plugin", "info", "example"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "stdout: {}", stdout(&output));
+    assert!(stderr(&output).contains("metadata command failed: example"));
 }
 
 /// Ambiguous plugin paths must fail instead of silently choosing an executable.

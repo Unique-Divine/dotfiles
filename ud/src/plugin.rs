@@ -3,10 +3,12 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, Permissions};
 use std::io::Read;
+use std::mem;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Once, mpsc};
 use std::thread;
@@ -153,12 +155,35 @@ fn load_metadata(
 /// ud kill the plugin group before ud exits.
 fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
     forward_termination_signals();
-    let mut child = Command::new(plugin)
+    // Hold SIGINT and SIGTERM until the handler can see the new group, so a
+    // signal right after spawn cannot orphan the plugin. The reader thread
+    // starts inside the bracket and keeps them blocked, which leaves this
+    // thread to take them. std passes the mask to the child, so the child
+    // restores ud's previous mask before exec.
+    let blocked = BlockedTermination::block();
+    let previous = blocked.previous;
+    let mut command = Command::new(plugin);
+    command
         .arg("--plugin-info")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .process_group(0)
+        .process_group(0);
+    // SAFETY: the hook only calls pthread_sigmask, which is
+    // async-signal-safe, on a mask copied before fork.
+    unsafe {
+        command.pre_exec(move || {
+            match libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                &previous,
+                ptr::null_mut(),
+            ) {
+                0 => Ok(()),
+                error => Err(std::io::Error::from_raw_os_error(error)),
+            }
+        });
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
     let _group = InspectedGroup::track(&child);
@@ -173,6 +198,7 @@ fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
         let result = pipe.read_to_end(&mut stdout).map(|_| stdout);
         let _ = sender.send(result);
     });
+    drop(blocked);
 
     // Stdout closes when the plugin and every helper holding it exit.
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -217,6 +243,41 @@ impl InspectedGroup {
 impl Drop for InspectedGroup {
     fn drop(&mut self) {
         INSPECTED_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Blocks SIGINT and SIGTERM on this thread until dropped, then restores
+/// the previous mask. A signal that arrived meanwhile is delivered then.
+struct BlockedTermination {
+    previous: libc::sigset_t,
+}
+
+impl BlockedTermination {
+    fn block() -> Self {
+        // SAFETY: the sets are initialized by sigemptyset or written by
+        // pthread_sigmask before use.
+        unsafe {
+            let mut set: libc::sigset_t = mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            let mut previous: libc::sigset_t = mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous);
+            Self { previous }
+        }
+    }
+}
+
+impl Drop for BlockedTermination {
+    fn drop(&mut self) {
+        // SAFETY: `previous` holds the mask pthread_sigmask returned.
+        unsafe {
+            libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                &self.previous,
+                ptr::null_mut(),
+            );
+        }
     }
 }
 
