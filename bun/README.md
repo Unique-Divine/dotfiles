@@ -6,6 +6,14 @@ links Bun's global package directory to this directory. Command `just sync`
 runs the same operation. Generated `node_modules` and source checkouts stay
 out of Git.
 
+Sync and `just bun-health` act on `$DOTFILES/bun`, the checkout that
+`symlinks.sh` also links from, whichever checkout runs them. From another
+checkout, such as a PR worktree, `just bun-sync` refuses to run, because the
+global tools would follow a directory that `git worktree remove` deletes. Pass
+`--allow-other-checkout` to `bun --no-install bun/sync.ts --run` to sync
+`$DOTFILES` from there anyway. `just bun-lock` and `just bun-activate-mdtoc`
+edit the manifest of the checkout they run in.
+
 The first migration preserves the previous global installation in a sibling
 directory named `global.before-dotfiles-<timestamp>`. It installs and checks
 the replacement before switching the directory link. A failed switch restores

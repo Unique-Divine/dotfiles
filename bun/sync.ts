@@ -167,6 +167,38 @@ export async function configuration(
   }
 }
 
+/**
+ * The `bun/` directory of the checkout that owns the live installation:
+ * `$DOTFILES/bun`, as `symlinks.sh` links from `$DOTFILES`. Falls back to the
+ * script's own directory only when `DOTFILES` is unset.
+ */
+export function installRoot(
+  env: Environment = process.env, scriptDir = dirname(import.meta.path),
+): string {
+  return env.DOTFILES ? resolve(env.DOTFILES, "bun") : resolve(scriptDir)
+}
+
+/**
+ * Refuse `--run` from a checkout other than `$DOTFILES`, such as a PR
+ * worktree, unless `allowOther` is set. Following a repair hint there would
+ * otherwise look like it restores this checkout's tools while it changes the
+ * live installation. With `allowOther`, sync still installs from `$DOTFILES`.
+ */
+export async function runCheckoutProblem(
+  env: Environment = process.env, scriptDir = dirname(import.meta.path),
+  allowOther = false,
+): Promise<string | undefined> {
+  if (allowOther || !env.DOTFILES) return undefined
+  const canonical = async (path: string): Promise<string> =>
+    realpath(path).catch(() => resolve(path))
+  const live = await canonical(installRoot(env, scriptDir))
+  const here = await canonical(scriptDir)
+  if (live === here) return undefined
+  return `Refusing --run: this script is in ${dirname(here)}, but ` +
+    `DOTFILES is ${dirname(live)}. Run just bun-sync from $DOTFILES, or ` +
+    "pass --allow-other-checkout to sync $DOTFILES from here."
+}
+
 /** The manifest and lock must agree before sync changes an installation. */
 export async function lockProblems(config: Config): Promise<string[]> {
   try {
@@ -652,23 +684,32 @@ export async function activateMdtoc(
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2)
-    const config = await configuration()
-    if (args.length === 1 && args[0] === "--check") {
-      const problems = await check(config)
+    const allowOther = args.includes("--allow-other-checkout")
+    const rest = args.filter((arg) => arg !== "--allow-other-checkout")
+    // --check and --run act on the live installation, so they read
+    // $DOTFILES. --lock and --activate-mdtoc edit files in this checkout.
+    const live = () => configuration(installRoot())
+    const local = () => configuration()
+    if (rest.length === 1 && rest[0] === "--check") {
+      const problems = await check(await live())
       if (problems.length) throw new Error(problems.join("\n"))
       console.log("Bun tools: manifest, packages, executables, and plugins match")
-    } else if (args.length === 1 && args[0] === "--run") {
-      await synchronize(config)
+    } else if (rest.length === 1 && rest[0] === "--run") {
+      const problem = await runCheckoutProblem(process.env,
+        dirname(import.meta.path), allowOther)
+      if (problem) throw new Error(problem)
+      await synchronize(await live())
       console.log("Bun tools: installation and links restored")
-    } else if (args.length === 1 && args[0] === "--lock") {
-      await refreshLock(config)
+    } else if (rest.length === 1 && rest[0] === "--lock") {
+      await refreshLock(await local())
       console.log("Bun lock refreshed; review the diff, then run just bun-sync")
-    } else if (args.length === 2 && args[0] === "--activate-mdtoc") {
-      await activateMdtoc(config, args[1]!)
+    } else if (rest.length === 2 && rest[0] === "--activate-mdtoc") {
+      await activateMdtoc(await local(), rest[1]!)
       console.log("ud-mdtoc release pinned; run just bun-sync")
     } else {
       throw new Error("Usage: bun --no-install bun/sync.ts " +
-        "--check | --run | --lock | --activate-mdtoc VERSION")
+        "--check | --run [--allow-other-checkout] | --lock | " +
+        "--activate-mdtoc VERSION")
     }
   } catch (error) {
     console.error(String(error))

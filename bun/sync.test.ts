@@ -8,8 +8,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   check, checkoutPinnedSource, configuration, ensureDiscord,
-  inspectPackages, lockProblems, refreshLock,
-  synchronize, type Config,
+  inspectPackages, installRoot, lockProblems, refreshLock,
+  runCheckoutProblem, synchronize, type Config,
 } from "./sync"
 
 const temporary: string[] = []
@@ -352,4 +352,83 @@ describe("managed Bun installation", () => {
       .toBe(JSON.parse(before).archiveHash)
     expect(await sourceIssues()).toEqual([])
   }, 120_000)
+})
+
+describe("checkout selection", () => {
+  const script = join(import.meta.dir, "sync.ts")
+
+  async function checkouts() {
+    const root = await mkdtemp(join(tmpdir(), "dotfiles-bun-checkouts-"))
+    temporary.push(root)
+    const live = join(root, "dotfiles")
+    const worktree = join(root, "dotfiles-pr")
+    await mkdir(join(live, "bun", "global"), { recursive: true })
+    await mkdir(join(worktree, "bun", "global"), { recursive: true })
+    const home = join(root, "home")
+    await mkdir(home)
+    return { root, live, worktree, home }
+  }
+
+  test("installs from $DOTFILES and falls back to the script directory", () => {
+    expect(installRoot({ DOTFILES: "/x/dotfiles" }, "/y/dotfiles-pr/bun"))
+      .toBe("/x/dotfiles/bun")
+    expect(installRoot({}, "/y/dotfiles-pr/bun")).toBe("/y/dotfiles-pr/bun")
+  })
+
+  test("refuses --run from a second checkout unless allowed", async () => {
+    const c = await checkouts()
+    const env = { DOTFILES: c.live }
+    const problem = await runCheckoutProblem(env, join(c.worktree, "bun"))
+    expect(problem).toContain("Refusing --run")
+    expect(problem).toContain(c.worktree)
+    expect(await runCheckoutProblem(env, join(c.worktree, "bun"), true))
+      .toBeUndefined()
+    expect(await runCheckoutProblem(env, join(c.live, "bun")))
+      .toBeUndefined()
+    const alias = join(c.root, "dotfiles-link")
+    await symlink(c.live, alias)
+    expect(await runCheckoutProblem({ DOTFILES: alias }, join(c.live, "bun")))
+      .toBeUndefined()
+    expect(await runCheckoutProblem({}, join(c.worktree, "bun")))
+      .toBeUndefined()
+  })
+
+  test("the CLI leaves the live installation alone from a second checkout",
+    async () => {
+      const c = await checkouts()
+      const runtime = join(c.home, "runtime-global")
+      await symlink(join(c.live, "bun", "global"), runtime)
+      const env = {
+        ...process.env, HOME: c.home, DOTFILES: c.live,
+        BUN_INSTALL: join(c.home, ".bun"), BUN_INSTALL_GLOBAL_DIR: runtime,
+        BUN_INSTALL_BIN: join(c.home, ".bun", "bin"),
+        XDG_DATA_HOME: join(c.home, "xdg"),
+      }
+      // This test file runs from a checkout other than c.live.
+      const run = Bun.spawn(["bun", "--no-install", script, "--run"], {
+        cwd: c.worktree, env, stdout: "pipe", stderr: "pipe",
+      })
+      const [code, stderr] = await Promise.all([
+        run.exited, new Response(run.stderr).text(),
+      ])
+      expect(code).toBe(1)
+      expect(stderr).toContain("Refusing --run")
+      expect(await readlink(runtime)).toBe(join(c.live, "bun", "global"))
+      // Bun may create its own cache under HOME; sync must not have backed
+      // up the runtime link or written executable links.
+      expect((await readdir(c.home)).filter((name) =>
+        name.startsWith("runtime-global"))).toEqual(["runtime-global"])
+      expect(await readdir(env.BUN_INSTALL_BIN).catch(() => []))
+        .toEqual([])
+
+      const checked = Bun.spawn(["bun", "--no-install", script, "--check"], {
+        cwd: c.worktree, env, stdout: "pipe", stderr: "pipe",
+      })
+      const [checkCode, checkErr] = await Promise.all([
+        checked.exited, new Response(checked.stderr).text(),
+      ])
+      expect(checkCode).toBe(1)
+      expect(checkErr).toContain(join(c.live, "bun", "global"))
+      expect(checkErr).not.toContain(import.meta.dir)
+    }, 30000)
 })
