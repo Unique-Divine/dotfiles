@@ -70,9 +70,9 @@ Why the index is per day: pruning deletes whole day folders and never
 edits a file. The rule is that no process rewrites a file a run might
 still append to, so today's and yesterday's files are append-only. A
 killed run never writes its index line, so run files are the truth. For
-today and yesterday, `boku-runs` reads the run files directly; the index
+today and yesterday, `ud runs` reads the run files directly; the index
 is a fast path for older days, and run files missing from it still show,
-as `incomplete`. `boku-runs reindex` rebuilds an older day's index, writing
+as `incomplete`. `ud runs reindex` rebuilds an older day's index, writing
 a temp file and renaming it over the old one. Prune does the same for any
 kept past day whose index is missing or partial. `end.warns` and
 `end.errors` are counted from the run file, so warnings written by the tap
@@ -172,7 +172,7 @@ just sync                        a1b2: start   (root, no parent)
  | ... ud-install, [herdr], i-zinit
  | just gh-rev-install           a1b2: step gh-rev-install
  | ... [clipboard], config scripts, skillsSync.ts
- | boku-runs prune               e5f6: start   parent=a1b2
+ | ud-runs prune               e5f6: start   parent=a1b2
  |  | delete old day folders     e5f6: step prune removed_days=1
  |  |                              bytes_freed=48211
  |  | exit 0                     e5f6: end exit=0 ok
@@ -198,7 +198,7 @@ git_mf main --agent              8b9c: start   (root)
  |                                 upstream_sha=4d2e1f0; warn
  | write prompt                  8b9c/prompt.md; artifact
  | claude -p --session-id U ...  (Claude also writes its own
- |   | boku-runs tap              ~/.claude/projects/.../U.jsonl)
+ |   | ud-runs tap              ~/.claude/projects/.../U.jsonl)
  |   |   each line               8b9c/agent.jsonl (redacted)
  |   |                           stderr: "agent: Bash just test"
  |   |   line 1: system init     8b9c: agent-session claude U
@@ -225,7 +225,7 @@ a `mktemp` file that `on_exit` removes.
 run_agent() {                     # caller: run_agent "$reason"; exit $?
   write_prompt "$reason"          # prompt + "This Run" -> $prompt_path
   record_before                   # HEAD, stash count, <cli> --version
-  if runlog_active && command -v boku-runs >/dev/null; then
+  if runlog_active && command -v ud-runs >/dev/null; then
     run_stream_pipeline           # below; sets agent_status
   else
     run_plain_agent               # today's command, plain text output
@@ -250,7 +250,7 @@ claude -p --session-id "$session_id" \
     --allowedTools "Bash(git:*)" "Bash(just:*)" "Bash(bun:*)" \
       "Bash(cargo:*)" "Read" "Edit" "Write" "Grep" "Glob" \
     < "$prompt_path" \
-  | { boku-runs tap --cli claude \
+  | { ud-runs tap --cli claude \
       || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
 agent_status="${PIPESTATUS[0]}"
 set -e
@@ -259,7 +259,7 @@ set -e
 Codex runs `codex exec --json -o "$run_dir/report.md" -C "$repo" -s
 workspace-write --approve-for-me` the same way, with `--cli codex`. Codex
 writes that report itself, so `git_mf` redacts it in place afterwards
-with `boku-runs redact-file "$run_dir/report.md"`.
+with `ud-runs redact-file "$run_dir/report.md"`.
 
 How it holds together:
 
@@ -284,7 +284,7 @@ How it holds together:
 
 Fail open means exit codes and repo changes never depend on logging. What
 you see does change: progress lines instead of Claude's plain text. If
-`runlog_start` failed or `boku-runs` is missing, the agent runs as today.
+`runlog_start` failed or `ud runs` is missing, the agent runs as today.
 
 How the tap reads each stream:
 
@@ -374,8 +374,10 @@ Two more failures:
 ```
 runlog/runlog.sh   bash writer, sourced
 runlog/runlog.ts   TS writer, imported
-runlog/cli.ts      boku-runs: reader, tap, prune, redact-file
-                   (linked to ~/.local/bin)
+runlog/cli.ts      ud runs: reader, tap, prune, redact-file. Linked as
+                   the ud plugin ~/.local/share/ud/plugins/ud-runs;
+                   git_mf and runlog.sh call it by path
+                   (BOKU_RUNS_CLI overrides)
 runlog/redact-patterns.json   shared redaction patterns
 runlog/*.test.ts
 ```
@@ -464,7 +466,7 @@ printf '%s\n' "$line" >>"$run_file"
 
 `redact` is a small jq function that applies each pattern with `gsub`.
 The cap relies on bash's `printf` writing a line of that size in one call.
-`runlog_artifact` uses `boku-runs redact-file` when it's on `PATH`, and
+`runlog_artifact` uses `ud runs redact-file` (`cli.ts` beside it) when it works, and
 the same jq filter line by line otherwise.
 
 Every internal command ends in `|| true`.
@@ -503,16 +505,16 @@ the agent runs, such as `just test`, could log their own child runs.
 
 ### Reviewing Runs
 
-`boku-runs`, or `just runs` with the same arguments:
+`ud runs`, or `just runs` with the same arguments:
 
 ```
-boku-runs                         last 20 top-level runs
-boku-runs show last --tree        a run's events and its children
-boku-runs agent 8b9c              the agent stream, one readable line each
-boku-runs agent 8b9c --at 57      jump to line 57, with context
-boku-runs challenges --since 30d  every Challenges section, newest first
-boku-runs redact-file FILE        redact a file in place
-boku-runs reindex | prune [DAYS]  maintenance
+ud runs                         last 20 top-level runs
+ud runs show last --tree        a run's events and its children
+ud runs agent 8b9c              the agent stream, one readable line each
+ud runs agent 8b9c --at 57      jump to line 57, with context
+ud runs challenges --since 30d  every Challenges section, newest first
+ud-runs redact-file FILE        redact a file in place
+ud runs reindex | prune [DAYS]  maintenance
 ```
 
 The learning loop: read the Challenges, follow refs with `--at`, and fix
@@ -521,7 +523,7 @@ what repeats. For anything else, the files are plain JSONL for jq, such as
 
 ## Retention, Pruning, and Caching
 
-`sync` ends with `runlog_step prune boku-runs prune`. Prune is a Bun tool,
+`sync` ends with `runlog_step prune ud runs prune`. Prune is a Bun tool,
 so it starts its own child run with the TS writer. It deletes day folders
 older than 30 days (never today or yesterday, UTC), then the oldest days
 while `runs/` is over 512 MiB, with a `warn`. Its own `prune` step carries
@@ -559,15 +561,15 @@ own flag before collecting merge flags.
 
 Phase 1:
 
-- [ ] Add `runlog/` (writers, tap, `boku-runs`, tests), link `boku-runs`
-  into `~/.local/bin`, and add `just runs *args`.
+- [ ] Add `runlog/` (writers, tap, `ud runs`, tests), link `cli.ts` as
+  the `ud-runs` plugin, and add `just runs *args`.
   - Why: every producer needs one writer and schema, readable anywhere.
 - [ ] Restructure `run_agent`; log `git_mf` with `on_exit`, tap, verify.
   - Why: agent merges are where you most want to learn from failures.
 - [ ] Add the Challenges section to `git_mf.prompt.md`.
   - Why: only the agent can say why something was hard.
 - [ ] Log `sync` and `sync-jiyuu.sh` with `on_exit`; end `sync` with
-  `boku-runs prune`.
+  `ud runs prune`.
   - Why: a failed sync must still say so, and the log must stay bounded.
 - [ ] Add `--json` to `git_mf`.
   - Why: it proves the convention where the output is most worth parsing.
@@ -594,7 +596,7 @@ formats change; lines are still copied and parse misses become warnings.
   failed command and a planted token. Assert redacted `agent.jsonl` and
   `report.md` (Codex's via `redact-file`), one `agent-command` per
   command, the failure's `ref.line`, and `end` as the last line.
-- Tap failure: a `boku-runs` that dies at startup (`tap-exited`), and a
+- Tap failure: a `ud runs` that dies at startup (`tap-exited`), and a
   run folder deleted mid-stream (`tap-failed`, one notice). The agent
   finishes and `git_mf` exits with the verified code.
 - Real agent: one Claude conflict, gated behind `BOKU_TEST_AGENT=1`.
@@ -604,7 +606,8 @@ formats change; lines are still copied and parse misses become warnings.
 1. Sync never passes `--agent`: unattended agents could clobber work.
 2. Agent runs keep 30-day retention; the Challenges review stays manual.
 3. Homebox runs come later; `host` is already logged.
-4. Reader: `boku-runs` on PATH plus `just runs`.
+4. Reader: the `ud runs` plugin plus `just runs`, so it sits with the other
+   `ud` commands instead of being its own tool.
 5. Root is `~/.boku`, not XDG folders (see Layout).
 
 ### Still Open

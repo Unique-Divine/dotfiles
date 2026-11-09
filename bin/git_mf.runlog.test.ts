@@ -1,11 +1,19 @@
 // End-to-end run logging for `git_mf --agent`: fake claude and codex CLIs
 // change a real repository and print real-shaped stream fixtures, which go
-// through the real `boku-runs tap`. Checks what lands in BOKU_HOME.
+// through the real `ud runs tap`. Checks what lands in BOKU_HOME.
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { cleanup, ok, repoPair, sh } from "./git-test-repo"
+import { cleanup, ok, repoPair, sh as baseSh } from "./git-test-repo"
+
+/** baseSh, with BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents. */
+const sh = (dir: string, command: string, env: Record<string, string> = {}) => {
+  const fakeBin = env.PATH?.split(":")[0]
+  const runsCli: Record<string, string> =
+    fakeBin ? { BOKU_RUNS_CLI: join(fakeBin, "runs-cli") } : {}
+  return baseSh(dir, command, { ...runsCli, ...env })
+}
 
 const root = resolve(import.meta.dir, "..")
 const gitMf = join(root, "bin", "git_mf")
@@ -45,7 +53,7 @@ async function runDirFiles(home: string): Promise<string[]> {
 }
 
 /**
- * A PATH with fake agent CLIs and `boku-runs`. `action` is shell run in the
+ * Env with fake agent CLIs on PATH and BOKU_RUNS_CLI. `action` is shell run in the
  * repository before the fixture stream is printed.
  */
 async function agentPath(
@@ -74,9 +82,9 @@ cat "${fixture}"
 `
   await writeFile(join(bin, cli), script, { mode: 0o755 })
   if (tap === "real") {
-    await symlink(join(root, "runlog", "cli.ts"), join(bin, "boku-runs"))
+    await symlink(join(root, "runlog", "cli.ts"), join(bin, "runs-cli"))
   } else {
-    await writeFile(join(bin, "boku-runs"), "#!/bin/sh\nexit 1\n", {
+    await writeFile(join(bin, "runs-cli"), "#!/bin/sh\nexit 1\n", {
       mode: 0o755,
     })
   }
@@ -137,7 +145,7 @@ describe("git_mf --agent run log", () => {
     expect(copy.join("\n")).toContain("[redacted:")
     // The report reaches the terminal, with a pointer to the run.
     expect(res.stderr).toContain("----- agent report")
-    expect(res.stderr).toContain("run log: boku-runs show ")
+    expect(res.stderr).toContain("run log: ud runs show ")
   })
 
   test("an agent that stops mid-merge exits 5 and saves the conflict", async () => {
@@ -386,9 +394,9 @@ describe("git_mf --json", () => {
   test("the plain agent path keeps stdout pure JSONL", async () => {
     const r = await conflict()
     const home = await mkdtemp(join(tmpdir(), "boku-home-"))
-    // No boku-runs on PATH: the agent runs in plain mode and prints text.
+    // No runs CLI: the agent runs in plain mode and prints text.
     const PATH = await agentPath(r.root, "claude", `${resolveTheirs}; echo agent says hi`)
-    await Bun.$`rm ${join(r.root, "fake-bin", "boku-runs")}`
+    await Bun.$`rm ${join(r.root, "fake-bin", "runs-cli")}`
     const res = await sh(r.clone, `${gitMf} main --agent --json`, { PATH, BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
     for (const l of res.stdout.trim().split("\n")) {

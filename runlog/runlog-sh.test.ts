@@ -681,10 +681,10 @@ runlog_end 0`)
     expect(evs.at(-1)).toMatchObject({ warns: 1 })
   })
 
-  test("a broken boku-runs falls back to jq and keeps the writer on", async () => {
+  test("a broken runs CLI falls back to jq and keeps the writer on", async () => {
     const bin = join(tmp, "bin")
     await mkdir(bin)
-    await writeFile(join(bin, "boku-runs"), "#!/bin/sh\nexit 1\n", {
+    await writeFile(join(bin, "runs-cli"), "#!/bin/sh\nexit 1\n", {
       mode: 0o755,
     })
     const planted = plantTokens()[0]!
@@ -694,7 +694,7 @@ printf 'x %s\\n' ${sq(planted.text)} > a.diff
 runlog_artifact remerge-diff a.diff
 runlog_event step name=after
 runlog_end 0`,
-      baseEnv({ PATH: `${bin}:${process.env.PATH}` }),
+      baseEnv({ BOKU_RUNS_CLI: join(bin, "runs-cli") }),
     )
     const evs = await events()
     expect(evs.map((e) => e.event)).toEqual([

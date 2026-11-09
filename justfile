@@ -171,7 +171,7 @@ sync:
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
-  # Each step goes to the Boku run log (boku-runs show last --tree).
+  # Each step goes to the Boku run log (ud runs show last --tree).
   source runlog/runlog.sh || true
   if ! declare -F runlog_start >/dev/null; then
     runlog_start() { :; }

@@ -458,13 +458,14 @@ _runlog_artifact_name() {
   return 0
 }
 
-# _runlog_redact_file FILE: redacts FILE in place, with `boku-runs
-# redact-file` when it's on PATH and works, else the shared patterns
-# through jq. A broken boku-runs must not cost the artifact.
+# _runlog_redact_file FILE: redacts FILE in place, with `ud runs
+# redact-file` (cli.ts beside this file, or BOKU_RUNS_CLI) when it works,
+# else the shared patterns through jq. A broken CLI must not cost the
+# artifact.
 _runlog_redact_file() {
   local -r file="${1:-}"
-  if command -v boku-runs >/dev/null 2>&1 \
-    && boku-runs redact-file "$file" >/dev/null 2>&1; then
+  local -r cli="${BOKU_RUNS_CLI:-${_runlog_lib_dir:-.}/cli.ts}"
+  if [[ -x "$cli" ]] && "$cli" redact-file "$file" >/dev/null 2>&1; then
     return 0
   fi
   local -r out="${file}.redact"

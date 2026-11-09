@@ -171,10 +171,10 @@ const runJq = async (): Promise<JqOutputs> => {
   await mkdir(home, { mode: 0o700 })
   await writeFile(join(tmp, "corpus.bin"), items.join("\0") + "\0")
   await writeFile(join(tmp, "corpus.txt"), items.join("\n") + "\n")
-  // A failing boku-runs makes _runlog_redact_file use its jq fallback.
+  // A failing runs CLI makes _runlog_redact_file use its jq fallback.
   const script = `set -Eeuo pipefail
 source ${JSON.stringify(writerPath)}
-boku-runs() { return 1; }
+export BOKU_RUNS_CLI=/bin/false
 runlog_start parity
 while IFS= read -r -d '' s; do
   runlog_event probe "s=$s"
@@ -300,7 +300,7 @@ describe("long inputs stay linear", () => {
     await writeFile(file, `${long}\n`)
     const script = `set -Eeuo pipefail
 source ${JSON.stringify(writerPath)}
-boku-runs() { return 1; }
+export BOKU_RUNS_CLI=/bin/false
 _runlog_patterns=${JSON.stringify(join(import.meta.dir, "redact-patterns.json"))}
 _runlog_redact_file ${JSON.stringify(file)}
 `
@@ -320,7 +320,7 @@ _runlog_redact_file ${JSON.stringify(file)}
   }, 60_000)
 
   // A 1 MiB, 16,000-line diff: one jq gsub per line took about 52 s, which
-  // stalled git_mf after the merge whenever boku-runs was broken.
+  // stalled git_mf after the merge whenever the runs CLI was broken.
   test("jq redacts a 1 MiB many-line diff in under 15 s, same as JS", async () => {
     const lines = Array.from({ length: 16_000 }, (_, i) =>
       `+ line ${i} of a diff with some words and paths/like/this.ts x=${i}`)
@@ -331,7 +331,7 @@ _runlog_redact_file ${JSON.stringify(file)}
     await writeFile(file, text)
     const script = `set -Eeuo pipefail
 source ${JSON.stringify(writerPath)}
-boku-runs() { return 1; }
+export BOKU_RUNS_CLI=/bin/false
 _runlog_patterns=${JSON.stringify(join(import.meta.dir, "redact-patterns.json"))}
 _runlog_redact_file ${JSON.stringify(file)}
 `

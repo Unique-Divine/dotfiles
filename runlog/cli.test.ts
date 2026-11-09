@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
   appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, rmSync, statSync, writeFileSync,
+  readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -54,7 +54,7 @@ const runCli = async (
 
 const withHome = (run: (home: string) => Promise<void> | void) =>
   async (): Promise<void> => {
-    const home = mkdtempSync(join(tmpdir(), "boku-runs-"))
+    const home = mkdtempSync(join(tmpdir(), "ud-runs-"))
     try {
       await run(home)
     } finally {
@@ -506,7 +506,7 @@ describe("reader", () => {
       const result = await runCli(["show", "abc"], baseEnv(home))
       expect(result.exitCode).toBe(0)
       expect(result.stdout.split("\n")[0]).toContain(newer)
-      expect(result.stderr).toBe(`boku-runs: "abc" matches 2 runs; showing ${
+      expect(result.stderr).toBe(`ud runs: "abc" matches 2 runs; showing ${
         newer}; others: ${older}\n`)
     }))
 
@@ -532,7 +532,7 @@ describe("reader", () => {
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toBe("")
       expect(result.stderr).toBe(
-        `boku-runs: no runs yet in ${join(home, "runs")}\n`)
+        `ud runs: no runs yet in ${join(home, "runs")}\n`)
     }
   }))
 
@@ -818,4 +818,37 @@ describe("maintenance", () => {
       .filter((e) => e.event === "warn").map((e) => e.code)
     expect(codes).toEqual(["size-cap", "size-cap-unmet"])
   }))
+})
+
+describe("ud plugin", () => {
+  const cli = join(import.meta.dir, "cli.ts")
+
+  test("--plugin-info prints the metadata ud validates", () => {
+    const r = Bun.spawnSync(["bun", cli, "--plugin-info"])
+    expect(r.exitCode).toBe(0)
+    expect(JSON.parse(r.stdout.toString())).toEqual({
+      apiVersion: 1,
+      name: "runs",
+      description: expect.any(String),
+    })
+  })
+
+  // Runs only where ud is installed: `ud runs` dispatches to ud-runs in
+  // UD_PLUGIN_PATH.
+  test.skipIf(!Bun.which("ud"))("ud lists and runs it as `ud runs`", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ud-plugin-"))
+    symlinkSync(cli, join(dir, "ud-runs"))
+    const home = mkdtempSync(join(tmpdir(), "boku-home-"))
+    const env = {
+      ...process.env,
+      UD_PLUGIN_PATH: dir,
+      BOKU_HOME: home,
+      XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ud-cache-")),
+    }
+    const help = Bun.spawnSync(["ud", "--help"], { env })
+    expect(help.stdout.toString()).toMatch(/\n\s+runs\s+Read the Boku run log/)
+    const list = Bun.spawnSync(["ud", "runs"], { env })
+    expect(list.exitCode).toBe(0)
+    expect(list.stderr.toString()).toContain("no runs yet")
+  })
 })

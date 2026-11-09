@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * boku-runs: reader, tap, prune, and redact-file for the Boku run log.
+ * ud runs (the ud-runs plugin): reader, tap, prune, and redact-file for the Boku run log.
  * See docs/run-log-design.md.
  */
 import {
@@ -24,7 +24,7 @@ export const maxCopyBytes = 20 * 1024 * 1024
 /** Prune removes the oldest days while `runs/` is larger than this. */
 export const maxRunsBytes = 512 * 1024 * 1024
 export const tapNotice =
-  "boku-runs tap: progress display stopped; output still saved"
+  "ud-runs tap: progress display stopped; output still saved"
 
 export type Event = Fields & { event?: string; ts?: string; run_id?: string }
 export type ListStatus = "ok" | "stopped" | "failed" | "running" | "incomplete"
@@ -1018,7 +1018,7 @@ const print = (lines: string[]): void => {
 }
 
 const note = (text: string): void => {
-  process.stderr.write(`boku-runs: ${text}\n`)
+  process.stderr.write(`ud runs: ${text}\n`)
 }
 
 /** `512 B`, `2.1 KB`, `3.4 MB`. */
@@ -1042,7 +1042,7 @@ const guard = (fn: () => void | Promise<void>) => async (): Promise<void> => {
   try {
     await fn()
   } catch (error) {
-    process.stderr.write(`boku-runs: ${
+    process.stderr.write(`ud runs: ${
       error instanceof Error ? error.message : String(error)}\n`)
     process.exitCode = 1
   }
@@ -1069,7 +1069,7 @@ export const createProgram = (env: Env = process.env): Command => {
   })
 
   program
-    .name("boku-runs")
+    .name("ud runs")
     .description("Read and maintain the Boku run log (~/.boku/runs)")
     .option("-n, --limit <n>", "how many top-level runs to list", "20")
     .action((opts: { limit: string }) => listAction(opts)())
@@ -1192,7 +1192,7 @@ export const createProgram = (env: Env = process.env): Command => {
       cli: string; sessionId?: string; maxCopyBytes: string
     }) => {
       if (opts.cli !== "claude" && opts.cli !== "codex") {
-        process.stderr.write(`boku-runs: --cli must be claude or codex\n`)
+        process.stderr.write(`ud runs: --cli must be claude or codex\n`)
         process.exitCode = 2
         return
       }
@@ -1205,5 +1205,18 @@ export const createProgram = (env: Env = process.env): Command => {
   return program
 }
 
-if (import.meta.main) await createProgram().parseAsync()
+/** What `ud` reads to list this plugin as `ud runs` (see ud/src/plugin.rs). */
+export const pluginInfo = {
+  apiVersion: 1,
+  name: "runs",
+  description: "Read the Boku run log of sync and git_mf runs",
+}
+
+if (import.meta.main) {
+  if (process.argv[2] === "--plugin-info" && process.argv.length === 3) {
+    process.stdout.write(`${JSON.stringify(pluginInfo)}\n`)
+  } else {
+    await createProgram().parseAsync()
+  }
+}
 

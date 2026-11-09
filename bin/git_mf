@@ -41,12 +41,12 @@ Options:
   --dry-run     Print the plan and commands without running them.
   --agent       On exit 2 or 3, run an agent with the merge prompt instead.
   --json        Print this run's events to stdout as JSONL. Command output
-                moves to stderr. The agent's own events (from boku-runs
+                moves to stderr. The agent's own events (from ud runs
                 tap) are in the run file, not on stdout.
   -h, --help    Show this help.
 
 Each run is logged to the Boku run log (~/.boku/runs; BOKU_HOME moves it,
-BOKU_RUNLOG=0 turns it off). Read it with boku-runs.
+BOKU_RUNLOG=0 turns it off). Read it with ud runs.
 EOF
 }
 
@@ -92,6 +92,8 @@ prompt_file="$script_dir/git_mf.prompt.md"
 
 # The run log is optional: without it, every runlog_* call does nothing.
 runlog_sh="$script_dir/../runlog/runlog.sh"
+# `ud runs`, called directly: its tap and redact-file run in the agent path.
+runs_cli="${BOKU_RUNS_CLI:-$script_dir/../runlog/cli.ts}"
 if [[ -r "$runlog_sh" ]]; then
   # shellcheck source=../runlog/runlog.sh
   source "$runlog_sh" || true
@@ -219,26 +221,26 @@ claude_args=(
 )
 codex_args=(exec -C "$repo" -s workspace-write --approve-for-me)
 
-# Run the agent through boku-runs tap, which saves and summarizes its stream.
+# Run the agent through `ud runs tap`, which saves and summarizes its stream.
 run_stream_pipeline() {
   set +e
   if [[ "$agent" == claude ]]; then
     session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
     claude "${claude_args[@]}" ${session_id:+--session-id "$session_id"} \
       --output-format stream-json --verbose <"$prompt_path" \
-      | { boku-runs tap --cli claude ${session_id:+--session-id "$session_id"} \
+      | { "$runs_cli" tap --cli claude ${session_id:+--session-id "$session_id"} \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   else
     codex "${codex_args[@]}" --json -o "$run_dir/report.md" <"$prompt_path" \
-      | { boku-runs tap --cli codex \
+      | { "$runs_cli" tap --cli codex \
           || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
     agent_status="${PIPESTATUS[0]}"
   fi
   set -e
   if [[ "$agent" == codex ]]; then
     if [[ -s "$run_dir/report.md" ]]; then
-      boku-runs redact-file "$run_dir/report.md" || true
+      "$runs_cli" redact-file "$run_dir/report.md" || true
     fi
     local run_file
     if run_file="$(runlog_file)"; then
@@ -326,7 +328,7 @@ save_artifacts() {
   runlog_active || return 0
   if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
     # Redact (and chmod 0600) in place, whoever wrote it: the tap, or codex
-    # through -o. The writer falls back to jq if boku-runs can't.
+    # through -o. The writer falls back to jq if `ud runs` can't.
     runlog_artifact report "$run_dir/report.md"
     report="$run_dir/report.md"
   fi
@@ -375,7 +377,7 @@ run_agent() {
   say "handing the merge to $agent"
   t0="$(date +%s%3N)"
   if runlog_active && [[ -n "$run_dir" ]] \
-    && command -v boku-runs >/dev/null 2>&1; then
+    && [[ -x "$runs_cli" ]]; then
     run_stream_pipeline
   else
     run_plain_agent
@@ -393,7 +395,7 @@ run_agent() {
   fi
   say "agent outcome: $outcome (git_mf exits $code)"
   if [[ -n "$run_dir" ]]; then
-    say "run log: boku-runs show ${run_dir##*/}"
+    say "run log: ud runs show ${run_dir##*/}"
   fi
   return "$code"
 }
