@@ -409,7 +409,7 @@ fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
     let uid = current_uid()?;
     let pids = find_nibiru_pids(&uid)?;
     if pids.is_empty() {
-        println!("No nibiru processes are running.");
+        println!("No nibiru processes you own are running.");
         println!("Done stopping nibiru processes.");
         return Ok(0);
     }

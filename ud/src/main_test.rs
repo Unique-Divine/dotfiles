@@ -569,7 +569,7 @@ fn nibi_stop_all_succeeds_when_nothing_matches() {
     assert_success(&output);
     assert_eq!(
         stdout(&output),
-        "No nibiru processes are running.\nDone stopping nibiru processes."
+        "No nibiru processes you own are running.\nDone stopping nibiru processes."
     );
 }
 
