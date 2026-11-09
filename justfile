@@ -218,10 +218,14 @@ sync:
   runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     runlog_step herdr-install just herdr-install
+  else
+    runlog_event step name=herdr-install msg=skipped
   fi
   if ! command -v herdr-tmux >/dev/null 2>&1; then
     runlog_step herdr-tmux-install \
       just --justfile herdr-tmux/justfile install
+  else
+    runlog_event step name=herdr-tmux-install msg=skipped
   fi
   runlog_step herdr-tmux-plugin-link \
     just --justfile herdr-tmux/justfile plugin-link
@@ -229,6 +233,8 @@ sync:
   runlog_step gh-rev-install just gh-rev-install
   if is_wsl >/dev/null; then
     runlog_step clipboard-install just clipboard-install
+  else
+    runlog_event step name=clipboard-install msg=skipped
   fi
   runlog_step codex-config bun run codex/config.ts --run
   runlog_step cursor-cli-config bun run cursor/cli-config.ts --run
@@ -237,14 +243,18 @@ sync:
   runlog_step herdr-integrations just herdr-integrations
   if command -v claude >/dev/null 2>&1; then
     runlog_step claude-mcp bun run claude/mcp.ts --run
+  else
+    runlog_event step name=claude-mcp msg=skipped
   fi
   runlog_step skills-sync bun run skillsSync.ts --run
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
 
-# Read the Boku run log. For commands, run `just runs --help`.
+# Read the Boku run log (same as `ud runs`). For commands: `just runs --help`.
+# Arguments pass through quoted, never re-parsed by the shell.
+[positional-arguments]
 runs *ARGS:
-  bun run runlog/cli.ts {{ARGS}}
+  bun run runlog/cli.ts "$@"
 
 # Check required tools and drift without changing dotfile-managed state.
 health:
