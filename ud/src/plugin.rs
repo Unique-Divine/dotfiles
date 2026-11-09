@@ -7,7 +7,8 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Once, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -27,6 +28,10 @@ const RESERVED_NAMES: &[&str] = &[
 /// Bound `--plugin-info` so one broken plugin cannot hang help or doctor.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const METADATA_POLL: Duration = Duration::from_millis(5);
+
+/// Process group of the plugin under inspection, or 0 when none runs.
+static INSPECTED_GROUP: AtomicI32 = AtomicI32::new(0);
+static FORWARD_SIGNALS: Once = Once::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,8 +148,11 @@ fn load_metadata(
 
 /// Run `plugin --plugin-info` and return its status and stdout, or fail
 /// after `METADATA_TIMEOUT`. The plugin runs in its own process group so a
-/// timeout also kills helpers that inherited its stdout.
+/// timeout also kills helpers that inherited its stdout. Leaving ud's group
+/// also means Ctrl-C no longer reaches the plugin, so SIGINT and SIGTERM to
+/// ud kill the plugin group before ud exits.
 fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
+    forward_termination_signals();
     let mut child = Command::new(plugin)
         .arg("--plugin-info")
         .stdin(Stdio::null())
@@ -153,6 +161,7 @@ fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
         .process_group(0)
         .spawn()
         .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
+    let _group = InspectedGroup::track(&child);
     let deadline = Instant::now() + METADATA_TIMEOUT;
     let mut pipe = child
         .stdout
@@ -191,6 +200,47 @@ fn metadata_timeout(name: &str) -> String {
         "ud plugin metadata command timed out after {}s: {name}",
         METADATA_TIMEOUT.as_secs()
     )
+}
+
+/// Publishes the inspected plugin's process group to the signal handler
+/// until the inspection returns.
+struct InspectedGroup;
+
+impl InspectedGroup {
+    fn track(child: &Child) -> Self {
+        let group = i32::try_from(child.id()).unwrap_or(0);
+        INSPECTED_GROUP.store(group, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InspectedGroup {
+    fn drop(&mut self) {
+        INSPECTED_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Install SIGINT and SIGTERM handlers once. Each kills the inspected
+/// plugin group, if any, then terminates ud as the default action would, so
+/// the shell still sees exit status 130 or 143.
+fn forward_termination_signals() {
+    FORWARD_SIGNALS.call_once(|| {
+        for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
+        {
+            // SAFETY: the action only loads an atomic and calls kill(2) and
+            // emulate_default_handler, which are async-signal-safe.
+            let _ = unsafe {
+                signal_hook::low_level::register(signal, move || {
+                    let group = INSPECTED_GROUP.load(Ordering::SeqCst);
+                    if group > 0 {
+                        libc::kill(-group, libc::SIGKILL);
+                    }
+                    let _ =
+                        signal_hook::low_level::emulate_default_handler(signal);
+                })
+            };
+        }
+    });
 }
 
 /// SIGKILL the plugin's process group, then reap the plugin itself.

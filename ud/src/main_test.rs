@@ -1144,6 +1144,49 @@ fn cached_metadata_survives_a_plugin_that_starts_hanging() {
     assert_plugin_processes_stopped(&temp.path().join("pids"));
 }
 
+/// SIGTERM to ud mid-inspection must also stop the plugin's process group,
+/// which no longer shares ud's group, and ud must die by that signal.
+#[test]
+fn sigterm_during_inspection_stops_the_plugin_group() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let mut ud = std::process::Command::new(env!("CARGO_BIN_EXE_ud"))
+        .args(["plugin", "info", "example"])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while fs::read_to_string(&pids_file)
+        .map_or(true, |pids| pids.split_whitespace().count() < 2)
+    {
+        if Instant::now() >= deadline {
+            let _ = ud.kill();
+            let _ = ud.wait();
+            panic!("plugin did not record its PIDs before the deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let status = ud.wait().unwrap();
+    assert_eq!(status.signal(), Some(15), "ud status: {status:?}");
+    assert_plugin_processes_stopped(&pids_file);
+}
+
 /// Ambiguous plugin paths must fail instead of silently choosing an executable.
 #[test]
 fn duplicate_plugins_are_rejected() {
