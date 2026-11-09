@@ -53,21 +53,24 @@ _runlog_artifact_max_default=20971520
 # The jq `redact` def both jq paths share, as redact in runlog.ts. Every
 # pattern applies case-insensitively ("gi"); a `keep` group stays readable
 # in front of the marker. `pem_lines` replaces the base64 body lines after
-# a PEM private key header and stops at the first line that is not a body
-# line, a blank line, or a Proc-Type/DEK-Info header. `pats` drops the
+# a PEM or PGP private key header, keeping a diff mark, indentation, and a
+# Read tool line number in front, and stops at the first line that is not
+# a body line, a blank line, or an armor header. `pats` drops the
 # patterns `_runlog_check_patterns` found jq can't compile. See
 # redact-patterns.md.
 # shellcheck disable=SC2016
 _runlog_jq_redact='
-def pem_begin: test("-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----"; "i");
+def pem_begin: test("-----BEGIN [A-Z ]{0,30}PRIVATE KEY( BLOCK)?-----"; "i");
+def pem_pre: "^(?<p>[-+ ]?[ \t]*(?:[0-9]+\t)?)";
+def pem_body: pem_pre + "[A-Za-z0-9+/=]{16,100}(?<r>\r?)$";
+def pem_keep: pem_pre
+  + "(?:(?:Proc-Type|DEK-Info|Version|Comment|Charset|Hash):[^\n]*)?\r?$";
 def pem_lines: [foreach .[] as $l ({in: false};
   if ($l | contains("-----")) and ($l | pem_begin) then {in: true, out: $l}
   elif .in | not then {in: false, out: $l}
-  elif $l | test("^[-+ ]?[A-Za-z0-9+/=]{16,100}\r?$") then
-    {in: true, out: ($l | sub("^(?<p>[-+ ]?)[A-Za-z0-9+/=]{16,100}(?<r>\r?)$";
-      "\(.p)[redacted:pem]\(.r)"))}
-  elif $l | test("^[-+ ]?(?:(?:Proc-Type|DEK-Info):[^\n]*)?\r?$"; "i") then
-    {in: true, out: $l}
+  elif $l | test(pem_body) then
+    {in: true, out: ($l | sub(pem_body; "\(.p)[redacted:pem]\(.r)"))}
+  elif $l | test(pem_keep; "i") then {in: true, out: $l}
   else {in: false, out: $l} end; .out)];
 def pem_text: if contains("\n") and pem_begin
   then split("\n") | pem_lines | join("\n") else . end;

@@ -5,16 +5,17 @@
  */
 import { createHash } from "node:crypto"
 import {
-  appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync,
-  renameSync, rmSync, writeFileSync,
+  chmodSync, closeSync, constants, existsSync, lstatSync, openSync,
+  readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from "node:fs"
 import { dirname, join } from "node:path"
 import { Command } from "commander"
 
 import {
-  attachRun, bokuHome, checkedRunPaths, ensureDir, indexLine,
-  indexPath, isRunId, readBootId, readPidStart, redact, redactLine,
-  redactLines, runFilePath, startRun, type Env, type Fields, type RunIdentity,
+  appendLine, attachRun, bokuHome, checkedRunPaths, createExclusive,
+  ensureDayDir, ensureRealDir, indexLine, indexPath, isRunId, readBootId,
+  readPidStart, redact, redactLine, redactLines, runFilePath, startRun,
+  writeNoFollow, type Env, type Fields, type RunIdentity,
 } from "./runlog.ts"
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -1016,7 +1017,12 @@ export interface Tap {
   finish(): void
 }
 
-/** The tap's state machine: copy, parse, and log one line at a time. */
+/**
+ * The tap's state machine: copy, parse, and log one line at a time. The
+ * run folder must be a real folder, and `agent.jsonl` and `report.md` are
+ * created exclusively and opened with `O_NOFOLLOW`, so nothing is written
+ * through a planted symlink. A refusal is a `tap-failed`.
+ */
 export const createTap = (opts: TapOptions): Tap => {
   const stderr = opts.stderr ?? ((t: string) => process.stderr.write(t))
   const run = attachRun(opts.env)
@@ -1025,7 +1031,7 @@ export const createTap = (opts: TapOptions): Tap => {
   const pending = new Map<string, string>()
   const state = {
     lineNo: 0, copiedBytes: 0, copying: agentFile !== null, failed: false,
-    session: false, capped: false,
+    session: false, capped: false, copyCreated: false, reportCreated: false,
   }
 
   const fail = (error: unknown): void => {
@@ -1038,21 +1044,31 @@ export const createTap = (opts: TapOptions): Tap => {
 
   const copy = (text: string): boolean => {
     if (!state.copying || !agentFile) return false
-    const line = `${cutStreamLine(redactLine(text))}\n`
-    const bytes = Buffer.byteLength(line)
+    const line = cutStreamLine(redactLine(text))
+    const bytes = Buffer.byteLength(line) + 1
     if (state.copiedBytes + bytes > cap) {
       state.copying = false
       state.capped = true
       return false
     }
-    appendFileSync(agentFile, line, { mode: 0o600 })
+    try {
+      if (!state.copyCreated) {
+        createExclusive(agentFile)
+        state.copyCreated = true
+      }
+      appendLine(agentFile, line)
+    } catch (error) {
+      // A refused or vanished file stops the copy for good.
+      state.copying = false
+      throw error
+    }
     state.copiedBytes += bytes
     return true
   }
 
   const apply = (action: TapAction, copied: boolean): void => {
     if (action.kind === "progress") {
-      stderr(`${redact(action.text)}\n`)
+      stderr(`${printable(redact(action.text))}\n`)
     } else if (action.kind === "session") {
       if (state.session) return
       state.session = true
@@ -1075,16 +1091,21 @@ export const createTap = (opts: TapOptions): Tap => {
         })
       }
     } else if (action.kind === "report" && run.runDir) {
-      writeFileSync(join(run.runDir, "report.md"), redact(action.text), {
-        mode: 0o600,
-      })
+      const report = join(run.runDir, "report.md")
+      if (!state.reportCreated) {
+        createExclusive(report)
+        state.reportCreated = true
+      }
+      writeNoFollow(report, redact(action.text))
     }
   }
 
   if (agentFile) {
     try {
-      ensureDir(run.runDir!)
+      ensureDayDir(bokuHome(opts.env), run.runId!)
+      ensureRealDir(run.runDir!)
     } catch (error) {
+      state.copying = false
       fail(error)
     }
   }
@@ -1128,9 +1149,16 @@ export const createTap = (opts: TapOptions): Tap => {
         }
       }
       // git_mf waits for the whole pipeline, so this lands before its `end`.
-      if (!agentFile || !existsSync(agentFile)) return
+      if (!agentFile || !state.copyCreated) return
       try {
-        const data = readFileSync(agentFile)
+        const fd = openSync(agentFile,
+          constants.O_RDONLY | constants.O_NOFOLLOW)
+        let data: Buffer
+        try {
+          data = readFileSync(fd)
+        } finally {
+          closeSync(fd)
+        }
         run.event("artifact", {
           kind: "agent-stream",
           path: "agent.jsonl",

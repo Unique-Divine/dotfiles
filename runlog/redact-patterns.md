@@ -26,12 +26,23 @@
     (`KEY=\"value\"`). Keys: `token`, `secret`, `secret_key`, `password`,
     `api_key`, `private_key`, `access_key` (covers
     `AWS_SECRET_ACCESS_KEY`), `mnemonic`, `seed_phrase`, and `seedphrase`.
+    `mnemonic-value` also takes the `--mnemonic` flag of `cast` and
+    `forge`: `--mnemonic "<phrase>"`, `--mnemonic=<phrase>`, or
+    `--mnemonic <phrase>` to the end of the line.
   - `-json`: `"key": "value"`, plain or escaped inside a JSON string. Keys
     as above, plus the camelCase `secretKey`, `apiKey`, `privateKey`, and
     `accessKey`. `accessToken` and `clientSecret` end in `token` and
     `secret`, so they're covered already.
   - `-yaml`: `key: value`, quoted as in `-value`. Keys as `-value`, plus
     `seed phrase`.
+- The spaced `KEY = value` and the Go `KEY:=`/`KEY := value` forms read
+  like code, so a bare value there must look like a secret: 8 or more
+  characters of `[A-Za-z0-9_./+=-]`, then whitespace, `&`, `;`, `,`, a
+  quote, a backslash, or the end. `max_token = 4096` and
+  `token := ctx.Value("denom")` stay; `API_TOKEN = abcdef123456` and a
+  quoted value are redacted. The no-space `KEY=value` form, as in an env
+  file or a URL query, takes any bare value. The `mnemonic` and seed
+  phrase keys keep the looser rule in every form.
 - A bare value ends at whitespace, `&`, a quote, or a backslash. A quoted
   value ends at its closing quote, a backslash, or a line break, so
   `PASSWORD="two words"` is redacted whole. A bare `mnemonic` or seed
@@ -39,13 +50,24 @@
   pattern consumes a backslash or a quote, so redacting JSON text keeps it
   valid.
 - `evm-key` takes a 64-hex key only after a key word: `private_key`,
-  `privateKey`, `privkey`, `*_PK`, `pk`, `--private-key`, or `accounts`,
+  `privateKey`, `privkey`, `*_PK`, `pk`, `--private-key`,
+  `--private-keys`, or `accounts`,
   with optional quotes, `:` or `=`, `[`, and `0x` between. A bare
   `0x<64 hex>` is never redacted: tx hashes, block hashes, event topics,
   storage slots, and `bytes32` constants must stay readable.
-- `url-password` replaces only the password in
-  `scheme://user:password@`. `ssh://git@host:22`,
-  `https://host:8080/a@v1`, and `git@github.com:o/r` don't match.
+- URL userinfo:
+  - `url-password` replaces the password in `scheme://user:password@`,
+    with an empty user too (`redis://:<pass>@`). The password may hold
+    `/`, but not as a port and path: `https://host:8080/a@v1` stays.
+  - `url-token` replaces a user of 20 to 64 `[A-Za-z0-9_-]` characters,
+    which is a token used as the username: `https://<token>@host` and
+    `https://<token>:x-oauth-basic@host`. It runs after `url-password`,
+    so neither part survives.
+  - `ssh://git@host:22`, `https://host:8080/a@v1`, and
+    `git@github.com:o/r` don't match.
+- `user-password` replaces the password in curl's `-u user:pass` and
+  `--user user:pass` (or `--user=`), quoted or not, keeping the user. An
+  all-digit password is left, so `docker run -u 1000:1000` stays.
 - `authorization` covers `Authorization: Basic <v>` and
   `Authorization: token <v>`. A bare `basic` never matches, so prose like
   "basic configuration" stays. `bearer` covers `Bearer <v>` anywhere.
@@ -57,19 +79,25 @@
 PEM bodies span lines, so the rule is code, not a pattern: `redactPemLines`
 in `runlog.ts` and `pem_lines` in `runlog.sh`.
 
-- After a line holding `-----BEGIN <label> PRIVATE KEY-----`, each line
-  matching `^[-+ ]?[A-Za-z0-9+/=]{16,100}\r?$` becomes `[redacted:pem]`,
-  keeping a diff prefix (`+`, `-`, or a space).
-- Blank lines and `Proc-Type:` or `DEK-Info:` headers keep the block
-  open. The block ends at the END line or at the first line that fits
-  none of these, so a header string in Go code never eats the code after
-  it, and nothing is deleted to the end of the file.
+- After a line holding `-----BEGIN <label> PRIVATE KEY-----` or the PGP
+  `-----BEGIN PGP PRIVATE KEY BLOCK-----`, each line matching
+  `^[-+ ]?[ \t]*(?:[0-9]+\t)?[A-Za-z0-9+/=]{16,100}\r?$` becomes
+  `[redacted:pem]`. The prefix stays: a diff mark (`+`, `-`, or a space),
+  indentation, as in a YAML `|` block, and a line number as Claude's Read
+  tool prints it (`     2\t`).
+- Blank lines and the armor headers `Proc-Type:`, `DEK-Info:`,
+  `Version:`, `Comment:`, `Charset:`, and `Hash:`, with the same prefix,
+  keep the block open. The block ends at the END line or at the first
+  line that fits none of these, so a header string in Go code never eats
+  the code after it, and nothing is deleted to the end of the file.
 - It runs over a whole file before the per-line passes, and over every
   multi-line string before the patterns.
-- The `pem` pattern catches a PEM inside a JSON string, where its line
-  breaks are an escaped `\n`. It replaces everything between the BEGIN
-  and END markers and keeps both. It needs the END marker within 8,192
-  characters on the same line.
+- A body line under 16 characters, such as a short last line or a PGP
+  `=XXXX` checksum, isn't redacted.
+- The `pem` pattern catches a PEM or PGP key inside a JSON string, where
+  its line breaks are an escaped `\n`. It replaces everything between the
+  BEGIN and END markers and keeps both. It needs the END marker within
+  8,192 characters on the same line.
 
 ## Lines and Files
 
@@ -119,6 +147,17 @@ These are not redacted. Read a run log with them in mind.
 - A key with no key word before it, such as the bare hex that
   `nibid keys export --unarmored-hex` prints, or the second key in an
   `accounts: [...]` list.
+- A seed phrase on its own line, with no key word, such as the phrase
+  `nibid keys add` or `--recover` prints.
+- URL userinfo the URL rules don't take:
+  - a token as the username under 20 characters, or with characters
+    outside `[A-Za-z0-9_-]`;
+  - a password holding whitespace, a quote, or a backslash, or one that
+    starts with 1 to 5 digits and a `/`, `?`, or `#`, which reads as a
+    port.
+- curl's `-uuser:pass` with no space, and an all-digit `-u` password.
+- In the spaced and `:=` code forms, a bare value under 8 characters or
+  with other characters, such as `password = p@ss!`.
 - Base64-, URL-, or otherwise encoded secrets, and fullwidth forms such as
   `token＝value`.
 - A PEM body without its BEGIN line in the same text.

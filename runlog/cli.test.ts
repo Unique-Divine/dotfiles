@@ -497,6 +497,93 @@ describe("tap", () => {
       expect(events.at(-1)!.event).toBe("end")
     }))
 
+  test("progress lines print terminal controls as text",
+    withHome(async (home) => {
+      const run = hostRun(home)
+      const osc = `printf '${esc}]52;c;cHduZWQK\x07' # x`
+      const stream = [
+        { type: "assistant", message: { content: [{
+          type: "tool_use", id: "t1", name: "Bash", input: { command: osc },
+        }] } },
+      ].map((o) => JSON.stringify(o)).join("\n")
+      const result = await runCli(["tap", "--cli", "claude"],
+        baseEnv(home, { BOKU_RUN_ID: run.runId! }), `${stream}\n`)
+      run.end(0)
+      expect(result.exitCode).toBe(0)
+      expect(hasControl(result.stderr)).toBe(false)
+      expect(result.stderr).toContain("agent: Bash printf '\\x1b]52;c;")
+    }))
+
+  /** Runs the Claude fixture through the tap of a run hosted here. */
+  const tapInto = async (home: string, run: RunLog): Promise<CliResult> => {
+    const result = await runCli(["tap", "--cli", "claude"],
+      baseEnv(home, { BOKU_RUN_ID: run.runId! }),
+      fixture("claude-stream.jsonl"))
+    run.end(0)
+    return result
+  }
+
+  /** Files under `dir`, by path relative to it. */
+  const listTree = (dir: string): string[] =>
+    readdirSync(dir, { recursive: true }).map(String).sort()
+
+  test("a symlinked run folder: tap-failed, nothing written through it",
+    withHome(async (dir) => {
+      const home = join(dir, "home")
+      const outside = join(dir, "outside")
+      mkdirSync(home)
+      mkdirSync(outside)
+      const run = hostRun(home)
+      symlinkSync(outside, run.runDir!)
+      const result = await tapInto(home, run)
+      expect(result.exitCode).toBe(0)
+      expect(result.stderr.split(tapNotice).length - 1).toBe(1)
+      expect(listTree(outside)).toEqual([])
+      const events = readEvents(runFilePath(home, run.runId!))
+      expect(events.filter((e) => e.code === "tap-failed")).toHaveLength(1)
+      expect(events.filter((e) => e.event === "artifact")).toHaveLength(0)
+      expect(events.at(-1)!.event).toBe("end")
+    }))
+
+  test("symlinked agent.jsonl and report.md: refused, nothing written",
+    withHome(async (dir) => {
+      const home = join(dir, "home")
+      const outside = join(dir, "outside")
+      mkdirSync(home)
+      mkdirSync(outside)
+      const run = hostRun(home)
+      mkdirSync(run.runDir!, { mode: 0o700 })
+      symlinkSync(join(outside, "stolen"), join(run.runDir!, "agent.jsonl"))
+      symlinkSync(join(outside, "rep"), join(run.runDir!, "report.md"))
+      const result = await tapInto(home, run)
+      expect(result.exitCode).toBe(0)
+      expect(result.stderr.split(tapNotice).length - 1).toBe(1)
+      expect(listTree(outside)).toEqual([])
+      const events = readEvents(runFilePath(home, run.runId!))
+      expect(events.filter((e) => e.code === "tap-failed")).toHaveLength(1)
+      expect(events.filter((e) => e.event === "artifact")).toHaveLength(0)
+      expect(events.at(-1)!.event).toBe("end")
+    }))
+
+  test("a symlinked report.md alone: refused, the copy still saved",
+    withHome(async (dir) => {
+      const home = join(dir, "home")
+      const outside = join(dir, "outside")
+      mkdirSync(home)
+      mkdirSync(outside)
+      const run = hostRun(home)
+      mkdirSync(run.runDir!, { mode: 0o700 })
+      symlinkSync(join(outside, "rep"), join(run.runDir!, "report.md"))
+      const result = await tapInto(home, run)
+      expect(result.exitCode).toBe(0)
+      expect(listTree(outside)).toEqual([])
+      const copy = readFileSync(join(run.runDir!, "agent.jsonl"), "utf8")
+      expect(copy.trimEnd().split("\n")).toHaveLength(
+        fixture("claude-stream.jsonl").trimEnd().split("\n").length)
+      const events = readEvents(runFilePath(home, run.runId!))
+      expect(events.filter((e) => e.code === "tap-failed")).toHaveLength(1)
+    }))
+
   test("a crafted run id writes nothing outside BOKU_HOME",
     withHome(async (dir) => {
       const home = join(dir, "home")

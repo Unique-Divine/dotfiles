@@ -116,17 +116,25 @@ const compiledPatterns = (patterns: RedactPattern[]): [RegExp, string][] => {
 
 const defaultCompiled = compiledPatterns(redactPatterns)
 
-/** A PEM private key header, as `pem_lines` in runlog.sh finds it. */
-const pemBegin = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----/i
-/** One base64 body line, with an optional diff prefix kept. */
-const pemBody = /^([-+ ]?)[A-Za-z0-9+/=]{16,100}(\r?)$/
-/** A blank or `Proc-Type:`/`DEK-Info:` line inside a PEM block. */
-const pemKeep = /^[-+ ]?(?:(?:Proc-Type|DEK-Info):[^\n]*)?\r?$/i
+/**
+ * A PEM or PGP private key header, as `pem_lines` in runlog.sh finds it:
+ * `PRIVATE KEY-----` or `PRIVATE KEY BLOCK-----`.
+ */
+const pemBegin = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/i
+/**
+ * One base64 body line. The kept prefix is a diff mark, indentation (a
+ * YAML `|` block), and a Read tool line number (`     2\t`).
+ */
+const pemBody = /^([-+ ]?[ \t]*(?:[0-9]+\t)?)[A-Za-z0-9+/=]{16,100}(\r?)$/
+/** A blank or armor header line inside a block, with the same prefix. */
+const pemKeep = new RegExp("^[-+ ]?[ \t]*(?:[0-9]+\t)?"
+  + "(?:(?:Proc-Type|DEK-Info|Version|Comment|Charset|Hash):[^\n]*)?\r?$", "i")
 
 /**
  * Replaces the body lines that follow a PEM private key header with
  * `[redacted:pem]`. A block ends at the first line that is neither a body
- * line, a blank line, nor a `Proc-Type:` or `DEK-Info:` header, so a lone
+ * line, a blank line, nor an armor header (`Proc-Type:`, `DEK-Info:`,
+ * `Version:`, `Comment:`, `Charset:`, `Hash:`), so a lone
  * header in code never eats the lines after it. Matches `pem_lines` in
  * runlog.sh.
  */
@@ -437,6 +445,20 @@ export const appendLine = (file: string, line: string): void => {
   const fd = openSync(file, appendFlags, 0o600)
   try {
     writeSync(fd, `${line}\n`)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * Writes `text` over `file` (`0600`), creating it if needed.
+ * `O_NOFOLLOW` refuses a symlinked file.
+ */
+export const writeNoFollow = (file: string, text: string): void => {
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT
+    | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600)
+  try {
+    writeSync(fd, text)
   } finally {
     closeSync(fd)
   }
