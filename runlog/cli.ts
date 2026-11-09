@@ -700,24 +700,70 @@ export const parseSince = (since: string, now: Date = new Date()): Date => {
   return date
 }
 
+/** The run's hex suffix when it names only this run, else the whole id. */
+export const shortId = (runs: RunSummary[], runId: string): string => {
+  const hex = runId.slice(-4)
+  const hits = new Set(runs.map((r) => r.runId).filter((id) => id.includes(hex)))
+  return hits.size === 1 ? hex : runId
+}
+
+/** The newest `agent` event's outcome, else the run's status. */
+const agentOutcome = (run: RunSummary, events: Event[]): string => {
+  const agent = events.filter((e) => e.event === "agent").at(-1)
+  return str(agent?.outcome) ?? run.status
+}
+
+/**
+ * The learning view of agent runs since a time, newest first. Each run gets
+ * a header (id, outcome, time), its Challenges text or "(no report)", and
+ * each failed agent command as a ready-to-run `ud runs agent ... --at N`
+ * line. A run counts as an agent run when it has an `agent` or
+ * `agent-session` event, or a `report.md`.
+ */
 export const challengeLines = (
   home: string, runs: RunSummary[], since: Date,
 ): string[] => {
   const out: string[] = []
   for (const run of [...runs].reverse()) {
-    if (Date.parse(run.ts) < since.getTime()) continue
-    let report: string
+    if (startMs(run) < since.getTime()) continue
+    let paths: { file: string; dir: string }
     try {
-      const file = join(checkedRunPaths(home, run.runId).dir, "report.md")
-      report = readFileSync(file, "utf8")
+      paths = checkedRunPaths(home, run.runId)
     } catch {
       continue
     }
-    const body = extractChallenges(report)
-    out.push(`== ${run.runId}  ${run.ts.slice(0, 19).replace("T", " ")}`)
-    out.push(body ?? "(no Challenges section)", "")
+    const events = readJsonl(paths.file)
+    let report: string | null = null
+    try {
+      report = readFileSync(join(paths.dir, "report.md"), "utf8")
+    } catch {
+      report = null
+    }
+    const isAgent = run.agent !== null || report !== null || events.some(
+      (e) => e.event === "agent" || e.event === "agent-session")
+    if (!isAgent) continue
+    const time = safeSlice(run.ts, 0, 19).replace("T", " ") || "-"
+    out.push(`== ${run.runId}  ${agentOutcome(run, events)}  ${time}`)
+    if (report === null) {
+      out.push("(no report)")
+    } else {
+      out.push(extractChallenges(report) ?? "(no Challenges section)")
+    }
+    const failed = events.filter((e) => e.event === "agent-command"
+      && e.exit !== 0)
+    if (failed.length) out.push("failed commands:")
+    const id = shortId(runs, run.runId)
+    for (const e of failed) {
+      const exit = `exit ${num(e.exit) ?? "?"}`
+      const cmd = oneLine(str(e.cmd) ?? "", 120)
+      const line = num((e.ref as Fields | null)?.line)
+      out.push(line === null
+        ? `  (not in agent.jsonl)  # ${exit}: ${cmd}`
+        : `  ud runs agent ${id} --at ${line}  # ${exit}: ${cmd}`)
+    }
+    out.push("")
   }
-  return out
+  return out.map(printable)
 }
 
 // ---------------------------------------------------------------- files
@@ -1207,8 +1253,9 @@ export const createProgram = (env: Env = process.env): Command => {
       })())
 
   program.command("challenges")
-    .description("every Challenges section, newest first")
-    .option("--since <when>", "30d, 12h, or a date", "30d")
+    .description("agent runs, newest first: Challenges, outcome, and an "
+      + "--at line per failed command")
+    .option("--since <when>", "Nd, Nh, or an ISO date or datetime", "30d")
     .action((opts: { since: string }) => guard(() => {
       const since = parseSince(opts.since)
       print(challengeLines(home(), loadRuns(home()), since))

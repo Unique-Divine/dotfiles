@@ -887,6 +887,70 @@ describe("reader", () => {
     expect(result.stdout).toContain("None")
     expect(result.stdout).not.toContain("## Notes")
   }))
+
+  test("challenges: outcome, failed commands as --at lines, no report",
+    withHome(async (home) => {
+      const day = dayAgo(0)
+      const ok = { exit: 0, status: "ok" }
+      const reported = `${stampFor(day)}-git_mf-1a2b`
+      const crashed = `${stampFor(day)}-git_mf-3c4d`
+      const plain = `${stampFor(day)}-sync-5e6f`
+      plantRun(home, reported, { end: ok, ts: noonPlus(day, 1) })
+      plantRun(home, crashed, {
+        end: { exit: 1, status: "failed" }, ts: noonPlus(day, 2),
+      })
+      plantRun(home, plain, { end: ok, ts: noonPlus(day, 3) })
+      appendEvents(home, reported, [
+        { event: "agent-session", cli: "claude", session_id: "s1" },
+        { event: "agent-command", cmd: "git status", exit: 0,
+          ref: { file: "agent.jsonl", line: 4 } },
+        { event: "agent-command", cmd: `just\n test ${esc}[2J`, exit: 1,
+          ref: { file: "agent.jsonl", line: 10 } },
+        { event: "agent-command", cmd: "cargo build", exit: 101, ref: null,
+          truncated: true },
+        { event: "agent", cli: "claude", outcome: "merged", exit: 0 },
+      ])
+      const dir = checkedRunPaths(home, reported).dir
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "report.md"),
+        "## Summary\n\nok\n\n## Challenges\n\nFlaky check.\n")
+      appendEvents(home, crashed, [
+        { event: "agent-session", cli: "codex", session_id: "s2" },
+        { event: "agent-command", cmd: "just lint", exit: null,
+          ref: { file: "agent.jsonl", line: 7 } },
+        { event: "agent", cli: "codex", outcome: "report-missing", exit: 1 },
+      ])
+
+      const result = await runCli(["challenges"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe([
+        `== ${crashed}  report-missing  ${day.replace(/^(..)(..)(..)$/,
+          "20$1-$2-$3")} 12:00:00`,
+        "(no report)",
+        "failed commands:",
+        "  ud runs agent 3c4d --at 7  # exit ?: just lint",
+        "",
+        `== ${reported}  merged  ${day.replace(/^(..)(..)(..)$/,
+          "20$1-$2-$3")} 12:00:00`,
+        "Flaky check.",
+        "failed commands:",
+        "  ud runs agent 1a2b --at 10  # exit 1: just test \\x1b[2J",
+        "  (not in agent.jsonl)  # exit 101: cargo build",
+        "", "",
+      ].join("\n"))
+      expect(result.stdout).not.toContain(plain)
+    }))
+
+  test("challenges --since refuses a bad window with exit 2",
+    withHome(async (home) => {
+      for (const bad of ["7", "Nov 1", "99999999999d"]) {
+        const result = await runCli(["challenges", "--since", bad],
+          baseEnv(home))
+        expect(result.exitCode).toBe(2)
+        expect(result.stdout).toBe("")
+        expect(result.stderr).toContain(`bad --since "${bad}"`)
+      }
+    }))
 })
 
 describe("maintenance", () => {
