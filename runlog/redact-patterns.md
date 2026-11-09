@@ -35,6 +35,14 @@
     `secret`, so they're covered already.
   - `-yaml`: `key: value`, quoted as in `-value`. Keys as `-value`, plus
     `seed phrase`.
+- The spaced `KEY = value` and the Go `KEY:=`/`KEY := value` forms read
+  like code, so a bare value there must look like a secret: 8 or more
+  characters of `[A-Za-z0-9_./+=-]`, then whitespace, `&`, `;`, `,`, a
+  quote, a backslash, or the end. `max_token = 4096` and
+  `token := ctx.Value("denom")` stay; `API_TOKEN = abcdef123456` and a
+  quoted value are redacted. The no-space `KEY=value` form, as in an env
+  file or a URL query, takes any bare value. The `mnemonic` and seed
+  phrase keys keep the looser rule in every form.
 - A bare value ends at whitespace, `&`, a quote, or a backslash. A quoted
   value ends at its closing quote, a backslash, or a line break, so
   `PASSWORD="two words"` is redacted whole. A bare `mnemonic` or seed
@@ -148,6 +156,8 @@ These are not redacted. Read a run log with them in mind.
     starts with 1 to 5 digits and a `/`, `?`, or `#`, which reads as a
     port.
 - curl's `-uuser:pass` with no space, and an all-digit `-u` password.
+- In the spaced and `:=` code forms, a bare value under 8 characters or
+  with other characters, such as `password = p@ss!`.
 - Base64-, URL-, or otherwise encoded secrets, and fullwidth forms such as
   `token＝value`.
 - A PEM body without its BEGIN line in the same text.
