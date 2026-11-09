@@ -526,9 +526,30 @@ _runlog_status_for() {
   return 0
 }
 
+# _runlog_count_file WARNS_VAR ERRORS_VAR: sets the named variables to the
+# run file's `warn` and `error` line counts, or returns 1 and leaves them.
+# The file holds events from subshells and from the tap process, which
+# this process's counters never see.
+_runlog_count_file() {
+  runlog_active || return 1
+  local counts=""
+  # shellcheck disable=SC2016
+  counts="$(jq -Rrn '[inputs | fromjson? | objects | .event] as $e
+    | "\($e | map(select(. == "warn")) | length)"
+      + " \($e | map(select(. == "error")) | length)"' \
+    <"${_runlog_run_file:-}" 2>/dev/null)" || counts=""
+  [[ "$counts" =~ ^([0-9]+)\ ([0-9]+)$ ]] || return 1
+  printf -v "$1" '%s' "${BASH_REMATCH[1]}" || return 1
+  printf -v "$2" '%s' "${BASH_REMATCH[2]}" || return 1
+  return 0
+}
+
 # runlog_end EXIT [status=...]: writes end, then the run's line in the
 # day's index.jsonl. An explicit status= wins over the exit-code mapping.
-# The run is finished afterwards; later calls do nothing.
+# `warns` and `errors` count the run file's lines, so subshells and the
+# tap count too; this process's own counters are the fallback when the
+# file can't be read. The run is finished afterwards; later calls do
+# nothing.
 runlog_end() {
   [[ "${_runlog_on}" == 1 ]] || return 0
   local code="${1:-}"
@@ -543,7 +564,8 @@ runlog_end() {
   [[ -n "$status" ]] || status="$(_runlog_status_for "$code")"
   _runlog_now
   local -r dur=$(( _runlog_ms - ${_runlog_start_ms:-$_runlog_ms} ))
-  local -r warns="${_runlog_warns:-0}" errors="${_runlog_errors:-0}"
+  local warns="${_runlog_warns:-0}" errors="${_runlog_errors:-0}"
+  _runlog_count_file warns errors || true
 
   if _runlog_build_at "$_runlog_ms" end "exit:=${code:-null}" \
     "status=$status" "dur_ms:=$dur" "warns:=$warns" "errors:=$errors"

@@ -503,6 +503,46 @@ runlog_end 1`)
   })
 })
 
+describe("end counts warnings in the run file", () => {
+  const cliPath = join(import.meta.dir, "cli.ts")
+
+  test("warns from a subshell and the tap process count", async () => {
+    const stream = JSON.stringify({ type: "system", subtype: "init",
+      session_id: "other-session" })
+    const r = await runBash(`runlog_start wc
+trap 'runlog_end $?' EXIT
+( runlog_event warn code=from-subshell )
+( runlog_event error code=from-subshell )
+printf '%s\\n' ${sq(stream)} \\
+  | bun ${sq(cliPath)} tap --cli claude --session-id my-session
+runlog_event warn code=from-main
+runlog_event step name=nested detail:='{"event":"warn"}'`)
+    expect(r.code).toBe(0)
+    const evs = await events()
+    const warns = evs.filter((e) => e.event === "warn").map((e) => e.code)
+    expect(warns.sort()).toEqual(
+      ["from-main", "from-subshell", "session-mismatch"])
+    const end = evs.at(-1)!
+    expect(end).toMatchObject({ event: "end", warns: 3, errors: 1 })
+    const [idx] = await indexLines()
+    expect(idx).toMatchObject({ warns: 3, errors: 1 })
+  }, 30_000)
+
+  test("falls back to this process's counters without the file",
+    async () => {
+      const r = await runBash(`runlog_start wc
+( runlog_event warn code=lost )
+runlog_event warn code=kept
+runlog_event error code=kept
+rm -f -- "$(runlog_file)"
+runlog_end 0`)
+      expect(r.code).toBe(0)
+      const evs = await events()
+      expect(evs).toHaveLength(1)
+      expect(evs[0]).toMatchObject({ event: "end", warns: 1, errors: 1 })
+    })
+})
+
 describe("redaction", () => {
   test("no planted token survives in events or artifacts", async () => {
     const planted = plantTokens()
