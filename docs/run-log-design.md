@@ -286,7 +286,8 @@ How it holds together:
 - The tap is an ordinary pipeline stage, so bash waits for it, and its
   events land before verify and `end`.
 - The tap (TS, Bun) reads stdin line by line. It saves each redacted line
-  to `agent.jsonl`, prints one redacted progress line per step to stderr,
+  to `agent.jsonl`, prints one redacted progress line per step to stderr
+  with control characters escaped,
   and writes `agent-session`, `agent-command` (every command, see
   Decision 6), Claude's `report.md`, and the `agent-stream` artifact. A
   Bash call with no result by the end logs `exit: null, ref: null`.
@@ -393,9 +394,9 @@ Rules for both writers:
   for the rest of that process (`BOKU_RUNLOG_DEBUG=1` prints it). Child
   processes try again, so one bad write doesn't silence a tree; they
   start their own root runs. `BOKU_RUNLOG=0` turns logging off.
-- Files are `0600`, folders `0700`. Both writers refuse a symlink below
-  `BOKU_HOME`: the runs folder, a day folder, the run folder, the run
-  file, or `index.jsonl`. The run file is claimed with an exclusive
+- Files are `0600`, folders `0700`. Both writers and the tap refuse a
+  symlink below `BOKU_HOME`: the runs folder, a day folder, the run
+  folder, the run file, `index.jsonl`, `agent.jsonl`, or `report.md`. The run file is claimed with an exclusive
   create, so run ids are unique.
 - A failed start leaves no run file, so no empty run is listed.
 
