@@ -119,6 +119,46 @@ export const redact = (
   return out
 }
 
+/** Redacts every string in a JSON value, at any depth, without a cut. */
+export const redactValue = (value: unknown): unknown => {
+  if (typeof value === "string") return redact(value)
+  if (Array.isArray(value)) return value.map(redactValue)
+  if (value !== null && typeof value === "object") {
+    // fromEntries keeps a `__proto__` key as data, as JSON.parse does.
+    return Object.fromEntries(Object.entries(value)
+      .map(([key, inner]) => [key, redactValue(inner)]))
+  }
+  return value
+}
+
+/** A line that may be a JSON object or array, as jq's `redact_line` tests. */
+const jsonCandidate = /^[ \t\r]*[{[]/
+
+/**
+ * Redacts one line. A JSON object or array first has its decoded strings
+ * redacted, so `KEY=\"value\"` is seen as `KEY="value"`, and is re-encoded
+ * only when a string changed. Every line is then redacted as text, which
+ * catches `"password": "..."` pairs; no pattern consumes a backslash or
+ * quote, so JSON stays valid. Matches `redact_line` in runlog.sh.
+ */
+export const redactLine = (line: string): string => {
+  let text = line
+  if (jsonCandidate.test(line)) {
+    try {
+      const value: unknown = JSON.parse(line)
+      const out = JSON.stringify(redactValue(value))
+      if (out !== JSON.stringify(value)) text = out
+    } catch {
+      // Not JSON: text only.
+    }
+  }
+  return redact(text)
+}
+
+/** Redacts text one line at a time with `redactLine`. */
+export const redactLines = (text: string): string =>
+  text.split("\n").map(redactLine).join("\n")
+
 /** Cuts a string to 512 characters plus `[cut]`. */
 export const cutString = (text: string, max = maxStringChars): string =>
   text.length > max ? `${text.slice(0, max)}[cut]` : text
@@ -503,7 +543,7 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
         const name = artifactName(kind, src)
         const dest = join(runDir, name)
         const { data, truncated } = readCapped(src, artifactMax(env))
-        const text = redact(data.toString("utf8"))
+        const text = redactLines(data.toString("utf8"))
         tmp = join(runDir, `.artifact.${process.pid}.${
           randomBytes(3).toString("hex")}`)
         writeFileSync(tmp, text, { mode: 0o600 })

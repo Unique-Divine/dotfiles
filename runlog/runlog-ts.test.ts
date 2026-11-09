@@ -123,6 +123,31 @@ describe("pure helpers", () => {
     expect(out).toContain("token=[redacted:token-value]&x=1")
   })
 
+  test("redact covers wallet, cloud, and YAML key forms", () => {
+    const hex = randomBytes(32).toString("hex")
+    const words = "abandon ability able about above absent"
+    expect(redact(`PRIVATE_KEY=0x${hex} AWS_SECRET_ACCESS_KEY=wJalrXUt`))
+      .toBe("PRIVATE_KEY=[redacted:private-key-value] "
+        + "AWS_SECRET_ACCESS_KEY=[redacted:access-key-value]")
+    expect(redact(`MNEMONIC="${words}" next`))
+      .toBe('MNEMONIC="[redacted:mnemonic-value]" next')
+    expect(redact(`{"private_key": "0x${hex}", "mnemonic": "${words}"}`))
+      .toBe('{"private_key": "[redacted:private-key-json]", '
+        + '"mnemonic": "[redacted:mnemonic-json]"}')
+    expect(redact(`password: hunter2 x\nmnemonic: ${words}`))
+      .toBe("password: [redacted:password-yaml] x\n"
+        + "mnemonic: [redacted:mnemonic-yaml]")
+  })
+
+  test("redact leaves token prefixes inside words alone", () => {
+    for (const word of ["task-add-run-log-feature-for-sync",
+      "/home/u/risk-assessment-notes-for-q3.md"]) {
+      expect(redact(word)).toBe(word)
+    }
+    const key = `sk-${randomBytes(16).toString("hex")}`
+    expect(redact(`path/${key}`)).toBe("path/[redacted:api-key]")
+  })
+
   test("redact ignores case", () => {
     const out = redact("API_TOKEN=abcdef123456 PASSWORD=hunter2hunter2 "
       + "Authorization: bearer abcdefgh12345")

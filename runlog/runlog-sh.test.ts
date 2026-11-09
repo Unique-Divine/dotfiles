@@ -209,6 +209,20 @@ const plantTokens = (): Planted[] => {
     tok('"Token":"', randAlnum(24)),
     tok('"secret": "', randAlnum(24)),
     tok('"API_KEY": "', randAlnum(24)),
+    tok("PRIVATE_KEY=0x", randAlnum(64, "0123456789abcdef")),
+    tok("AWS_SECRET_ACCESS_KEY=", randAlnum(40)),
+    tok('DB_PASSWORD=\\"', randAlnum(24)),
+    tok('"private_key": "', randAlnum(24)),
+    tok('"Access_Key":"', randAlnum(24)),
+    tok("password: ", randAlnum(24)),
+    tok("token: ", randAlnum(24)),
+    tok("secret: ", randAlnum(24)),
+    tok("api_key: ", randAlnum(24)),
+    tok("private_key: ", randAlnum(24)),
+    // Mnemonics run to the closing quote or the end of the line, so last.
+    tok('"mnemonic": "', `${randAlnum(8)} ${randAlnum(8)}`),
+    tok("MNEMONIC=", `${randAlnum(8)} ${randAlnum(8)}`),
+    tok("mnemonic: ", `${randAlnum(8)} ${randAlnum(8)}`),
   ]
 }
 
@@ -603,7 +617,11 @@ runlog_end 0`)
       "api-key", "slack-token", "aws-key", "gitlab-token", "npm-token",
       "jwt", "bearer", "token-value", "secret-value", "secret-key-value",
       "password-value", "api-key-value", "token-json", "secret-json",
-      "password-json", "api-key-json"]) {
+      "password-json", "api-key-json", "private-key-value",
+      "access-key-value", "private-key-json", "access-key-json",
+      "password-yaml", "token-yaml", "secret-yaml", "api-key-yaml",
+      "private-key-yaml", "mnemonic-value", "mnemonic-json",
+      "mnemonic-yaml"]) {
       expect(kinds).toContain(k)
     }
   })
