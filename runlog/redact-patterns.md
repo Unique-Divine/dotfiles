@@ -7,17 +7,37 @@
   jq `gsub($r.regex; "[redacted:\($r.kind)]"; "gi")`, and JS
   `new RegExp(r.regex, "gi")`. So `token=` also matches `API_TOKEN=`, and
   `Bearer` matches `bearer`.
-- Patterns apply in file order. Token shapes come first. The `KEY=value`
-  and JSON patterns skip a value that is already `[redacted:...]`.
+- Patterns apply in file order. Token shapes come first. The key patterns
+  skip a value that is already `[redacted:...]`.
+- Key patterns keep the key and replace only the value, so the replacement
+  stays the same in both engines. Each key has these forms:
+  - `-value`: `KEY=value`, `KEY="value"`, `KEY='value'`, and the escaped
+    `KEY=\"value\"`. Keys: `token`, `secret`, `secret_key`, `password`,
+    and `api_key`.
+  - `-json`: `"key": "value"`, plain or escaped inside a JSON string.
+    Keys: `token`, `secret`, `password`, and `api_key`.
+- A bare value ends at whitespace, `&`, a quote, or a backslash. A quoted
+  value ends at its closing quote, a backslash, or a line break, so
+  `PASSWORD="two words"` is redacted whole. No value pattern consumes a
+  backslash or a quote, so redacting JSON text keeps it valid.
+- Files and the tap's `agent.jsonl` copy are redacted line by line
+  (`redactLines` in `runlog.ts`, `redact_lines` in `runlog.sh`). A line
+  whose first non-blank character is `{` or `[` and that parses as JSON
+  first has its decoded strings redacted, so `KEY=\"value\"` in the raw
+  line reads as `KEY="value"`. The line is re-encoded only when a string
+  changed. Every line is then redacted as text, which catches
+  `"password": "..."` pairs.
 - Each regex must mean the same in jq's Oniguruma and in JS without the
   `u` flag. Lookbehind is fixed-width, with alternatives as separate
   lookbehind groups (`(?:(?<=a)|(?<=bc))`, never `(?<=a|bc)`). Don't use `\s`
   to end a value, since the engines differ on U+0085 and U+FEFF. List the
   whitespace instead. Don't use `.`, since it differs on U+2028.
-- Known gap: Oniguruma folds a few non-ASCII letters to ASCII (`ſ` to `s`,
-  the Kelvin sign to `k`), and JS without `u` doesn't. jq then redacts
-  `ſecret=x` and JS doesn't. The parity corpus is ASCII keys only.
-- Key patterns keep the key and replace only the value, so the replacement
-  stays the same in both engines.
+- Known gaps:
+  - Oniguruma folds a few non-ASCII letters to ASCII (`ſ` to `s`, the
+    Kelvin sign to `k`), and JS without `u` doesn't. jq then redacts
+    `ſecret=x` and JS doesn't. The parity corpus is ASCII keys only.
+  - jq's `fromjson` accepts `nan`, and jq keeps number literals such as
+    `1.0` when it re-encodes; JS rejects `nan` and prints `1`. Only a
+    re-encoded line can differ, and both engines still redact it.
 - `runlog/redact-parity.test.ts` runs a corpus through both writers and
   fails on any difference.

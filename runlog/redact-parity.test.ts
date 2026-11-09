@@ -6,7 +6,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { redact } from "./runlog.ts"
+import { redact, redactLines } from "./runlog.ts"
 
 // Runs one corpus through both redaction paths and asserts they agree:
 // the bash writer's jq filters (event lines and _runlog_redact_file) and
@@ -79,13 +79,34 @@ const jsonForms = (): string[] => {
   return out
 }
 
+/**
+ * Agent stream lines: JSON whose strings hold `KEY="value"` and quoted
+ * URLs, so the raw line reads `KEY=\"value\"`.
+ */
+const streamForms = (): string[] => [
+  JSON.stringify({ type: "user", message: { content: [{
+    type: "tool_result", tool_use_id: "t1",
+    content: `DB_PASSWORD="hunter2-${randAlnum(12)}"\n`
+      + `API_KEY="${randAlnum(12)}"`,
+  }] } }),
+  JSON.stringify({ type: "assistant", message: { content: [{
+    type: "tool_use", id: "t2", name: "Bash",
+    input: { command: `curl "https://x/?token=${randAlnum(12)}"` },
+  }] } }),
+  JSON.stringify({ cmd: `echo 'secret=${randAlnum(12)}'`, n: 1 }),
+  JSON.stringify([`export TOKEN="${randAlnum(12)}"`, 2]),
+  `KEY_FILE contents: PASSWORD=\"${randAlnum(12)}\" done`,
+  `{"broken": "json, token=\"${randAlnum(12)}\"`,
+]
+
 /** Whitespace both engines must agree on where a value ends. */
 const whitespace = ["\t", "\r", "\v", "\f", "\u0085", " ", " ",
   " ", " ", " ", " ", " ", " ", "　",
   "﻿"]
 
 const corpus = (): string[] => {
-  const out = [...tokens(), ...envForms(), ...jsonForms()]
+  const out = [...tokens(), ...envForms(), ...jsonForms(),
+    ...streamForms()]
   for (const ws of whitespace) {
     out.push(`token=${randAlnum(12)}${ws}after`)
     out.push(`PASSWORD=${randAlnum(12)}${ws}after`)
@@ -169,18 +190,51 @@ describe("jq and JS redact the same way", () => {
     expect(pairs.filter((p) => p.jq !== p.js)).toEqual([])
   })
 
-  test("_runlog_redact_file matches redact() on the whole file", () => {
-    expect(jq.file).toBe(redact(items.join("\n") + "\n"))
+  test("_runlog_redact_file matches redactLines() on the whole file", () => {
+    expect(jq.file).toBe(redactLines(items.join("\n") + "\n"))
+  })
+
+  /** The redacted file's line for each one-line item. */
+  const fileLine = (): Map<string, string> => {
+    const lines = jq.file.split("\n")
+    const out = new Map<string, string>()
+    let at = 0
+    for (const item of items) {
+      if (!item.includes("\n")) out.set(item, lines[at]!)
+      at += item.split("\n").length
+    }
+    return out
+  }
+
+  test("JSON lines stay JSON, with no planted value left", () => {
+    const lines = fileLine()
+    for (const item of items) {
+      if (item.includes("\n")) continue
+      let parsed = true
+      try {
+        JSON.parse(item)
+      } catch {
+        parsed = false
+      }
+      if (parsed) expect(() => JSON.parse(lines.get(item)!)).not.toThrow()
+    }
+    for (const form of streamForms()) {
+      const out = redactLines(form)
+      expect(out).not.toMatch(/hunter2-[A-Za-z0-9]/)
+      expect(out).not.toMatch(
+        /(token|secret|password|api_key)=\\?["']?[A-Za-z0-9]/i)
+    }
   })
 
   test("every token, env, and JSON secret is redacted", () => {
+    const keyNames = "(token|secret|secret_key|password|api_key)"
     const out = jq.events.join("\n")
     expect(out).not.toMatch(/gh[pousr]_[A-Za-z0-9]{20}/i)
     expect(out).not.toMatch(/npm_[A-Za-z0-9]{36}/i)
     expect(out).not.toMatch(/bearer [A-Za-z0-9]{8}/i)
     expect(out).not.toMatch(
-      /(token|secret|secret_key|password|api_key)=["']?[A-Za-z0-9]/i)
+      new RegExp(`${keyNames}=\\\\?["']?[A-Za-z0-9]`, "i"))
     expect(out).not.toMatch(
-      /(token|secret|password|api_key)\\?": ?\\?"[A-Za-z0-9]/i)
+      new RegExp(`${keyNames}\\\\?": ?\\\\?"[A-Za-z0-9]`, "i"))
   })
 })

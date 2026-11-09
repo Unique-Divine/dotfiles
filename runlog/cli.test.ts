@@ -267,6 +267,49 @@ describe("tap", () => {
     expect(String(commands[2]!.cmd)).toContain("Bearer [redacted:bearer]")
   }))
 
+  test("quoted secrets in stream strings: redacted, lines stay JSON",
+    withHome(async (home) => {
+      const run = hostRun(home)
+      const password = `hunter2-${randomBytes(8).toString("hex")}`
+      const token = `abc123${randomBytes(8).toString("hex")}`
+      const filler = "y".repeat(20000)
+      const stream = [
+        { type: "assistant", message: { content: [{
+          type: "tool_use", id: "t1", name: "Bash",
+          input: { command: `curl "https://x/?token=${token}"` },
+        }] } },
+        { type: "user", message: { content: [{
+          type: "tool_result", tool_use_id: "t1",
+          content: `DB_PASSWORD="${password}"\nAPI_KEY="${token}"`,
+        }] } },
+        // Over the 16,384-character line cut.
+        { type: "user", message: { content: [{
+          type: "tool_result", tool_use_id: "t1",
+          content: `SECRET="0x${token}" ${filler}`,
+        }] } },
+      ].map((o) => JSON.stringify(o)).join("\n")
+      const result = await runCli(["tap", "--cli", "claude"],
+        baseEnv(home, { BOKU_RUN_ID: run.runId! }), `${stream}\n`)
+      run.end(0)
+      expect(result.exitCode).toBe(0)
+      const copy = readFileSync(join(run.runDir!, "agent.jsonl"), "utf8")
+      expect(copy).not.toContain(password)
+      expect(copy).not.toContain(token)
+      const lines = copy.trimEnd().split("\n")
+      expect(lines).toHaveLength(3)
+      for (const line of lines) {
+        expect(line.length).toBeLessThanOrEqual(16384)
+        expect(() => JSON.parse(line)).not.toThrow()
+      }
+      expect(JSON.parse(lines[0]!).message.content[0].input.command)
+        .toBe('curl "https://x/?token=[redacted:token-value]"')
+      expect(JSON.parse(lines[1]!).message.content[0].content).toBe(
+        'DB_PASSWORD="[redacted:password-value]"\n'
+        + 'API_KEY="[redacted:api-key-value]"')
+      expect(JSON.parse(lines[2]!).message.content[0].content).toStartWith(
+        'SECRET="[redacted:secret-value]" yyy')
+    }))
+
   test("session mismatch and unparsed exit warn", withHome(async (home) => {
     const run = hostRun(home)
     const stream = [
@@ -675,6 +718,18 @@ describe("maintenance", () => {
     expect(result.exitCode).toBe(0)
     expect(readFileSync(file, "utf8")).toBe("x [redacted:github-token] y\n")
     expect(statSync(file).mode & 0o777).toBe(0o600)
+  }))
+
+  test("redact-file keeps JSON lines valid", withHome(async (home) => {
+    const secret = randomBytes(8).toString("hex")
+    const file = join(home, "agent.jsonl")
+    writeFileSync(file, `${JSON.stringify({ out: `TOKEN="${secret}"` })}\n`
+      + `TOKEN=\\"${secret}\\" not json\n`)
+    const result = await runCli(["redact-file", file], baseEnv(home))
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(file, "utf8")).toBe(
+      '{"out":"TOKEN=\\"[redacted:token-value]\\""}\n'
+      + 'TOKEN=\\"[redacted:token-value]\\" not json\n')
   }))
 
   const plantDay = (home: string, day: string, bytes: number): void => {

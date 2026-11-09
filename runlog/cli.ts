@@ -12,8 +12,8 @@ import { Command } from "commander"
 
 import {
   attachRun, bokuHome, checkedRunPaths, cutString, ensureDir, indexLine,
-  indexPath, isRunId, readBootId, readPidStart, redact, runFilePath,
-  startRun, type Env, type Fields, type RunIdentity,
+  indexPath, isRunId, readBootId, readPidStart, redact, redactLine,
+  redactLines, runFilePath, startRun, type Env, type Fields, type RunIdentity,
 } from "./runlog.ts"
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -631,7 +631,7 @@ export const challengeLines = (
 /** Redacts a file in place through a temp file and rename; mode `0600`. */
 export const redactFile = (file: string): boolean => {
   const before = readFileSync(file, "utf8")
-  const after = redact(before)
+  const after = redactLines(before)
   const tmp = join(dirname(file), `.${process.pid}.redact.tmp`)
   writeFileSync(tmp, after, { mode: 0o600 })
   renameSync(tmp, file)
@@ -896,7 +896,7 @@ export const createTap = (opts: TapOptions): Tap => {
 
   const copy = (text: string): boolean => {
     if (!state.copying || !agentFile) return false
-    const line = `${cutStreamLine(redact(text))}\n`
+    const line = `${cutStreamLine(redactLine(text))}\n`
     const bytes = Buffer.byteLength(line)
     if (state.copiedBytes + bytes > cap) {
       state.copying = false

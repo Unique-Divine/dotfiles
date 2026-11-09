@@ -43,6 +43,26 @@ _runlog_artifact_max_default=20971520
 _runlog_jq_redact='def redact($p): reduce $p[] as $r (.;
   gsub($r.regex; "[redacted:\($r.kind)]"; "gi"));'
 
+# The jq `redact_lines` def behind _runlog_redact_file, as redactLines in
+# runlog.ts. A line that parses as a JSON object or array first has its
+# decoded strings redacted, so `KEY=\"value\"` reads as `KEY="value"`, and
+# is re-encoded only when a string changed. Every line is then redacted as
+# text, which catches `"password": "..."` pairs.
+# shellcheck disable=SC2016
+_runlog_jq_redact_lines="${_runlog_jq_redact}"'
+def redact_deep($p): if type == "string" then redact($p)
+  elif type == "array" then map(redact_deep($p))
+  elif type == "object" then map_values(redact_deep($p))
+  else . end;
+def redact_line($p): . as $line
+  | (if test("^[ \\t\\r]*[{\\[]") then (fromjson? // null) else null end)
+  | if . == null then $line
+    else redact_deep($p) as $r
+      | if $r == . then $line else $r | tojson end
+    end
+  | redact($p);
+def redact_lines($p): split("\n") | map(redact_line($p)) | join("\n");'
+
 # The jq program behind every line. `redact` applies each shared pattern,
 # `cut` keeps 512 characters, and a line over 4,095 bytes falls back to
 # the common fields plus `truncated: true`. Positional args are KEY=VAL
@@ -441,7 +461,7 @@ _runlog_redact_file() {
   local -r out="${file}.redact"
   ( umask 077 && : >"$out" ) 2>/dev/null || return 1
   if jq -Rsj --slurpfile pats "${_runlog_patterns:-}" \
-    "${_runlog_jq_redact} redact(\$pats[0])" \
+    "${_runlog_jq_redact_lines} redact_lines(\$pats[0])" \
     <"$file" >"$out" 2>/dev/null && mv -f -- "$out" "$file" 2>/dev/null
   then
     return 0
