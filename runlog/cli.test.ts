@@ -310,6 +310,19 @@ describe("tap", () => {
       expect(events.at(-1)!.event).toBe("end")
     }))
 
+  test("a crafted run id writes nothing outside BOKU_HOME",
+    withHome(async (dir) => {
+      const home = join(dir, "home")
+      mkdirSync(home)
+      const result = await runCli(["tap", "--cli", "claude"], baseEnv(home, {
+        BOKU_RUN_ID: "261109T000000Z-x/../../../../escaped",
+      }), fixture("claude-stream.jsonl"))
+      expect(result.exitCode).toBe(0)
+      expect(result.stderr).toContain("agent: Bash just test")
+      expect(readdirSync(dir)).toEqual(["home"])
+      expect(readdirSync(home)).toEqual([])
+    }))
+
   test("without a run it only shows progress", withHome(async (home) => {
     const result = await runCli(["tap", "--cli", "codex"], baseEnv(home),
       fixture("codex-stream.jsonl"))

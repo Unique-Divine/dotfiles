@@ -8,8 +8,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  buildEvent, indexPath, maxLineBytes, newRunId, redact, runFilePath, startRun,
-  statusFor, type Env, type RunIdentity,
+  attachRun, buildEvent, checkedRunPaths, indexPath, isRunId, maxLineBytes,
+  newRunId, redact, runFilePath, safeToolName, startRun, statusFor, type Env,
+  type RunIdentity,
 } from "./runlog.ts"
 
 const writerPath = join(import.meta.dir, "runlog.ts")
@@ -86,7 +87,27 @@ describe("pure helpers", () => {
     const at = new Date("2026-11-09T14:20:30.101Z")
     const runId = newRunId("git_mf", at, "8b9c")
     expect(runId).toBe("261109T142030Z-git_mf-8b9c")
-    expect(newRunId("a b/c")).toMatch(/^\d{6}T\d{6}Z-a_b_c-[0-9a-f]{4}$/)
+    expect(newRunId("a b/c")).toMatch(/^\d{6}T\d{6}Z-a-b-c-[0-9a-f]{4}$/)
+  })
+
+  test("safeToolName matches the bash writer", () => {
+    expect(safeToolName("git_mf")).toBe("git_mf")
+    expect(safeToolName("a b/c:d")).toBe("a-b-c-d")
+    expect(safeToolName("naïve😀")).toBe("na-ve-")
+    expect(safeToolName("x".repeat(50))).toBe("x".repeat(40))
+    expect(safeToolName("")).toBe("run")
+  })
+
+  test("isRunId takes only the exact id shape", () => {
+    for (const ok of [
+      "261109T142030Z-git_mf-8b9c", "261109T142030Z-a.b-c-0000",
+      `261109T142030Z-${"x".repeat(40)}-ffff`, "261109T142030Z-..-abcd",
+    ]) expect(isRunId(ok)).toBe(true)
+    for (const bad of [
+      "261109T000000Z-x/../../../../escaped", "261109T142030Z-git_mf-8B9C",
+      "261109T142030Z--8b9c", `261109T142030Z-${"x".repeat(41)}-ffff`,
+      "261109T142030Z-git_mf-8b9c\n", "../261109T142030Z-git_mf-8b9c",
+    ]) expect(isRunId(bad)).toBe(false)
   })
 
   test("redact replaces every planted token", () => {
@@ -259,6 +280,30 @@ describe("startRun", () => {
     expect(run.active).toBe(false)
     expect(env.BOKU_RUN_ID).toBeUndefined()
     expect(readdirSync(home)).toEqual([])
+  }))
+})
+
+describe("attachRun", () => {
+  test("a crafted BOKU_RUN_ID writes nothing outside BOKU_HOME",
+    withHome((dir) => {
+      const home = join(dir, "home")
+      const runId = "261109T000000Z-x/../../../../escaped"
+      const run = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: runId })
+      run.event("warn", { code: "x" })
+      expect(run.active).toBe(false)
+      expect(run.runDir).toBeNull()
+      expect(readdirSync(dir)).toEqual([])
+      expect(() => checkedRunPaths(home, runId)).toThrow("not a run id")
+    }))
+
+  test("a valid id writes into its run file", withHome((home) => {
+    const host = startRun("git_mf", { env: { BOKU_HOME: home }, rev: null })
+    const run = attachRun({ BOKU_HOME: home, BOKU_RUN_ID: host.runId! })
+    run.event("agent-session", { cli: "claude", session_id: "s1" })
+    host.end(0)
+    expect(run.runDir).toBe(host.runDir)
+    const events = readLines(runFilePath(home, host.runId!))
+    expect(events.map((e) => e.event)).toEqual(["start", "agent-session", "end"])
   }))
 })
 

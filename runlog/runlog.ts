@@ -10,7 +10,7 @@ import {
   renameSync, statSync, writeFileSync,
 } from "node:fs"
 import { homedir, hostname } from "node:os"
-import { basename, join } from "node:path"
+import { basename, join, resolve, sep } from "node:path"
 
 import patternsJson from "./redact-patterns.json"
 
@@ -147,9 +147,17 @@ export const statusFor = (exit: number, status?: RunStatus): RunStatus => {
 export const compactStamp = (date: Date): string =>
   date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").slice(2)
 
-/** Keeps a tool name safe for file names. */
+/**
+ * Keeps a tool name safe for file names, as `_runlog_new_id` does: other
+ * characters become `-`, 40 characters at most, `run` when empty.
+ */
 export const safeToolName = (tool: string): string =>
-  tool.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64) || "tool"
+  tool.replace(/[^A-Za-z0-9_.-]/gu, "-").slice(0, 40) || "run"
+
+/** The exact run id shape both writers emit. */
+export const runIdPattern = /^\d{6}T\d{6}Z-[A-Za-z0-9_.-]{1,40}-[0-9a-f]{4}$/
+
+export const isRunId = (value: string): boolean => runIdPattern.test(value)
 
 /** `<yymmddTHHMMSSZ>-<tool>-<4 hex>`. */
 export const newRunId = (
@@ -204,6 +212,26 @@ export const runDirPath = (home: string, runId: string): string =>
 
 export const indexPath = (home: string, day: string): string =>
   join(home, "runs", day, "index.jsonl")
+
+/**
+ * A run's file and folder, after checking the whole id and that both paths
+ * stay under `<home>/runs/`. Throws on anything else, so an id read from
+ * the environment or an index line can't point outside the run log.
+ */
+export const checkedRunPaths = (
+  home: string, runId: string,
+): { file: string; dir: string } => {
+  if (!isRunId(runId)) {
+    throw new Error(`not a run id: ${JSON.stringify(cutString(runId, 80))}`)
+  }
+  const root = `${resolve(home, "runs")}${sep}`
+  const file = resolve(runFilePath(home, runId))
+  const dir = resolve(runDirPath(home, runId))
+  if (!file.startsWith(root) || !dir.startsWith(root)) {
+    throw new Error(`run id ${runId} leaves ${root}`)
+  }
+  return { file, dir }
+}
 
 /** Field 22 of `/proc/<pid>/stat`: start time in clock ticks since boot. */
 export const readPidStart = (pid: number): number | null => {
@@ -496,17 +524,25 @@ export interface AttachedRun {
  * `BOKU_RUN_ID`. Used by the tap; it writes neither `start` nor `end`.
  */
 export const attachRun = (env: Env = process.env): AttachedRun => {
-  const runId = env.BOKU_RUN_ID
-  if (isLoggingOff(env) || !runId || !/^\d{6}T\d{6}Z-/.test(runId)) {
-    return { active: false, runId: null, runDir: null, event() {} }
+  const inactive: AttachedRun = {
+    active: false, runId: null, runDir: null, event() {},
   }
+  const runId = env.BOKU_RUN_ID
+  if (isLoggingOff(env) || !runId) return inactive
   const home = bokuHome(env)
+  let paths: { file: string; dir: string }
+  try {
+    paths = checkedRunPaths(home, runId)
+  } catch (error) {
+    debug(env, error)
+    return inactive
+  }
   const id = readRunIdentity(home, runId, env.BOKU_ROOT_RUN_ID)
   const sink = makeSink(env, home, id, () => new Date())
   return {
     active: true,
     runId,
-    runDir: runDirPath(home, runId),
+    runDir: paths.dir,
     event(kind, fields = {}) {
       sink.write(kind, fields)
     },
