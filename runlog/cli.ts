@@ -3,6 +3,7 @@
  * ud runs (the ud-runs plugin): reader, tap, prune, and redact-file for the Boku run log.
  * See docs/run-log-design.md.
  */
+import { createHash } from "node:crypto"
 import {
   appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync,
   renameSync, rmSync, writeFileSync,
@@ -11,7 +12,7 @@ import { dirname, join } from "node:path"
 import { Command } from "commander"
 
 import {
-  attachRun, bokuHome, checkedRunPaths, cutString, ensureDir, indexLine,
+  attachRun, bokuHome, checkedRunPaths, ensureDir, indexLine,
   indexPath, isRunId, readBootId, readPidStart, redact, redactLine,
   redactLines, runFilePath, startRun, type Env, type Fields, type RunIdentity,
 } from "./runlog.ts"
@@ -56,6 +57,41 @@ export const systemProbe = (): LiveProbe => ({
   bootId: readBootId(),
   pidStart: readPidStart,
 })
+
+// ---------------------------------------------------------------- text
+
+/** A bad argument: `ud runs` exits 2. */
+export class UsageError extends Error {}
+
+const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff
+const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff
+
+/**
+ * `text.slice(start, end)` in UTF-16 units, moved inward so it never splits
+ * a surrogate pair: the result has no lone surrogate the input didn't have.
+ */
+export const safeSlice = (text: string, start = 0, end?: number): string => {
+  let from = Math.max(0, start)
+  let to = Math.min(text.length, end ?? text.length)
+  if (from > 0 && isLow(text.charCodeAt(from))
+    && isHigh(text.charCodeAt(from - 1))) from += 1
+  if (to > 0 && to < text.length && isHigh(text.charCodeAt(to - 1))
+    && isLow(text.charCodeAt(to))) to -= 1
+  return from < to ? text.slice(from, to) : ""
+}
+
+/** Cuts a string over `max` UTF-16 units, plus `[cut]`; pair-safe. */
+export const cutText = (text: string, max: number): string =>
+  text.length > max ? `${safeSlice(text, 0, max)}[cut]` : text
+
+/**
+ * Makes text safe to print to a terminal: C0 controls other than `\n` and
+ * `\t`, DEL, and C1 controls become visible `\xNN` escapes, so ESC, OSC,
+ * and CSI sequences from agents or repos print as text and do nothing.
+ */
+export const printable = (text: string): string =>
+  text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, (c) =>
+    `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)
 
 // ---------------------------------------------------------------- days
 
@@ -285,7 +321,7 @@ export const resolveRunId = (
   if (query === "last") {
     const pool = opts.agent
       ? runs.filter((r) => r.agent !== null)
-      : runs.filter((r) => r.parentRunId === null)
+      : topLevelRuns(runs)
     const last = pool.at(-1)
     if (!last) throw new Error(opts.agent ? "no agent runs yet" : "no runs yet")
     return last.runId
@@ -323,7 +359,11 @@ export const treeCounts = (
 ): { warns: number; errors: number } => {
   const byParent = childrenByParent(runs)
   const total = { warns: 0, errors: 0 }
+  const seen = new Set<string>()
   const visit = (id: string): void => {
+    // A parent cycle (a corrupt or hand-edited file) counts each run once.
+    if (seen.has(id)) return
+    seen.add(id)
     const run = runs.find((r) => r.runId === id)
     if (run) {
       total.warns += run.warns
@@ -344,6 +384,31 @@ const childrenByParent = (runs: RunSummary[]): Map<string, RunSummary[]> => {
   return map
 }
 
+/** True when following parents from `run` comes back to `run`. */
+const isInCycle = (
+  run: RunSummary, byId: Map<string, RunSummary>,
+): boolean => {
+  const seen = new Set<string>()
+  let parentId = run.parentRunId
+  while (parentId !== null && !seen.has(parentId)) {
+    if (parentId === run.runId) return true
+    seen.add(parentId)
+    parentId = byId.get(parentId)?.parentRunId ?? null
+  }
+  return false
+}
+
+/**
+ * Runs shown at the top of the list and as tree roots, oldest first: runs
+ * with no parent, runs whose parent isn't loaded (pruned, say), and runs on
+ * a parent cycle.
+ */
+export const topLevelRuns = (runs: RunSummary[]): RunSummary[] => {
+  const byId = new Map(runs.map((r) => [r.runId, r]))
+  return runs.filter((r) => r.parentRunId === null
+    || !byId.has(r.parentRunId) || isInCycle(r, byId))
+}
+
 export const formatSummary = (
   run: RunSummary, counts = { warns: run.warns, errors: run.errors },
 ): string => [
@@ -357,7 +422,7 @@ export const formatSummary = (
 
 /** The last `limit` top-level runs, newest first. */
 export const listLines = (runs: RunSummary[], limit = 20): string[] =>
-  runs.filter((r) => r.parentRunId === null).slice(-limit).reverse()
+  topLevelRuns(runs).slice(-limit).reverse()
     .map((r) => formatSummary(r, treeCounts(runs, r.runId)))
 
 const commonKeys = new Set([
@@ -365,25 +430,29 @@ const commonKeys = new Set([
   "event",
 ])
 
-const formatValue = (value: unknown): string =>
+const formatValue = (value: unknown): string => printable(
   typeof value === "string" && /^[^\s"=]+$/.test(value)
-    ? value : JSON.stringify(value)
+    ? value : JSON.stringify(value) ?? String(value))
 
 /** One readable line for an event. */
 export const formatEvent = (event: Event): string => {
-  const time = str(event.ts)?.slice(11, 23) ?? "-"
+  const ts = str(event.ts)
+  const time = ts === null ? "-" : safeSlice(ts, 11, 23)
   const fields = Object.entries(event)
     .filter(([key]) => !commonKeys.has(key))
     .map(([key, value]) => `${key}=${formatValue(value)}`)
-  return `${time}  ${String(event.event ?? "?").padEnd(13)} ${
-    fields.join(" ")}`.trimEnd()
+  return printable(`${time}  ${String(event.event ?? "?").padEnd(13)} ${
+    fields.join(" ")}`.trimEnd())
 }
 
 export const showLines = (
   home: string, runs: RunSummary[], runId: string, tree: boolean,
-  depth = 0,
+  depth = 0, seen: Set<string> = new Set(),
 ): string[] => {
   const pad = "  ".repeat(depth)
+  // A parent cycle (a corrupt or hand-edited file) prints each run once.
+  if (seen.has(runId)) return [`${pad}${runId}  (cycle: shown above)`]
+  seen.add(runId)
   const run = runs.find((r) => r.runId === runId)
   const header = run
     ? `${run.runId}  ${run.tool}  ${run.status}  exit=${run.exit ?? "-"}  ${
@@ -395,7 +464,8 @@ export const showLines = (
   }
   if (tree) {
     for (const child of childrenByParent(runs).get(runId) ?? []) {
-      lines.push(...showLines(home, runs, child.runId, true, depth + 1))
+      lines.push(...showLines(
+        home, runs, child.runId, true, depth + 1, seen))
     }
   }
   return lines
@@ -413,7 +483,7 @@ const textOf = (content: unknown): string => {
 
 const oneLine = (text: string, max = 100): string => {
   const flat = text.replace(/\s+/g, " ").trim()
-  return flat.length > max ? `${flat.slice(0, max)}...` : flat
+  return flat.length > max ? `${safeSlice(flat, 0, max)}...` : flat
 }
 
 const toolArg = (input: Fields): string =>
@@ -592,38 +662,110 @@ export const extractChallenges = (markdown: string): string | null => {
   return (next ? rest.slice(0, next.index) : rest).trim()
 }
 
-/** `30d`, `12h`, or a date; returns the cutoff time. */
+/** The longest `--since` window: about ten years. */
+export const maxSinceDays = 3650
+
+/** `YYYY-MM-DD`, then optionally `[T ]HH:MM[:SS[.fff]]` and a zone. */
+const isoSince = new RegExp("^(\\d{4})-(\\d{2})-(\\d{2})"
+  + "(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:\\d{2})?)?$")
+
+/**
+ * `Nd`, `Nh`, or an ISO date or datetime (`2026-11-01`,
+ * `2026-11-01T10:00`, `2026-11-01 10:00:00Z`); returns the cutoff time.
+ * A datetime without a zone is local time; a date alone is UTC midnight.
+ * Anything else, such as `7`, `Nov 1`, or a window over 3650 days, throws
+ * a `UsageError`.
+ */
 export const parseSince = (since: string, now: Date = new Date()): Date => {
-  const rel = /^(\d+)([dh])$/.exec(since.trim())
+  const bad = (why: string): UsageError => new UsageError(
+    `bad --since "${since}": ${why}; use 30d, 12h, or a date like 2026-11-01`)
+  const text = since.trim()
+  const rel = /^(\d+)([dh])$/.exec(text)
   if (rel) {
-    const unit = rel[2] === "d" ? dayMs : dayMs / 24
-    return new Date(now.getTime() - Number(rel[1]) * unit)
+    const n = Number(rel[1])
+    const days = rel[2] === "d" ? n : n / 24
+    if (!Number.isSafeInteger(n) || n < 1 || days > maxSinceDays) {
+      throw bad(`the window must be 1 to ${maxSinceDays} days`)
+    }
+    return new Date(now.getTime() - days * dayMs)
   }
-  const date = new Date(since)
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`bad --since "${since}": use 30d, 12h, or a date`)
+  const iso = isoSince.exec(text)
+  if (!iso) throw bad("not a window or an ISO date")
+  const [y, mo, d] = iso.slice(1, 4).map(Number) as [number, number, number]
+  const date = new Date(text.replace(" ", "T"))
+  const day = new Date(Date.UTC(y, mo - 1, d))
+  // JS rolls 2026-02-31 over to March; refuse days the month lacks.
+  if (Number.isNaN(date.getTime()) || day.getUTCMonth() !== mo - 1
+    || day.getUTCDate() !== d) {
+    throw bad("not a real date or time")
   }
   return date
 }
 
+/** The run's hex suffix when it names only this run, else the whole id. */
+export const shortId = (runs: RunSummary[], runId: string): string => {
+  const hex = runId.slice(-4)
+  const hits = new Set(runs.map((r) => r.runId).filter((id) => id.includes(hex)))
+  return hits.size === 1 ? hex : runId
+}
+
+/** The newest `agent` event's outcome, else the run's status. */
+const agentOutcome = (run: RunSummary, events: Event[]): string => {
+  const agent = events.filter((e) => e.event === "agent").at(-1)
+  return str(agent?.outcome) ?? run.status
+}
+
+/**
+ * The learning view of agent runs since a time, newest first. Each run gets
+ * a header (id, outcome, time), its Challenges text or "(no report)", and
+ * each failed agent command as a ready-to-run `ud runs agent ... --at N`
+ * line. A run counts as an agent run when it has an `agent` or
+ * `agent-session` event, or a `report.md`.
+ */
 export const challengeLines = (
   home: string, runs: RunSummary[], since: Date,
 ): string[] => {
   const out: string[] = []
   for (const run of [...runs].reverse()) {
-    if (Date.parse(run.ts) < since.getTime()) continue
-    let report: string
+    if (startMs(run) < since.getTime()) continue
+    let paths: { file: string; dir: string }
     try {
-      const file = join(checkedRunPaths(home, run.runId).dir, "report.md")
-      report = readFileSync(file, "utf8")
+      paths = checkedRunPaths(home, run.runId)
     } catch {
       continue
     }
-    const body = extractChallenges(report)
-    out.push(`== ${run.runId}  ${run.ts.slice(0, 19).replace("T", " ")}`)
-    out.push(body ?? "(no Challenges section)", "")
+    const events = readJsonl(paths.file)
+    let report: string | null = null
+    try {
+      report = readFileSync(join(paths.dir, "report.md"), "utf8")
+    } catch {
+      report = null
+    }
+    const isAgent = run.agent !== null || report !== null || events.some(
+      (e) => e.event === "agent" || e.event === "agent-session")
+    if (!isAgent) continue
+    const time = safeSlice(run.ts, 0, 19).replace("T", " ") || "-"
+    out.push(`== ${run.runId}  ${agentOutcome(run, events)}  ${time}`)
+    if (report === null) {
+      out.push("(no report)")
+    } else {
+      out.push(extractChallenges(report) ?? "(no Challenges section)")
+    }
+    const failed = events.filter((e) => e.event === "agent-command"
+      && e.exit !== 0)
+    if (failed.length) out.push("failed commands:")
+    const id = shortId(runs, run.runId)
+    for (const e of failed) {
+      const exit = `exit ${num(e.exit) ?? "?"}`
+      const cmd = oneLine(str(e.cmd) ?? "", 120)
+      const line = num((e.ref as Fields | null)?.line)
+      out.push(line === null
+        ? `  (not in agent.jsonl)  # ${exit}: ${cmd}`
+        : `  ud runs agent ${id} --at ${line}  # ${exit}: ${cmd}`)
+    }
+    out.push("")
   }
-  return out
+  return out.map(printable)
 }
 
 // ---------------------------------------------------------------- files
@@ -842,10 +984,10 @@ export const cutStreamLine = (
   try {
     obj = JSON.parse(line)
   } catch {
-    return `${line.slice(0, max - 5)}[cut]`
+    return cutText(line, max - 5)
   }
   const cutAll = (value: unknown, n: number): unknown => {
-    if (typeof value === "string") return cutString(value, n)
+    if (typeof value === "string") return cutText(value, n)
     if (Array.isArray(value)) return value.map((v) => cutAll(v, n))
     if (value && typeof value === "object") {
       return Object.fromEntries(
@@ -883,7 +1025,7 @@ export const createTap = (opts: TapOptions): Tap => {
   const pending = new Map<string, string>()
   const state = {
     lineNo: 0, copiedBytes: 0, copying: agentFile !== null, failed: false,
-    session: false,
+    session: false, capped: false,
   }
 
   const fail = (error: unknown): void => {
@@ -900,6 +1042,7 @@ export const createTap = (opts: TapOptions): Tap => {
     const bytes = Buffer.byteLength(line)
     if (state.copiedBytes + bytes > cap) {
       state.copying = false
+      state.capped = true
       return false
     }
     appendFileSync(agentFile, line, { mode: 0o600 })
@@ -974,12 +1117,27 @@ export const createTap = (opts: TapOptions): Tap => {
       }
     },
     finish(): void {
-      if (state.failed) return
-      try {
-        for (const cmd of pending.values()) {
-          run.event("agent-command", { cmd, exit: null, ref: null })
+      if (!state.failed) {
+        try {
+          for (const cmd of pending.values()) {
+            run.event("agent-command", { cmd, exit: null, ref: null })
+          }
+          pending.clear()
+        } catch (error) {
+          fail(error)
         }
-        pending.clear()
+      }
+      // git_mf waits for the whole pipeline, so this lands before its `end`.
+      if (!agentFile || !existsSync(agentFile)) return
+      try {
+        const data = readFileSync(agentFile)
+        run.event("artifact", {
+          kind: "agent-stream",
+          path: "agent.jsonl",
+          bytes: data.length,
+          sha256: createHash("sha256").update(data).digest("hex"),
+          truncated: state.capped,
+        })
       } catch (error) {
         fail(error)
       }
@@ -1013,12 +1171,13 @@ export const runTap = async (opts: TapOptions): Promise<void> => {
 
 // ---------------------------------------------------------------- program
 
+/** Every line `ud runs` prints goes through `printable`. */
 const print = (lines: string[]): void => {
-  if (lines.length) process.stdout.write(`${lines.join("\n")}\n`)
+  if (lines.length) process.stdout.write(`${printable(lines.join("\n"))}\n`)
 }
 
 const note = (text: string): void => {
-  process.stderr.write(`ud runs: ${text}\n`)
+  process.stderr.write(`ud runs: ${printable(text)}\n`)
 }
 
 /** `512 B`, `2.1 KB`, `3.4 MB`. */
@@ -1042,9 +1201,8 @@ const guard = (fn: () => void | Promise<void>) => async (): Promise<void> => {
   try {
     await fn()
   } catch (error) {
-    process.stderr.write(`ud runs: ${
-      error instanceof Error ? error.message : String(error)}\n`)
-    process.exitCode = 1
+    note(error instanceof Error ? error.message : String(error))
+    process.exitCode = error instanceof UsageError ? 2 : 1
   }
 }
 
@@ -1061,7 +1219,7 @@ export const createProgram = (env: Env = process.env): Command => {
   const home = (): string => bokuHome(env)
   const listAction = (opts: { limit: string }) => guard(() => {
     const runs = loadRuns(home())
-    if (!runs.some((r) => r.parentRunId === null)) {
+    if (!topLevelRuns(runs).length) {
       note(`no runs yet in ${join(home(), "runs")}`)
       return
     }
@@ -1084,6 +1242,10 @@ export const createProgram = (env: Env = process.env): Command => {
     .option("--tree", "include child runs")
     .action((query: string, opts: { tree?: boolean }) => guard(() => {
       const runs = loadRuns(home())
+      if (query === "last" && !topLevelRuns(runs).length) {
+        note(`no runs yet in ${join(home(), "runs")}`)
+        return
+      }
       const runId = resolveRunId(runs, query, { note })
       print(showLines(home(), runs, runId, opts.tree === true))
     })())
@@ -1109,10 +1271,12 @@ export const createProgram = (env: Env = process.env): Command => {
       })())
 
   program.command("challenges")
-    .description("every Challenges section, newest first")
-    .option("--since <when>", "30d, 12h, or a date", "30d")
+    .description("agent runs, newest first: Challenges, outcome, and an "
+      + "--at line per failed command")
+    .option("--since <when>", "Nd, Nh, or an ISO date or datetime", "30d")
     .action((opts: { since: string }) => guard(() => {
-      print(challengeLines(home(), loadRuns(home()), parseSince(opts.since)))
+      const since = parseSince(opts.since)
+      print(challengeLines(home(), loadRuns(home()), since))
     })())
 
   program.command("redact-file <file>")

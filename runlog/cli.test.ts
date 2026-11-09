@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import {
   appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
@@ -8,13 +8,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  cutStreamLine, dayOf, extractChallenges, liveStatus, parseExitCode,
-  parseSince, pathBytes, pruneSummary, renderStreamLine, tapNotice,
+  cutStreamLine, cutText, dayOf, describeStreamLine, extractChallenges,
+  formatEvent, liveStatus, parseExitCode, parseSince, pathBytes, printable,
+  pruneSummary, renderStreamLine, safeSlice, tapNotice, UsageError,
   unwrapShell, type Event, type LiveProbe,
 } from "./cli.ts"
 import {
-  buildEvent, indexLine, indexPath, runFilePath, startRun, type Env,
-  type RunIdentity, type RunLog,
+  buildEvent, checkedRunPaths, indexLine, indexPath, runFilePath, startRun,
+  type Env, type RunIdentity, type RunLog,
 } from "./runlog.ts"
 
 const cliPath = join(import.meta.dir, "cli.ts")
@@ -120,6 +121,20 @@ const noonPlus = (day: string, ms: number): Date =>
 
 const stampFor = (day: string): string => `${day}T120000Z`
 
+/** Appends raw events to a planted run's file. */
+const appendEvents = (home: string, runId: string, events: Event[]): void =>
+  appendFileSync(runFilePath(home, runId),
+    events.map((e) => `${JSON.stringify(e)}\n`).join(""))
+
+const esc = "\x1b"
+/** True when text has a raw C0 (other than newline and tab), DEL, or C1. */
+const hasControl = (text: string): boolean =>
+  /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)
+/** True when text has a surrogate that isn't half of a pair. */
+const hasLoneSurrogate = (text: string): boolean =>
+  /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+    .test(text)
+
 describe("pure helpers", () => {
   test("renderStreamLine prints Codex items and unknown lines", () => {
     const item = JSON.stringify({ type: "item.completed", item: {
@@ -177,7 +192,76 @@ describe("pure helpers", () => {
     const now = new Date("2026-11-09T00:00:00Z")
     expect(parseSince("30d", now).toISOString()).toBe("2026-10-10T00:00:00.000Z")
     expect(parseSince("12h", now).toISOString()).toBe("2026-11-08T12:00:00.000Z")
-    expect(() => parseSince("soon", now)).toThrow()
+    expect(parseSince("3650d", now).getTime()).toBe(now.getTime() - 3650 * dayMs)
+    expect(parseSince("2026-11-01", now).toISOString())
+      .toBe("2026-11-01T00:00:00.000Z")
+    expect(parseSince("2026-11-01T10:00Z", now).toISOString())
+      .toBe("2026-11-01T10:00:00.000Z")
+    expect(parseSince("2026-11-01 10:00:30+02:00", now).toISOString())
+      .toBe("2026-11-01T08:00:30.000Z")
+    expect(parseSince("2026-11-01T10:00", now).getTime())
+      .toBe(new Date(2026, 10, 1, 10).getTime())
+  })
+
+  test("parseSince refuses anything but Nd, Nh, or an ISO date", () => {
+    for (const bad of [
+      "7", "Nov 1", "11/01", "2026", "99999999999d", "3651d", "87601h", "0d",
+      "-1d", "1.5d", "soon", "", "2026-02-31", "2026-13-01", "2026-11-01T25:00",
+    ]) {
+      expect(() => parseSince(bad)).toThrow(UsageError)
+    }
+    expect(() => parseSince("7")).toThrow(/use 30d, 12h, or a date/)
+  })
+
+  test("printable escapes C0, DEL, and C1 but keeps newline and tab", () => {
+    expect(printable("a\tb\nc")).toBe("a\tb\nc")
+    expect(printable(`${esc}]52;c;cHduZWQK\x07`))
+      .toBe("\\x1b]52;c;cHduZWQK\\x07")
+    expect(printable("\x00\r\x7f\x9b\u00a0é😀"))
+      .toBe("\\x00\\x0d\\x7f\\x9b\u00a0é😀")
+    expect(printable(printable(`${esc}[31m`))).toBe("\\x1b[31m")
+  })
+
+  test("formatEvent escapes an OSC 52 payload in a session id", () => {
+    const osc = `x${esc}]52;c;cHduZWQK\x07y`
+    const line = formatEvent({
+      event: "agent-session", ts: "2026-11-09T00:00:00.000Z", session_id: osc,
+    })
+    expect(hasControl(line)).toBe(false)
+    expect(line).toContain("session_id=x\\x1b]52;c;cHduZWQK\\x07y")
+    const spaced = formatEvent({ event: "warn", msg: `a b${esc}[2J\u009b` })
+    expect(hasControl(spaced)).toBe(false)
+    expect(spaced).toContain("\\u001b[2J\\x9b")
+  })
+
+  test("cuts never leave a lone surrogate", () => {
+    const emoji = "😀".repeat(10)
+    for (let n = 0; n <= emoji.length; n++) {
+      expect(hasLoneSurrogate(safeSlice(emoji, 0, n))).toBe(false)
+      expect(hasLoneSurrogate(safeSlice(emoji, n))).toBe(false)
+      expect(hasLoneSurrogate(cutText(emoji, n))).toBe(false)
+    }
+    expect(safeSlice("a😀", 0, 2)).toBe("a")
+    expect(cutText("a😀b", 2)).toBe("a[cut]")
+
+    // Not JSON: the cut lands mid-pair at 16379 units.
+    const plain = `a${"😀".repeat(9000)}`
+    const cutPlain = cutStreamLine(plain)
+    expect(cutPlain.length).toBeLessThanOrEqual(16384)
+    expect(cutPlain.endsWith("[cut]")).toBe(true)
+    expect(hasLoneSurrogate(cutPlain)).toBe(false)
+    // JSON: every string is cut at an odd unit count.
+    const json = JSON.stringify({ type: "user", text: `a${"😀".repeat(9000)}` })
+    const cutJson = cutStreamLine(json)
+    expect(cutJson.length).toBeLessThanOrEqual(16384)
+    const text = JSON.parse(cutJson).text as string
+    expect(text.endsWith("[cut]")).toBe(true)
+    expect(hasLoneSurrogate(text)).toBe(false)
+    expect(hasLoneSurrogate(cutJson)).toBe(false)
+
+    const line = JSON.stringify({ type: "result", subtype: "success",
+      result: `a${"😀".repeat(80)}` })
+    expect(hasLoneSurrogate(describeStreamLine(line))).toBe(false)
   })
 
   test("liveStatus checks pid, pid_start, and boot_id", () => {
@@ -241,6 +325,19 @@ describe("tap", () => {
     expect(failed.ref).toEqual({ file: "agent.jsonl", line: 10 })
     const copied = copy.split("\n")[9]!
     expect(JSON.parse(copied).message.content[0].tool_use_id).toBe("toolu_04")
+
+    // One artifact event for the stream, after the commands, before `end`.
+    const artifacts = events.filter((e) => e.event === "artifact")
+    expect(artifacts).toEqual([expect.objectContaining({
+      kind: "agent-stream", path: "agent.jsonl",
+      bytes: Buffer.byteLength(copy),
+      sha256: createHash("sha256").update(copy).digest("hex"),
+      truncated: false,
+    })])
+    const at = events.findIndex((e) => e.event === "artifact")
+    expect(at).toBeGreaterThan(
+      events.findLastIndex((e) => e.event === "agent-command"))
+    expect(at).toBe(events.length - 2)
   }))
 
   test("codex stream: copy, commands, session", withHome(async (home) => {
@@ -361,6 +458,12 @@ describe("tap", () => {
     expect(commands[0]).toMatchObject({ ref: { line: 1 } })
     expect(commands[0]!.truncated).toBeUndefined()
     expect(commands[2]).toMatchObject({ ref: null, truncated: true })
+    const artifact = readEvents(runFilePath(home, run.runId!))
+      .find((e) => e.event === "artifact")
+    expect(artifact).toMatchObject({
+      kind: "agent-stream", path: "agent.jsonl", truncated: true,
+      bytes: statSync(join(run.runDir!, "agent.jsonl")).size,
+    })
   }))
 
   test("a run folder deleted mid-stream: tap-failed, drain, exit 0",
@@ -406,6 +509,15 @@ describe("tap", () => {
       expect(readdirSync(dir)).toEqual(["home"])
       expect(readdirSync(home)).toEqual([])
     }))
+
+  test("an empty stream writes no artifact event", withHome(async (home) => {
+    const run = hostRun(home)
+    await runCli(["tap", "--cli", "codex"],
+      baseEnv(home, { BOKU_RUN_ID: run.runId! }), "")
+    run.end(0)
+    const events = readEvents(runFilePath(home, run.runId!))
+    expect(events.filter((e) => e.event === "artifact")).toHaveLength(0)
+  }))
 
   test("without a run it only shows progress", withHome(async (home) => {
     const result = await runCli(["tap", "--cli", "codex"], baseEnv(home),
@@ -524,6 +636,103 @@ describe("reader", () => {
       expect(result.exitCode).toBe(0)
       expect(result.stdout.split("\n")[0]).toContain(want)
     }
+  }))
+
+  test("a child whose parent day was pruned is top-level",
+    withHome(async (home) => {
+      const ok = { exit: 0, status: "ok" }
+      const parent = `${stampFor(dayAgo(12))}-sync-aaaa`
+      const child = `${stampFor(dayAgo(11))}-git_mf-bbbb`
+      const grandchild = `${stampFor(dayAgo(11))}-just-cccc`
+      plantRun(home, parent, { end: ok, indexed: true })
+      plantRun(home, child, {
+        parent, end: { exit: 3, status: "stopped" }, indexed: true,
+      })
+      plantRun(home, grandchild, { parent: child, end: ok, indexed: true })
+      appendEvents(home, grandchild, [{ event: "warn", code: "x" }])
+      rmSync(join(home, "runs", dayAgo(12)), { recursive: true, force: true })
+
+      const list = await runCli([], baseEnv(home))
+      const rows = list.stdout.trimEnd().split("\n")
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatch(/stopped .*git_mf-bbbb$/)
+      const last = await runCli(["show", "last", "--tree"], baseEnv(home))
+      expect(last.exitCode).toBe(0)
+      expect(last.stdout.split("\n")[0]).toContain(child)
+      expect(last.stdout).toContain(`  ${grandchild}  just  ok`)
+    }))
+
+  test("a parent cycle prints each run once", withHome(async (home) => {
+    const ok = { exit: 0, status: "ok" }
+    const a = `${stampFor(dayAgo(0))}-a-aaaa`
+    const b = `${stampFor(dayAgo(0))}-b-bbbb`
+    plantRun(home, a, { parent: b, end: ok, ts: noonPlus(dayAgo(0), 1) })
+    plantRun(home, b, { parent: a, end: ok, ts: noonPlus(dayAgo(0), 2) })
+    const tree = await runCli(["show", "aaaa", "--tree"], baseEnv(home))
+    expect(tree.exitCode).toBe(0)
+    const heads = tree.stdout.split("\n").filter((l) => /^ *\d{6}T/.test(l))
+    expect(heads.map((l) => l.trim().split(" ")[0])).toEqual([a, b, a])
+    expect(heads[2]).toContain("(cycle: shown above)")
+    const list = await runCli([], baseEnv(home))
+    expect(list.exitCode).toBe(0)
+    expect(list.stdout.trimEnd().split("\n")).toHaveLength(2)
+    const self = `${stampFor(dayAgo(0))}-self-cccc`
+    plantRun(home, self, { parent: self, end: ok })
+    const own = await runCli(["show", "cccc", "--tree"], baseEnv(home))
+    expect(own.exitCode).toBe(0)
+    expect(own.stdout).toContain("(cycle: shown above)")
+  }))
+
+  test("show last on an empty home says so and exits 0",
+    withHome(async (home) => {
+      for (const args of [["show", "last"], ["show", "last", "--tree"]]) {
+        const result = await runCli(args, baseEnv(home))
+        expect(result.exitCode).toBe(0)
+        expect(result.stdout).toBe("")
+        expect(result.stderr).toContain("no runs yet")
+      }
+    }))
+
+  test("readers escape terminal controls", withHome(async (home) => {
+    const ok = { exit: 0, status: "ok" }
+    const runId = `${stampFor(dayAgo(0))}-git_mf-e5c0`
+    plantRun(home, runId, { end: ok })
+    const osc = `x${esc}]52;c;cHduZWQK\x07y`
+    const evil = `evil${esc}]0;PWNED\x07.rs`
+    appendEvents(home, runId, [
+      { event: "agent-session", cli: "claude", session_id: osc },
+      { event: "artifact", kind: "remerge-diff", path: evil },
+    ])
+    const dir = checkedRunPaths(home, runId).dir
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "report.md"),
+      `## Challenges\n\nRed ${esc}[31mtext${esc}[0m and ${esc}[2J\n`)
+    writeFileSync(join(dir, "agent.jsonl"), [
+      { type: "system", subtype: "init", session_id: osc },
+      { type: "assistant", message: { content: [
+        { type: "text", text: `done ${esc}]0;PWNED-TITLE\x07${esc}[2J` },
+        { type: "tool_use", id: "t1", name: "Read",
+          input: { file_path: `/repo/${evil}` } },
+      ] } },
+    ].map((l) => `${JSON.stringify(l)}\n`).join(""))
+
+    const outputs = await Promise.all([
+      ["show", "e5c0"], ["show", "last", "--tree"], ["agent", "e5c0"],
+      ["agent", "last", "--at", "2"], ["agent", "e5c0", "--at", "1", "--raw"],
+      ["challenges"], [],
+    ].map((args) => runCli(args, baseEnv(home))))
+    for (const out of outputs) {
+      expect(out.exitCode).toBe(0)
+      expect(hasControl(out.stdout)).toBe(false)
+    }
+    const [show, , , at, , challenges] = outputs.map((o) => o.stdout)
+    expect(show).toContain("session_id=x\\x1b]52;c;cHduZWQK\\x07y")
+    expect(show).toContain("path=evil\\x1b]0;PWNED\\x07.rs")
+    expect(at).toContain("Read: /repo/evil\\x1b]0;PWNED\\x07.rs")
+    expect(at).toContain("done \\x1b]0;PWNED-TITLE\\x07\\x1b[2J")
+    expect(challenges).toContain("Red \\x1b[31mtext\\x1b[0m and \\x1b[2J")
+    const query = await runCli(["show", `zz${esc}[2J`], baseEnv(home))
+    expect(hasControl(query.stderr)).toBe(false)
   }))
 
   test("an empty log says so", withHome(async (home) => {
@@ -707,6 +916,70 @@ describe("reader", () => {
     expect(result.stdout).toContain("None")
     expect(result.stdout).not.toContain("## Notes")
   }))
+
+  test("challenges: outcome, failed commands as --at lines, no report",
+    withHome(async (home) => {
+      const day = dayAgo(0)
+      const ok = { exit: 0, status: "ok" }
+      const reported = `${stampFor(day)}-git_mf-1a2b`
+      const crashed = `${stampFor(day)}-git_mf-3c4d`
+      const plain = `${stampFor(day)}-sync-5e6f`
+      plantRun(home, reported, { end: ok, ts: noonPlus(day, 1) })
+      plantRun(home, crashed, {
+        end: { exit: 1, status: "failed" }, ts: noonPlus(day, 2),
+      })
+      plantRun(home, plain, { end: ok, ts: noonPlus(day, 3) })
+      appendEvents(home, reported, [
+        { event: "agent-session", cli: "claude", session_id: "s1" },
+        { event: "agent-command", cmd: "git status", exit: 0,
+          ref: { file: "agent.jsonl", line: 4 } },
+        { event: "agent-command", cmd: `just\n test ${esc}[2J`, exit: 1,
+          ref: { file: "agent.jsonl", line: 10 } },
+        { event: "agent-command", cmd: "cargo build", exit: 101, ref: null,
+          truncated: true },
+        { event: "agent", cli: "claude", outcome: "merged", exit: 0 },
+      ])
+      const dir = checkedRunPaths(home, reported).dir
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "report.md"),
+        "## Summary\n\nok\n\n## Challenges\n\nFlaky check.\n")
+      appendEvents(home, crashed, [
+        { event: "agent-session", cli: "codex", session_id: "s2" },
+        { event: "agent-command", cmd: "just lint", exit: null,
+          ref: { file: "agent.jsonl", line: 7 } },
+        { event: "agent", cli: "codex", outcome: "report-missing", exit: 1 },
+      ])
+
+      const result = await runCli(["challenges"], baseEnv(home))
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe([
+        `== ${crashed}  report-missing  ${day.replace(/^(..)(..)(..)$/,
+          "20$1-$2-$3")} 12:00:00`,
+        "(no report)",
+        "failed commands:",
+        "  ud runs agent 3c4d --at 7  # exit ?: just lint",
+        "",
+        `== ${reported}  merged  ${day.replace(/^(..)(..)(..)$/,
+          "20$1-$2-$3")} 12:00:00`,
+        "Flaky check.",
+        "failed commands:",
+        "  ud runs agent 1a2b --at 10  # exit 1: just test \\x1b[2J",
+        "  (not in agent.jsonl)  # exit 101: cargo build",
+        "", "",
+      ].join("\n"))
+      expect(result.stdout).not.toContain(plain)
+    }))
+
+  test("challenges --since refuses a bad window with exit 2",
+    withHome(async (home) => {
+      for (const bad of ["7", "Nov 1", "99999999999d"]) {
+        const result = await runCli(["challenges", "--since", bad],
+          baseEnv(home))
+        expect(result.exitCode).toBe(2)
+        expect(result.stdout).toBe("")
+        expect(result.stderr).toContain(`bad --since "${bad}"`)
+      }
+    }))
 })
 
 describe("maintenance", () => {
