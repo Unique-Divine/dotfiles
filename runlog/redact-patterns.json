@@ -1,0 +1,15 @@
+[
+  { "kind": "github-token", "regex": "gh[pousr]_[A-Za-z0-9]{20,}" },
+  { "kind": "github-pat", "regex": "github_pat_[A-Za-z0-9_]{20,}" },
+  { "kind": "anthropic-key", "regex": "sk-ant-[A-Za-z0-9_-]{20,}" },
+  { "kind": "api-key", "regex": "sk-[A-Za-z0-9_-]{20,}" },
+  { "kind": "slack-token", "regex": "xox[abpr]-[A-Za-z0-9-]{10,}" },
+  { "kind": "aws-key", "regex": "AKIA[0-9A-Z]{16}" },
+  { "kind": "gitlab-token", "regex": "glpat-[A-Za-z0-9_-]{20,}" },
+  { "kind": "jwt", "regex": "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}" },
+  { "kind": "bearer", "regex": "(?<=Bearer )[A-Za-z0-9._~+/=-]{8,}" },
+  { "kind": "token-value", "regex": "(?<=token=)[^\\s&\"']+" },
+  { "kind": "secret-value", "regex": "(?<=secret=)[^\\s&\"']+" },
+  { "kind": "password-value", "regex": "(?<=password=)[^\\s&\"']+" },
+  { "kind": "api-key-value", "regex": "(?<=api_key=)[^\\s&\"']+" }
+]
