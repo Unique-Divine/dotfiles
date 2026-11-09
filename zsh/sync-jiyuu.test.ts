@@ -175,6 +175,32 @@ describe("sync-jiyuu.sh", () => {
     expect(result.stderr).toContain("left Jiyuu as it is")
   })
 
+  test("logs its own run and links git_mf beneath it", async () => {
+    const { boku, root } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "printf local > jiyuu/LOCAL")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    temporaryRoots.push(home)
+    const result = await run(root, `bash ${scriptPath}`, {
+      GIT_ALLOW_PROTOCOL: "file",
+      REPO: root,
+      BOKU_HOME: home,
+    })
+    expect(result.exitCode, result.stderr).toBe(0)
+    const text = await expectOk(home, "cat runs/*/*.jsonl")
+    const events = text.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    const jiyuu = events.filter((e) => e.tool === "sync-jiyuu")
+    const gitMf = events.filter((e) => e.tool === "git_mf")
+    expect(jiyuu.some((e) => e.code === "jiyuu-left-as-is")).toBe(true)
+    expect(jiyuu.find((e) => e.event === "end")).toMatchObject({
+      exit: 0, status: "ok",
+    })
+    expect(gitMf[0].parent_run_id).toBe(jiyuu[0].run_id)
+    expect(gitMf.find((e) => e.event === "end")).toMatchObject({
+      exit: 2, status: "stopped",
+    })
+  })
+
   test.each(["staged", "unstaged", "untracked"])(
     "leaves a %s Jiyuu checkout untouched",
     async (state) => {

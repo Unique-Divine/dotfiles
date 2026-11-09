@@ -179,8 +179,16 @@ sync:
     runlog_step() { shift; "$@"; }
     runlog_end() { :; }
   fi
+  if ! declare -F runlog_trap_signals >/dev/null; then
+    runlog_trap_signals() {
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+    }
+  fi
   runlog_start sync
   trap 'runlog_end $?' EXIT
+  runlog_trap_signals
   i_bash_stamp="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/i-bash.stamp"
   i_bash_max_age_seconds=$((24 * 60 * 60))
   if [[ ! -f "$i_bash_stamp" ]] || (( $(date +%s) \

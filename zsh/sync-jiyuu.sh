@@ -16,8 +16,16 @@ if ! declare -F runlog_start >/dev/null; then
   runlog_step() { shift; "$@"; }
   runlog_end() { :; }
 fi
+if ! declare -F runlog_trap_signals >/dev/null; then
+  runlog_trap_signals() {
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  }
+fi
 runlog_start sync-jiyuu
 trap 'runlog_end $?' EXIT
+runlog_trap_signals
 
 fail() {
   echo "sync-jiyuu: $*" >&2
