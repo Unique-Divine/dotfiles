@@ -483,7 +483,78 @@ fn nibi_stop_all_lists_and_terminates_every_match() {
         assert_eq!(status.signal(), Some(15));
     }
     let calls = fs::read_to_string(temp.path().join("pgrep-calls")).unwrap();
-    assert!(calls.lines().all(|line| line == "-x nibid|nibiru"));
+    let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+    let expected = format!(
+        "-u {} -x nibid|nibiru",
+        String::from_utf8_lossy(&uid.stdout).trim()
+    );
+    assert!(calls.lines().all(|line| line == expected), "calls: {calls}");
+}
+
+/// Fake kill(1) whose SIGTERM fails. With `kill_first`, it SIGKILLs the
+/// target before failing, as if the process exited on its own. Other signals,
+/// including the `-0` liveness check, use Bash's builtin kill.
+fn write_failing_kill(temp: &TempDir, kill_first: bool) {
+    let exit_first = if kill_first {
+        "  builtin kill -KILL \"$3\"\n\
+         \x20 while builtin kill -0 \"$3\" 2>/dev/null; do sleep 0.05; done\n"
+    } else {
+        ""
+    };
+    write_executable(
+        &temp.path().join("kill"),
+        &format!(
+            "#!/usr/bin/env bash\n\
+             if [[ \"$1\" == -TERM ]]; then\n\
+             {exit_first}\
+             \x20 echo 'kill: Operation not permitted' >&2\n\
+             \x20 exit 1\n\
+             fi\n\
+             builtin kill \"$@\"\n"
+        ),
+    );
+}
+
+/// A live process that cannot be signaled fails at once instead of waiting
+/// for the timeout.
+#[test]
+fn nibi_stop_all_fails_fast_when_sigterm_is_refused() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+    write_failing_kill(&temp, false);
+
+    let started = std::time::Instant::now();
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(stderr(&output).contains(&format!(
+        "could not send SIGTERM to nibiru processes: {}",
+        node.pid
+    )));
+    assert!(!stdout(&output).contains("Sent SIGTERM"));
+    assert!(node.is_running());
+}
+
+/// A process that is gone by the time kill runs is dropped from the wait.
+#[test]
+fn nibi_stop_all_drops_a_process_that_already_exited() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+    write_failing_kill(&temp, true);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        stdout(&output)
+            .contains(&format!("Process {} exited before SIGTERM", node.pid))
+    );
+    assert!(stdout(&output).ends_with("Done stopping nibiru processes."));
 }
 
 /// Finding nothing to stop is a success, not an error.

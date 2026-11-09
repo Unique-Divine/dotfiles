@@ -402,11 +402,12 @@ fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
     if !args.all {
         bail!(
             "ud nibi stop sends no signal without --all. Run `ud nibi stop \
-             --all` to stop every nibid and nibiru process."
+             --all` to stop every nibid and nibiru process you own."
         );
     }
 
-    let pids = find_nibiru_pids()?;
+    let uid = current_uid()?;
+    let pids = find_nibiru_pids(&uid)?;
     if pids.is_empty() {
         println!("No nibiru processes are running.");
         println!("Done stopping nibiru processes.");
@@ -416,23 +417,30 @@ fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
     for pid in &pids {
         println!("Found nibiru process {pid}");
     }
-    for pid in &pids {
-        let status = Command::new("kill")
-            .args(["-TERM", "--", &pid.to_string()])
-            .status()
-            .context("failed to run kill")?;
-        if status.success() {
+    let mut signaled = Vec::new();
+    let mut unsignaled = Vec::new();
+    for &pid in &pids {
+        if send_signal("-TERM", pid)? {
             println!("Sent SIGTERM to process {pid}");
+            signaled.push(pid);
+        } else if send_signal("-0", pid)? {
+            unsignaled.push(pid.to_string());
         } else {
-            eprintln!("Could not signal process {pid}; it may have exited.");
+            println!("Process {pid} exited before SIGTERM");
         }
+    }
+    if !unsignaled.is_empty() {
+        bail!(
+            "could not send SIGTERM to nibiru processes: {}",
+            unsignaled.join(" ")
+        );
     }
 
     let deadline = Instant::now() + NIBIRU_STOP_TIMEOUT;
     loop {
-        let remaining = find_nibiru_pids()?
+        let remaining = find_nibiru_pids(&uid)?
             .into_iter()
-            .filter(|pid| pids.contains(pid))
+            .filter(|pid| signaled.contains(pid))
             .collect::<Vec<_>>();
         if remaining.is_empty() {
             println!("Done stopping nibiru processes.");
@@ -453,10 +461,33 @@ fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
     }
 }
 
-/// List PIDs whose process name is exactly nibid or nibiru.
-fn find_nibiru_pids() -> Result<Vec<u32>> {
+/// Send `signal` to `pid` with kill(1); return whether kill succeeded.
+fn send_signal(signal: &str, pid: u32) -> Result<bool> {
+    let status = Command::new("kill")
+        .args([signal, "--", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to run kill")?;
+    Ok(status.success())
+}
+
+/// Return the effective user ID from `id -u`, which works on Linux and macOS.
+fn current_uid() -> Result<String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to run id -u")?;
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || uid.parse::<u32>().is_err() {
+        bail!("id -u did not print a user ID");
+    }
+    Ok(uid)
+}
+
+/// List PIDs owned by `uid` whose process name is exactly nibid or nibiru.
+fn find_nibiru_pids(uid: &str) -> Result<Vec<u32>> {
     let output = Command::new("pgrep")
-        .args(["-x", NIBIRU_PROCESS_PATTERN])
+        .args(["-u", uid, "-x", NIBIRU_PROCESS_PATTERN])
         .output()
         .context("failed to inspect nibiru processes")?;
     match output.status.code() {
