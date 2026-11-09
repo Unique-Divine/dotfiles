@@ -250,12 +250,18 @@ run_stream_pipeline() {
 
 # Today's command, with the agent's own text output.
 run_plain_agent() {
-  set +e
+  local -a agent_cmd
   if [[ "$agent" == claude ]]; then
-    claude "${claude_args[@]}" <"$prompt_path"
+    agent_cmd=(claude "${claude_args[@]}")
   else
-    codex "${codex_args[@]}" ${run_dir:+-o "$run_dir/report.md"} \
-      <"$prompt_path"
+    agent_cmd=(codex "${codex_args[@]}" ${run_dir:+-o "$run_dir/report.md"})
+  fi
+  set +e
+  if (( json_out )); then
+    # Keep stdout JSONL: the agent's text goes to stderr.
+    "${agent_cmd[@]}" <"$prompt_path" >&2
+  else
+    "${agent_cmd[@]}" <"$prompt_path"
   fi
   agent_status=$?
   set -e
@@ -309,10 +315,9 @@ verify() {
 }
 
 # Paths whose contents never go into a saved diff.
+# '*.env*' also matches .env, .envrc, .env-prod, and app.env.local.
 secret_excludes=(
-  . ':(exclude,glob)**/secrets/**' ':(exclude,glob)**/*.env'
-  ':(exclude,glob)**/*.env.*' ':(exclude,glob)**/.env'
-  ':(exclude,glob)**/.env.*'
+  . ':(exclude,glob)**/secrets/**' ':(exclude,glob)**/*.env*'
 )
 
 # Check the report and save the diffs that show what the agent decided.

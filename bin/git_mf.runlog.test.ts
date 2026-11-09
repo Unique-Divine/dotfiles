@@ -313,18 +313,21 @@ describe("git_mf --agent verify rows", () => {
     await r.pushUpstream("base", ".env")
     await ok(r.clone, "git pull -q && git switch -q -c feature")
     await ok(r.clone,
-      "printf 'DB_PASSWORD=mine-0001\\n' > .env && printf mine > file.txt && git commit -qam mine")
+      "printf 'DB_PASSWORD=mine-0001\\n' > .env && printf 'export K=mine-0003\\n' > .envrc && printf mine > file.txt && git add . && git commit -qam mine")
     await r.pushUpstream("DB_PASSWORD=theirs-0002", ".env")
+    await r.pushUpstream("export K=theirs-0004", ".envrc")
     await r.pushUpstream("theirs")
     const home = await mkdtemp(join(tmpdir(), "boku-home-"))
     const PATH = await agentPath(r.root, "claude",
-      "git merge -q origin/main >/dev/null 2>&1; git checkout -q --theirs .env file.txt && git add .env file.txt && git commit -q --no-edit")
+      "git merge -q origin/main >/dev/null 2>&1; git checkout -q --theirs .env .envrc file.txt && git add .env .envrc file.txt && git commit -q --no-edit")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
     const diff = await runFile(home, "remerge.diff")
     // The other conflicted file is there, so the diff was really saved.
     expect(diff).toContain("file.txt")
     expect(diff).not.toContain("mine-0001")
+    expect(diff).not.toContain("mine-0003")
+    expect(diff).not.toContain("theirs-0004")
     expect(diff).not.toContain("theirs-0002")
   })
 })
@@ -380,6 +383,20 @@ describe("git_mf signals", () => {
 })
 
 describe("git_mf --json", () => {
+  test("the plain agent path keeps stdout pure JSONL", async () => {
+    const r = await conflict()
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    // No boku-runs on PATH: the agent runs in plain mode and prints text.
+    const PATH = await agentPath(r.root, "claude", `${resolveTheirs}; echo agent says hi`)
+    await Bun.$`rm ${join(r.root, "fake-bin", "boku-runs")}`
+    const res = await sh(r.clone, `${gitMf} main --agent --json`, { PATH, BOKU_HOME: home })
+    expect(res.code, res.stderr).toBe(0)
+    for (const l of res.stdout.trim().split("\n")) {
+      expect(() => JSON.parse(l)).not.toThrow()
+    }
+    expect(res.stderr).toContain("agent says hi")
+  })
+
   test("the no-target path keeps stdout pure JSONL", async () => {
     const r = await repoPair()
     await r.pushUpstream("two")
