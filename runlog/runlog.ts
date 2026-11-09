@@ -7,9 +7,9 @@
  */
 import { createHash, randomBytes } from "node:crypto"
 import {
-  accessSync, appendFileSync, chmodSync, closeSync, constants, mkdirSync,
+  accessSync, chmodSync, closeSync, constants, lstatSync, mkdirSync,
   openSync, readFileSync, readSync, renameSync, rmSync, statSync,
-  writeFileSync,
+  writeFileSync, writeSync,
 } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { join, resolve, sep } from "node:path"
@@ -98,23 +98,85 @@ const writerState = { disabled: false }
 
 export const redactPatterns: RedactPattern[] = patternsJson
 
-/** Every pattern matches case-insensitively, in both writers. */
-const compiledPatterns = (patterns: RedactPattern[]): [RegExp, string][] =>
-  patterns.map((p) => [new RegExp(p.regex, "gi"), `[redacted:${p.kind}]`])
+/**
+ * Every pattern matches case-insensitively, in both writers. A pattern jq
+ * or JS can't compile is skipped; redact-parity.test.ts fails on it.
+ */
+const compiledPatterns = (patterns: RedactPattern[]): [RegExp, string][] => {
+  const out: [RegExp, string][] = []
+  for (const p of patterns) {
+    try {
+      out.push([new RegExp(p.regex, "gi"), `[redacted:${p.kind}]`])
+    } catch {
+      // Skipped, as runlog_start skips a pattern jq rejects.
+    }
+  }
+  return out
+}
 
 const defaultCompiled = compiledPatterns(redactPatterns)
 
-/** Replaces every token shape in `text` with `[redacted:<kind>]`. */
+/** A PEM private key header, as `pem_lines` in runlog.sh finds it. */
+const pemBegin = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----/i
+/** One base64 body line, with an optional diff prefix kept. */
+const pemBody = /^([-+ ]?)[A-Za-z0-9+/=]{16,100}(\r?)$/
+/** A blank or `Proc-Type:`/`DEK-Info:` line inside a PEM block. */
+const pemKeep = /^[-+ ]?(?:(?:Proc-Type|DEK-Info):[^\n]*)?\r?$/i
+
+/**
+ * Replaces the body lines that follow a PEM private key header with
+ * `[redacted:pem]`. A block ends at the first line that is neither a body
+ * line, a blank line, nor a `Proc-Type:` or `DEK-Info:` header, so a lone
+ * header in code never eats the lines after it. Matches `pem_lines` in
+ * runlog.sh.
+ */
+export const redactPemLines = (lines: string[]): string[] => {
+  let inBlock = false
+  return lines.map((line) => {
+    if (line.includes("-----") && pemBegin.test(line)) {
+      inBlock = true
+      return line
+    }
+    if (!inBlock) return line
+    const body = pemBody.exec(line)
+    if (body) return `${body[1]}[redacted:pem]${body[2]}`
+    if (!pemKeep.test(line)) inBlock = false
+    return line
+  })
+}
+
+/** `redactPemLines` on a multi-line string; other strings pass through. */
+const redactPemText = (text: string): string =>
+  text.includes("\n") && pemBegin.test(text)
+    ? redactPemLines(text.split("\n")).join("\n") : text
+
+/**
+ * The replacement for one match: a `keep` group, when the pattern has one
+ * and it took part, stays readable in front of `[redacted:<kind>]`, as
+ * `"\(.keep // "")"` does in jq.
+ */
+const replacer = (replacement: string) =>
+  (...args: unknown[]): string => {
+    const groups = args.at(-1)
+    const keep = groups !== null && typeof groups === "object"
+      ? (groups as Record<string, string | undefined>).keep ?? "" : ""
+    return `${keep}${replacement}`
+  }
+
+/**
+ * Replaces every token shape in `text` with `[redacted:<kind>]`, after
+ * redacting PEM body lines.
+ */
 export const redact = (
   text: string,
   patterns: RedactPattern[] = redactPatterns,
 ): string => {
   const compiled = patterns === redactPatterns
     ? defaultCompiled : compiledPatterns(patterns)
-  let out = text
+  let out = redactPemText(text)
   for (const [regex, replacement] of compiled) {
     regex.lastIndex = 0
-    out = out.replace(regex, replacement)
+    out = out.replace(regex, replacer(replacement))
   }
   return out
 }
@@ -156,13 +218,35 @@ export const redactLine = (line: string): string => {
   return redact(text)
 }
 
-/** Redacts text one line at a time with `redactLine`. */
-export const redactLines = (text: string): string =>
-  text.split("\n").map(redactLine).join("\n")
+/**
+ * Redacts text one line at a time with `redactLine`, after the PEM body
+ * lines across the whole text.
+ */
+export const redactLines = (text: string): string => {
+  const lines = text.split("\n")
+  return (pemBegin.test(text) ? redactPemLines(lines) : lines)
+    .map(redactLine).join("\n")
+}
 
-/** Cuts a string to 512 characters plus `[cut]`. */
-export const cutString = (text: string, max = maxStringChars): string =>
-  text.length > max ? `${text.slice(0, max)}[cut]` : text
+/**
+ * Cuts a string to 512 code points plus `[cut]`, as jq's `.[:512]` counts
+ * them, so a surrogate pair is never split.
+ */
+export const cutString = (text: string, max = maxStringChars): string => {
+  // UTF-16 length is at least the code point count.
+  if (text.length <= max) return text
+  let points = 0
+  for (let i = 0; i < text.length; i++) {
+    if (points === max) return `${text.slice(0, i)}[cut]`
+    const unit = text.charCodeAt(i)
+    const next = text.charCodeAt(i + 1)
+    if (unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      i += 1
+    }
+    points += 1
+  }
+  return text
+}
 
 /** Redacts and cuts every string in a JSON-like value. */
 export const cleanValue = (value: unknown): unknown => {
@@ -319,9 +403,49 @@ export const ensureDir = (dir: string): void => {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
 }
 
-/** Appends one line with a single write; the file is created `0600`. */
+/**
+ * Creates one folder (`0700`) unless it exists. Throws on a symlink or a
+ * non-folder, so nothing is written through a planted link.
+ */
+export const ensureRealDir = (dir: string): void => {
+  try {
+    mkdirSync(dir, { mode: 0o700 })
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
+  const st = lstatSync(dir)
+  if (st.isSymbolicLink()) throw new Error(`${dir} is a symlink`)
+  if (!st.isDirectory()) throw new Error(`${dir} is not a folder`)
+}
+
+/** The `runs/` and day folders for a run, each checked by ensureRealDir. */
+export const ensureDayDir = (home: string, runId: string): void => {
+  ensureDir(home)
+  ensureRealDir(join(home, "runs"))
+  ensureRealDir(join(home, "runs", dayOfRunId(runId)))
+}
+
+const appendFlags = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT
+  | constants.O_NOFOLLOW
+
+/**
+ * Appends one line with a single write; the file is created `0600`.
+ * `O_NOFOLLOW` refuses a symlinked file.
+ */
 export const appendLine = (file: string, line: string): void => {
-  appendFileSync(file, `${line}\n`, { mode: 0o600 })
+  const fd = openSync(file, appendFlags, 0o600)
+  try {
+    writeSync(fd, `${line}\n`)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** Creates `file` (`0600`) and fails if anything, a link too, is there. */
+export const createExclusive = (file: string): void => {
+  closeSync(openSync(file, constants.O_WRONLY | constants.O_CREAT
+    | constants.O_EXCL | constants.O_NOFOLLOW, 0o600))
 }
 
 export const isLoggingOff = (env: Env): boolean => env.BOKU_RUNLOG === "0"
@@ -416,7 +540,7 @@ const makeSink = (
   write(kind, fields) {
     if (writerState.disabled) return false
     try {
-      ensureDir(join(home, "runs", dayOfRunId(id.runId)))
+      ensureDayDir(home, id.runId)
       const line = buildEvent(id, kind, fields, now())
       appendLine(runFilePath(home, id.runId), line)
       return true
@@ -458,7 +582,28 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
 
   const startedAt = now()
   const parentRunId = env.BOKU_RUN_ID || null
-  const runId = newRunId(tool, startedAt)
+  const home = bokuHome(env)
+  // Claim the run file exclusively (no link followed), with a new id on a
+  // clash, as `_runlog_open_files` does.
+  let runId = newRunId(tool, startedAt)
+  let claimed = false
+  try {
+    ensureDir(home)
+    for (let tries = 1; !claimed; tries++) {
+      ensureDayDir(home, runId)
+      try {
+        createExclusive(runFilePath(home, runId))
+        claimed = true
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== "EEXIST" || tries >= 8) throw error
+        runId = newRunId(tool, startedAt)
+      }
+    }
+  } catch (error) {
+    writerState.disabled = true
+    debug(env, error)
+  }
   const id: RunIdentity = {
     source: opts.source ?? "dotfiles",
     runId,
@@ -466,19 +611,12 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
     rootRunId: (parentRunId && env.BOKU_ROOT_RUN_ID) || parentRunId || runId,
     tool: safeToolName(tool),
   }
-  const home = bokuHome(env)
   const sink = makeSink(env, home, id, now)
   const runDir = runDirPath(home, runId)
   const counts: ProblemCounts = { warns: 0, errors: 0 }
   let agent: { cli: unknown; session_id: unknown } | null = null
   let ended = false
 
-  try {
-    ensureDir(home)
-  } catch (error) {
-    writerState.disabled = true
-    debug(env, error)
-  }
   const started = sink.write("start", {
     argv: opts.argv ?? process.argv.slice(2),
     cwd: opts.cwd ?? process.cwd(),
@@ -490,6 +628,8 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
     git: opts.git,
   })
   if (!started) {
+    // No empty run file is left to be listed as incomplete.
+    if (claimed) rmSync(runFilePath(home, runId), { force: true })
     delete env.BOKU_RUN_ID
     delete env.BOKU_ROOT_RUN_ID
     return inactiveRun()
@@ -538,16 +678,25 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
         event("warn", { code: "artifact-missing", msg: `${kind}: ${src}` })
         return
       }
+      try {
+        ensureDayDir(home, id.runId)
+        ensureRealDir(runDir)
+      } catch (error) {
+        // As runlog_dir: a run folder we can't use, a symlink among them,
+        // turns the file writer off.
+        writerState.disabled = true
+        debug(env, error)
+        return
+      }
       let tmp: string | null = null
       try {
-        ensureDir(runDir)
         const name = artifactName(kind, src)
         const dest = join(runDir, name)
         const { data, truncated } = readCapped(src, artifactMax(env))
         const text = redactLines(data.toString("utf8"))
         tmp = join(runDir, `.artifact.${process.pid}.${
           randomBytes(3).toString("hex")}`)
-        writeFileSync(tmp, text, { mode: 0o600 })
+        writeFileSync(tmp, text, { mode: 0o600, flag: "wx" })
         renameSync(tmp, dest)
         tmp = null
         chmodSync(dest, 0o600)
@@ -565,6 +714,10 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
         })
       } catch (error) {
         if (tmp) rmSync(tmp, { force: true })
+        // Never leave an unredacted source in the run folder.
+        if (resolve(src).startsWith(`${resolve(runDir)}${sep}`)) {
+          rmSync(resolve(src), { force: true })
+        }
         debug(env, error)
         // One lost artifact is worth a warning, not the rest of the log.
         event("warn", {
@@ -588,6 +741,7 @@ export const startRun = (tool: string, opts: StartOptions = {}): RunLog => {
         warns: total.warns, errors: total.errors, agent,
       })
       try {
+        ensureDayDir(home, id.runId)
         appendLine(indexPath(home, dayOfRunId(id.runId)), index)
       } catch (error) {
         writerState.disabled = true
@@ -627,9 +781,16 @@ export const indexLine = (input: IndexInput): string => {
     agent: input.agent,
   }))
   if (Buffer.byteLength(line) <= maxLineBytes) return line
+  // The common fields, as the bash writer's fallback keeps them.
   return JSON.stringify(cleanValue({
-    v: schemaVersion, ts: input.ts, run_id: input.id.runId,
-    status: input.status, truncated: true,
+    v: schemaVersion,
+    ts: input.ts,
+    source: input.id.source,
+    run_id: input.id.runId,
+    parent_run_id: input.id.parentRunId,
+    root_run_id: input.id.rootRunId,
+    tool: input.id.tool,
+    truncated: true,
   }))
 }
 

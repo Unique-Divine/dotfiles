@@ -2,15 +2,16 @@ import { describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import {
   appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, rmSync, statSync, writeFileSync,
+  readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  artifactName, attachRun, buildEvent, checkedRunPaths, indexPath, isRunId,
-  maxLineBytes, newRunId, readCapped, redact, runFilePath, safeToolName,
-  startRun, statusFor, type Env, type RunIdentity,
+  appendLine, artifactName, attachRun, buildEvent, checkedRunPaths,
+  createExclusive, cutString, indexLine, indexPath, isRunId, maxLineBytes,
+  newRunId, readCapped, redact, runFilePath, safeToolName, startRun,
+  statusFor, type Env, type RunIdentity,
 } from "./runlog.ts"
 
 const writerPath = join(import.meta.dir, "runlog.ts")
@@ -162,7 +163,8 @@ describe("pure helpers", () => {
     expect(Buffer.byteLength(`${line}\n`)).toBeLessThanOrEqual(4096)
     const event = JSON.parse(line)
     expect(event.msg.endsWith("[cut]")).toBe(true)
-    expect(event.msg.length).toBe(512 + 5)
+    // 512 code points, as jq counts them, plus "[cut]".
+    expect(Array.from(event.msg as string)).toHaveLength(512 + 5)
 
     const many: Record<string, string> = {}
     for (let i = 0; i < 20; i++) many[`f${i}`] = "😀".repeat(400)
@@ -490,4 +492,147 @@ describe("fail open", () => {
     const events = readLines(runFilePath(home, result.stdout.trim()))
     expect(events.map((e) => e.event)).toEqual(["start"])
   }))
+})
+
+describe("round-2 writer fixes", () => {
+  test("cutString counts code points, as jq's .[:512]", () => {
+    const long = `a${"😀".repeat(600)}`
+    const cut = cutString(long)
+    expect(cut.endsWith("[cut]")).toBe(true)
+    const kept = Array.from(cut.slice(0, -"[cut]".length))
+    expect(kept).toHaveLength(512)
+    expect(kept.at(-1)).toBe("😀")
+    expect(cut).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+    const short = "😀".repeat(300)
+    expect(cutString(short)).toBe(short)
+  })
+
+  test("the index fallback keeps the common fields, as bash does", () => {
+    const huge = "x".repeat(300)
+    const agent = { cli: huge, session_id: Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => [`k${i}`, huge])) }
+    const line = JSON.parse(indexLine({
+      id, ts: "2026-11-09T14:20:30.000Z", durMs: 1, exit: 0, status: "ok",
+      warns: 0, errors: 0, agent,
+    })) as Record<string, unknown>
+    expect(Object.keys(line)).toEqual(["v", "ts", "source", "run_id",
+      "parent_run_id", "root_run_id", "tool", "truncated"])
+  })
+
+  test("appendLine and createExclusive never follow a symlink",
+    withHome((home) => {
+      const target = join(home, "target")
+      writeFileSync(target, "")
+      symlinkSync(target, join(home, "link"))
+      expect(() => appendLine(join(home, "link"), "x")).toThrow()
+      expect(() => createExclusive(join(home, "link"))).toThrow()
+      symlinkSync(join(home, "nowhere"), join(home, "dangling"))
+      expect(() => createExclusive(join(home, "dangling"))).toThrow()
+      expect(readFileSync(target, "utf8")).toBe("")
+    }))
+
+  /** Runs a producer after `plant` links part of BOKU_HOME outside. */
+  const planted = async (
+    dir: string, plant: string, body = "",
+  ): Promise<{ result: { stdout: string; stderr: string };
+    outside: string[] }> => {
+    const home = join(dir, "home")
+    const outside = join(dir, "outside")
+    mkdirSync(outside)
+    const result = await runScript(dir, `
+      const { mkdirSync, symlinkSync, renameSync, writeFileSync } =
+        await import("node:fs")
+      const { join } = await import("node:path")
+      const home = process.env.BOKU_HOME!
+      const outside = ${JSON.stringify(outside)}
+      const day = new Date().toISOString().slice(2, 10).replaceAll("-", "")
+      mkdirSync(home, { recursive: true })
+      ${plant}
+      const run = w.startRun("demo", { rev: null })
+      ${body}
+      writeFileSync(join(outside, "..", "art.txt"), "x\\n")
+      run.artifact("report", join(outside, "..", "art.txt"))
+      run.event("probe", { a: 1 })
+      run.end(0)
+      console.log(JSON.stringify({ active: run.active }))
+    `, { BOKU_HOME: home, BOKU_RUNLOG_DEBUG: "1" })
+    const files = (Bun.spawnSync(["find", outside, "-mindepth", "1"])
+      .stdout.toString().trim().split("\n").filter(Boolean))
+    return { result, outside: files }
+  }
+
+  test("a symlinked runs or day folder is refused", withHome(async (dir) => {
+    for (const [name, plant] of [
+      ["runs", `symlinkSync(outside, join(home, "runs"))`],
+      ["day", `mkdirSync(join(home, "runs"))
+        symlinkSync(outside, join(home, "runs", day))`],
+    ] as const) {
+      const sub = join(dir, name)
+      mkdirSync(sub)
+      const { result, outside } = await planted(sub, plant)
+      expect(JSON.parse(result.stdout)).toEqual({ active: false })
+      expect(result.stderr).toContain("is a symlink")
+      expect(outside).toEqual([])
+    }
+  }))
+
+  test("a symlinked run folder, run file, or index is refused",
+    withHome(async (dir) => {
+      const cases = {
+        folder: `symlinkSync(outside, run.runDir!)`,
+        file: `const f = run.runDir! + ".jsonl"
+          renameSync(f, join(outside, "moved.jsonl"))
+          symlinkSync(join(outside, "moved.jsonl"), f)`,
+        index: `writeFileSync(join(outside, "index.jsonl"), "")
+          symlinkSync(join(outside, "index.jsonl"),
+            join(home, "runs", day, "index.jsonl"))`,
+      }
+      for (const [name, body] of Object.entries(cases)) {
+        const sub = join(dir, name)
+        mkdirSync(sub)
+        const { result, outside } = await planted(sub, "", body)
+        expect(result.stderr).toContain("boku runlog: off:")
+        if (name === "folder") expect(outside).toEqual([])
+        if (name === "file") {
+          const moved = readFileSync(join(sub, "outside", "moved.jsonl"),
+            "utf8")
+          expect(moved.trim().split("\n")).toHaveLength(1)
+        }
+        if (name === "index") {
+          expect(readFileSync(join(sub, "outside", "index.jsonl"), "utf8"))
+            .toBe("")
+        }
+      }
+    }))
+
+  test("a start line that fails leaves no run file", withHome(async (dir) => {
+    const home = join(dir, "home")
+    const result = await runScript(dir, `
+      const git = { get repo(): string { throw new Error("boom") } }
+      const run = w.startRun("demo", { rev: null, git: git as w.GitInfo })
+      console.log(JSON.stringify({ active: run.active,
+        id: process.env.BOKU_RUN_ID ?? null }))
+    `, { BOKU_HOME: home })
+    expect(JSON.parse(result.stdout)).toEqual({ active: false, id: null })
+    const files = Bun.spawnSync(["find", home, "-name", "*.jsonl"])
+      .stdout.toString().trim()
+    expect(files).toBe("")
+  }))
+
+  test("a failed artifact deletes its source in the run folder",
+    withHome((home) => {
+      const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+      mkdirSync(run.runDir!, { recursive: true })
+      const src = join(run.runDir!, "draft.md")
+      writeFileSync(src, "raw\n")
+      // A folder in the way makes the final rename fail.
+      mkdirSync(join(run.runDir!, "report.md", "x"), { recursive: true })
+      run.artifact("report", src)
+      run.end(0)
+      expect(readdirSync(run.runDir!)).toEqual(["report.md"])
+      const events = readLines(runFilePath(home, run.runId!))
+      expect(events.map((e) => e.code ?? e.event)).toEqual([
+        "start", "artifact-failed", "end",
+      ])
+    }))
 })
