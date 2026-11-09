@@ -223,6 +223,38 @@ sync:
     bun run claude/mcp.ts --run
   fi
   bun run skillsSync.ts --run
+  just email-sync
+
+# Clone or update gmailctl in ~/ki/gmailctl and install it with go.
+gmailctl-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  if ! command -v go >/dev/null 2>&1; then
+    echo "go is required to build gmailctl; skipping" >&2
+    exit 0
+  fi
+  gmailctl_src="$HOME/ki/gmailctl"
+  if [[ -d "$gmailctl_src/.git" ]]; then
+    git -C "$gmailctl_src" pull --ff-only --quiet
+  else
+    git clone --quiet https://github.com/mbrt/gmailctl.git "$gmailctl_src"
+  fi
+  (cd "$gmailctl_src" && go install ./cmd/gmailctl)
+  echo "installed $(go env GOPATH)/bin/gmailctl"
+
+# Render private gmailctl configs from boku TypeScript into ~/.config;
+# skip missing ones.
+email-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  email_private="${BOKU:-$HOME/ki/boku}/priv-skills/ud/email"
+  email_build() {
+    local src="$email_private/$1"
+    [[ -f "$src" ]] || return 0
+    bun run email/gmailctl.ts "$src" "$HOME/.config/$2/config.jsonnet"
+  }
+  email_build gmailctl-nibi.ts gmailctl
+  email_build gmailctl-personal.ts gmailctl-personal
 
 # Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
 # while WSL is down. WSL only.
