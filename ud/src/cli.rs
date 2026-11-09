@@ -132,10 +132,20 @@ pub enum NibiCommand {
     /// Install the published Nibiru CLI through Bun.
     #[command(name = "get-nibiru", alias = "gn")]
     GetNibiru,
-    /// Stop running nibiru processes.
-    Stop,
+    /// Stop every running nibid and nibiru process; requires --all.
+    #[command(
+        after_help = "Without --all, the command exits without sending a signal. With --all, it lists each matching PID, sends SIGTERM, and fails if any process is still running after 10 seconds."
+    )]
+    Stop(NibiStopArgs),
     /// Manage local Nibiru test keys.
     Keys(Nested<NibiKeysCommand>),
+}
+
+#[derive(Debug, Args, Clone, Copy)]
+pub struct NibiStopArgs {
+    /// Stop every process named nibid or nibiru, not one selected node.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Subcommand, Clone, Copy)]

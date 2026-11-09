@@ -6,7 +6,7 @@ use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::CommandFactory;
@@ -15,7 +15,7 @@ use clap_complete::aot::{Shell, generate};
 use crate::cli::{
     Cli, CommandPreview, CompletionShell, DockerCommand, GoCommand,
     HealthCommand, MarkdownCommand, NibiCommand, NibiKeysCommand, NibiNetwork,
-    QuickCommand, RustCommand,
+    NibiStopArgs, QuickCommand, RustCommand,
 };
 use crate::process;
 
@@ -330,7 +330,7 @@ pub fn run_nibi(command: NibiCommand) -> Result<i32> {
         NibiCommand::GetNibiru => {
             run_shell_helper([OsStr::new("nibi-get-nibiru")])
         }
-        NibiCommand::Stop => stop_nibiru(),
+        NibiCommand::Stop(args) => stop_nibiru(args),
         NibiCommand::Keys(keys) => match keys.command {
             Some(command) => run_nibi_keys(command),
             None => bail!("missing Nibiru keys command"),
@@ -392,37 +392,91 @@ fn run_nibi_keys(command: NibiKeysCommand) -> Result<i32> {
     ])
 }
 
-fn stop_nibiru() -> Result<i32> {
-    let output = Command::new("pgrep")
-        .args(["-x", "nibid|nibiru"])
-        .output()
-        .context("failed to inspect nibiru processes")?;
-    if !output.status.success() {
+/// Process names that `ud nibi stop --all` matches exactly with pgrep.
+const NIBIRU_PROCESS_PATTERN: &str = "nibid|nibiru";
+/// How long matched processes get to exit after SIGTERM.
+const NIBIRU_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+const NIBIRU_STOP_POLL: Duration = Duration::from_millis(200);
+
+fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
+    if !args.all {
+        bail!(
+            "ud nibi stop sends no signal without --all. Run `ud nibi stop \
+             --all` to stop every nibid and nibiru process."
+        );
+    }
+
+    let pids = find_nibiru_pids()?;
+    if pids.is_empty() {
         println!("No nibiru processes are running.");
         println!("Done stopping nibiru processes.");
         return Ok(0);
     }
 
-    for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-        let status = Command::new("kill").arg(pid).status()?;
+    for pid in &pids {
+        println!("Found nibiru process {pid}");
+    }
+    for pid in &pids {
+        let status = Command::new("kill")
+            .args(["-TERM", "--", &pid.to_string()])
+            .status()
+            .context("failed to run kill")?;
         if status.success() {
-            println!("Killed process {pid} (nibiru)");
+            println!("Sent SIGTERM to process {pid}");
+        } else {
+            eprintln!("Could not signal process {pid}; it may have exited.");
         }
     }
-    for _ in 0..50 {
-        let running = Command::new("pgrep")
-            .args(["-x", "nibid|nibiru"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !running {
+
+    let deadline = Instant::now() + NIBIRU_STOP_TIMEOUT;
+    loop {
+        let remaining = find_nibiru_pids()?
+            .into_iter()
+            .filter(|pid| pids.contains(pid))
+            .collect::<Vec<_>>();
+        if remaining.is_empty() {
             println!("Done stopping nibiru processes.");
             return Ok(0);
         }
-        thread::sleep(Duration::from_millis(200));
+        if Instant::now() >= deadline {
+            let remaining = remaining
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            bail!(
+                "nibiru processes still running after {} seconds: {remaining}",
+                NIBIRU_STOP_TIMEOUT.as_secs()
+            );
+        }
+        thread::sleep(NIBIRU_STOP_POLL);
     }
-    bail!("nibiru processes did not stop within 10 seconds")
+}
+
+/// List PIDs whose process name is exactly nibid or nibiru.
+fn find_nibiru_pids() -> Result<Vec<u32>> {
+    let output = Command::new("pgrep")
+        .args(["-x", NIBIRU_PROCESS_PATTERN])
+        .output()
+        .context("failed to inspect nibiru processes")?;
+    match output.status.code() {
+        Some(0) => parse_pids(&String::from_utf8_lossy(&output.stdout)),
+        // pgrep exits 1 when no process matches.
+        Some(1) => Ok(Vec::new()),
+        _ => bail!(
+            "pgrep failed while inspecting nibiru processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+fn parse_pids(text: &str) -> Result<Vec<u32>> {
+    text.split_whitespace()
+        .map(|pid| {
+            pid.parse::<u32>()
+                .with_context(|| format!("pgrep printed an invalid PID: {pid}"))
+        })
+        .collect()
 }
 
 pub fn run_docker(command: DockerCommand) -> Result<i32> {

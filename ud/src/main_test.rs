@@ -2,9 +2,14 @@
 
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{ExitStatus, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -356,6 +361,175 @@ fn nibi_cfg_help_excludes_dev_and_documents_archive() {
     let output = run(&["nibi", "cfg", "dev"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("unrecognized subcommand 'dev'"));
+}
+
+/// A disposable child process that stands in for a running nibid node.
+struct FakeNode {
+    pid: u32,
+    exit: Receiver<ExitStatus>,
+}
+
+impl FakeNode {
+    /// Start `sleep`; `ignore_term` makes it survive SIGTERM.
+    fn spawn(ignore_term: bool) -> Self {
+        let trap = if ignore_term { "trap '' TERM; " } else { "" };
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", &format!("{trap}echo ready; exec sleep 60")])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        let pid = child.id();
+        let (sender, exit) = mpsc::channel();
+        // Reap promptly so an exited node does not linger as a zombie.
+        thread::spawn(move || {
+            let _ = sender.send(child.wait().unwrap());
+        });
+        Self { pid, exit }
+    }
+
+    fn is_running(&self) -> bool {
+        matches!(self.exit.try_recv(), Err(TryRecvError::Empty))
+    }
+}
+
+impl Drop for FakeNode {
+    fn drop(&mut self) {
+        if self.is_running() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &self.pid.to_string()])
+                .status();
+        }
+    }
+}
+
+/// Fake pgrep that reports only the fixture PIDs that are still alive, so
+/// tests never see or signal a real nibid on the machine.
+fn fake_pgrep(temp: &TempDir, nodes: &[&FakeNode]) -> Command {
+    let pids = nodes
+        .iter()
+        .map(|node| node.pid.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    write_executable(
+        &temp.path().join("pgrep"),
+        &format!(
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$PGREP_CALLS_FILE\"\n\
+             status=1\n\
+             for pid in {pids}; do\n\
+             \x20 if kill -0 \"$pid\" 2>/dev/null; then\n\
+             \x20   printf '%s\\n' \"$pid\"\n\
+             \x20   status=0\n\
+             \x20 fi\n\
+             done\n\
+             exit \"$status\"\n"
+        ),
+    );
+    let mut command = ud();
+    command
+        .env("PATH", path_with(temp.path()))
+        .env("PGREP_CALLS_FILE", temp.path().join("pgrep-calls"));
+    command
+}
+
+/// A bare stop must not inspect or signal any process.
+#[test]
+fn nibi_stop_without_all_sends_no_signal() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("ud nibi stop --all"));
+    assert!(!temp.path().join("pgrep-calls").exists());
+    thread::sleep(Duration::from_millis(300));
+    assert!(node.is_running());
+}
+
+/// The broad stop lists each matched PID before sending SIGTERM to it.
+#[test]
+fn nibi_stop_all_lists_and_terminates_every_match() {
+    let temp = TempDir::new().unwrap();
+    let first = FakeNode::spawn(false);
+    let second = FakeNode::spawn(false);
+
+    let output = fake_pgrep(&temp, &[&first, &second])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines[..4],
+        [
+            format!("Found nibiru process {}", first.pid),
+            format!("Found nibiru process {}", second.pid),
+            format!("Sent SIGTERM to process {}", first.pid),
+            format!("Sent SIGTERM to process {}", second.pid),
+        ]
+    );
+    assert_eq!(lines.last(), Some(&"Done stopping nibiru processes."));
+    for node in [&first, &second] {
+        let status = node.exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(status.signal(), Some(15));
+    }
+    let calls = fs::read_to_string(temp.path().join("pgrep-calls")).unwrap();
+    assert!(calls.lines().all(|line| line == "-x nibid|nibiru"));
+}
+
+/// Finding nothing to stop is a success, not an error.
+#[test]
+fn nibi_stop_all_succeeds_when_nothing_matches() {
+    let temp = TempDir::new().unwrap();
+
+    let output = fake_pgrep(&temp, &[])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "No nibiru processes are running.\nDone stopping nibiru processes."
+    );
+}
+
+/// A process that ignores SIGTERM must fail the command after the timeout.
+#[test]
+fn nibi_stop_all_fails_when_a_process_outlives_the_timeout() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(true);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stdout(&output).contains(&format!("Found nibiru process {}", node.pid))
+    );
+    assert!(stderr(&output).contains(&format!(
+        "nibiru processes still running after 10 seconds: {}",
+        node.pid
+    )));
+    assert!(node.is_running());
+}
+
+/// Help must say that a broad stop needs --all.
+#[test]
+fn nibi_stop_help_documents_all() {
+    let output = run(&["nibi", "stop", "--help"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("--all"));
+    assert!(stdout(&output).contains("Without --all"));
 }
 
 /// Mnemonic import must preserve the selected network, wallet name and input.
