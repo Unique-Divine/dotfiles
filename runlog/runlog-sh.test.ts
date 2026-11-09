@@ -1034,3 +1034,19 @@ runlog_end 0`, baseEnv({ BOKU_RUNS_CLI: "/bin/false",
       expect(await allStoredText()).not.toContain(planted.secret)
     })
 })
+
+describe("runlog_exec", () => {
+  test("a wrapped shell function still prints its events under --json", async () => {
+    const r = await runBash(
+      `runlog_start wrapfn
+f() { runlog_event step name=inside; }
+runlog_step wrapped f
+runlog_event step name=after
+runlog_end 0`,
+      baseEnv({ BOKU_RUNLOG_STDOUT: "1" }),
+    )
+    const names = r.stdout.trim().split("\n").map((l) => JSON.parse(l))
+      .map((e) => e.name ?? e.event)
+    expect(names).toEqual(["start", "inside", "wrapped", "after", "end"])
+  })
+})

@@ -8,6 +8,8 @@
 #   runlog_event KIND [KEY=VAL ...]  KEY=VAL is a string; KEY:=JSON is raw
 #   runlog_step NAME CMD [ARG...]    runs an external command, logs a step,
 #                                    returns the command's status
+#   runlog_exec CMD [ARG...]         runs CMD without the --json stdout
+#                                    copy, so children can't hold it open
 #   runlog_artifact KIND FILE        copies FILE (capped, redacted) into
 #                                    the run folder
 #   runlog_dir                       prints the run folder (creates it)
@@ -529,22 +531,24 @@ runlog_event() {
   return 0
 }
 
-# runlog_step NAME CMD [ARG...]: runs an external command, logs a step
-# with `cmd` (the argv as a JSON array), `exit`, and `dur_ms`, and returns
-# the command's status.
-# Wrap external commands only; functions and `source` run unwrapped.
 # runlog_exec CMD [ARG...]: runs CMD with the stdout copy saved for
 # `--json` closed. A child, or anything it leaves running in the
 # background (an agent's server, git's `gc --auto`), would otherwise hold
 # that copy open and keep a `git_mf --json | jq` reader waiting for EOF.
+# A shell function runs as is: closing the copy around it would stop its
+# own events from printing.
 runlog_exec() {
-  if [[ -n "${_runlog_out_fd:-}" ]]; then
+  if [[ -n "${_runlog_out_fd:-}" && "$(type -t "${1:-}")" == file ]]; then
     "$@" {_runlog_out_fd}>&-
   else
     "$@"
   fi
 }
 
+# runlog_step NAME CMD [ARG...]: runs an external command through
+# runlog_exec, logs a step with `cmd` (the argv as a JSON array), `exit`,
+# and `dur_ms`, and returns the command's status.
+# Wrap external commands only; functions and `source` run unwrapped.
 runlog_step() {
   local -r name="${1:-step}"
   shift || true
