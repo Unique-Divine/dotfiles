@@ -1018,14 +1018,15 @@ wait
 "#;
 
 /// Return whether `pid` has exited, treating a zombie awaiting its reaper as
-/// exited.
+/// exited. Uses ps(1) so the probe works on Linux and macOS alike.
 fn process_exited(pid: &str) -> bool {
-    match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => true,
-        Ok(stat) => stat
-            .rsplit_once(')')
-            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
-    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("failed to run ps");
+    let stat = String::from_utf8_lossy(&output.stdout);
+    let stat = stat.trim();
+    stat.is_empty() || stat.starts_with('Z')
 }
 
 /// Assert that a timed-out plugin and its helper no longer run.
