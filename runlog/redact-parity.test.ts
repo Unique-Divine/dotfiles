@@ -99,6 +99,16 @@ const streamForms = (): string[] => [
   `{"broken": "json, token=\"${randAlnum(12)}\"`,
 ]
 
+/** Words that hold a token prefix after other word characters. */
+const lookalikes = [
+  "task-add-run-log-feature-for-sync",
+  "/home/u/risk-assessment-notes-for-q3.md",
+  "boku/runlog-fix3-task-redaction-ask-sk-followups",
+  "desk-npm_install_all_the_things_for_the_whole_monorepo_x",
+  "mask_ghp_placeholder_value_with_more_chars",
+  "keyJ eyJ_not_a_jwt_because_no_dots_here_at_all",
+]
+
 /** Whitespace both engines must agree on where a value ends. */
 const whitespace = ["\t", "\r", "\v", "\f", "\u0085", " ", " ",
   " ", " ", " ", " ", " ", " ", "　",
@@ -106,7 +116,7 @@ const whitespace = ["\t", "\r", "\v", "\f", "\u0085", " ", " ",
 
 const corpus = (): string[] => {
   const out = [...tokens(), ...envForms(), ...jsonForms(),
-    ...streamForms()]
+    ...streamForms(), ...lookalikes]
   for (const ws of whitespace) {
     out.push(`token=${randAlnum(12)}${ws}after`)
     out.push(`PASSWORD=${randAlnum(12)}${ws}after`)
@@ -226,6 +236,14 @@ describe("jq and JS redact the same way", () => {
     }
   })
 
+  test("token prefixes inside words are left alone", () => {
+    const lines = fileLine()
+    for (const word of lookalikes) {
+      expect(lines.get(word)).toBe(word)
+      expect(redact(word)).toBe(word)
+    }
+  })
+
   test("every token, env, and JSON secret is redacted", () => {
     const keyNames = "(token|secret|secret_key|password|api_key)"
     const out = jq.events.join("\n")
@@ -237,4 +255,33 @@ describe("jq and JS redact the same way", () => {
     expect(out).not.toMatch(
       new RegExp(`${keyNames}\\\\?": ?\\\\?"[A-Za-z0-9]`, "i"))
   })
+})
+
+describe("long inputs stay linear", () => {
+  /** 200,000 characters of `eyJ` runs with no dot, so never a JWT. */
+  const long = "eyJ".repeat(66_667)
+
+  test("jq redacts them in under 2 s", async () => {
+    const file = join(tmp, "long.txt")
+    await writeFile(file, `${long}\n`)
+    const script = `set -Eeuo pipefail
+source ${JSON.stringify(writerPath)}
+boku-runs() { return 1; }
+_runlog_patterns=${JSON.stringify(join(import.meta.dir, "redact-patterns.json"))}
+_runlog_redact_file ${JSON.stringify(file)}
+`
+    const started = performance.now()
+    const proc = Bun.spawn(["bash", "-c", script], {
+      stdout: "pipe", stderr: "pipe",
+    })
+    expect(await proc.exited).toBe(0)
+    expect(performance.now() - started).toBeLessThan(2000)
+    expect(await readFile(file, "utf8")).toBe(`${long}\n`)
+  }, 60_000)
+
+  test("JS redacts them in under 2 s", () => {
+    const started = performance.now()
+    expect(redactLines(long)).toBe(long)
+    expect(performance.now() - started).toBeLessThan(2000)
+  }, 60_000)
 })

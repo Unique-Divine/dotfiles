@@ -9,6 +9,9 @@
   `Bearer` matches `bearer`.
 - Patterns apply in file order. Token shapes come first. The key patterns
   skip a value that is already `[redacted:...]`.
+- Token shapes start with `(?<![A-Za-z0-9_-])`, so a prefix inside a word
+  (`task-add-...`, `risk-...`) isn't a token, and a long `eyJ` run is
+  scanned from its start only, not from every `eyJ` in it.
 - Key patterns keep the key and replace only the value, so the replacement
   stays the same in both engines. Each key has these forms:
   - `-value`: `KEY=value`, `KEY="value"`, `KEY='value'`, and the escaped
@@ -39,5 +42,7 @@
   - jq's `fromjson` accepts `nan`, and jq keeps number literals such as
     `1.0` when it re-encodes; JS rejects `nan` and prints `1`. Only a
     re-encoded line can differ, and both engines still redact it.
+  - A token shape right after a word character, `-`, or `_` (`x-sk-...`)
+    isn't redacted.
 - `runlog/redact-parity.test.ts` runs a corpus through both writers and
   fails on any difference.

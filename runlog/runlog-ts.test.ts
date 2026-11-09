@@ -123,6 +123,15 @@ describe("pure helpers", () => {
     expect(out).toContain("token=[redacted:token-value]&x=1")
   })
 
+  test("redact leaves token prefixes inside words alone", () => {
+    for (const word of ["task-add-run-log-feature-for-sync",
+      "/home/u/risk-assessment-notes-for-q3.md"]) {
+      expect(redact(word)).toBe(word)
+    }
+    const key = `sk-${randomBytes(16).toString("hex")}`
+    expect(redact(`path/${key}`)).toBe("path/[redacted:api-key]")
+  })
+
   test("redact ignores case", () => {
     const out = redact("API_TOKEN=abcdef123456 PASSWORD=hunter2hunter2 "
       + "Authorization: bearer abcdefgh12345")
