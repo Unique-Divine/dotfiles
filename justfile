@@ -229,7 +229,17 @@ sync:
 win-sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+  for tool in cmd.exe wslpath rsync; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "win-sync: $tool is unavailable; skipping" >&2
+      exit 0
+    fi
+  done
+  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "$win_home" || "$win_home" == "%USERPROFILE%" ]]; then
+    echo "win-sync: could not read %USERPROFILE%; skipping" >&2
+    exit 0
+  fi
   dest="$(wslpath -u "$win_home")/.files/windows"
   mkdir -p "$dest"
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
