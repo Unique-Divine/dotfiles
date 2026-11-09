@@ -1,0 +1,317 @@
+import { describe, expect, test } from "bun:test"
+import { randomBytes } from "node:crypto"
+import {
+  chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
+  writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import {
+  buildEvent, indexPath, maxLineBytes, newRunId, redact, runFilePath, startRun,
+  statusFor, type Env, type RunIdentity,
+} from "./runlog.ts"
+
+const writerPath = join(import.meta.dir, "runlog.ts")
+
+const withHome = (run: (home: string) => void | Promise<void>) =>
+  async (): Promise<void> => {
+    const home = mkdtempSync(join(tmpdir(), "boku-runlog-"))
+    try {
+      await run(home)
+    } finally {
+      chmodSync(home, 0o700)
+      rmSync(home, { force: true, recursive: true })
+    }
+  }
+
+const readLines = (file: string): Record<string, unknown>[] =>
+  readFileSync(file, "utf8").trimEnd().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+/** Fake tokens built at test time, so no literal secret sits in the repo. */
+const fakeTokens = (): Record<string, string> => {
+  const alnum = (n: number): string =>
+    randomBytes(n).toString("base64").replace(/[^A-Za-z0-9]/g, "a").slice(0, n)
+  return {
+    "github-token": `ghp_${alnum(36)}`,
+    "github-pat": `github_pat_${alnum(40)}`,
+    "anthropic-key": `sk-ant-${alnum(30)}`,
+    "slack-token": `xoxb-${alnum(20)}`,
+    "aws-key": `AKIA${alnum(16).toUpperCase()}`,
+  }
+}
+
+/** Runs a short TS script against the writer in its own process. */
+const runScript = async (
+  dir: string, body: string, env: Env,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+  const script = join(dir, `script-${randomBytes(3).toString("hex")}.ts`)
+  const header = `import * as w from ${JSON.stringify(writerPath)}\n`
+  writeFileSync(script, `${header}${body}`)
+  const proc = Bun.spawn(["bun", script], {
+    env: { ...process.env, BOKU_RUN_ID: "", BOKU_ROOT_RUN_ID: "", ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  rmSync(script, { force: true })
+  return { exitCode, stdout, stderr }
+}
+
+const id: RunIdentity = {
+  source: "dotfiles",
+  runId: "261109T142030Z-test-8b9c",
+  parentRunId: null,
+  rootRunId: "261109T142030Z-test-8b9c",
+  tool: "test",
+}
+
+describe("pure helpers", () => {
+  test("statusFor maps exit codes and lets an explicit status win", () => {
+    expect(statusFor(0)).toBe("ok")
+    for (const exit of [2, 3, 4, 5]) expect(statusFor(exit)).toBe("stopped")
+    for (const exit of [1, 6, 101, 130, -1]) {
+      expect(statusFor(exit)).toBe("failed")
+    }
+    expect(statusFor(0, "stopped")).toBe("stopped")
+    expect(statusFor(5, "failed")).toBe("failed")
+  })
+
+  test("newRunId sorts by time and names its day and tool", () => {
+    const at = new Date("2026-11-09T14:20:30.101Z")
+    const runId = newRunId("git_mf", at, "8b9c")
+    expect(runId).toBe("261109T142030Z-git_mf-8b9c")
+    expect(newRunId("a b/c")).toMatch(/^\d{6}T\d{6}Z-a_b_c-[0-9a-f]{4}$/)
+  })
+
+  test("redact replaces every planted token", () => {
+    const tokens = fakeTokens()
+    const text = Object.values(tokens).join(" and ")
+      + " Bearer abcdefgh12345 url?token=s3cr3tvalue&x=1"
+    const out = redact(text)
+    for (const [kind, token] of Object.entries(tokens)) {
+      expect(out).not.toContain(token)
+      expect(out).toContain(`[redacted:${kind}]`)
+    }
+    expect(out).toContain("Bearer [redacted:bearer]")
+    expect(out).toContain("token=[redacted:token-value]&x=1")
+  })
+
+  test("buildEvent cuts strings and keeps multibyte lines in the cap", () => {
+    const msg = "ü€😀".repeat(100 * 1024 / 9)
+    const line = buildEvent(id, "step", { name: "big", msg })
+    expect(Buffer.byteLength(`${line}\n`)).toBeLessThanOrEqual(4096)
+    const event = JSON.parse(line)
+    expect(event.msg.endsWith("[cut]")).toBe(true)
+    expect(event.msg.length).toBe(512 + 5)
+
+    const many: Record<string, string> = {}
+    for (let i = 0; i < 20; i++) many[`f${i}`] = "😀".repeat(400)
+    const fallback = JSON.parse(buildEvent(id, "step", many))
+    expect(fallback).toMatchObject({ v: 1, run_id: id.runId, truncated: true })
+    expect(fallback.f0).toBeUndefined()
+  })
+
+  test("buildEvent never lets fields replace the common ones", () => {
+    const event = JSON.parse(buildEvent(id, "warn", { run_id: "x", code: "c" }))
+    expect(event.run_id).toBe(id.runId)
+    expect(event.event).toBe("warn")
+  })
+})
+
+describe("startRun", () => {
+  test("writes start, events, end, and an index line", withHome((home) => {
+    const env: Env = { BOKU_HOME: home }
+    const tokens = fakeTokens()
+    const run = startRun("demo", {
+      env, argv: ["--key", tokens["github-token"]!], rev: "abc1234",
+    })
+    expect(run.active).toBe(true)
+    expect(env.BOKU_RUN_ID).toBe(run.runId!)
+    expect(env.BOKU_ROOT_RUN_ID).toBe(run.runId!)
+    run.event("warn", { code: "needs-judgment", msg: "😀".repeat(5000) })
+    run.event("step", { name: "fetch", exit: 0 })
+    run.end(3)
+    run.event("step", { name: "after-end" })
+
+    const file = runFilePath(home, run.runId!)
+    const raw = readFileSync(file, "utf8")
+    expect(raw).not.toContain(tokens["github-token"]!)
+    for (const line of raw.trimEnd().split("\n")) {
+      expect(Buffer.byteLength(line)).toBeLessThanOrEqual(maxLineBytes)
+      JSON.parse(line)
+    }
+    const events = readLines(file)
+    expect(events.map((e) => e.event)).toEqual(["start", "warn", "step", "end"])
+    expect(events[0]).toMatchObject({
+      v: 1, source: "dotfiles", parent_run_id: null, tool: "demo",
+      argv: ["--key", "[redacted:github-token]"], pid: process.pid,
+      rev: "abc1234",
+    })
+    expect(typeof events[0]!.pid_start).toBe("number")
+    expect(typeof events[0]!.boot_id).toBe("string")
+    expect(events[3]).toMatchObject({
+      exit: 3, status: "stopped", warns: 1, errors: 0,
+    })
+    const index = readLines(indexPath(home, run.runId!.slice(0, 6)))
+    expect(index).toHaveLength(1)
+    expect(index[0]).toMatchObject({
+      run_id: run.runId, tool: "demo", exit: 3, status: "stopped", warns: 1,
+    })
+
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(statSync(home).mode & 0o777).toBe(0o700)
+    expect(statSync(join(home, "runs")).mode & 0o777).toBe(0o700)
+  }))
+
+  test("explicit end status wins over the exit mapping", withHome((home) => {
+    const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+    run.end(0, { status: "stopped" })
+    const events = readLines(runFilePath(home, run.runId!))
+    expect(events.at(-1)).toMatchObject({ exit: 0, status: "stopped" })
+  }))
+
+  test("inherits parent and root from the environment", withHome((home) => {
+    const env: Env = {
+      BOKU_HOME: home,
+      BOKU_RUN_ID: "261109T141203Z-sync-a1b2",
+      BOKU_ROOT_RUN_ID: "261109T141000Z-cron-0000",
+    }
+    const run = startRun("git_mf", { env, rev: null })
+    const start = readLines(runFilePath(home, run.runId!))[0]!
+    expect(start.parent_run_id).toBe("261109T141203Z-sync-a1b2")
+    expect(start.root_run_id).toBe("261109T141000Z-cron-0000")
+    expect(env.BOKU_RUN_ID).toBe(run.runId!)
+    expect(env.BOKU_ROOT_RUN_ID).toBe("261109T141000Z-cron-0000")
+  }))
+
+  test("links a child process through exported ids", withHome(async (home) => {
+    const parent = startRun("sync", { env: { BOKU_HOME: home }, rev: null })
+    const result = await runScript(home, `
+      const run = w.startRun("child", { rev: null })
+      run.end(0)
+      console.log(run.runId)
+    `, {
+      BOKU_HOME: home,
+      BOKU_RUN_ID: parent.runId!,
+      BOKU_ROOT_RUN_ID: parent.rootRunId!,
+    })
+    parent.end(0)
+    const childId = result.stdout.trim()
+    const start = readLines(runFilePath(home, childId))[0]!
+    expect(start).toMatchObject({
+      parent_run_id: parent.runId, root_run_id: parent.runId, tool: "child",
+    })
+  }))
+
+  test("step logs a throw as exit 1", withHome(async (home) => {
+    const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+    expect(await run.step("ok", () => 42)).toBe(42)
+    await expect(run.step("bad", () => {
+      throw new Error("boom")
+    })).rejects.toThrow("boom")
+    run.end(1)
+    const steps = readLines(runFilePath(home, run.runId!))
+      .filter((e) => e.event === "step")
+    expect(steps[0]).toMatchObject({ name: "ok", exit: 0 })
+    expect(steps[1]).toMatchObject({ name: "bad", exit: 1, msg: "boom" })
+    expect(typeof steps[0]!.dur_ms).toBe("number")
+  }))
+
+  test("artifact copies a redacted file", withHome((home) => {
+    const tokens = fakeTokens()
+    const src = join(home, "report.md")
+    writeFileSync(src, `# Report\nkey ${tokens["slack-token"]}\n`)
+    const run = startRun("demo", { env: { BOKU_HOME: home }, rev: null })
+    run.artifact("report", src)
+    run.end(0)
+    const dest = join(run.runDir!, "report.md")
+    const text = readFileSync(dest, "utf8")
+    expect(text).toContain("[redacted:slack-token]")
+    expect(statSync(dest).mode & 0o777).toBe(0o600)
+    const artifact = readLines(runFilePath(home, run.runId!))
+      .find((e) => e.event === "artifact")!
+    expect(artifact).toMatchObject({
+      kind: "report", path: "report.md", bytes: Buffer.byteLength(text),
+      truncated: false,
+    })
+    expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/)
+  }))
+
+  test("BOKU_RUNLOG=0 writes nothing and exports nothing", withHome((home) => {
+    const env: Env = { BOKU_HOME: home, BOKU_RUNLOG: "0" }
+    const run = startRun("demo", { env, rev: null })
+    run.event("warn", { code: "x" })
+    run.end(1)
+    expect(run.active).toBe(false)
+    expect(env.BOKU_RUN_ID).toBeUndefined()
+    expect(readdirSync(home)).toEqual([])
+  }))
+})
+
+describe("fail open", () => {
+  const body = `
+    const run = w.startRun("demo", { rev: null })
+    run.event("warn", { code: "x" })
+    await run.step("s", () => 1)
+    run.end(7)
+    const id = process.env.BOKU_RUN_ID ?? null
+    console.log(JSON.stringify({ active: run.active, id }))
+    process.exit(7)
+  `
+
+  test("a file as BOKU_HOME keeps the exit code", withHome(async (dir) => {
+    const home = join(dir, "not-a-dir")
+    writeFileSync(home, "x")
+    const result = await runScript(dir, body, {
+      BOKU_HOME: home, BOKU_RUN_ID: "261109T141203Z-sync-a1b2",
+    })
+    expect(result.exitCode).toBe(7)
+    expect(JSON.parse(result.stdout)).toEqual({ active: false, id: null })
+    expect(result.stderr).toBe("")
+    expect(readFileSync(home, "utf8")).toBe("x")
+  }))
+
+  test("a read-only BOKU_HOME keeps the exit code", withHome(async (dir) => {
+    const home = join(dir, "ro")
+    const scripts = join(dir, "scripts")
+    for (const d of [home, scripts]) Bun.spawnSync(["mkdir", "-p", d])
+    chmodSync(home, 0o500)
+    try {
+      const result = await runScript(scripts, body, {
+        BOKU_HOME: home, BOKU_RUNLOG_DEBUG: "1",
+      })
+      expect(result.exitCode).toBe(7)
+      expect(JSON.parse(result.stdout)).toEqual({ active: false, id: null })
+      expect(result.stderr.trim().split("\n")).toHaveLength(1)
+      expect(result.stderr).toContain("boku runlog: off:")
+      expect(readdirSync(home)).toEqual([])
+    } finally {
+      chmodSync(home, 0o700)
+    }
+  }))
+
+  test("the writer stays off after a mid-run error", withHome(async (dir) => {
+    const home = join(dir, "home")
+    const result = await runScript(dir, `
+      const run = w.startRun("demo", { rev: null })
+      const { chmodSync } = await import("node:fs")
+      const { join } = await import("node:path")
+      const day = join(process.env.BOKU_HOME, "runs", run.runId.slice(0, 6))
+      chmodSync(join(day, run.runId + ".jsonl"), 0o400)
+      run.event("warn", { code: "lost" })
+      chmodSync(join(day, run.runId + ".jsonl"), 0o600)
+      run.event("warn", { code: "after" })
+      run.end(0)
+      console.log(run.runId)
+    `, { BOKU_HOME: home })
+    expect(result.exitCode).toBe(0)
+    const events = readLines(runFilePath(home, result.stdout.trim()))
+    expect(events.map((e) => e.event)).toEqual(["start"])
+  }))
+})
