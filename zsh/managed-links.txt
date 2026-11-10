@@ -5,6 +5,7 @@ rustfmt.toml rustfmt.toml
 zsh/cargo-config.toml .cargo/config.toml
 tmux/tmux.conf .tmux.conf
 nvim .config/nvim
+mise .config/mise
 herdr-cfg/config.toml .config/herdr/config.toml
 systemd/ssh-agent.service .config/systemd/user/ssh-agent.service
 .config/yarn/global/package.json .config/yarn/global/package.json
