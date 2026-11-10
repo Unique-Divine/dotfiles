@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { cleanup, ok, repoPair, sh as baseSh } from "./git-test-repo"
+import { cleanup, jqDir, ok, repoPair, sh as baseSh } from "./git-test-repo"
 
 /** baseSh, with BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents. */
 const sh = (dir: string, command: string, env: Record<string, string> = {}) => {
@@ -88,7 +88,7 @@ cat "${fixture}"
       mode: 0o755,
     })
   }
-  return `${bin}:${bunBin}:/usr/bin:/bin`
+  return `${bin}:${bunBin}:${jqDir}:/usr/bin:/bin`
 }
 
 /** A feature branch whose file.txt conflicts with origin/main. */

@@ -1,5 +1,5 @@
 # Use this justfile by
-# (1) installing with "cargo install just"
+# (1) installing just with mise (see mise/README.md for a fresh machine)
 # (2) running the "just" command.
 
 # Displays available recipes when running `just` or `just list`.
@@ -22,7 +22,9 @@ test-rust:
   cargo test --workspace --locked
 
 test-bun:
-  bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
+  bun test \
+    --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts" \
+    --path-ignore-patterns "**/bun/sources/**"
 
 alias t := test
 
@@ -164,8 +166,8 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, portable Codex, Cursor CLI, and Claude Code config, and
-# managed AI skills for Cursor, Codex, and Claude Code.
+# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI, and
+# Claude Code config, and managed AI skills for Cursor, Codex, and Claude Code.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -204,9 +206,7 @@ sync:
     )
     runlog_event step name=bun-bootstrap msg=done
   fi
-  runlog_step claude-install just claude-install
   runlog_step codex-install just codex-install
-  runlog_step i-jiyuu just i-jiyuu
   runlog_step bun-install bun install
   # Functions and sourced files run unwrapped: wrapping them in runlog_step
   # would turn off set -e inside them and change variable scope.
@@ -215,6 +215,10 @@ sync:
   runlog_event step name=main-bash-setup msg=done
   source symlinks.sh
   runlog_event step name=symlinks msg=done
+  runlog_step mise-install just mise-install
+  runlog_step bun-sync just bun-sync
+  runlog_step claude-install just claude-install
+  runlog_step i-jiyuu just i-jiyuu
   runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     runlog_step herdr-install just herdr-install
@@ -233,6 +237,7 @@ sync:
   runlog_step gh-rev-install just gh-rev-install
   if is_wsl >/dev/null; then
     runlog_step clipboard-install just clipboard-install
+    runlog_step win-sync just win-sync
   else
     runlog_event step name=clipboard-install msg=skipped
   fi
@@ -247,8 +252,57 @@ sync:
     runlog_event step name=claude-mcp msg=skipped
   fi
   runlog_step skills-sync bun run skillsSync.ts --run
+  runlog_step email-sync just email-sync
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
+
+# Install a pinned mise if missing, then the CLI tools pinned in
+# mise/mise.lock (gh, ripgrep, just, nvim, gmailctl, ...). See mise/README.md.
+mise-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  mise_bin="$HOME/.local/bin/mise"
+  if [[ ! -x "$mise_bin" ]]; then
+    curl -fsSL https://mise.run | MISE_VERSION=v2026.11.5 sh
+  fi
+  "$mise_bin" install --locked
+  # Link shims into ~/.local/bin for bash, sh, and agents with an older PATH.
+  bun mise/links.ts --run
+
+# Render private gmailctl configs from boku TypeScript into ~/.config;
+# skip missing ones.
+email-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  email_private="${BOKU:-$HOME/ki/boku}/priv-skills/ud/email"
+  email_build() {
+    local src="$email_private/$1"
+    [[ -f "$src" ]] || return 0
+    bun run email/gmailctl.ts "$src" "$HOME/.config/$2/config.jsonnet"
+  }
+  email_build gmailctl-nibi.ts gmailctl
+  email_build gmailctl-ud.ts gmailctl-ud
+
+# Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
+# while WSL is down. WSL only.
+win-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  for tool in cmd.exe wslpath rsync; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "win-sync: $tool is unavailable; skipping" >&2
+      exit 0
+    fi
+  done
+  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "$win_home" || "$win_home" == "%USERPROFILE%" ]]; then
+    echo "win-sync: could not read %USERPROFILE%; skipping" >&2
+    exit 0
+  fi
+  dest="$(wslpath -u "$win_home")/.files/windows"
+  mkdir -p "$dest"
+  rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
+  echo "synced windows/ -> $win_home\\.files\\windows"
 
 # Read the Boku run log (same as `ud runs`). For commands: `just runs --help`.
 # Arguments pass through quoted, never re-parsed by the shell.
@@ -259,6 +313,27 @@ runs *ARGS:
 # Check required tools and drift without changing dotfile-managed state.
 health:
   bash zsh/health.sh
+
+# Check domain registration (RDAP) and DNS; exits 1 on any FAIL finding.
+# Default: uniquedivine.com dsn-braids.com. Add --json for machine output.
+domain-health *ARGS:
+  bun run domain/health.ts {{ARGS}}
+
+# Restore the locked global Bun packages and their command and plugin links.
+bun-sync:
+  bun --no-install bun/sync.ts --run
+
+# Inspect managed Bun packages and links without changing the installation.
+bun-health:
+  bun --no-install bun/sync.ts --check
+
+# Refresh the global Bun lockfile after editing bun/global/package.json.
+bun-lock:
+  bun --no-install bun/sync.ts --lock
+
+# Pin a published ud-mdtoc release in the managed global manifest.
+bun-activate-mdtoc VERSION="0.1.0":
+  bun --no-install bun/sync.ts --activate-mdtoc {{quote(VERSION)}}
 
 # Install or verify the native Claude CLI and its command resolution.
 claude-install:
@@ -328,7 +403,6 @@ i-jiyuu:
 
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
-  brew trust --tap bufbuild/buf
   brew bundle --file Brewfile
 
 # Install baseline Ubuntu/WSL shell dependencies.
@@ -337,9 +411,10 @@ i-bash:
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
-  sudo apt install -y build-essential ripgrep gh libclang-dev wslu openssh-server \
-    ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass unzip jq
+  # System packages only; CLI tools such as gh, ripgrep, fzf and jq come from
+  # mise (just mise-install).
+  sudo apt install -y build-essential wslu openssh-server \
+    ca-certificates gnupg curl trash-cli clang-format sqlite3 pass unzip
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
@@ -361,7 +436,7 @@ i-bash-ci:
 # Repair or check the repository-backed Cursor, Codex, and Claude Code skill
 # links.
 skills-sync *ARGS:
-  bun run skillsSync.ts {{ARGS}}
+  @bun run skillsSync.ts {{ARGS}}
 
 # Check TypeScript scripts
 typecheck:

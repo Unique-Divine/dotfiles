@@ -356,6 +356,10 @@ path=("$BUN_INSTALL/bin" "${path[@]}")
 # the Mason binaries.
 path+=("$HOME/.local/share/nvim/mason/bin")
 
+# mise shims stay first: the edits above prepend other directories (bun,
+# ~/.local/bin, Go) that may still hold older copies of the pinned tools.
+path=("$HOME/.local/share/mise/shims" "${path[@]}")
+
 # GVM (Go Version Manager) was an experiment. Load it only if it is invoked;
 # the regular system `go` command remains available without this setup.
 load_gvm() {

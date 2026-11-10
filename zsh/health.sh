@@ -15,6 +15,7 @@ bash_files=(
   zsh/zinit-install.sh
   zsh/ud/shell.sh
   ud/source-hash.sh
+  claude/native.sh
 )
 
 zsh_files=(
@@ -118,6 +119,14 @@ if ! which_ok bun; then
   exit 1
 fi
 
+if ! bun --no-install bun/sync.ts --check; then
+  failed=1
+fi
+
+if ! bash claude/native.sh --check; then
+  failed=1
+fi
+
 if ! bun run codex/config.ts --check; then
   failed=1
 fi
@@ -173,6 +182,14 @@ fi
 
 if is_wsl >/dev/null && [[ ! -x "$HOME/.local/bin/wsl-clipboard" ]]; then
   log_error "wsl-clipboard is not installed; run: just clipboard-install"
+  failed=1
+fi
+
+if ! bun mise/health.ts --check; then
+  failed=1
+fi
+
+if ! bun mise/links.ts --check; then
   failed=1
 fi
 

@@ -1,9 +1,9 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, realpathSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 /** Run-log home for these tests, so nothing writes into the real ~/.boku. */
 export const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
@@ -77,3 +77,18 @@ export async function repoPair() {
   }
   return { root, remote, clone, peer, pushUpstream }
 }
+
+/**
+ * The folder holding a real jq binary. Tests that build their own PATH add
+ * it, since jq may live outside /usr/bin (a mise install), and its mise shim
+ * costs about 170 ms per call.
+ */
+export const jqDir: string = (() => {
+  const viaMise = Bun.spawnSync(["mise", "which", "jq"], {
+    stdout: "pipe", stderr: "ignore",
+  })
+  const fromMise = viaMise.exitCode === 0 ? viaMise.stdout.toString().trim() : ""
+  if (fromMise) return dirname(fromMise)
+  const found = Bun.which("jq")
+  return found ? dirname(realpathSync(found)) : "/usr/bin"
+})()

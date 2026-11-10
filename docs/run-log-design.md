@@ -154,7 +154,7 @@ Size limits:
 
 | Producer | `warn` | `error` |
 | --- | --- | --- |
-| `git_mf` | `needs-judgment`, `fetch-failed`, `pull-failed`, `upstream-unknown`, `agent-exit-nonzero`, `agent-left-changes`, `agent-left-stash`, `report-missing`, `report-missing-challenges`, `tap-exited` | `agent-left-merge`, `merge-tree-failed`, `merge-failed` |
+| `git_mf` | `needs-judgment`, `fetch-failed`, `pull-failed`, `upstream-unknown`, `agent-exit-nonzero`, `agent-left-changes`, `agent-left-stash`, `report-missing`, `report-missing-challenges`, `tap-exited` | `agent-left-merge`, `merge-tree-failed`, `merge-failed`, `fetch-failed` (a fetch error, not a missing branch) |
 | tap | `tap-failed`, `session-mismatch`, `exit-unparsed` | |
 | Both writers | `artifact-missing`, `artifact-failed` | |
 | Bash writer | `redact-pattern-invalid`, `redact-fallback-capped` | |

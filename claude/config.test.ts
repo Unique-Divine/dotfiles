@@ -10,6 +10,7 @@ import {
   dotfileState,
   dotfileSettings,
   managedAllowRules,
+  managedAskRules,
   mergePermissions,
   mergeRuntimeSettings,
   ownedView,
@@ -21,7 +22,10 @@ import {
 /** Settings sync writes to a runtime file that has no permissions yet. */
 const freshSettings = {
   ...dotfileSettings,
-  permissions: { allow: [...managedAllowRules] },
+  permissions: {
+    allow: [...managedAllowRules],
+    ask: [...managedAskRules],
+  },
 }
 
 const scriptPath = join(import.meta.dir, "config.ts")
@@ -145,7 +149,10 @@ describe("claude settings", () => {
     expect(merged).toEqual({
       model: "opus",
       editorMode: "vim",
-      permissions: { allow: ["Bash(ls)", ...managedAllowRules] },
+      permissions: {
+        allow: ["Bash(ls)", ...managedAllowRules],
+        ask: [...managedAskRules],
+      },
       attribution: dotfileSettings.attribution,
       statusLine: dotfileSettings.statusLine,
       tui: "default",
@@ -194,6 +201,31 @@ describe("claude settings", () => {
       allow: ["Bash(ls)", "Bash(rg:*)"],
       deny: ["Bash(rm:*)"],
       defaultMode: "acceptEdits",
+    })
+  })
+
+  test("allows gcloud and firebase but still asks before bucket deletes", () => {
+    expect(managedAllowRules).toContain("Bash(gcloud:*)")
+    expect(managedAllowRules).toContain("Bash(firebase:*)")
+    expect(managedAskRules).toEqual(["Bash(gcloud storage rm:*)"])
+  })
+
+  test("adds managed ask rules and keeps runtime ask rules", () => {
+    expect(
+      mergePermissions(
+        { allow: ["Bash(ls)"], ask: ["Bash(git push:*)"] },
+        ["Bash(rg:*)"],
+        ["Bash(gcloud storage rm:*)"],
+      ),
+    ).toEqual({
+      allow: ["Bash(ls)", "Bash(rg:*)"],
+      ask: ["Bash(git push:*)", "Bash(gcloud storage rm:*)"],
+    })
+  })
+
+  test("leaves ask absent when there are no managed ask rules", () => {
+    expect(mergePermissions({}, ["Bash(rg:*)"])).toEqual({
+      allow: ["Bash(rg:*)"],
     })
   })
 

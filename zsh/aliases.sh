@@ -4,12 +4,12 @@
 # Unique Divine linux commands
 # ===================================================
 
-alias ls="exa" # cargo install exa
-# alias ls="exa --icons" # cargo install exa
+# eza comes from mise (mise/config.toml); exa is archived upstream.
+[[ -n "$(command -v eza)" ]] && alias ls="eza"
 alias la="ls -a"
 
-# cargo install bat
-[[ -n "$(command -v bat)" ]] && alias cat="bat" # cargo install bat
+# bat comes from mise (mise/config.toml).
+[[ -n "$(command -v bat)" ]] && alias cat="bat"
 # if command -v bat >/dev/null 2>&1; then
 #
 # fi

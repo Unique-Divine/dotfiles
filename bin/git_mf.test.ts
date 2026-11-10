@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { cleanup, ok, repoPair, sh } from "./git-test-repo"
+import { cleanup, jqDir, ok, repoPair, sh } from "./git-test-repo"
 
 const gitMf = join(resolve(import.meta.dir), "git_mf")
 
@@ -17,12 +17,16 @@ type Scenario = {
   name: string
   setup: (r: Repo) => Promise<void>
   target?: string
+  /** Extra flags after the target, passed through to git merge. */
+  args?: string
   /** Text the "git_mf: plan: ..." line must contain. */
   plan: string
   code: number
   /** Exit code of --dry-run when it can't know the outcome. Default: code. */
   dryCode?: number
-  /** Branch after a successful real run. */
+  /** Text both runs must print besides the plan. */
+  says?: string
+  /** Branch after a successful real run; "" means detached. */
   branch?: string
   /** Ref the real run must end up containing. Default: origin/<target>. */
   includes?: string
@@ -251,6 +255,73 @@ const scenarios: Scenario[] = [
     branch: "feature",
   },
   {
+    name: "clean merge while local main is checked out in another worktree",
+    setup: async (r) => {
+      await feature(r)
+      await ok(r.clone, `git worktree add -q ${r.root}/wt main`)
+      await r.pushUpstream("two")
+    },
+    plan: "plan: merge",
+    says: "local main is checked out in",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "detached while main is checked out in another worktree moves HEAD",
+    setup: async (r) => {
+      await ok(r.clone, `git switch -q --detach HEAD && git worktree add -q ${r.root}/wt main`)
+      await r.pushUpstream("two")
+    },
+    plan: "plan: detached-advance",
+    says: "local main is checked out in",
+    code: 0,
+    branch: "",
+  },
+  {
+    name: "detached while local main is ahead of origin switches to main",
+    setup: async (r) => {
+      await ok(r.clone, "printf x > x && git add . && git commit -qm x && git switch -q --detach HEAD~1")
+    },
+    plan: "detached-switch up-to-date",
+    code: 0,
+    branch: "main",
+  },
+  ...["-X theirs", "-Xtheirs", "--strategy-option=theirs"].map((args) => ({
+    name: `content conflict with ${args} merges`,
+    setup: async (r: Repo) => {
+      await feature(r, "file.txt", "mine")
+      await r.pushUpstream("theirs")
+    },
+    args,
+    plan: "update-local-target merge",
+    code: 0,
+    branch: "feature",
+  })),
+  {
+    name: "--allow-unrelated-histories merges an unrelated target",
+    setup: async (r) => {
+      await ok(
+        r.peer,
+        "git switch -q --orphan other && printf o > other.txt && git add other.txt && git commit -qm other && git push -q -u origin other && git switch -q main",
+      )
+    },
+    target: "other",
+    args: "--allow-unrelated-histories",
+    plan: "plan: merge",
+    code: 0,
+    branch: "main",
+  },
+  {
+    name: "a failed fetch is an error, not a missing branch",
+    setup: async (r) => {
+      await r.pushUpstream("two")
+      await ok(r.clone, `git remote set-url origin ${r.root}/missing.git`)
+    },
+    plan: "fetch-failed",
+    says: "does not appear to be a git repository",
+    code: 1,
+  },
+  {
     name: "a pre-merge-commit hook that rejects leaves the branch as it was",
     setup: async (r) => {
       await feature(r)
@@ -274,19 +345,22 @@ describe("git_mf <target> scenarios", () => {
     const target = s.target ?? "main"
     const before = await snapshot(r.clone)
 
-    const dry = await sh(r.clone, `${gitMf} ${target} --dry-run`)
+    const cmd = `${gitMf} ${target} ${s.args ?? ""}`
+    const dry = await sh(r.clone, `${cmd} --dry-run`)
     expect(dry.stderr).toContain(`git_mf: plan: `)
     expect(dry.stderr).toContain(s.plan)
+    expect(dry.stderr).toContain(s.says ?? "")
     expect(dry.code, dry.stderr).toBe(s.dryCode ?? s.code)
     expect(await snapshot(r.clone)).toBe(before)
 
-    const real = await sh(r.clone, `${gitMf} ${target}`)
+    const real = await sh(r.clone, cmd)
     expect(real.stderr).toContain(s.plan)
+    expect(real.stderr).toContain(s.says ?? "")
     expect(real.stderr).not.toContain("plan predicted")
     expect(real.code, real.stderr).toBe(s.code)
 
     if (s.code === 0) {
-      if (s.branch) {
+      if (s.branch !== undefined) {
         expect(await ok(r.clone, "git branch --show-current")).toBe(s.branch)
       }
       const includes = s.includes ?? `origin/${target}`
@@ -347,7 +421,23 @@ describe("git_mf <target> scenarios", () => {
     const res = await sh(r.clone, `${gitMf} main --no-ff -m 'custom message' --dry-run`)
     expect(res.stderr).toContain("--no-ff -m custom message origin/main")
   })
+
+  test("flags git merge-tree can't model get a note in the plan", async () => {
+    const r = await repoPair()
+    await feature(r)
+    await r.pushUpstream("two")
+    const res = await sh(r.clone, `${gitMf} main --squash -s ours --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("git_mf: plan: update-local-target merge")
+    expect(res.stderr).toContain(
+      "can't model --squash -s ours; the real merge may not match this plan",
+    )
+  })
 })
+
+/** The argv a fake agent CLI received, one entry per argument. */
+const agentArgs = async (root: string, name: string) =>
+  (await readFile(join(root, `${name}.args`), "utf8")).trimEnd().split("\n")
 
 /** A PATH with only the system tools and the given fake agent CLIs. */
 async function fakeAgents(root: string, names: string[]) {
@@ -356,11 +446,11 @@ async function fakeAgents(root: string, names: string[]) {
   for (const name of names) {
     await writeFile(
       join(bin, name),
-      `#!/bin/sh\nprintf '%s\\n' "$*" > "${root}/${name}.args"\ncat > "${root}/${name}.stdin"\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${root}/${name}.args"\ncat > "${root}/${name}.stdin"\n`,
       { mode: 0o755 },
     )
   }
-  return `${bin}:/usr/bin:/bin`
+  return `${bin}:${jqDir}:/usr/bin:/bin`
 }
 
 describe("git_mf --agent", () => {
@@ -371,7 +461,7 @@ describe("git_mf --agent", () => {
     await pushUpstream("theirs")
     const PATH = await fakeAgents(root, ["claude", "codex"])
 
-    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH, BOKU_RUNLOG: "0" })
     // The fake agent merges nothing, and git_mf checks the repo rather than
     // trusting the agent's exit 0.
     expect(r.code, r.stderr).toBe(3)
@@ -379,7 +469,22 @@ describe("git_mf --agent", () => {
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
     expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
     expect(stdin).toContain("conflicts in: file.txt")
-    expect(await readFile(join(root, "claude.args"), "utf8")).toContain("-p")
+    expect(await agentArgs(root, "claude")).toEqual([
+      "-p",
+      "--strict-mcp-config",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(git:*)",
+      "Bash(just:*)",
+      "Bash(bun:*)",
+      "Bash(cargo:*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+    ])
     expect(await Bun.file(join(root, "codex.stdin")).exists()).toBe(false)
   })
 
@@ -388,12 +493,20 @@ describe("git_mf --agent", () => {
     await ok(clone, "printf local > file.txt")
     const PATH = await fakeAgents(root, ["codex"])
 
-    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH, BOKU_RUNLOG: "0" })
     expect(r.code, r.stderr).toBe(0)
     expect(await readFile(join(root, "codex.stdin"), "utf8")).toContain(
       "uncommitted changes",
     )
-    expect(await readFile(join(root, "codex.args"), "utf8")).toContain("exec")
+    const repo = await ok(clone, "git rev-parse --show-toplevel")
+    // --approve-for-me implies workspace-write and conflicts with --sandbox.
+    // Logging is off here, so this is the plain command; it also passes -o
+    // with a temp file for codex's report. Streaming is covered in
+    // git_mf.runlog.test.ts.
+    const args = await agentArgs(root, "codex")
+    expect(args.slice(0, 5)).toEqual(["exec", "-C", repo, "--approve-for-me", "-o"])
+    expect(args).not.toContain("-s")
+    expect(args).not.toContain("--sandbox")
   })
 
   test("--dry-run names the agent without running it", async () => {
@@ -415,5 +528,41 @@ describe("git_mf --agent", () => {
     const r = await sh(clone, `${gitMf} main --agent`, { PATH })
     expect(r.code).toBe(1)
     expect(r.stderr).toContain("neither claude nor codex")
+  })
+})
+
+describe("git_mf review-2 fixes", () => {
+  test("a branch named x/main on origin doesn't count as main", async () => {
+    const r = await repoPair()
+    // origin keeps only x/main; the clone still has a local main.
+    await ok(r.peer, "git push -q origin main:x/main")
+    await ok(r.remote, "git symbolic-ref HEAD refs/heads/x/main && git update-ref -d refs/heads/main")
+    const res = await sh(r.clone, `${gitMf} main`)
+    expect(res.stderr).not.toContain("fetch-failed")
+    expect(res.stderr).toContain("origin has no main; merging the local branch")
+    expect(res.code, res.stderr).toBe(0)
+  })
+
+  test("with no origin remote, the local branch is merged", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c topic && printf t > t.txt && git add . && git commit -qm t")
+    await ok(r.clone, "git switch -q main && git switch -q -c feature && git remote remove origin")
+    const topic = await ok(r.clone, "git rev-parse topic")
+    const res = await sh(r.clone, `${gitMf} topic`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("no origin remote; merging the local branch")
+    expect(await ok(r.clone, "git rev-parse HEAD")).toBe(topic)
+  })
+
+  test("--no-ff makes a merge commit where a fast-forward would do", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c feature")
+    await r.pushUpstream("two")
+    const dry = await sh(r.clone, `${gitMf} main --no-ff --dry-run`)
+    expect(dry.stderr).toMatch(/plan: (update-local-target )?merge\n/)
+    expect(dry.stderr).not.toContain("fast-forward")
+    const res = await sh(r.clone, `${gitMf} main --no-ff`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(await ok(r.clone, "git rev-list --parents -n1 HEAD | wc -w")).toBe("3")
   })
 })

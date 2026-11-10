@@ -29,6 +29,20 @@
 # on the start event as `git`. With BOKU_RUNLOG_STDOUT=1, events also
 # print to the stdout runlog_start found, even under a later `>&2`.
 
+# A jq installed by mise is a shim that starts mise on every call, about
+# 170 ms each, and the writer calls jq several times per event. Put the
+# real binary's folder first on PATH for this process instead. A jq that
+# isn't a mise shim, such as a test's fake, is left alone.
+_runlog_fast_jq() {
+  local shim real
+  shim="$(command -v jq 2>/dev/null)" || return 0
+  [[ "$(readlink -f -- "$shim" 2>/dev/null)" == */mise ]] || return 0
+  real="$(mise which jq 2>/dev/null)" || return 0
+  [[ -x "$real" ]] && PATH="${real%/*}:$PATH"
+  return 0
+}
+_runlog_fast_jq || true
+
 # Folder holding this file and redact-patterns.json, found at source time.
 _runlog_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null \
   && pwd)" || _runlog_lib_dir=""

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { cutString, redact, redactLines } from "./runlog.ts"
+import { jqDir } from "../bin/git-test-repo"
 
 // Runs one corpus through both redaction paths and asserts they agree:
 // the bash writer's jq filters (event lines and _runlog_redact_file) and
@@ -576,7 +577,9 @@ describe("redact-patterns.json", () => {
     )) as { kind: string; regex: string }[]
     const failed: string[] = []
     for (const p of patterns) {
-      const proc = Bun.spawn(["jq", "-n", "--arg", "re", p.regex,
+      // The real jq, not a mise shim: 40-odd calls at 170 ms each would
+      // outrun the test's time limit.
+      const proc = Bun.spawn([join(jqDir, "jq"), "-n", "--arg", "re", p.regex,
         '"" | test($re; "gi")'], { stdout: "pipe", stderr: "pipe" })
       if (await proc.exited !== 0) failed.push(`jq: ${p.kind}`)
       try {

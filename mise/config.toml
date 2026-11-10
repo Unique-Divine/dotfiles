@@ -1,0 +1,33 @@
+# Global mise config, linked to ~/.config/mise by `just sync`.
+#
+# Pinned CLI tools installed from upstream release binaries. `just sync` runs
+# `mise install --locked`, which installs exactly the versions and checksums
+# recorded in mise.lock. To add or bump a tool, see mise/README.md.
+#
+# Backends: most tools resolve through mise's aqua registry, which verifies
+# checksums (and attestations or signatures where upstream publishes them).
+# `mise tool <name>` shows the backend and its security checks.
+
+[settings]
+lockfile = true
+# Install only through `just mise-install`. By default a shim silently
+# installs a missing tool on first use, even under a different HOME.
+auto_install = false
+not_found_auto_install = false
+
+[tools]
+gh = "2.103.3"
+ripgrep = "15.2.0"
+jq = "1.8.2"
+just = "1.59.0"
+bat = "0.26.1"
+sd = "1.1.0"
+tree-sitter = "0.27.2"
+buf = "1.75.0"
+lychee = "0.24.2"
+fzf = "0.75.0"
+# eza publishes no macOS binary; macOS users install it with brew.
+eza = { version = "0.23.5", os = ["linux"] }
+# The registry default for neovim is a vfox plugin; aqua verifies sha256.
+"aqua:neovim/neovim" = "0.12.6"
+"github:mbrt/gmailctl" = "0.13.0"
