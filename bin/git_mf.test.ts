@@ -525,3 +525,39 @@ describe("git_mf --agent", () => {
     expect(r.stderr).toContain("neither claude nor codex")
   })
 })
+
+describe("git_mf review-2 fixes", () => {
+  test("a branch named x/main on origin doesn't count as main", async () => {
+    const r = await repoPair()
+    // origin keeps only x/main; the clone still has a local main.
+    await ok(r.peer, "git push -q origin main:x/main")
+    await ok(r.remote, "git symbolic-ref HEAD refs/heads/x/main && git update-ref -d refs/heads/main")
+    const res = await sh(r.clone, `${gitMf} main`)
+    expect(res.stderr).not.toContain("fetch-failed")
+    expect(res.stderr).toContain("origin has no main; merging the local branch")
+    expect(res.code, res.stderr).toBe(0)
+  })
+
+  test("with no origin remote, the local branch is merged", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c topic && printf t > t.txt && git add . && git commit -qm t")
+    await ok(r.clone, "git switch -q main && git switch -q -c feature && git remote remove origin")
+    const topic = await ok(r.clone, "git rev-parse topic")
+    const res = await sh(r.clone, `${gitMf} topic`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("no origin remote; merging the local branch")
+    expect(await ok(r.clone, "git rev-parse HEAD")).toBe(topic)
+  })
+
+  test("--no-ff makes a merge commit where a fast-forward would do", async () => {
+    const r = await repoPair()
+    await ok(r.clone, "git switch -q -c feature")
+    await r.pushUpstream("two")
+    const dry = await sh(r.clone, `${gitMf} main --no-ff --dry-run`)
+    expect(dry.stderr).toMatch(/plan: (update-local-target )?merge\n/)
+    expect(dry.stderr).not.toContain("fast-forward")
+    const res = await sh(r.clone, `${gitMf} main --no-ff`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(await ok(r.clone, "git rev-list --parents -n1 HEAD | wc -w")).toBe("3")
+  })
+})
