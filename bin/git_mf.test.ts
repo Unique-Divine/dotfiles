@@ -276,6 +276,15 @@ const scenarios: Scenario[] = [
     branch: "",
   },
   {
+    name: "detached while local main is ahead of origin switches to main",
+    setup: async (r) => {
+      await ok(r.clone, "printf x > x && git add . && git commit -qm x && git switch -q --detach HEAD~1")
+    },
+    plan: "detached-switch up-to-date",
+    code: 0,
+    branch: "main",
+  },
+  {
     name: "a pre-merge-commit hook that rejects leaves the branch as it was",
     setup: async (r) => {
       await feature(r)

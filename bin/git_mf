@@ -264,7 +264,8 @@ if [[ -z "$branch" ]]; then
     say "detached HEAD is at $(git rev-parse --short HEAD), including $upstream"
     exit 0
   fi
-  if (( has_local_target )) && ! is_ancestor "$target" "$upstream"; then
+  if (( has_local_target )) && ! is_ancestor "$target" "$upstream" \
+    && ! is_ancestor "$upstream" "$target"; then
     say "plan: diverged"
     needs_judgment "$target has commits that $upstream doesn't, and the reverse"
   fi
