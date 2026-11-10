@@ -249,6 +249,117 @@ export function normalizeMessageId(
 }
 
 /** Cached header data for one Gmail message, keyed by Gmail id. */
+// ---------------------------------------------------------------------------
+// Gmail REST v1 and Google OAuth response bindings
+// ---------------------------------------------------------------------------
+// Shapes match responses captured live on 2026-11-10; anonymized copies live
+// in email/fixtures/gmail/ and keep these types honest in tests.
+
+/** An entry in users.messages.list. */
+export interface GmailMessageRef {
+  id: string;
+  threadId: string;
+}
+
+/** users.messages.list. `messages` is absent when nothing matches. */
+export interface GmailListMessagesResponse {
+  messages?: GmailMessageRef[];
+  nextPageToken?: string;
+  resultSizeEstimate: number;
+}
+
+export interface GmailHeader {
+  name: string;
+  value: string;
+}
+
+/** users.messages.get with format=metadata. */
+export interface GmailMessageMetadata {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  snippet: string;
+  payload: { mimeType: string; headers: GmailHeader[] };
+  sizeEstimate: number;
+  /** Decimal string, not a number. */
+  historyId: string;
+  /** Epoch milliseconds as a decimal string. */
+  internalDate: string;
+}
+
+/** users.getProfile. */
+export interface GmailProfile {
+  emailAddress: string;
+  messagesTotal: number;
+  threadsTotal: number;
+  historyId: string;
+}
+
+/** Error envelope for non-2xx Gmail responses. */
+export interface GmailErrorResponse {
+  error: {
+    code: number;
+    message: string;
+    errors: { message: string; domain?: string; reason?: string }[];
+    status?: string;
+  };
+}
+
+/** Google OAuth token endpoint response (code exchange or refresh). */
+export interface OAuthTokenResponse {
+  access_token: string;
+  expires_in: number;
+  scope: string;
+  token_type: string;
+  /** Present on code exchange; usually absent on refresh. */
+  refresh_token?: string;
+  /** Present for apps in Testing mode, where refresh tokens last 7 days. */
+  refresh_token_expires_in?: number;
+}
+
+/** Gmail ids from one list page; an empty match has no `messages` key. */
+export function idsFromListPage(page: GmailListMessagesResponse): string[] {
+  return (page.messages ?? []).map((m) => m.id);
+}
+
+/** Message-ID and Subject from a metadata response, header names any case. */
+export function metaFromMessage(
+  msg: Pick<GmailMessageMetadata, "payload">,
+): MessageMeta {
+  const headers = msg.payload?.headers ?? [];
+  const get = (name: string): string | undefined =>
+    headers.find((h) => h.name.toLowerCase() === name)?.value;
+  return {
+    mid: normalizeMessageId(get("message-id")),
+    subject: get("subject"),
+  };
+}
+
+/** Parse a Gmail error body, or null when it is not the JSON envelope. */
+export function parseGmailError(text: string): GmailErrorResponse | null {
+  try {
+    const body = JSON.parse(text) as Partial<GmailErrorResponse>;
+    return body.error && typeof body.error.code === "number"
+      ? (body as GmailErrorResponse)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Apply a token refresh response to a stored token. */
+export function applyTokenRefresh(
+  token: StoredToken,
+  body: OAuthTokenResponse,
+  now: number,
+): StoredToken {
+  return {
+    ...token,
+    accessToken: body.access_token,
+    expiresAt: now + body.expires_in * 1000,
+  };
+}
+
 export interface MessageMeta {
   /** Normalized Message-ID, or null when the header is missing. */
   mid: string | null;
@@ -420,15 +531,35 @@ export function backoffMs(
 }
 
 /**
- * 60 ms spacing = about 16.7 requests/s = 5,000 units/min for 5-unit gets.
- * The ud-tooling-2611 project's per-user `total_query_cost` limit is 6,000
- * units/min (checked 2026-11-10 via serviceusage consumerQuotaMetrics),
- * below Gmail's documented 15,000 default.
+ * 125 ms spacing = 8 requests/s = 480 gets/min. The ud-tooling-2611
+ * project's per-user `total_query_cost` limit is 6,000 units/min (checked
+ * 2026-11-10 via serviceusage consumerQuotaMetrics). Runs at 40/s and 16.7/s
+ * still exceeded it, so this pace leaves room even if a metadata get costs
+ * more than the documented 5 units.
  */
-export const REQUEST_INTERVAL_MS = 60;
+export const REQUEST_INTERVAL_MS = 125;
 
 /** Per-user query-cost limit for this project, in units per minute. */
 export const QUERY_COST_LIMIT_PER_MIN = 6_000;
+
+/** True for Gmail's per-user quota 403, which resets each minute. */
+export function isQuotaExceeded(status: number, body = ""): boolean {
+  return status === 403 && /Quota exceeded|RATE_LIMIT_EXCEEDED/i.test(body);
+}
+
+/**
+ * Delay before retrying. A quota 403 waits out the one-minute window;
+ * other retryable errors back off exponentially.
+ */
+export function retryDelayMs(
+  status: number,
+  body: string,
+  attempt: number,
+  jitter = 0,
+): number {
+  if (isQuotaExceeded(status, body)) return 61_000 + Math.round(jitter * 4_000);
+  return backoffMs(attempt, jitter);
+}
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -521,7 +652,7 @@ function tryOpenBrowser(url: string): void {
 
 async function tokenRequest(
   params: Record<string, string>,
-): Promise<Record<string, unknown>> {
+): Promise<OAuthTokenResponse> {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -538,7 +669,7 @@ async function tokenRequest(
       `token endpoint ${res.status} ${String(body.error ?? "")}${desc}`,
     );
   }
-  return body;
+  return body as unknown as OAuthTokenResponse;
 }
 
 async function loopbackAuth(
@@ -635,11 +766,7 @@ export class GmailAccount {
       refresh_token: this.token.refreshToken,
       grant_type: "refresh_token",
     });
-    this.token = {
-      ...this.token,
-      accessToken: String(body.access_token),
-      expiresAt: Date.now() + Number(body.expires_in ?? 0) * 1000,
-    };
+    this.token = applyTokenRefresh(this.token, body, Date.now());
     await writePrivateJson(tokenPath(this.email), this.token);
     return this.token.accessToken;
   }
@@ -694,7 +821,9 @@ export class GmailAccount {
       if (isRetryableStatus(res.status, text) && attempt + 1 < maxAttempts) {
         const after = Number(res.headers.get("retry-after"));
         const wait =
-          after > 0 ? after * 1000 : backoffMs(attempt, Math.random());
+          after > 0
+            ? after * 1000
+            : retryDelayMs(res.status, text, attempt, Math.random());
         await sleep(wait);
         continue;
       }
@@ -706,7 +835,7 @@ export class GmailAccount {
   }
 
   async profileEmail(): Promise<string> {
-    const p = await this.call<{ emailAddress: string }>("/profile");
+    const p = await this.call<GmailProfile>("/profile");
     return p.emailAddress.toLowerCase();
   }
 }
@@ -754,11 +883,10 @@ export async function listIds(
   do {
     const params = new URLSearchParams({ q, maxResults: "500" });
     if (pageToken) params.set("pageToken", pageToken);
-    const page = await acct.call<{
-      messages?: { id: string }[];
-      nextPageToken?: string;
-    }>(`/messages?${params.toString()}`);
-    for (const m of page.messages ?? []) ids.push(m.id);
+    const page = await acct.call<GmailListMessagesResponse>(
+      `/messages?${params.toString()}`,
+    );
+    ids.push(...idsFromListPage(page));
     pageToken = page.nextPageToken;
     if (limit !== null && ids.length >= limit) return ids.slice(0, limit);
   } while (pageToken);
@@ -797,7 +925,6 @@ async function saveCache(email: string, meta: MetaMap): Promise<void> {
   await writePrivateJson(cachePath(email), file);
 }
 
-type Header = { name: string; value: string };
 
 /** Fill `meta` with Message-ID and Subject for ids not yet cached. */
 export async function fetchMeta(
@@ -831,16 +958,10 @@ export async function fetchMeta(
     params.append("metadataHeaders", "Message-ID");
     params.append("metadataHeaders", "Subject");
     try {
-      const msg = await acct.call<{ payload?: { headers?: Header[] } }>(
+      const msg = await acct.call<GmailMessageMetadata>(
         `/messages/${id}?${params.toString()}`,
       );
-      const headers = msg.payload?.headers ?? [];
-      const get = (name: string): string | undefined =>
-        headers.find((h) => h.name.toLowerCase() === name)?.value;
-      meta[id] = {
-        mid: normalizeMessageId(get("message-id")),
-        subject: get("subject"),
-      };
+      meta[id] = metaFromMessage(msg);
     } catch (err) {
       if (/-> 404/.test((err as Error).message)) return; // Deleted since.
       throw err;
