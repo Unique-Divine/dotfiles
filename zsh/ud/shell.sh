@@ -154,12 +154,21 @@ ud_shell_docker_kill_all() {
     echo "No running docker compose apps found."
   fi
 
-  local running_container_ids
-  running_container_ids=$(docker ps --format '{{.ID}}')
-  if [[ -n "$running_container_ids" ]]; then
+  local container_output
+  if ! container_output="$(docker ps --format '{{.ID}}')"; then
+    echo "Failed to list running containers."
+    return 1
+  fi
+  local -a container_ids=()
+  if [[ -n "$container_output" ]]; then
+    mapfile -t container_ids <<< "$container_output"
+  fi
+  if [[ "${#container_ids[@]}" -gt 0 ]]; then
     echo "Stopping remaining running containers..."
-    # shellcheck disable=SC2086
-    docker stop $running_container_ids
+    if ! docker stop "${container_ids[@]}"; then
+      echo "Failed to stop running containers."
+      return 1
+    fi
   else
     echo "No remaining running containers found."
   fi
