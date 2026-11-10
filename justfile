@@ -253,6 +253,11 @@ email-sync:
   email_build gmailctl-nibi.ts gmailctl
   email_build gmailctl-ud.ts gmailctl-ud
 
+# Archive target inbox mail that is archived in the source Gmail account.
+# Dry run unless --run is given.
+mail-state-sync *ARGS:
+  bun run email/mail-state-sync.ts {{ARGS}}
+
 # Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
 # while WSL is down. WSL only.
 win-sync:
