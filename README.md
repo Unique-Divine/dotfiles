@@ -190,8 +190,9 @@ the rest of the sync still runs.
 ### Merging From main
 
 `git_mf main` brings the current branch up to date with `origin/main`: a
-fast-forward on `main`, and a merge commit on any other branch. Any other
-target works the same way. When the merge needs judgment, it stops without
+fast-forward on `main`, and a merge commit on any other branch. A detached
+checkout switches to `main`, or moves forward and stays detached when another
+worktree has `main` checked out. Any other target works the same way. When the merge needs judgment, it stops without
 changing anything. `git_mf main --agent` then hands the merge to `claude -p`,
 or `codex exec` when Claude is missing, with the instructions in
 [`git_mf.prompt.md`](bin/git_mf.prompt.md). Those instructions

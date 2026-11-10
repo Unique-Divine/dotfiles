@@ -22,7 +22,9 @@ type Scenario = {
   code: number
   /** Exit code of --dry-run when it can't know the outcome. Default: code. */
   dryCode?: number
-  /** Branch after a successful real run. */
+  /** Text both runs must print besides the plan. */
+  says?: string
+  /** Branch after a successful real run; "" means detached. */
   branch?: string
   /** Ref the real run must end up containing. Default: origin/<target>. */
   includes?: string
@@ -251,6 +253,29 @@ const scenarios: Scenario[] = [
     branch: "feature",
   },
   {
+    name: "clean merge while local main is checked out in another worktree",
+    setup: async (r) => {
+      await feature(r)
+      await ok(r.clone, `git worktree add -q ${r.root}/wt main`)
+      await r.pushUpstream("two")
+    },
+    plan: "plan: merge",
+    says: "local main is checked out in",
+    code: 0,
+    branch: "feature",
+  },
+  {
+    name: "detached while main is checked out in another worktree moves HEAD",
+    setup: async (r) => {
+      await ok(r.clone, `git switch -q --detach HEAD && git worktree add -q ${r.root}/wt main`)
+      await r.pushUpstream("two")
+    },
+    plan: "plan: detached-advance",
+    says: "local main is checked out in",
+    code: 0,
+    branch: "",
+  },
+  {
     name: "a pre-merge-commit hook that rejects leaves the branch as it was",
     setup: async (r) => {
       await feature(r)
@@ -277,16 +302,18 @@ describe("git_mf <target> scenarios", () => {
     const dry = await sh(r.clone, `${gitMf} ${target} --dry-run`)
     expect(dry.stderr).toContain(`git_mf: plan: `)
     expect(dry.stderr).toContain(s.plan)
+    expect(dry.stderr).toContain(s.says ?? "")
     expect(dry.code, dry.stderr).toBe(s.dryCode ?? s.code)
     expect(await snapshot(r.clone)).toBe(before)
 
     const real = await sh(r.clone, `${gitMf} ${target}`)
     expect(real.stderr).toContain(s.plan)
+    expect(real.stderr).toContain(s.says ?? "")
     expect(real.stderr).not.toContain("plan predicted")
     expect(real.code, real.stderr).toBe(s.code)
 
     if (s.code === 0) {
-      if (s.branch) {
+      if (s.branch !== undefined) {
         expect(await ok(r.clone, "git branch --show-current")).toBe(s.branch)
       }
       const includes = s.includes ?? `origin/${target}`

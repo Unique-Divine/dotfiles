@@ -17,9 +17,12 @@ origin/TARGET, or with the local TARGET when origin doesn't have it.
   No target            fetch and pull the current branch
   On TARGET itself     fast-forward only
   On another branch    merge, creating a merge commit when needed
-  Detached             switch to TARGET when HEAD is already part of it
+  Detached             switch to TARGET when HEAD is already part of it, or
+                       move HEAD forward, still detached, when TARGET is
+                       checked out in another worktree
 
-A local TARGET branch you aren't on is fast-forwarded too, when it can be.
+A local TARGET branch you aren't on is fast-forwarded too, when it can be
+and no other worktree has it checked out.
 
 Every run prints its plan ("git_mf: plan: ...") and each command that
 changes the repository ("RUN ..."). With --dry-run, nothing but
@@ -163,6 +166,23 @@ in_progress_op() {
 
 is_ancestor() { git merge-base --is-ancestor "$1" "$2"; }
 
+# Print the path of another worktree that has branch $1 checked out, if any.
+checked_out_elsewhere() {
+  local -r ref="refs/heads/$1"
+  local line path=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch $ref")
+        if [[ "$path" != "$repo" ]]; then
+          echo "$path"
+          return
+        fi
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+}
+
 # ---- Plan: read-only apart from fetching remote-tracking refs. ----
 
 op="$(in_progress_op)"
@@ -200,13 +220,22 @@ fi
 
 branch="$(git branch --show-current)"
 steps=()
+target_worktree=""
+if (( has_local_target )); then
+  target_worktree="$(checked_out_elsewhere "$target")"
+fi
 
 # Keep a local target you aren't on current, as the old checkout-and-pull did.
 # A detached checkout switches to the target instead.
 if (( has_local_target )) && [[ -n "$branch" && "$branch" != "$target" \
   && "$upstream" != "$target" ]]; then
   if is_ancestor "$target" "$upstream"; then
-    if [[ "$(git rev-parse "$target")" != "$(git rev-parse "$upstream")" ]]; then
+    if [[ "$(git rev-parse "$target")" == "$(git rev-parse "$upstream")" ]]; then
+      :
+    elif [[ -n "$target_worktree" ]]; then
+      # git refuses to update a branch checked out in another worktree.
+      say "local $target is checked out in $target_worktree; not updating it"
+    else
       steps+=("update-local-target")
     fi
   else
@@ -219,6 +248,21 @@ if [[ -z "$branch" ]]; then
     say "plan: detached-stray"
     say "detached at $(git rev-parse --short HEAD), which isn't on $upstream; switch to a branch first"
     exit 4
+  fi
+  if [[ -n "$target_worktree" ]]; then
+    # git won't switch to a branch checked out in another worktree, so
+    # move the detached HEAD forward instead, as the old sync did.
+    say "local $target is checked out in $target_worktree; staying detached"
+    if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$upstream")" ]]; then
+      say "plan: up-to-date"
+      say "detached HEAD already includes $upstream"
+      exit 0
+    fi
+    say "plan: detached-advance"
+    run git switch --quiet --detach "$upstream"
+    (( dry_run )) && exit 0
+    say "detached HEAD is at $(git rev-parse --short HEAD), including $upstream"
+    exit 0
   fi
   if (( has_local_target )) && ! is_ancestor "$target" "$upstream"; then
     say "plan: diverged"
