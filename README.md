@@ -202,8 +202,10 @@ Each run prints its plan (`git_mf: plan: ...`) and every command that changes
 the repository (`RUN ...`). `git_mf main --dry-run` prints them without running
 anything; only remote-tracking refs are fetched. It predicts conflicts with
 `git merge-tree`, git's own merge engine, so the conflicted files it names are
-the ones a real merge would hit. It can't predict hooks, which only run during
-a real merge. `git_mf --help` lists the exit codes, and
+the ones a real merge would hit. Extra flags go to `git merge`, and the plan
+passes `-X` and `--allow-unrelated-histories` to `git merge-tree` too. It can't
+predict hooks, which only run during a real merge, or flags such as `-s`,
+`--squash`, and `--no-commit`, which it notes in the plan. `git_mf --help` lists the exit codes, and
 [`git_mf.test.ts`](bin/git_mf.test.ts) checks each scenario's dry run against
 its real run.
 

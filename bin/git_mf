@@ -24,6 +24,10 @@ origin/TARGET, or with the local TARGET when origin doesn't have it.
 A local TARGET branch you aren't on is fast-forwarded too, when it can be
 and no other worktree has it checked out.
 
+Extra flags go to git merge. The plan passes -X/--strategy-option and
+--allow-unrelated-histories to git merge-tree too; for -s/--strategy,
+--squash, and --no-commit it prints a note that the real merge may differ.
+
 Every run prints its plan ("git_mf: plan: ...") and each command that
 changes the repository ("RUN ..."). With --dry-run, nothing but
 remote-tracking refs changes, and the exit code is the one a real run would
@@ -183,6 +187,30 @@ checked_out_elsewhere() {
   done < <(git worktree list --porcelain)
 }
 
+# Split the extra flags into those git merge-tree can model, for the plan,
+# and warn about those it can't.
+tree_flags=()
+unmodeled=()
+for (( i = 0; i < ${#merge_flags[@]}; i++ )); do
+  flag="${merge_flags[i]}"
+  case "$flag" in
+    -X|--strategy-option)
+      tree_flags+=("$flag" "${merge_flags[i + 1]:-}")
+      i=$(( i + 1 ))
+      ;;
+    -X*|--strategy-option=*|--allow-unrelated-histories)
+      tree_flags+=("$flag")
+      ;;
+    -s|--strategy)
+      unmodeled+=("$flag ${merge_flags[i + 1]:-}")
+      i=$(( i + 1 ))
+      ;;
+    -s*|--strategy=*|--squash|--no-commit)
+      unmodeled+=("$flag")
+      ;;
+  esac
+done
+
 # ---- Plan: read-only apart from fetching remote-tracking refs. ----
 
 op="$(in_progress_op)"
@@ -289,7 +317,7 @@ else
   # Anything else is an error, such as unrelated histories.
   tree_status=0
   tree_out="$(git merge-tree --write-tree --name-only --no-messages \
-    "$head_ref" "$upstream" 2>&1)" || tree_status=$?
+    "${tree_flags[@]}" "$head_ref" "$upstream" 2>&1)" || tree_status=$?
   case "$tree_status" in
     0) action="merge" ;;
     1)
@@ -306,6 +334,9 @@ fi
 
 steps+=("$action")
 say "plan: ${steps[*]}${conflicts:+: $conflicts}"
+if [[ "$action" == merge* ]] && (( ${#unmodeled[@]} )); then
+  say "note: git merge-tree can't model ${unmodeled[*]}; the real merge may not match this plan"
+fi
 
 case "$action" in
   diverged)

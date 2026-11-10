@@ -17,6 +17,8 @@ type Scenario = {
   name: string
   setup: (r: Repo) => Promise<void>
   target?: string
+  /** Extra flags after the target, passed through to git merge. */
+  args?: string
   /** Text the "git_mf: plan: ..." line must contain. */
   plan: string
   code: number
@@ -284,6 +286,31 @@ const scenarios: Scenario[] = [
     code: 0,
     branch: "main",
   },
+  ...["-X theirs", "-Xtheirs", "--strategy-option=theirs"].map((args) => ({
+    name: `content conflict with ${args} merges`,
+    setup: async (r: Repo) => {
+      await feature(r, "file.txt", "mine")
+      await r.pushUpstream("theirs")
+    },
+    args,
+    plan: "update-local-target merge",
+    code: 0,
+    branch: "feature",
+  })),
+  {
+    name: "--allow-unrelated-histories merges an unrelated target",
+    setup: async (r) => {
+      await ok(
+        r.peer,
+        "git switch -q --orphan other && printf o > other.txt && git add other.txt && git commit -qm other && git push -q -u origin other && git switch -q main",
+      )
+    },
+    target: "other",
+    args: "--allow-unrelated-histories",
+    plan: "plan: merge",
+    code: 0,
+    branch: "main",
+  },
   {
     name: "a pre-merge-commit hook that rejects leaves the branch as it was",
     setup: async (r) => {
@@ -308,14 +335,15 @@ describe("git_mf <target> scenarios", () => {
     const target = s.target ?? "main"
     const before = await snapshot(r.clone)
 
-    const dry = await sh(r.clone, `${gitMf} ${target} --dry-run`)
+    const cmd = `${gitMf} ${target} ${s.args ?? ""}`
+    const dry = await sh(r.clone, `${cmd} --dry-run`)
     expect(dry.stderr).toContain(`git_mf: plan: `)
     expect(dry.stderr).toContain(s.plan)
     expect(dry.stderr).toContain(s.says ?? "")
     expect(dry.code, dry.stderr).toBe(s.dryCode ?? s.code)
     expect(await snapshot(r.clone)).toBe(before)
 
-    const real = await sh(r.clone, `${gitMf} ${target}`)
+    const real = await sh(r.clone, cmd)
     expect(real.stderr).toContain(s.plan)
     expect(real.stderr).toContain(s.says ?? "")
     expect(real.stderr).not.toContain("plan predicted")
@@ -382,6 +410,18 @@ describe("git_mf <target> scenarios", () => {
     await r.pushUpstream("two")
     const res = await sh(r.clone, `${gitMf} main --no-ff -m 'custom message' --dry-run`)
     expect(res.stderr).toContain("--no-ff -m custom message origin/main")
+  })
+
+  test("flags git merge-tree can't model get a note in the plan", async () => {
+    const r = await repoPair()
+    await feature(r)
+    await r.pushUpstream("two")
+    const res = await sh(r.clone, `${gitMf} main --squash -s ours --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("git_mf: plan: update-local-target merge")
+    expect(res.stderr).toContain(
+      "can't model --squash -s ours; the real merge may not match this plan",
+    )
   })
 })
 
