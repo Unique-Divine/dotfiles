@@ -401,7 +401,11 @@ async function readJson<T>(path: string): Promise<T | null> {
 
 export function isRetryableStatus(status: number, body = ""): boolean {
   if (status === 429 || status >= 500) return true;
-  return status === 403 && /rateLimitExceeded/i.test(body);
+  // Gmail reports per-user quota exhaustion as 403, not 429.
+  return (
+    status === 403 &&
+    /rateLimitExceeded|Quota exceeded|RATE_LIMIT_EXCEEDED/i.test(body)
+  );
 }
 
 /** Exponential backoff in ms, capped; `jitter` in [0, 1). */
@@ -414,6 +418,9 @@ export function backoffMs(
   const exp = Math.min(capMs, baseMs * 2 ** attempt);
   return Math.round(exp * (0.5 + jitter / 2));
 }
+
+/** 25 ms spacing = 40 requests/s = 12,000 units/min for 5-unit gets. */
+export const REQUEST_INTERVAL_MS = 25;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -629,13 +636,28 @@ export class GmailAccount {
     return this.token.accessToken;
   }
 
+  /**
+   * Earliest start time for the next request. Requests are spaced
+   * REQUEST_INTERVAL_MS apart so a messages.get (5 quota units) stays under
+   * Gmail's 15,000 units per minute per user.
+   */
+  private nextRequestAt = 0;
+
+  private async pace(): Promise<void> {
+    const now = Date.now();
+    const start = Math.max(now, this.nextRequestAt);
+    this.nextRequestAt = start + REQUEST_INTERVAL_MS;
+    if (start > now) await sleep(start - now);
+  }
+
   /** Call the Gmail API with retry on 429, 5xx, and rate-limit 403s. */
   async call<T>(
     path: string,
     init: { method?: string; body?: unknown } = {},
-    maxAttempts = 7,
+    maxAttempts = 10,
   ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
+      await this.pace();
       const token = await this.accessToken();
       let res: Response;
       try {
