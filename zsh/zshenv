@@ -1,4 +1,10 @@
 [[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+
+# mise installs pinned CLI tools (gh, ripgrep, just, nvim, ...) from
+# mise/config.toml. Its shims go first so every shell, including agents and
+# non-interactive commands, runs the pinned versions. zshrc re-asserts this
+# after its own PATH edits.
+export PATH="$HOME/.local/share/mise/shims:$PATH"
 export REPO="$HOME/ki"
 export DOTFILES="$REPO/boku/dotfiles"
 export OUTTXT="$HOME/ki/out.txt"
