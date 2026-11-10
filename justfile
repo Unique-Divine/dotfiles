@@ -22,7 +22,9 @@ test-rust:
   cargo test --workspace --locked
 
 test-bun:
-  bun test --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts"
+  bun test \
+    --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts" \
+    --path-ignore-patterns "**/bun/sources/**"
 
 alias t := test
 
@@ -164,8 +166,8 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, portable Codex, Cursor CLI, and Claude Code config, and
-# managed AI skills for Cursor, Codex, and Claude Code.
+# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI, and
+# Claude Code config, and managed AI skills for Cursor, Codex, and Claude Code.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -191,11 +193,13 @@ sync:
     curl -fsSL https://chatgpt.com/codex/install.sh | \
       CODEX_NON_INTERACTIVE=1 sh
   fi
-  just i-jiyuu
   bun install
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just bun-sync
+  just claude-install
+  just i-jiyuu
   just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     just herdr-install
@@ -208,6 +212,7 @@ sync:
   just gh-rev-install
   if is_wsl >/dev/null; then
     just clipboard-install
+    just win-sync
   fi
   bun run codex/config.ts --run
   bun run cursor/cli-config.ts --run
@@ -218,10 +223,92 @@ sync:
     bun run claude/mcp.ts --run
   fi
   bun run skillsSync.ts --run
+  just email-sync
+
+# Clone or update gmailctl in ~/ki/gmailctl and install it with go.
+gmailctl-install:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  if ! command -v go >/dev/null 2>&1; then
+    echo "go is required to build gmailctl; skipping" >&2
+    exit 0
+  fi
+  gmailctl_src="$HOME/ki/gmailctl"
+  if [[ -d "$gmailctl_src/.git" ]]; then
+    git -C "$gmailctl_src" pull --ff-only --quiet
+  else
+    git clone --quiet https://github.com/mbrt/gmailctl.git "$gmailctl_src"
+  fi
+  (cd "$gmailctl_src" && go install ./cmd/gmailctl)
+  echo "installed $(go env GOPATH)/bin/gmailctl"
+
+# Render private gmailctl configs from boku TypeScript into ~/.config;
+# skip missing ones.
+email-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  email_private="${BOKU:-$HOME/ki/boku}/priv-skills/ud/email"
+  email_build() {
+    local src="$email_private/$1"
+    [[ -f "$src" ]] || return 0
+    bun run email/gmailctl.ts "$src" "$HOME/.config/$2/config.jsonnet"
+  }
+  email_build gmailctl-nibi.ts gmailctl
+  email_build gmailctl-ud.ts gmailctl-ud
+
+# Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
+# while WSL is down. WSL only.
+win-sync:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  for tool in cmd.exe wslpath rsync; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "win-sync: $tool is unavailable; skipping" >&2
+      exit 0
+    fi
+  done
+  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "$win_home" || "$win_home" == "%USERPROFILE%" ]]; then
+    echo "win-sync: could not read %USERPROFILE%; skipping" >&2
+    exit 0
+  fi
+  dest="$(wslpath -u "$win_home")/.files/windows"
+  mkdir -p "$dest"
+  rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
+  echo "synced windows/ -> $win_home\\.files\\windows"
 
 # Check required tools and drift without changing dotfile-managed state.
 health:
   bash zsh/health.sh
+
+# Check domain registration (RDAP) and DNS; exits 1 on any FAIL finding.
+# Default: uniquedivine.com dsn-braids.com. Add --json for machine output.
+domain-health *ARGS:
+  bun run domain/health.ts {{ARGS}}
+
+# Restore the locked global Bun packages and their command and plugin links.
+bun-sync:
+  bun --no-install bun/sync.ts --run
+
+# Inspect managed Bun packages and links without changing the installation.
+bun-health:
+  bun --no-install bun/sync.ts --check
+
+# Refresh the global Bun lockfile after editing bun/global/package.json.
+bun-lock:
+  bun --no-install bun/sync.ts --lock
+
+# Pin a published ud-mdtoc release in the managed global manifest.
+bun-activate-mdtoc VERSION="0.1.0":
+  bun --no-install bun/sync.ts --activate-mdtoc {{quote(VERSION)}}
+
+# Install or verify the native Claude CLI and its command resolution.
+claude-install:
+  bash claude/native.sh --run
+
+# Check the native Claude installation without installing or updating it.
+claude-health:
+  bash claude/native.sh --check
 
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:

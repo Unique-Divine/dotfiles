@@ -1,0 +1,10 @@
+# Global Cargo config, linked to ~/.cargo/config.toml by `just sync`.
+#
+# Keep file/line info for panics and backtraces, but drop full debugger
+# info (variable inspection in gdb/lldb). Shrinks target/ substantially.
+# Opt out for one build with CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

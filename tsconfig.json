@@ -1,4 +1,5 @@
 {
+  "exclude": ["bun/sources", "bun/global/node_modules"],
   "compilerOptions": {
     // Enable latest features
     "lib": ["ESNext", "DOM"],
