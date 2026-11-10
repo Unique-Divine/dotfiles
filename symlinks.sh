@@ -57,8 +57,12 @@ if [[ -r "$retired_path" ]]; then
 
     destination_path="$HOME/$destination_relative"
     [[ -L "$destination_path" ]] || continue
-    if [[ "$(readlink -f -- "$destination_path")" == \
-      "$(readlink -f -- "$DOTFILES/$source_relative")" ]]; then
+    # readlink -f prints nothing when a parent folder is missing; two empty
+    # results must not count as a match.
+    destination_target="$(readlink -f -- "$destination_path" || true)"
+    source_target="$(readlink -f -- "$DOTFILES/$source_relative" || true)"
+    if [[ -n "$source_target" && "$destination_target" == "$source_target" ]]
+    then
       if rm -f -- "$destination_path"; then
         echo "removed retired link: $destination_path"
       else
