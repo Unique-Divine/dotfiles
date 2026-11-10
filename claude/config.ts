@@ -93,23 +93,51 @@ export const managedAllowRules: readonly string[] = [
   // Superhuman Mail inbox cleanup: unsubscribe and move threads to Trash.
   "mcp__superhuman-mail__unsubscribe",
   "mcp__superhuman-mail__trash_thread",
+  // Google Cloud and Firebase work (DNS, IAM, hosting) without auto mode
+  // holding each command for approval. Bucket deletes stay in
+  // managedAskRules.
+  "Bash(gcloud:*)",
+  "Bash(firebase:*)",
 ]
 
 /**
- * Returns runtime `permissions` with every managed allow rule present. Other
- * fields, such as `deny` and `defaultMode`, and existing rule order are kept.
+ * Rules sync adds to `permissions.ask`. An ask rule outranks a matching allow
+ * rule, so these carve exceptions out of the broad allows above.
+ */
+export const managedAskRules: readonly string[] = [
+  "Bash(gcloud storage rm:*)",
+]
+
+/** Appends each rule missing from a runtime rule list, keeping its order. */
+const mergeRuleList = (
+  current: JsonValue | undefined,
+  rules: readonly string[],
+): JsonValue[] => {
+  const list = Array.isArray(current) ? current : []
+
+  return [...list, ...rules.filter((rule) => !list.includes(rule))]
+}
+
+/**
+ * Returns runtime `permissions` with every managed allow rule present, and
+ * every ask rule when `askRules` is non-empty. Other fields, such as `deny`
+ * and `defaultMode`, and existing rule order are kept.
  */
 export const mergePermissions = (
   runtimePermissions: JsonValue | undefined,
   rules: readonly string[] = managedAllowRules,
+  askRules: readonly string[] = [],
 ): JsonObject => {
   const permissions = isJsonObject(runtimePermissions)
     ? runtimePermissions
     : {}
-  const allow = Array.isArray(permissions.allow) ? permissions.allow : []
-  const missing = rules.filter((rule) => !allow.includes(rule))
+  const out: JsonObject = {
+    ...permissions,
+    allow: mergeRuleList(permissions.allow, rules),
+  }
+  if (askRules.length > 0) out.ask = mergeRuleList(permissions.ask, askRules)
 
-  return { ...permissions, allow: [...allow, ...missing] }
+  return out
 }
 
 export interface ClaudePaths {
@@ -198,7 +226,11 @@ export const mergeRuntimeSettings = (
     }
   }
 
-  out.permissions = mergePermissions(runtimeSettings.permissions)
+  out.permissions = mergePermissions(
+    runtimeSettings.permissions,
+    managedAllowRules,
+    managedAskRules,
+  )
 
   return out
 }

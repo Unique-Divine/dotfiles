@@ -105,7 +105,7 @@ log_info() {
 which_ok() {
 
   # Runnable binary on $PATH? Ex: "jq", "bun", etc.
-  # Alias? Ex: "ls" (I have it aliased to exa).
+  # Alias? Ex: "ls" (I have it aliased to eza).
   # Built-in? Ex: "echo", "cd"
   if which "$1" >/dev/null 2>&1; then
     return 0
