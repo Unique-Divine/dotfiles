@@ -185,7 +185,7 @@ standalone CLI with OpenAI's installer when it's missing
 `just sync` also merges `origin/main` into whatever branch Jiyuu is on, using
 [`git_mf main`](bin/git_mf). Uncommitted changes, a conflict, or a
 `main` that has diverged from `origin` leave Jiyuu untouched with a warning, and
-the rest of the sync still runs.
+the rest of the sync still runs. A failed fetch from `origin` stops the sync.
 
 ### Merging From main
 

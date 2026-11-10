@@ -312,6 +312,16 @@ const scenarios: Scenario[] = [
     branch: "main",
   },
   {
+    name: "a failed fetch is an error, not a missing branch",
+    setup: async (r) => {
+      await r.pushUpstream("two")
+      await ok(r.clone, `git remote set-url origin ${r.root}/missing.git`)
+    },
+    plan: "fetch-failed",
+    says: "does not appear to be a git repository",
+    code: 1,
+  },
+  {
     name: "a pre-merge-commit hook that rejects leaves the branch as it was",
     setup: async (r) => {
       await feature(r)

@@ -35,7 +35,8 @@ return.
 
 Exit codes:
   0  up to date, or brought up to date
-  1  error (TARGET missing, or a merge failed without conflicts)
+  1  error (TARGET missing, fetching from origin failed, or a merge failed
+     without conflicts)
   2  uncommitted changes; nothing was touched
   3  needs judgment (conflict, or TARGET diverged from origin); nothing was
      touched. Rerun with --agent to hand it to claude, or codex if claude is
@@ -234,16 +235,28 @@ has_local_target=0
 git show-ref --verify --quiet "refs/heads/$target" && has_local_target=1
 
 echo "RUN git fetch --quiet --prune origin +refs/heads/$target:refs/remotes/$upstream" >&2
-if git fetch --quiet --prune origin \
-  "+refs/heads/$target:refs/remotes/$upstream" 2>/dev/null; then
+if fetch_err="$(git fetch --quiet --prune origin \
+  "+refs/heads/$target:refs/remotes/$upstream" 2>&1)"; then
   :
-elif (( has_local_target )); then
-  say "origin has no $target; merging the local branch"
-  upstream="$target"
 else
-  say "plan: missing-target"
-  say "no branch $target on origin or locally"
-  exit 1
+  # Exit 2 means origin answered and has no such branch. Anything else
+  # (network, auth, a bad URL) is a real failure, not a missing branch.
+  remote_status=0
+  git ls-remote --exit-code --heads origin "$target" >/dev/null 2>&1 \
+    || remote_status=$?
+  if (( remote_status != 2 )); then
+    say "plan: fetch-failed"
+    say "could not fetch $target from origin:"
+    echo "$fetch_err" >&2
+    exit 1
+  elif (( has_local_target )); then
+    say "origin has no $target; merging the local branch"
+    upstream="$target"
+  else
+    say "plan: missing-target"
+    say "no branch $target on origin or locally"
+    exit 1
+  fi
 fi
 
 branch="$(git branch --show-current)"
