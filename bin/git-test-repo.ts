@@ -84,10 +84,14 @@ export async function repoPair() {
  * costs about 170 ms per call.
  */
 export const jqDir: string = (() => {
-  const viaMise = Bun.spawnSync(["mise", "which", "jq"], {
-    stdout: "pipe", stderr: "ignore",
-  })
-  const fromMise = viaMise.exitCode === 0 ? viaMise.stdout.toString().trim() : ""
+  // spawnSync throws when mise isn't installed, as on CI runners.
+  let fromMise = ""
+  if (Bun.which("mise")) {
+    const viaMise = Bun.spawnSync(["mise", "which", "jq"], {
+      stdout: "pipe", stderr: "ignore",
+    })
+    if (viaMise.exitCode === 0) fromMise = viaMise.stdout.toString().trim()
+  }
   if (fromMise) return dirname(fromMise)
   const found = Bun.which("jq")
   return found ? dirname(realpathSync(found)) : "/usr/bin"
