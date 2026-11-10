@@ -4,6 +4,8 @@ set -Eeuo pipefail
 mode="${1:---check}"
 native_bin="$HOME/.local/bin/claude"
 native_versions="$HOME/.local/share/claude/versions"
+# Installer: https://code.claude.com/docs/en/setup
+install_url="${CLAUDE_INSTALL_URL:-https://claude.ai/install.sh}"
 
 native_ok() {
   [[ -x "$native_bin" ]] || return 1
@@ -21,7 +23,7 @@ case "$mode" in
         echo "Unexpected Claude installation at $native_bin; inspect it before running just claude-install." >&2
         exit 1
       fi
-      curl -fsSL https://claude.ai/install.sh | bash
+      curl -fsSL "$install_url" | bash
       if ! native_ok; then
         echo "Native Claude installation failed verification: $native_bin" >&2
         exit 1
