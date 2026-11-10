@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { cleanup, ok, repoPair, sh } from "./git-test-repo"
+import { cleanup, jqDir, ok, repoPair, sh } from "./git-test-repo"
 
 const gitMf = join(resolve(import.meta.dir), "git_mf")
 
@@ -450,7 +450,7 @@ async function fakeAgents(root: string, names: string[]) {
       { mode: 0o755 },
     )
   }
-  return `${bin}:/usr/bin:/bin`
+  return `${bin}:${jqDir}:/usr/bin:/bin`
 }
 
 describe("git_mf --agent", () => {
@@ -461,13 +461,17 @@ describe("git_mf --agent", () => {
     await pushUpstream("theirs")
     const PATH = await fakeAgents(root, ["claude", "codex"])
 
-    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
-    expect(r.code, r.stderr).toBe(0)
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH, BOKU_RUNLOG: "0" })
+    // The fake agent merges nothing, and git_mf checks the repo rather than
+    // trusting the agent's exit 0.
+    expect(r.code, r.stderr).toBe(3)
+    expect(r.stderr).toContain("agent outcome: no-change")
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
     expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
     expect(stdin).toContain("conflicts in: file.txt")
     expect(await agentArgs(root, "claude")).toEqual([
       "-p",
+      "--strict-mcp-config",
       "--permission-mode",
       "acceptEdits",
       "--allowedTools",
@@ -489,19 +493,20 @@ describe("git_mf --agent", () => {
     await ok(clone, "printf local > file.txt")
     const PATH = await fakeAgents(root, ["codex"])
 
-    const r = await sh(clone, `${gitMf} main --agent`, { PATH })
+    const r = await sh(clone, `${gitMf} main --agent`, { PATH, BOKU_RUNLOG: "0" })
     expect(r.code, r.stderr).toBe(0)
     expect(await readFile(join(root, "codex.stdin"), "utf8")).toContain(
       "uncommitted changes",
     )
     const repo = await ok(clone, "git rev-parse --show-toplevel")
     // --approve-for-me implies workspace-write and conflicts with --sandbox.
-    expect(await agentArgs(root, "codex")).toEqual([
-      "exec",
-      "-C",
-      repo,
-      "--approve-for-me",
-    ])
+    // Logging is off here, so this is the plain command; it also passes -o
+    // with a temp file for codex's report. Streaming is covered in
+    // git_mf.runlog.test.ts.
+    const args = await agentArgs(root, "codex")
+    expect(args.slice(0, 5)).toEqual(["exec", "-C", repo, "--approve-for-me", "-o"])
+    expect(args).not.toContain("-s")
+    expect(args).not.toContain("--sandbox")
   })
 
   test("--dry-run names the agent without running it", async () => {

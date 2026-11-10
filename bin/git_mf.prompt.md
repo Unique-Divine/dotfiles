@@ -27,3 +27,16 @@ stopped. Below, `<base>` means the branch to merge from.
 Finish with a short report: the new `HEAD`, each file that conflicted and
 how you resolved it, the checks you ran and their result, and anything you
 left for a person to decide.
+
+End the report with this section, always, even if it's only "None":
+
+```markdown
+## Challenges
+
+What slowed you down or confused you: missing context, misleading git
+output, permissions you lacked, slow or flaky checks. Say what git_mf or
+this prompt could do to make the next run easier.
+```
+
+If you stop with the merge in progress, still write the report and the
+Challenges section, and say why you stopped.

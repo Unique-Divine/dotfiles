@@ -9,7 +9,8 @@ set -Eeuo pipefail
 
 usage() {
   cat <<EOF
-Usage: git_mf [target_branch] [--dry-run] [--agent] [git merge flags...]
+Usage: git_mf [target_branch] [--dry-run] [--agent] [--json]
+              [git merge flags...]
 
 Git "[m]erge [f]rom". Bring the current branch up to date with
 origin/TARGET, or with the local TARGET when origin doesn't have it.
@@ -47,7 +48,13 @@ Exit codes:
 Options:
   --dry-run     Print the plan and commands without running them.
   --agent       On exit 2 or 3, run an agent with the merge prompt instead.
+  --json        Print this run's events to stdout as JSONL. Command output
+                moves to stderr. The agent's own events (from ud runs
+                tap) are in the run file, not on stdout.
   -h, --help    Show this help.
+
+Each run is logged to the Boku run log (~/.boku/runs; BOKU_HOME moves it,
+BOKU_RUNLOG=0 turns it off). Read it with ud runs.
 EOF
 }
 
@@ -62,12 +69,35 @@ require_command() {
 
 say() { echo "git_mf: $*" >&2; }
 
+# Milliseconds since the epoch, from bash's EPOCHREALTIME (date %N isn't
+# portable). Falls back to whole seconds.
+now_ms() {
+  local t="${EPOCHREALTIME:-}"
+  t="${t//[.,]/}"
+  if [[ "$t" =~ ^[0-9]{10,}$ ]]; then
+    echo $(( 10#$t / 1000 ))
+  else
+    printf '%(%s)T000\n' -1
+  fi
+}
+
 dry_run=0
+json_out=0
 
 # Print a command that changes the repository, then run it unless dry-run.
+# Each one is a step in the run log. Under --json, the command's own output
+# goes to stderr so stdout stays JSONL.
 run() {
   echo "RUN $*" >&2
-  (( dry_run )) || "$@"
+  if (( dry_run )); then
+    runlog_event step name="$1 ${2:-}" msg=dry-run
+    return 0
+  fi
+  if (( json_out )); then
+    runlog_step "$1 ${2:-}" "$@" >&2
+  else
+    runlog_step "$1 ${2:-}" "$@"
+  fi
 }
 
 if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
@@ -77,6 +107,39 @@ fi
 
 require_command git
 
+script_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+prompt_file="$script_dir/git_mf.prompt.md"
+
+# The run log is optional: without it, every runlog_* call does nothing.
+runlog_sh="$script_dir/../runlog/runlog.sh"
+# `ud runs`, called directly: its tap and redact-file run in the agent path.
+runs_cli="${BOKU_RUNS_CLI:-$script_dir/../runlog/cli.ts}"
+if [[ -r "$runlog_sh" ]]; then
+  # shellcheck source=../runlog/runlog.sh
+  source "$runlog_sh" || true
+fi
+if ! declare -F runlog_start >/dev/null; then
+  runlog_start() { :; }
+  runlog_active() { return 1; }
+  runlog_event() { :; }
+  runlog_step() { shift; "$@"; }
+  runlog_artifact() { :; }
+  runlog_end() { :; }
+  runlog_dir() { return 1; }
+  runlog_file() { return 1; }
+fi
+if ! declare -F runlog_exec >/dev/null; then
+  runlog_exec() { "$@"; }
+fi
+if ! declare -F runlog_trap_signals >/dev/null; then
+  # Exit with 128+N on a signal, so the EXIT handler records the real code.
+  runlog_trap_signals() {
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  }
+fi
+
 target=""
 use_agent=0
 merge_flags=()
@@ -84,6 +147,7 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
     --agent) use_agent=1 ;;
+    --json) json_out=1; export BOKU_RUNLOG_STDOUT=1 ;;
     -h|--help) usage; exit 0 ;;
     *)
       if [[ -z "$target" && "$arg" != -* ]]; then
@@ -95,21 +159,255 @@ for arg in "$@"; do
   esac
 done
 
+merge_log=""
+prompt_tmp=""
+report_tmp=""
+status=""
+
+# One exit handler: clean up temp files and close the run with its status.
+on_exit() {
+  local -r code=$?
+  [[ -n "$merge_log" ]] && rm -f -- "$merge_log"
+  [[ -n "$prompt_tmp" ]] && rm -f -- "$prompt_tmp"
+  [[ -n "$report_tmp" ]] && rm -f -- "$report_tmp"
+  runlog_end "$code" ${status:+status="$status"}
+}
+
+# shellcheck disable=SC2034 # read by runlog_start
+RUNLOG_START_GIT="$(jq -nc \
+  --arg repo "$(git rev-parse --show-toplevel 2>/dev/null)" \
+  --arg branch "$(git branch --show-current 2>/dev/null)" \
+  --arg head "$(git rev-parse --short HEAD 2>/dev/null)" \
+  '{repo: $repo, branch: $branch, head: $head}' 2>/dev/null || true)"
+runlog_start git_mf "$@"
+trap on_exit EXIT
+runlog_trap_signals
+
 if [[ -z "$target" ]]; then
-  run git fetch --all --prune || true
-  run git pull || true
+  # Failures here never failed git_mf; they're warnings in the run log.
+  run git fetch --all --prune \
+    || runlog_event warn code=fetch-failed msg="git fetch --all failed"
+  run git pull \
+    || runlog_event warn code=pull-failed msg="git pull failed"
   exit 0
 fi
 
-script_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
-prompt_file="$script_dir/git_mf.prompt.md"
 repo="$(git rev-parse --show-toplevel)"
 upstream="origin/$target"
+upstream_sha=""
 
-# Hand the merge to an agent CLI. Exits with the agent's status.
+# ---- Agent hand-off ----
+# run_agent writes the prompt, runs the agent (through the run log's tap when
+# it can), then checks the repository itself instead of trusting the agent's
+# exit code. It returns git_mf's exit code; on_exit closes the run.
+
+agent=""
+agent_status=0
+session_id=""
+cli_version=""
+run_dir=""
+prompt_path=""
+head_before=""
+stash_before=0
+clean_before=0
+outcome=""
+code=0
+challenges=""
+
+# Write the prompt and this run's context to a 0600 temp file, which the
+# agent reads as is. With the run log on, a redacted copy is saved as the
+# run's prompt.md; redacting what the agent reads would corrupt names such
+# as tools/sk-learn-*.py.
+write_prompt() {
+  local -r reason="$1"
+  run_dir="$(runlog_dir)" || run_dir=""
+  prompt_tmp="$(mktemp --suffix=.md)"
+  report_tmp="$(mktemp --suffix=.md)"
+  prompt_path="$prompt_tmp"
+  {
+    cat "$prompt_file"
+    printf '%s\n' "" "## This Run" "" \
+      "- Repository: $repo" \
+      "- Merge from: $upstream${upstream_sha:+ ($upstream_sha)}" \
+      "- Current branch: $(git branch --show-current)" \
+      "- Why plain git stopped: $reason"
+  } >"$prompt_path"
+  if [[ -n "$run_dir" ]]; then
+    runlog_artifact prompt "$prompt_tmp"
+  fi
+}
+
+record_before() {
+  head_before="$(git rev-parse HEAD)"
+  stash_before="$(git stash list | wc -l)"
+  clean_before=0
+  [[ -z "$(git status --porcelain)" ]] && clean_before=1
+  cli_version="$(runlog_exec "$agent" --version </dev/null 2>/dev/null \
+    | head -n 1 || true)"
+}
+
+# --strict-mcp-config with no --mcp-config: the merge needs no MCP servers,
+# and loading them all adds seconds before the agent starts.
+claude_args=(
+  -p --strict-mcp-config --permission-mode acceptEdits
+  --allowedTools "Bash(git:*)" "Bash(just:*)" "Bash(bun:*)"
+  "Bash(cargo:*)" "Read" "Edit" "Write" "Grep" "Glob"
+)
+# --approve-for-me already implies the workspace-write sandbox and conflicts
+# with --sandbox. That sandbox may keep .git read-only, so codex can stop
+# before committing; verify reports what actually happened.
+codex_args=(exec -C "$repo" --approve-for-me)
+
+# Run the agent through `ud runs tap`, which saves and summarizes its stream.
+run_stream_pipeline() {
+  set +e
+  if [[ "$agent" == claude ]]; then
+    session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+    runlog_exec claude "${claude_args[@]}" \
+      ${session_id:+--session-id "$session_id"} \
+      --output-format stream-json --verbose <"$prompt_path" \
+      | { runlog_exec "$runs_cli" tap --cli claude ${session_id:+--session-id "$session_id"} \
+          || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
+    agent_status="${PIPESTATUS[0]}"
+  else
+    runlog_exec codex "${codex_args[@]}" --json -o "$report_tmp" \
+      <"$prompt_path" \
+      | { runlog_exec "$runs_cli" tap --cli codex \
+          || { runlog_event warn code=tap-exited; cat >/dev/null; }; }
+    agent_status="${PIPESTATUS[0]}"
+  fi
+  set -e
+  if [[ "$agent" == codex ]]; then
+    local run_file
+    if run_file="$(runlog_file)"; then
+      session_id="$(jq -r 'select(.event == "agent-session")
+        | .session_id // empty' "$run_file" 2>/dev/null | tail -n 1 || true)"
+    fi
+  fi
+}
+
+# Today's command, with the agent's own text output.
+run_plain_agent() {
+  local -a agent_cmd
+  if [[ "$agent" == claude ]]; then
+    agent_cmd=(claude "${claude_args[@]}")
+  else
+    agent_cmd=(codex "${codex_args[@]}" -o "$report_tmp")
+  fi
+  set +e
+  if (( json_out )); then
+    # Keep stdout JSONL: the agent's text goes to stderr.
+    runlog_exec "${agent_cmd[@]}" <"$prompt_path" >&2
+  else
+    runlog_exec "${agent_cmd[@]}" <"$prompt_path"
+  fi
+  agent_status=$?
+  set -e
+}
+
+# Decide the outcome from the repository, per the verify table in
+# docs/run-log-design.md.
+verify() {
+  local op moved=0 contains=0 head_after
+  head_after="$(git rev-parse HEAD)"
+  [[ "$head_after" != "$head_before" ]] && moved=1
+  op="$(in_progress_op)"
+  if [[ -n "$op" ]]; then
+    outcome=stopped code=5 status=stopped
+    runlog_event error code=agent-left-merge \
+      msg="a $op is still in progress after the agent exited"
+  else
+    if [[ -n "$upstream_sha" ]]; then
+      if is_ancestor "$upstream_sha" HEAD; then contains=1; fi
+    else
+      runlog_event warn code=upstream-unknown \
+        msg="no upstream commit to check; judging by HEAD alone"
+      contains="$moved"
+    fi
+    if (( agent_status == 0 )); then
+      if (( contains && moved )); then
+        outcome=merged code=0 status=ok
+      elif (( contains )); then
+        outcome=no-change code=0 status=ok
+      elif (( ! moved )); then
+        outcome=no-change code=3 status=stopped
+      else
+        outcome=failed code=1 status=failed
+      fi
+    elif (( contains && moved )); then
+      outcome=merged code=0 status=ok
+      runlog_event warn code=agent-exit-nonzero \
+        msg="agent exited $agent_status but the merge landed"
+    else
+      outcome=failed code=1 status=failed
+    fi
+  fi
+  if [[ "$outcome" != stopped ]] && (( clean_before )) \
+    && [[ -n "$(git status --porcelain)" ]]; then
+    runlog_event warn code=agent-left-changes \
+      msg="the tree was clean before the agent and isn't now"
+  fi
+  if (( $(git stash list | wc -l) > stash_before )); then
+    runlog_event warn code=agent-left-stash msg="the stash grew during the run"
+  fi
+}
+
+# Paths whose contents never go into a saved diff.
+# '*.env*' also matches .env, .envrc, .env-prod, and app.env.local. Key
+# files are named exactly, so src/id_generator.go still shows.
+secret_excludes=(
+  . ':(exclude,glob)**/secrets/**' ':(exclude,glob)**/.secrets/**'
+  ':(exclude,glob)**/*.env*' ':(exclude,glob)**/*.pem'
+  ':(exclude,glob)**/*.key' ':(exclude,glob)**/id_rsa*'
+  ':(exclude,glob)**/id_ed25519*' ':(exclude,glob)**/id_ecdsa*'
+  ':(exclude,glob)**/.npmrc' ':(exclude,glob)**/.pypirc'
+  ':(exclude,glob)**/.netrc' ':(exclude,glob)**/.aws/**'
+  ':(exclude,glob)**/keystore/**'
+)
+
+# Check the report and save the diffs that show what the agent decided.
+save_artifacts() {
+  local report="" tmp
+  runlog_active || return 0
+  # A run folder never holds an unredacted file: codex's report arrives from
+  # a temp file outside it, and runlog_artifact deletes what it can't redact.
+  if [[ -n "$report_tmp" && -s "$report_tmp" ]]; then
+    runlog_artifact report "$report_tmp"
+  elif [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
+    # The tap's report for claude: redact (and chmod 0600) in place. The
+    # writer falls back to jq if `ud runs` can't.
+    runlog_artifact report "$run_dir/report.md"
+  fi
+  if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
+    report="$run_dir/report.md"
+  fi
+  if [[ -z "$report" ]]; then
+    runlog_event warn code=report-missing msg="the agent left no report"
+  elif ! grep -q '^## Challenges' "$report"; then
+    runlog_event warn code=report-missing-challenges \
+      msg="the report has no Challenges section"
+  else
+    challenges="$(awk '/^## Challenges/ { f = 1; next } /^## / { f = 0 }
+      f && !started && /^[[:space:]]*$/ { next }
+      f { started = 1; print }' "$report")"
+  fi
+  tmp="$(mktemp)"
+  if [[ "$outcome" == merged ]] \
+    && git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+    git show --remerge-diff --format= HEAD -- "${secret_excludes[@]}" \
+      >"$tmp" 2>/dev/null || true
+    runlog_artifact remerge-diff "$tmp"
+  elif [[ "$outcome" == stopped ]]; then
+    git diff -- "${secret_excludes[@]}" >"$tmp" 2>/dev/null || true
+    runlog_artifact conflict-diff "$tmp"
+  fi
+  rm -f -- "$tmp"
+}
+
+# Hand the merge to an agent CLI. Returns git_mf's exit code.
 run_agent() {
   local -r reason="$1"
-  local context agent
+  local t0
   if command -v claude >/dev/null 2>&1; then
     agent=claude
   elif command -v codex >/dev/null 2>&1; then
@@ -120,36 +418,46 @@ run_agent() {
   fi
   if (( dry_run )); then
     echo "RUN $agent < git_mf.prompt.md  # $reason" >&2
+    runlog_event step name=agent msg=dry-run cli="$agent"
     exit 0
   fi
-  context="$(printf '%s\n' \
-    "" "## This Run" "" \
-    "- Repository: $repo" \
-    "- Merge from: $upstream" \
-    "- Current branch: $(git branch --show-current)" \
-    "- Why plain git stopped: $reason")"
-  if [[ "$agent" == claude ]]; then
-    say "handing the merge to claude"
-    { cat "$prompt_file"; echo "$context"; } | claude -p \
-      --permission-mode acceptEdits \
-      --allowedTools "Bash(git:*)" "Bash(just:*)" "Bash(bun:*)" \
-        "Bash(cargo:*)" "Read" "Edit" "Write" "Grep" "Glob"
+  write_prompt "$reason"
+  record_before
+  say "handing the merge to $agent"
+  t0="$(now_ms)"
+  if runlog_active && [[ -n "$run_dir" ]] \
+    && [[ -x "$runs_cli" ]]; then
+    run_stream_pipeline
   else
-    say "claude not found; handing the merge to codex"
-    # --approve-for-me already implies the workspace-write sandbox and
-    # conflicts with --sandbox. That sandbox may keep .git read-only, so codex
-    # can stop before committing; the agent's own result check reports that.
-    { cat "$prompt_file"; echo "$context"; } | codex exec -C "$repo" \
-      --approve-for-me
+    run_plain_agent
   fi
+  verify
+  save_artifacts
+  runlog_event agent cli="$agent" cli_version="$cli_version" \
+    session_id="$session_id" exit:="$agent_status" \
+    dur_ms:="$(( $(now_ms) - t0 ))" outcome="$outcome" \
+    challenges="$challenges"
+  if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
+    echo "----- agent report ($run_dir/report.md) -----" >&2
+    # Drop terminal control characters (keep tab and newline): the report
+    # is agent output.
+    LC_ALL=C tr -d '\000-\010\013-\037\177' <"$run_dir/report.md" >&2
+    echo "-----" >&2
+  fi
+  say "agent outcome: $outcome (git_mf exits $code)"
+  if [[ -n "$run_dir" ]]; then
+    say "run log: ud runs show ${run_dir##*/}"
+  fi
+  return "$code"
 }
 
 # Stop with exit 3, or hand over to the agent.
 needs_judgment() {
   local -r reason="$1"
+  runlog_event warn code=needs-judgment msg="$reason"
   if (( use_agent )); then
-    run_agent "$reason"
-    exit $?
+    run_agent "$reason" || exit $?
+    exit 0
   fi
   say "$reason"
   say "nothing was changed; run: git_mf $target --agent"
@@ -170,6 +478,29 @@ in_progress_op() {
 }
 
 is_ancestor() { git merge-base --is-ancestor "$1" "$2"; }
+
+# The commit a merge would bring in: the upstream ref, else the local target.
+resolve_upstream_sha() {
+  git rev-parse -q --verify "$upstream^{commit}" 2>/dev/null \
+    || git rev-parse -q --verify "$target^{commit}" 2>/dev/null \
+    || true
+}
+
+# Print the arguments as a JSON array of strings; [] without jq.
+json_array() {
+  jq -nc '$ARGS.positional' --args -- "$@" 2>/dev/null || echo '[]'
+}
+
+# Log the plan as one step, with at most 200 conflicted paths (the total is
+# in conflicts_total). Sets upstream_sha for verify.
+log_plan() {
+  local -r action="$1"
+  shift
+  upstream_sha="$(resolve_upstream_sha)"
+  runlog_event step name=plan action="$action" target="$target" \
+    upstream="$upstream" upstream_sha="$upstream_sha" \
+    conflicts:="$(json_array "${@:1:200}")" conflicts_total:="$#"
+}
 
 # Print the path of another worktree that has branch $1 checked out, if any.
 checked_out_elsewhere() {
@@ -217,15 +548,17 @@ done
 op="$(in_progress_op)"
 if [[ -n "$op" ]]; then
   say "plan: in-progress: $op"
+  log_plan "in-progress: $op"
   say "finish or abort the $op first"
   exit 5
 fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
   say "plan: dirty"
+  log_plan dirty
   if (( use_agent )); then
-    run_agent "the working tree has uncommitted changes"
-    exit $?
+    run_agent "the working tree has uncommitted changes" || exit $?
+    exit 0
   fi
   say "uncommitted changes in $repo; skipping"
   exit 2
@@ -241,13 +574,21 @@ if ! git remote get-url origin >/dev/null 2>&1; then
     upstream="$target"
   else
     say "plan: missing-target"
+    log_plan missing-target
     say "no origin remote and no local branch $target"
     exit 1
   fi
 else
   echo "RUN git fetch --quiet --prune origin +refs/heads/$target:refs/remotes/$upstream" >&2
-  if ! fetch_err="$(git fetch --quiet --prune origin \
-    "+refs/heads/$target:refs/remotes/$upstream" 2>&1)"; then
+  fetch_cmd=(git fetch --quiet --prune origin
+    "+refs/heads/$target:refs/remotes/$upstream")
+  fetch_rc=0
+  fetch_t0="$(now_ms)"
+  fetch_err="$(runlog_exec "${fetch_cmd[@]}" 2>&1)" || fetch_rc=$?
+  runlog_event step name=fetch-target cmd:="$(json_array "${fetch_cmd[@]}")" \
+    exit:="$fetch_rc" dur_ms:="$(( $(now_ms) - fetch_t0 ))" \
+    ref="$upstream"
+  if (( fetch_rc != 0 )); then
     # Exit 2 means origin answered and has no such branch. Anything else
     # (network, auth, a bad URL) is a real failure, not a missing branch.
     # The full ref: a bare name would also match refs/heads/x/<target>.
@@ -256,6 +597,8 @@ else
       || remote_status=$?
     if (( remote_status != 2 )); then
       say "plan: fetch-failed"
+      log_plan fetch-failed
+      runlog_event error code=fetch-failed msg="$fetch_err"
       say "could not fetch $target from origin:"
       echo "$fetch_err" >&2
       exit 1
@@ -264,6 +607,7 @@ else
       upstream="$target"
     else
       say "plan: missing-target"
+      log_plan missing-target
       say "no branch $target on origin or locally"
       exit 1
     fi
@@ -298,6 +642,7 @@ fi
 if [[ -z "$branch" ]]; then
   if ! is_ancestor HEAD "$upstream"; then
     say "plan: detached-stray"
+    log_plan detached-stray
     say "detached at $(git rev-parse --short HEAD), which isn't on $upstream; switch to a branch first"
     exit 4
   fi
@@ -319,6 +664,7 @@ if [[ -z "$branch" ]]; then
   if (( has_local_target )) && ! is_ancestor "$target" "$upstream" \
     && ! is_ancestor "$upstream" "$target"; then
     say "plan: diverged"
+    log_plan diverged
     needs_judgment "$target has commits that $upstream doesn't, and the reverse"
   fi
   steps+=("detached-switch")
@@ -330,6 +676,7 @@ else
 fi
 
 conflicts=""
+conflict_list=()
 if is_ancestor "$upstream" "$head_ref"; then
   action="up-to-date"
 elif is_ancestor "$head_ref" "$upstream" \
@@ -344,17 +691,26 @@ else
   # Exit 0: clean merge. Exit 1: conflicts, listed after the tree id.
   # Anything else is an error, such as unrelated histories.
   tree_status=0
-  tree_out="$(git merge-tree --write-tree --name-only --no-messages \
-    "${tree_flags[@]}" "$head_ref" "$upstream" 2>&1)" || tree_status=$?
+  tree_err="$(mktemp)"
+  tree_out="$(git merge-tree --write-tree --name-only --no-messages -z \
+    "${tree_flags[@]}" "$head_ref" "$upstream" 2>"$tree_err" | tr '\0' '\n'; \
+    exit "${PIPESTATUS[0]}")" || tree_status=$?
+  tree_msg="$(cat "$tree_err")"
+  rm -f -- "$tree_err"
   case "$tree_status" in
     0) action="merge" ;;
     1)
       action="merge-conflict"
-      conflicts="$(tail -n +2 <<<"$tree_out" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+      # -z output: tree id, then one path per entry (paths may hold spaces).
+      mapfile -t conflict_list < <(tail -n +2 <<<"$tree_out" | sed '/^$/d' \
+        | sort -u)
+      conflicts="${conflict_list[*]}"
       ;;
     *)
       say "plan: error"
-      say "git merge-tree failed: $tree_out"
+      log_plan error
+      runlog_event error code=merge-tree-failed msg="$tree_msg"
+      say "git merge-tree failed: $tree_msg"
       exit 1
       ;;
   esac
@@ -362,6 +718,7 @@ fi
 
 steps+=("$action")
 say "plan: ${steps[*]}${conflicts:+: $conflicts}"
+log_plan "${steps[*]}" "${conflict_list[@]}"
 if [[ "$action" == merge* ]] && (( ${#unmodeled[@]} )); then
   say "note: git merge-tree can't model ${unmodeled[*]}; the real merge may not match this plan"
 fi
@@ -399,8 +756,17 @@ case "$action" in
     merge_cmd=(git merge --ff --no-edit --quiet "${merge_flags[@]}" "$upstream")
     echo "RUN ${merge_cmd[*]}" >&2
     merge_log="$(mktemp)"
-    trap 'rm -f -- "$merge_log"' EXIT
-    if (( ! dry_run )) && ! "${merge_cmd[@]}" >"$merge_log" 2>&1; then
+    merge_rc=0
+    if (( dry_run )); then
+      runlog_event step name="git merge" msg=dry-run
+    else
+      merge_t0="$(now_ms)"
+      runlog_exec "${merge_cmd[@]}" >"$merge_log" 2>&1 || merge_rc=$?
+      runlog_event step name="git merge" \
+        cmd:="$(json_array "${merge_cmd[@]}")" exit:="$merge_rc" \
+        dur_ms:="$(( $(now_ms) - merge_t0 ))"
+    fi
+    if (( merge_rc != 0 )); then
       unmerged="$(git diff --name-only --diff-filter=U | paste -sd ' ' -)"
       if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
         git merge --abort
@@ -409,6 +775,7 @@ case "$action" in
         say "warning: plan predicted a clean merge, but git found conflicts"
         needs_judgment "merging $upstream into $branch conflicts in: $unmerged"
       fi
+      runlog_event error code=merge-failed msg="$(head -c 400 "$merge_log")"
       say "merge failed without conflicts; nothing was changed:"
       cat "$merge_log" >&2
       exit 1

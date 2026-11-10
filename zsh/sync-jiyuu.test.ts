@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const dotfilesRoot = join(import.meta.dir, "..")
+
+// Each test runs the real sync-jiyuu.sh and git_mf, with run logging on,
+// once or twice. That takes about 2 s locally and over 5 s (bun's
+// default) on CI runners.
+setDefaultTimeout(30_000)
+/** Run-log home for these tests, so nothing writes into the real ~/.boku. */
+const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 const scriptPath = join(dotfilesRoot, "zsh", "sync-jiyuu.sh")
 const temporaryRoots: string[] = []
 
@@ -23,6 +31,7 @@ const run = async (
     env: {
       ...process.env,
       GIT_CONFIG_GLOBAL: "/dev/null",
+      BOKU_HOME: testBokuHome,
       GIT_AUTHOR_NAME: "Test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test",
@@ -169,6 +178,32 @@ describe("sync-jiyuu.sh", () => {
     expect(result.exitCode, result.stderr).toBe(0)
     expect(result.stderr).toContain("in-progress: rebase")
     expect(result.stderr).toContain("left Jiyuu as it is")
+  })
+
+  test("logs its own run and links git_mf beneath it", async () => {
+    const { boku, root } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "printf local > jiyuu/LOCAL")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    temporaryRoots.push(home)
+    const result = await run(root, `bash ${scriptPath}`, {
+      GIT_ALLOW_PROTOCOL: "file",
+      REPO: root,
+      BOKU_HOME: home,
+    })
+    expect(result.exitCode, result.stderr).toBe(0)
+    const text = await expectOk(home, "cat runs/*/*.jsonl")
+    const events = text.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    const jiyuu = events.filter((e) => e.tool === "sync-jiyuu")
+    const gitMf = events.filter((e) => e.tool === "git_mf")
+    expect(jiyuu.some((e) => e.code === "jiyuu-left-as-is")).toBe(true)
+    expect(jiyuu.find((e) => e.event === "end")).toMatchObject({
+      exit: 0, status: "ok",
+    })
+    expect(gitMf[0].parent_run_id).toBe(jiyuu[0].run_id)
+    expect(gitMf.find((e) => e.event === "end")).toMatchObject({
+      exit: 2, status: "stopped",
+    })
   })
 
   test.each(["staged", "unstaged", "untracked"])(

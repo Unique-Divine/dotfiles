@@ -1,8 +1,12 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
+import { mkdtempSync, realpathSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+
+/** Run-log home for these tests, so nothing writes into the real ~/.boku. */
+export const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 
 export type Result = { code: number; stdout: string; stderr: string }
 
@@ -22,7 +26,7 @@ export async function sh(
 ): Promise<Result> {
   const proc = Bun.spawn(["bash", "-c", command], {
     cwd,
-    env: { ...process.env, ...gitEnv, ...env },
+    env: { ...process.env, ...gitEnv, BOKU_HOME: testBokuHome, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -73,3 +77,22 @@ export async function repoPair() {
   }
   return { root, remote, clone, peer, pushUpstream }
 }
+
+/**
+ * The folder holding a real jq binary. Tests that build their own PATH add
+ * it, since jq may live outside /usr/bin (a mise install), and its mise shim
+ * costs about 170 ms per call.
+ */
+export const jqDir: string = (() => {
+  // spawnSync throws when mise isn't installed, as on CI runners.
+  let fromMise = ""
+  if (Bun.which("mise")) {
+    const viaMise = Bun.spawnSync(["mise", "which", "jq"], {
+      stdout: "pipe", stderr: "ignore",
+    })
+    if (viaMise.exitCode === 0) fromMise = viaMise.stdout.toString().trim()
+  }
+  if (fromMise) return dirname(fromMise)
+  const found = Bun.which("jq")
+  return found ? dirname(realpathSync(found)) : "/usr/bin"
+})()

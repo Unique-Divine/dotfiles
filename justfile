@@ -173,55 +173,88 @@ sync:
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
+  # Each step goes to the Boku run log (ud runs show last --tree).
+  source runlog/runlog.sh || true
+  if ! declare -F runlog_start >/dev/null; then
+    runlog_start() { :; }
+    runlog_event() { :; }
+    runlog_step() { shift; "$@"; }
+    runlog_end() { :; }
+  fi
+  if ! declare -F runlog_trap_signals >/dev/null; then
+    runlog_trap_signals() {
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+    }
+  fi
+  runlog_start sync
+  trap 'runlog_end $?' EXIT
+  runlog_trap_signals
   i_bash_stamp="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/i-bash.stamp"
   i_bash_max_age_seconds=$((24 * 60 * 60))
-  if [[ ! -f "$i_bash_stamp" ]]; then
-    just i-bash
+  if [[ ! -f "$i_bash_stamp" ]] || (( $(date +%s) \
+    - $(stat --format='%Y' "$i_bash_stamp") >= i_bash_max_age_seconds )); then
+    runlog_step i-bash just i-bash
   else
-    i_bash_last_run="$(stat --format='%Y' "$i_bash_stamp")"
-    if (( $(date +%s) - i_bash_last_run >= i_bash_max_age_seconds )); then
-      just i-bash
-    fi
+    runlog_event step name=i-bash msg=skipped
   fi
   if ! command -v bun >/dev/null 2>&1; then
     (
       export SHELL=/bin/sh
       curl -fsSL https://bun.com/install | bash
     )
+    runlog_event step name=bun-bootstrap msg=done
   fi
-  just codex-install
-  bun install
+  runlog_step codex-install just codex-install
+  runlog_step bun-install bun install
+  # Functions and sourced files run unwrapped: wrapping them in runlog_step
+  # would turn off set -e inside them and change variable scope.
   source zsh/bashlib.sh
   main_bash_setup
+  runlog_event step name=main-bash-setup msg=done
   source symlinks.sh
-  just mise-install
-  just bun-sync
-  just claude-install
-  just i-jiyuu
-  just ud-install
+  runlog_event step name=symlinks msg=done
+  runlog_step mise-install just mise-install
+  runlog_step bun-sync just bun-sync
+  runlog_step claude-install just claude-install
+  runlog_step i-jiyuu just i-jiyuu
+  runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
-    just herdr-install
+    runlog_step herdr-install just herdr-install
+  else
+    runlog_event step name=herdr-install msg=skipped
   fi
   if ! command -v herdr-tmux >/dev/null 2>&1; then
-    just --justfile herdr-tmux/justfile install
+    runlog_step herdr-tmux-install \
+      just --justfile herdr-tmux/justfile install
+  else
+    runlog_event step name=herdr-tmux-install msg=skipped
   fi
-  just --justfile herdr-tmux/justfile plugin-link
-  just i-zinit
-  just gh-rev-install
+  runlog_step herdr-tmux-plugin-link \
+    just --justfile herdr-tmux/justfile plugin-link
+  runlog_step i-zinit just i-zinit
+  runlog_step gh-rev-install just gh-rev-install
   if is_wsl >/dev/null; then
-    just clipboard-install
-    just win-sync
+    runlog_step clipboard-install just clipboard-install
+    runlog_step win-sync just win-sync
+  else
+    runlog_event step name=clipboard-install msg=skipped
   fi
-  bun run codex/config.ts --run
-  bun run cursor/cli-config.ts --run
-  bun run cursor/mcp.ts --run
-  bun run claude/config.ts --run
-  just herdr-integrations
+  runlog_step codex-config bun run codex/config.ts --run
+  runlog_step cursor-cli-config bun run cursor/cli-config.ts --run
+  runlog_step cursor-mcp bun run cursor/mcp.ts --run
+  runlog_step claude-config bun run claude/config.ts --run
+  runlog_step herdr-integrations just herdr-integrations
   if command -v claude >/dev/null 2>&1; then
-    bun run claude/mcp.ts --run
+    runlog_step claude-mcp bun run claude/mcp.ts --run
+  else
+    runlog_event step name=claude-mcp msg=skipped
   fi
-  bun run skillsSync.ts --run
-  just email-sync
+  runlog_step skills-sync bun run skillsSync.ts --run
+  runlog_step email-sync just email-sync
+  # Pruning old runs must never fail the sync.
+  runlog_step prune bun run runlog/cli.ts prune || true
 
 # Install a pinned mise if missing, then the CLI tools pinned in
 # mise/mise.lock (gh, ripgrep, just, nvim, gmailctl, ...). See mise/README.md.
@@ -270,6 +303,12 @@ win-sync:
   mkdir -p "$dest"
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
+
+# Read the Boku run log (same as `ud runs`). For commands: `just runs --help`.
+# Arguments pass through quoted, never re-parsed by the shell.
+[positional-arguments]
+runs *ARGS:
+  bun run runlog/cli.ts "$@"
 
 # Check required tools and drift without changing dotfile-managed state.
 health:

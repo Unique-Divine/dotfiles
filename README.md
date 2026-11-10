@@ -209,6 +209,27 @@ predict hooks, which only run during a real merge, or flags such as `-s`,
 [`git_mf.test.ts`](bin/git_mf.test.ts) checks each scenario's dry run against
 its real run.
 
+### Boku Run Log
+
+`just sync` and `git_mf` record every run as JSONL under `~/.boku/runs/`
+(`BOKU_HOME` moves it; `BOKU_RUNLOG=0` turns it off). Nested runs link, so a
+sync reads as a tree. A `git_mf --agent` run also keeps the prompt, a redacted
+copy of the agent's stream, its report with a Challenges section, and the
+remerge diff showing how each conflict was resolved. Logging never changes an
+exit code or what happens to the repository.
+
+```bash
+ud runs                        # recent runs (or: just runs)
+ud runs show last --tree       # the latest run and its children
+ud runs agent <id> --at 57     # the agent's stream around line 57
+ud runs challenges --since 30d # what agents found hard
+```
+
+`sync` prunes runs older than 30 days. The writers are
+[`runlog/runlog.sh`](runlog/runlog.sh) and
+[`runlog/runlog.ts`](runlog/runlog.ts); the design, including the call stack,
+is in [`docs/run-log-design.md`](docs/run-log-design.md).
+
 ### AI agent skills
 
 Public skills are distributed from Unique-Divine/jiyuu under `jiyuu/ai-skills`
