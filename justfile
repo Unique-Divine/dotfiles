@@ -1,5 +1,5 @@
 # Use this justfile by
-# (1) installing with "cargo install just"
+# (1) installing just with mise (see mise/README.md for a fresh machine)
 # (2) running the "just" command.
 
 # Displays available recipes when running `just` or `just list`.
@@ -197,6 +197,7 @@ sync:
   source zsh/bashlib.sh
   main_bash_setup
   source symlinks.sh
+  just mise-install
   just bun-sync
   just claude-install
   just i-jiyuu
@@ -225,22 +226,18 @@ sync:
   bun run skillsSync.ts --run
   just email-sync
 
-# Clone or update gmailctl in ~/ki/gmailctl and install it with go.
-gmailctl-install:
+# Install a pinned mise if missing, then the CLI tools pinned in
+# mise/mise.lock (gh, ripgrep, just, nvim, gmailctl, ...). See mise/README.md.
+mise-install:
   #!/usr/bin/env bash
   set -Eeuo pipefail
-  if ! command -v go >/dev/null 2>&1; then
-    echo "go is required to build gmailctl; skipping" >&2
-    exit 0
+  mise_bin="$HOME/.local/bin/mise"
+  if [[ ! -x "$mise_bin" ]]; then
+    curl -fsSL https://mise.run | MISE_VERSION=v2026.11.5 sh
   fi
-  gmailctl_src="$HOME/ki/gmailctl"
-  if [[ -d "$gmailctl_src/.git" ]]; then
-    git -C "$gmailctl_src" pull --ff-only --quiet
-  else
-    git clone --quiet https://github.com/mbrt/gmailctl.git "$gmailctl_src"
-  fi
-  (cd "$gmailctl_src" && go install ./cmd/gmailctl)
-  echo "installed $(go env GOPATH)/bin/gmailctl"
+  "$mise_bin" install --locked
+  # Link shims into ~/.local/bin for bash, sh, and agents with an older PATH.
+  bun mise/links.ts --run
 
 # Render private gmailctl configs from boku TypeScript into ~/.config;
 # skip missing ones.
@@ -366,7 +363,6 @@ i-jiyuu:
 
 # Install Homebrew packages from the checked-in Brewfile.
 i-brew:
-  brew trust --tap bufbuild/buf
   brew bundle --file Brewfile
 
 # Install baseline Ubuntu/WSL shell dependencies.
@@ -375,9 +371,10 @@ i-bash:
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
-  sudo apt install -y build-essential ripgrep gh libclang-dev wslu openssh-server \
-    ca-certificates gnupg curl trash-cli clang-format sqlite3 fzf \
-    pass unzip jq
+  # System packages only; CLI tools such as gh, ripgrep, fzf and jq come from
+  # mise (just mise-install).
+  sudo apt install -y build-essential wslu openssh-server \
+    ca-certificates gnupg curl trash-cli clang-format sqlite3 pass unzip
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
@@ -402,7 +399,7 @@ i-bash-ci:
 # Repair or check the repository-backed Cursor, Codex, and Claude Code skill
 # links.
 skills-sync *ARGS:
-  bun run skillsSync.ts {{ARGS}}
+  @bun run skillsSync.ts {{ARGS}}
 
 # Check TypeScript scripts
 typecheck:

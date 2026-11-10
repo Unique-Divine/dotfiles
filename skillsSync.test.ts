@@ -191,33 +191,59 @@ describe("skills-sync", () => {
     const result = await run(homeDir, repoDir, [])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain(
-      `Team skill export differs: ${join(keeperSkillsDir, "keeper-skill")}`,
+      `Team skill export missing: ${join(keeperSkillsDir, "keeper-skill")}`,
     )
     await expect(
       lstat(join(keeperSkillsDir, "keeper-skill")),
     ).rejects.toMatchObject({ code: "ENOENT" })
   })
 
-  test("health detects drift and run replaces destination content", async () => {
+  test("warns on a diverged export and never overwrites it", async () => {
     await initializeRepository(keeperDir)
     await run(homeDir, repoDir, ["--run"])
     const destination = join(keeperSkillsDir, "keeper-skill")
-    await writeFile(join(destination, "SKILL.md"), "uncommitted edit\n")
-    await writeFile(join(destination, "untracked.txt"), "remove me\n")
+    await writeFile(join(destination, "SKILL.md"), "team edit\n")
+    await writeFile(join(destination, "team-only.txt"), "keep me\n")
+    await rm(join(destination, "references"), { recursive: true })
 
     const health = await run(homeDir, repoDir, ["--health"])
-    expect(health.exitCode).toBe(1)
-    expect(health.stdout).toContain(`Team skill export differs: ${destination}`)
-
-    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
-      exitCode: 0,
-      stderr: "",
-    })
-    expect(await readFile(join(destination, "SKILL.md"), "utf8")).toBe(
-      await readFile(join(privateDir, "keeper-skill", "SKILL.md"), "utf8"),
+    expect(health.exitCode).toBe(0)
+    expect(health.stdout).toContain(
+      "Skills links are healthy; 1 team export (1 diverged).",
     )
-    await expect(lstat(join(destination, "untracked.txt"))).rejects.toMatchObject(
+    const warning = JSON.parse(health.stderr.trim())
+    expect(warning).toEqual({
+      level: "warn",
+      event: "team_skill_export_diverged",
+      skill: "keeper-skill",
+      ghRepo: "NibiruChain/sai-keeper",
+      source: join(privateDir, "keeper-skill"),
+      destination,
+      changed: ["SKILL.md"],
+      onlySource: ["references", "references/workflow.md"],
+      onlyRepo: ["team-only.txt"],
+    })
+
+    const sync = await run(homeDir, repoDir, ["--run"])
+    expect(sync.exitCode).toBe(0)
+    expect(sync.stderr.trim().split("\n")).toHaveLength(1)
+    expect(await readFile(join(destination, "SKILL.md"), "utf8")).toBe(
+      "team edit\n",
+    )
+    expect(await readFile(join(destination, "team-only.txt"), "utf8")).toBe(
+      "keep me\n",
+    )
+    await expect(lstat(join(destination, "references"))).rejects.toMatchObject(
       { code: "ENOENT" },
+    )
+  })
+
+  test("health fails while a team export is missing", async () => {
+    await initializeRepository(keeperDir)
+    const health = await run(homeDir, repoDir, ["--health"])
+    expect(health.exitCode).toBe(1)
+    expect(health.stdout).toContain(
+      `Team skill export missing: ${join(keeperSkillsDir, "keeper-skill")}`,
     )
   })
 
@@ -389,5 +415,58 @@ describe("skills-sync", () => {
     const result = await run(homeDir, repoDir, ["--run"])
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain("Runtime/union skill name collision")
+  })
+})
+
+describe("terminal colors", () => {
+  test("colorEnabled honors NO_COLOR, FORCE_COLOR, and TTY", async () => {
+    const { colorEnabled } = await import("./skillsSync.ts")
+    expect(colorEnabled({}, true)).toBe(true)
+    expect(colorEnabled({}, false)).toBe(false)
+    expect(colorEnabled({ NO_COLOR: "1", FORCE_COLOR: "1" }, true)).toBe(false)
+    expect(colorEnabled({ FORCE_COLOR: "1" }, false)).toBe(true)
+    expect(colorEnabled({ FORCE_COLOR: "0" }, false)).toBe(false)
+    expect(colorEnabled({ TERM: "dumb" }, true)).toBe(false)
+  })
+
+  test("paint uses named ANSI colors from the terminal palette", async () => {
+    const { paint } = await import("./skillsSync.ts")
+    expect(paint("x", "warning", true)).toBe("\x1b[33mx\x1b[39m")
+    expect(paint("x", "command", true)).toBe("\x1b[36mx\x1b[39m")
+    expect(paint("x", "warning", false)).toBe("x")
+  })
+
+  test("a forced-color run paints the divergence line yellow", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skills-color-test-"))
+    try {
+      const homeDir = join(root, "home")
+      const repoDir = join(root, "repo")
+      const privateDir = join(repoDir, "boku/priv-skills")
+      await makeSkill(join(repoDir, "boku/jiyuu/ai-skills"), "public-skill")
+      await makeSkill(privateDir, "keeper-skill", {
+        ghRepo: "NibiruChain/sai-keeper",
+        private: true,
+      })
+      const keeperDir = join(repoDir, "sai-keeper")
+      await initializeRepository(keeperDir)
+      await makeSkill(join(keeperDir, "ai-skills"), "keeper-skill")
+
+      const proc = Bun.spawn(["bun", scriptPath, "--run"], {
+        cwd: import.meta.dir,
+        env: { ...process.env, HOME: homeDir, REPO: repoDir, FORCE_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(await proc.exited).toBe(0)
+      const stderr = await new Response(proc.stderr).text()
+      const stdout = await new Response(proc.stdout).text()
+      expect(stderr).toStartWith("\x1b[33m{")
+      expect(stdout).toContain(
+        "💚 \x1b[32mSkills synced:\x1b[39m 2 skills linked",
+      )
+      expect(stdout).toContain("1 team export (1 diverged)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

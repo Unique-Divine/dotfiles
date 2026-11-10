@@ -26,6 +26,78 @@ import { bash } from "@uniquedivine/bash"
 import { Command } from "commander"
 import matter from "gray-matter"
 
+/**
+ * Named ANSI foreground codes, the only colors this script prints.
+ *
+ * Why named codes: each one picks a palette slot (code minus 30), not a
+ * color. The reader's terminal theme decides what that slot looks like, so
+ * the output matches whatever theme they chose: onedark yellow in a onedark
+ * terminal, a darker yellow that stays readable in a light theme, and a new
+ * palette when the terminal swaps themes with the system's light or dark
+ * mode. Hardcoded RGB would ignore the theme and assume a background.
+ *
+ * `RESET` restores the default foreground color.
+ */
+export const ANSI_COLOR = {
+  BLACK: 30,
+  RED: 31,
+  GREEN: 32,
+  YELLOW: 33,
+  BLUE: 34,
+  MAGENTA: 35,
+  CYAN: 36,
+  WHITE: 37,
+  RESET: 39,
+} as const
+
+type AnsiColorName = Exclude<keyof typeof ANSI_COLOR, "RESET">
+
+/**
+ * What each color means in terminal output. Use names from `ANSI_COLOR`
+ * (see there for why), never 24-bit RGB such as `\x1b[38;2;R;G;Bm`.
+ *
+ * Keep color sparse so a warning stands out: secondary text stays in the
+ * default color (no gray or dim), and each role below has one meaning.
+ * - `warning` (yellow): something to review, such as a diverged team export.
+ * - `success` (green): the label of a final summary line, after a 💚; the
+ *   details that follow stay plain.
+ * - `command` (cyan): a command or flag to run, such as `--run`. Paths
+ *   stay in the default color.
+ */
+export const TERM_COLORS = {
+  warning: "YELLOW",
+  success: "GREEN",
+  command: "CYAN",
+} as const satisfies Record<string, AnsiColorName>
+
+type TermColor = keyof typeof TERM_COLORS
+
+/** Whether to color a stream: NO_COLOR wins, FORCE_COLOR forces, else a TTY. */
+export const colorEnabled = (
+  env: Record<string, string | undefined>,
+  isTTY: boolean | undefined,
+): boolean => {
+  if (env.NO_COLOR) return false
+  if (env.FORCE_COLOR && env.FORCE_COLOR !== "0") return true
+  return isTTY === true && env.TERM !== "dumb"
+}
+
+/** Wrap text in a named ANSI foreground color, or return it unchanged. */
+export const paint = (
+  text: string,
+  color: TermColor,
+  enabled: boolean,
+): string => {
+  if (!enabled) return text
+  const code = ANSI_COLOR[TERM_COLORS[color]]
+  return `\x1b[${code}m${text}\x1b[${ANSI_COLOR.RESET}m`
+}
+
+const stdoutColor = (): boolean =>
+  colorEnabled(process.env, process.stdout.isTTY)
+const stderrColor = (): boolean =>
+  colorEnabled(process.env, process.stderr.isTTY)
+
 interface SkillsConfig {
   claudeSkillsDir: string
   cursorSkillsDir: string
@@ -356,12 +428,17 @@ const resolveTeamSkillExports = async (
   return resolvedExports
 }
 
-const directorySnapshot = async (root: string): Promise<string[] | undefined> => {
-  if (!(await pathExists(root))) return undefined
-  const rootInfo = await lstat(root)
-  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return []
+/** Relative path -> entry signature (kind, mode, digest or link target). */
+type DirectorySnapshot = Map<string, string>
 
-  const snapshot: string[] = []
+const directorySnapshot = async (
+  root: string,
+): Promise<DirectorySnapshot | undefined> => {
+  if (!(await pathExists(root))) return undefined
+  const snapshot: DirectorySnapshot = new Map()
+  const rootInfo = await lstat(root)
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return snapshot
+
   const walk = async (dir: string, prefix: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true })
     entries.sort((left, right) => left.name.localeCompare(right.name))
@@ -372,15 +449,15 @@ const directorySnapshot = async (root: string): Promise<string[] | undefined> =>
       const info = await lstat(path)
       const mode = (info.mode & 0o777).toString(8)
       if (info.isDirectory()) {
-        snapshot.push(`d ${mode} ${relativePath}`)
+        snapshot.set(relativePath, `d ${mode}`)
         await walk(path, relativePath)
       } else if (info.isFile()) {
         const digest = createHash("sha256")
           .update(await readFile(path))
           .digest("hex")
-        snapshot.push(`f ${mode} ${digest} ${relativePath}`)
+        snapshot.set(relativePath, `f ${mode} ${digest}`)
       } else if (info.isSymbolicLink()) {
-        snapshot.push(`l ${await readlink(path)} ${relativePath}`)
+        snapshot.set(relativePath, `l ${await readlink(path)}`)
       } else {
         throw new Error(`Unsupported file in skill export: ${path}`)
       }
@@ -391,24 +468,74 @@ const directorySnapshot = async (root: string): Promise<string[] | undefined> =>
   return snapshot
 }
 
+export interface SnapshotDiff {
+  changed: string[]
+  onlyRepo: string[]
+  onlySource: string[]
+}
+
+/** Paths that differ between the private source and the repository copy. */
+export const diffSnapshots = (
+  source: DirectorySnapshot,
+  repo: DirectorySnapshot,
+): SnapshotDiff => {
+  const diff: SnapshotDiff = { changed: [], onlyRepo: [], onlySource: [] }
+  for (const [path, signature] of source) {
+    const repoSignature = repo.get(path)
+    if (repoSignature === undefined) diff.onlySource.push(path)
+    else if (repoSignature !== signature) diff.changed.push(path)
+  }
+  for (const path of repo.keys()) {
+    if (!source.has(path)) diff.onlyRepo.push(path)
+  }
+  for (const paths of Object.values(diff)) paths.sort()
+  return diff
+}
+
+/**
+ * Export a private skill into its team repository, never overwriting it.
+ *
+ * A missing repository copy is created on --run and fails --health. A copy
+ * that diverges from the private source is left alone: the repository version
+ * is what teammates share, so divergence is reported as one JSONL warning on
+ * stderr and does not fail --health.
+ */
 const syncTeamSkillExport = async (
   skillExport: ResolvedTeamSkillExport,
   apply: boolean,
-): Promise<boolean> => {
+): Promise<{ healthy: boolean; diverged: boolean }> => {
   const sourceSnapshot = await directorySnapshot(skillExport.sourceDir)
+  if (!sourceSnapshot) {
+    throw new Error(`Team skill source is missing: ${skillExport.sourceDir}`)
+  }
   const destinationSnapshot = await directorySnapshot(
     skillExport.destinationDir,
   )
-  if (
-    sourceSnapshot &&
-    destinationSnapshot &&
-    sourceSnapshot.join("\n") === destinationSnapshot.join("\n")
-  ) {
-    return true
+
+  if (destinationSnapshot) {
+    const diff = diffSnapshots(sourceSnapshot, destinationSnapshot)
+    const diverged =
+      diff.changed.length + diff.onlyRepo.length + diff.onlySource.length > 0
+    if (diverged) {
+      const line = JSON.stringify({
+          level: "warn",
+          event: "team_skill_export_diverged",
+          skill: skillExport.name,
+          ghRepo: skillExport.ghRepo,
+          source: skillExport.sourceDir,
+          destination: skillExport.destinationDir,
+          changed: diff.changed,
+          onlySource: diff.onlySource,
+          onlyRepo: diff.onlyRepo,
+      })
+      // Color only on a terminal so piped stderr stays plain JSONL.
+      console.warn(paint(line, "warning", stderrColor()))
+    }
+    return { healthy: true, diverged }
   }
 
-  console.log(`Team skill export differs: ${skillExport.destinationDir}`)
-  if (!apply) return false
+  console.log(`Team skill export missing: ${skillExport.destinationDir}`)
+  if (!apply) return { healthy: false, diverged: false }
 
   await mkdir(skillExport.skillsDir, { recursive: true })
   const temporaryDir = await mkdtemp(
@@ -421,12 +548,11 @@ const syncTeamSkillExport = async (
       preserveTimestamps: true,
       verbatimSymlinks: true,
     })
-    await rm(skillExport.destinationDir, { force: true, recursive: true })
     await rename(stagedSkill, skillExport.destinationDir)
   } finally {
     await rm(temporaryDir, { force: true, recursive: true })
   }
-  return false
+  return { healthy: true, diverged: false }
 }
 
 const canonicalSkillNames = async (dir: string): Promise<Set<string>> => {
@@ -695,11 +821,17 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
 
   const unionHealthy = await syncUnion(cfg, targets, apply)
   let exportsHealthy = true
+  let divergedExports = 0
   for (const skillExport of exports) {
-    if (!(await syncTeamSkillExport(skillExport, apply))) {
-      exportsHealthy = false
-    }
+    const result = await syncTeamSkillExport(skillExport, apply)
+    if (!result.healthy) exportsHealthy = false
+    if (result.diverged) divergedExports += 1
   }
+  const exportSummary =
+    exports.length === 0
+      ? ""
+      : `; ${exports.length} team export${exports.length === 1 ? "" : "s"}` +
+        (divergedExports ? ` (${divergedExports} diverged)` : "")
 
   let discoveryHealthy = true
   for (const skillExport of repositories.values()) {
@@ -744,7 +876,12 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
       codexHealthy &&
       claudeHealthy
     ) {
-      console.log("Skills links are healthy.")
+      console.log(
+        "💚 " +
+          paint("Skills links are healthy", "success", stdoutColor()) +
+          exportSummary +
+          ".",
+      )
     } else {
       process.exitCode = 1
     }
@@ -752,8 +889,22 @@ const runSkillsSync = async (options: SkillsSyncOptions): Promise<void> => {
   }
 
   if (!apply) {
-    console.log("Dry run complete. Run with --run to apply changes.")
+    console.log(
+      "Dry run complete. Run with " +
+        paint("--run", "command", stdoutColor()) +
+        " to apply changes.",
+    )
+    return
   }
+
+  console.log(
+    "💚 " +
+      paint("Skills synced:", "success", stdoutColor()) +
+      ` ${names.size} skills linked into Cursor, Codex, ` +
+      "and Claude Code" +
+      exportSummary +
+      ".",
+  )
 }
 
 export const createProgram = (): Command =>
@@ -768,7 +919,10 @@ export const createProgram = (): Command =>
       "--migrate",
       "replace matching legacy runtime directories with links",
     )
-    .option("--health", "fail when managed skill links or exports drift")
+    .option(
+      "--health",
+      "fail when managed skill links drift or a team export is missing",
+    )
     .action(runSkillsSync)
 
 if (import.meta.main) await createProgram().parseAsync()

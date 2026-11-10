@@ -83,21 +83,22 @@ for native build and publishing rules.
 git clone --recurse-submodules git@github.com:Unique-Divine/boku.git "$HOME/ki/boku"
 cd "$HOME/ki/boku/dotfiles"
 
-# Install system packages used by the shell and Neovim.
+# Install system packages used by the shell.
 # - build-essential: Used in almost everything
-# - gh: GitHub CLI
-# - libclang-dev: Needed so `cargo install tree-sitter-cli` can build.
-# - tree-sitter-cli: Required by `nvim-treesitter` on the `main` branch.
 # - wslu: Provides `wslview` (Example: gh pr view --web). This fixes the error,
 #   > exec: "xdg-open,x-www-browser,www-browser,wslview": executable file not found in $PATH
+sudo apt install build-essential wslu
 
-sudo apt install build-essential ripgrep gh libclang-dev wslu
+# Install mise and the CLI tools pinned in mise/mise.lock: gh, ripgrep, jq,
+# just, bat, sd, tree-sitter (for nvim-treesitter's `main` branch), buf,
+# lychee, gmailctl, fzf, eza and Neovim. See mise/README.md.
+curl -fsSL https://mise.run | MISE_VERSION=v2026.11.5 sh
+mkdir -p ~/.config && ln -sfn "$PWD/mise" ~/.config/mise
+~/.local/bin/mise install --locked
 
-# This might be different for you. The command comes from here:
+# Rust toolchain for the dotfiles' own crates. The command comes from
 # https://rustup.rs/
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-cargo install just
-cargo install bat tree-sitter-cli sd
 
 # Homebrew/Linuxbrew must be on PATH, then install formulas from Brewfile.
 just i-brew
@@ -193,10 +194,13 @@ A private skill can set `metadata.gh-repo: Owner/repository` to export a copy
 into a private team checkout. Sync uses `$REPO/<repository>` by default, or
 the relative path in `metadata.repo-dir`, and writes the copy under
 `ai-skills/<skill-name>`. It also maintains relative link
-`.agents/skills -> ../ai-skills` for teammates. The private Boku directory is
-authoritative, and sync replaces the complete repository copy. Missing team
-checkouts are skipped and do not fail health checks. Existing checkouts with
-export drift do fail health checks.
+`.agents/skills -> ../ai-skills` for teammates. Sync creates a missing
+repository copy but never overwrites an existing one, so the team copy can
+diverge from the private skill. Divergence prints one JSONL warning on stderr
+(event `team_skill_export_diverged`, with `changed`, `onlySource`, and
+`onlyRepo` paths) and does not fail health checks. A missing copy in an
+existing checkout fails health checks until `--run` creates it. Missing team
+checkouts are skipped and do not fail health checks.
 
 Sync rejects duplicate names and unexpected link targets. The first
 conversion from legacy copied runtime directories requires
@@ -350,7 +354,6 @@ desktop clipboard for the task to access.
 - Tmux
 - Bun and Node.js
 - Cargo/Rust tools
-- Just command runner (`cargo install just`)
-- `libclang-dev` for building `tree-sitter-cli`
+- [mise](mise/README.md) for pinned CLI tools, including `just`, Neovim and
+  `tree-sitter`
 - `lua5.1` and `luarocks` for Lazy/LuaRocks health checks
-- `tree-sitter-cli` (`cargo install tree-sitter-cli`)

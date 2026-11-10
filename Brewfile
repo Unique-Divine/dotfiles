@@ -1,9 +1,5 @@
-# A tap is an extra package source. brew lines are packages.
-# Core formulas like lychee need no tap. buf is not in core, so
-# tap the bufbuild/buf repo first, then install from it.
-tap "bufbuild/buf"
-brew "bufbuild/buf/buf"
+# Homebrew packages. CLI tools that ship release binaries (buf, lychee, gh,
+# ripgrep, ...) come from mise instead; see mise/config.toml.
 brew "go"
 brew "kubectl"
-brew "lychee"
 brew "zig@0.16"

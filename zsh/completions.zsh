@@ -71,8 +71,8 @@ fi
 # fallbacks, so a `sai-*` prefix would hide dated `*-sai-*` names.
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z} l:|=* r:|=*'
 
-# Reuse `ls` shell completions for `exa`.
-compdef exa=ls
+# Reuse `ls` shell completions for `eza`.
+compdef eza=ls
 
 # ----------------------------------------------
 # Fuzzy Finder (fzf)
@@ -84,28 +84,12 @@ compdef exa=ls
 # Tab may still point to our lazy loader here, so name the native widget instead.
 typeset -g fzf_default_completion=expand-or-complete
 
-# macOS / Homebrew (Apple Silicon)
-if [[ -f /opt/homebrew/opt/fzf/shell/key-bindings.zsh ]]; then
-  source /opt/homebrew/opt/fzf/shell/key-bindings.zsh
-  source /opt/homebrew/opt/fzf/shell/completion.zsh
-fi
-
-# macOS / Homebrew (Intel)
-if [[ -f /usr/local/opt/fzf/shell/key-bindings.zsh ]]; then
-  source /usr/local/opt/fzf/shell/key-bindings.zsh
-  source /usr/local/opt/fzf/shell/completion.zsh
-fi
-
-# Arch
-if [[ -f /usr/share/fzf/key-bindings.zsh ]]; then
-  source /usr/share/fzf/key-bindings.zsh
-  source /usr/share/fzf/completion.zsh
-fi
-
-# Ubuntu
-if [[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]]; then
-  source /usr/share/doc/fzf/examples/key-bindings.zsh
-  source /usr/share/doc/fzf/examples/completion.zsh
+# fzf 0.48+ prints its key bindings and completion for zsh. mise installs a
+# pinned fzf (mise/config.toml) on every platform, so no per-OS paths remain.
+if (( $+commands[fzf] )); then
+  # A shim whose tool isn't installed (for example under another HOME) exits
+  # with an error; skip the bindings quietly instead of failing shell startup.
+  source <(fzf --zsh 2>/dev/null)
 fi
 
 # Google Cloud SDK command completion.
