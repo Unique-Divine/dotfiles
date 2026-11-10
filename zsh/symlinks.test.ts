@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { lstat, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
+import {
+  lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { bash } from "@uniquedivine/bash"
@@ -29,13 +31,20 @@ const readManagedLinks = async (): Promise<ManagedLink[]> => {
     })
 }
 
-const runSync = async (home: string) => {
+const runSync = async (home: string): Promise<string> => {
   const scriptPath = join(dotfilesRoot, "symlinks.sh")
   const output = await bash(
     `DOTFILES=${shellQuote(dotfilesRoot)} HOME=${shellQuote(home)} bash ${shellQuote(scriptPath)}`,
   )
   expect(output.exitCode).toBe(0)
   expect(output.stderr).toBeEmpty()
+  return output.stdout
+}
+
+const newHome = async (): Promise<string> => {
+  const home = await mkdtemp(join(tmpdir(), "dotfiles-links-"))
+  temporaryHomes.push(home)
+  return home
 }
 
 const expectManagedLinks = async (home: string, links: ManagedLink[]) => {
@@ -80,5 +89,46 @@ describe("symlinks.sh", () => {
 
     await runSync(home)
     await expectManagedLinks(home, links)
+  })
+
+  describe("retires the old ud-runs plugin link", () => {
+    const relative = join(".local", "share", "ud", "plugins", "ud-runs")
+    const placeAt = async (home: string): Promise<string> => {
+      const path = join(home, relative)
+      await mkdir(join(path, ".."), { recursive: true })
+      return path
+    }
+
+    test("removes a link that resolves to runlog/cli.ts", async () => {
+      const home = await newHome()
+      const path = await placeAt(home)
+      await symlink(join(dotfilesRoot, "runlog", "cli.ts"), path)
+
+      const stdout = await runSync(home)
+      await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" })
+      expect(stdout).toContain(`removed retired link: ${path}`)
+
+      expect(await runSync(home)).not.toContain("removed retired link")
+    })
+
+    test("keeps a link that points elsewhere", async () => {
+      const home = await newHome()
+      const path = await placeAt(home)
+      const other = join(home, "my-runs")
+      await writeFile(other, "#!/bin/sh\n")
+      await symlink(other, path)
+
+      expect(await runSync(home)).not.toContain("removed retired link")
+      expect(await readlink(path)).toBe(other)
+    })
+
+    test("keeps a regular file", async () => {
+      const home = await newHome()
+      const path = await placeAt(home)
+      await writeFile(path, "mine\n")
+
+      expect(await runSync(home)).not.toContain("removed retired link")
+      expect(await readFile(path, "utf8")).toBe("mine\n")
+    })
   })
 })
