@@ -349,6 +349,10 @@ describe("git_mf <target> scenarios", () => {
   })
 })
 
+/** The argv a fake agent CLI received, one entry per argument. */
+const agentArgs = async (root: string, name: string) =>
+  (await readFile(join(root, `${name}.args`), "utf8")).trimEnd().split("\n")
+
 /** A PATH with only the system tools and the given fake agent CLIs. */
 async function fakeAgents(root: string, names: string[]) {
   const bin = join(root, "fake-bin")
@@ -356,7 +360,7 @@ async function fakeAgents(root: string, names: string[]) {
   for (const name of names) {
     await writeFile(
       join(bin, name),
-      `#!/bin/sh\nprintf '%s\\n' "$*" > "${root}/${name}.args"\ncat > "${root}/${name}.stdin"\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${root}/${name}.args"\ncat > "${root}/${name}.stdin"\n`,
       { mode: 0o755 },
     )
   }
@@ -376,7 +380,21 @@ describe("git_mf --agent", () => {
     const stdin = await readFile(join(root, "claude.stdin"), "utf8")
     expect(stdin).toContain("# Merge a Branch From origin Into the Current Branch")
     expect(stdin).toContain("conflicts in: file.txt")
-    expect(await readFile(join(root, "claude.args"), "utf8")).toContain("-p")
+    expect(await agentArgs(root, "claude")).toEqual([
+      "-p",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(git:*)",
+      "Bash(just:*)",
+      "Bash(bun:*)",
+      "Bash(cargo:*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+    ])
     expect(await Bun.file(join(root, "codex.stdin")).exists()).toBe(false)
   })
 
@@ -390,7 +408,14 @@ describe("git_mf --agent", () => {
     expect(await readFile(join(root, "codex.stdin"), "utf8")).toContain(
       "uncommitted changes",
     )
-    expect(await readFile(join(root, "codex.args"), "utf8")).toContain("exec")
+    const repo = await ok(clone, "git rev-parse --show-toplevel")
+    // --approve-for-me implies workspace-write and conflicts with --sandbox.
+    expect(await agentArgs(root, "codex")).toEqual([
+      "exec",
+      "-C",
+      repo,
+      "--approve-for-me",
+    ])
   })
 
   test("--dry-run names the agent without running it", async () => {
