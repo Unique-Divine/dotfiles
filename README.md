@@ -194,10 +194,13 @@ A private skill can set `metadata.gh-repo: Owner/repository` to export a copy
 into a private team checkout. Sync uses `$REPO/<repository>` by default, or
 the relative path in `metadata.repo-dir`, and writes the copy under
 `ai-skills/<skill-name>`. It also maintains relative link
-`.agents/skills -> ../ai-skills` for teammates. The private Boku directory is
-authoritative, and sync replaces the complete repository copy. Missing team
-checkouts are skipped and do not fail health checks. Existing checkouts with
-export drift do fail health checks.
+`.agents/skills -> ../ai-skills` for teammates. Sync creates a missing
+repository copy but never overwrites an existing one, so the team copy can
+diverge from the private skill. Divergence prints one JSONL warning on stderr
+(event `team_skill_export_diverged`, with `changed`, `onlySource`, and
+`onlyRepo` paths) and does not fail health checks. A missing copy in an
+existing checkout fails health checks until `--run` creates it. Missing team
+checkouts are skipped and do not fail health checks.
 
 Sync rejects duplicate names and unexpected link targets. The first
 conversion from legacy copied runtime directories requires

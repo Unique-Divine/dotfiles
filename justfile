@@ -399,7 +399,7 @@ i-bash-ci:
 # Repair or check the repository-backed Cursor, Codex, and Claude Code skill
 # links.
 skills-sync *ARGS:
-  bun run skillsSync.ts {{ARGS}}
+  @bun run skillsSync.ts {{ARGS}}
 
 # Check TypeScript scripts
 typecheck:
