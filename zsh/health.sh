@@ -185,6 +185,14 @@ if is_wsl >/dev/null && [[ ! -x "$HOME/.local/bin/wsl-clipboard" ]]; then
   failed=1
 fi
 
+if ! bun mise/health.ts --check; then
+  failed=1
+fi
+
+if ! bun mise/links.ts --check; then
+  failed=1
+fi
+
 zinit_home="${ZINIT_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git}"
 if [[ ! -f "$zinit_home/zinit.zsh" ]]; then
   log_error "zinit is not installed; run: just sync"
