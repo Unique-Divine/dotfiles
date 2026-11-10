@@ -1,23 +1,10 @@
 /**
- * Golden tests: real Gmail and Google OAuth responses, captured live on
- * 2026-11-10 and anonymized (ids, Message-IDs, subjects, snippets, addresses,
- * counts, and tokens replaced; field names, nesting, and value types kept).
- * Each import is checked against its binding with `satisfies`, so `bun check`
- * fails if a fixture and its type drift apart. No HTTP calls.
+ * Golden tests over anonymized live Gmail and OAuth responses; see
+ * fixtures/gmail/index.ts. No HTTP calls.
  */
 import { describe, expect, test } from "bun:test";
 
-import error403Quota from "./fixtures/gmail/error-403-quota.json";
-import error404 from "./fixtures/gmail/error-404.json";
-import sourceList from "./fixtures/gmail/source-list.json";
-import sourceMessage from "./fixtures/gmail/source-message-metadata.json";
-import sourceProfile from "./fixtures/gmail/source-profile.json";
-import sourceTokenRefresh from "./fixtures/gmail/source-token-refresh.json";
-import targetListEmpty from "./fixtures/gmail/target-list-empty.json";
-import targetList from "./fixtures/gmail/target-list.json";
-import targetMessage from "./fixtures/gmail/target-message-metadata.json";
-import targetProfile from "./fixtures/gmail/target-profile.json";
-import targetTokenRefresh from "./fixtures/gmail/target-token-refresh.json";
+import { gmailFixtures as fx } from "./fixtures/gmail/index.ts";
 import {
   applyTokenRefresh,
   idsFromListPage,
@@ -27,27 +14,8 @@ import {
   parseGmailError,
   planSync,
   retryDelayMs,
-  type GmailErrorResponse,
-  type GmailListMessagesResponse,
-  type GmailMessageMetadata,
-  type GmailProfile,
-  type OAuthTokenResponse,
   type StoredToken,
 } from "./mail-state-sync.ts";
-
-const fx = {
-  sourceList: sourceList satisfies GmailListMessagesResponse,
-  targetList: targetList satisfies GmailListMessagesResponse,
-  targetListEmpty: targetListEmpty satisfies GmailListMessagesResponse,
-  sourceMessage: sourceMessage satisfies GmailMessageMetadata,
-  targetMessage: targetMessage satisfies GmailMessageMetadata,
-  sourceProfile: sourceProfile satisfies GmailProfile,
-  targetProfile: targetProfile satisfies GmailProfile,
-  error404: error404 satisfies GmailErrorResponse,
-  error403Quota: error403Quota satisfies GmailErrorResponse,
-  sourceTokenRefresh: sourceTokenRefresh satisfies OAuthTokenResponse,
-  targetTokenRefresh: targetTokenRefresh satisfies OAuthTokenResponse,
-};
 
 describe("users.messages.list", () => {
   test("returns the ids of a page", () => {
