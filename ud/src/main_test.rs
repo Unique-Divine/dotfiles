@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -1002,6 +1002,282 @@ fn plugin_doctor_rejects_built_in_collisions() {
         .unwrap();
     assert!(!output.status.success());
     assert!(stderr(&output).contains("collides with built-in: health"));
+}
+
+/// A plugin whose `--plugin-info` hangs while a background helper holds its
+/// stdout. It records both PIDs in `$PLUGIN_PIDS`. When `$PLUGIN_HANG_FLAG`
+/// is set, it hangs only after that file exists.
+const HANGING_PLUGIN: &str = r#"#!/usr/bin/env bash
+if [[ -n "${PLUGIN_HANG_FLAG:-}" && ! -e "$PLUGIN_HANG_FLAG" ]]; then
+  printf '%s\n' '{"apiVersion":1,"name":"example","description":"Cached plugin"}'
+  exit 0
+fi
+sleep 60 &
+printf '%s %s\n' "$$" "$!" > "$PLUGIN_PIDS"
+wait
+"#;
+
+/// Return whether `pid` has exited, treating a zombie awaiting its reaper as
+/// exited. Uses ps(1) so the probe works on Linux and macOS alike.
+fn process_exited(pid: &str) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("failed to run ps");
+    let stat = String::from_utf8_lossy(&output.stdout);
+    let stat = stat.trim();
+    stat.is_empty() || stat.starts_with('Z')
+}
+
+/// Assert that a timed-out plugin and its helper no longer run.
+fn assert_plugin_processes_stopped(pids_file: &Path) {
+    let pids = fs::read_to_string(pids_file).unwrap();
+    let pids = pids.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2, "unexpected PID record: {pids:?}");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !pids.iter().all(|pid| process_exited(pid)) {
+        assert!(
+            Instant::now() < deadline,
+            "plugin processes survived the timeout: {pids:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Run `ud` against the hanging plugin and assert it returns near the limit.
+fn run_with_hanging_plugin(
+    temp: &TempDir,
+    plugins: &Path,
+    args: &[&str],
+) -> Output {
+    let started = Instant::now();
+    let output = isolated_ud(temp)
+        .env("UD_PLUGIN_PATH", plugins)
+        .env("PLUGIN_PIDS", temp.path().join("pids"))
+        .env("PLUGIN_HANG_FLAG", temp.path().join("hang"))
+        .args(args)
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1900)
+            && elapsed < Duration::from_secs(5),
+        "ud {args:?} took {elapsed:?}"
+    );
+    output
+}
+
+/// A hanging `--plugin-info` must fail after two seconds and name the plugin.
+#[test]
+fn plugin_info_times_out_on_a_hanging_plugin() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let output =
+        run_with_hanging_plugin(&temp, &plugins, &["plugin", "info", "example"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output)
+            .contains("ud plugin metadata command timed out after 2s: example"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+    assert!(
+        !temp
+            .path()
+            .join("cache/ud/plugin-metadata/example.json")
+            .exists()
+    );
+}
+
+/// Root help must still list a plugin whose metadata command hangs.
+#[test]
+fn root_help_lists_a_hanging_plugin_without_metadata() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let output = run_with_hanging_plugin(&temp, &plugins, &["--help"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("Installed plugins:\n  example"));
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+}
+
+/// Valid cached metadata skips inspection, while doctor still refreshes and
+/// reports the timeout.
+#[test]
+fn cached_metadata_survives_a_plugin_that_starts_hanging() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let ud_with_plugin = |args: &[&str]| {
+        isolated_ud(&temp)
+            .env("UD_PLUGIN_PATH", &plugins)
+            .env("PLUGIN_PIDS", temp.path().join("pids"))
+            .env("PLUGIN_HANG_FLAG", temp.path().join("hang"))
+            .args(args)
+            .timeout(Duration::from_secs(10))
+            .output()
+            .unwrap()
+    };
+
+    assert_success(&ud_with_plugin(&["plugin", "info", "example"]));
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let started = Instant::now();
+    let cached = ud_with_plugin(&["plugin", "info", "example"]);
+    assert_success(&cached);
+    assert!(stdout(&cached).contains("\"description\": \"Cached plugin\""));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(!temp.path().join("pids").exists());
+
+    let doctor = run_with_hanging_plugin(&temp, &plugins, &["plugin", "doctor"]);
+    assert!(!doctor.status.success());
+    assert!(
+        stderr(&doctor)
+            .contains("ud plugin metadata command timed out after 2s: example")
+    );
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+}
+
+/// Wait until the hanging plugin records both PIDs, or kill `ud` and fail.
+fn wait_for_plugin_pids(ud: &mut std::process::Child, pids_file: &Path) {
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while fs::read_to_string(pids_file)
+        .map_or(true, |pids| pids.split_whitespace().count() < 2)
+    {
+        if Instant::now() >= deadline {
+            let _ = ud.kill();
+            let _ = ud.wait();
+            panic!("plugin did not record its PIDs before the deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// SIGTERM to ud mid-inspection must also stop the plugin's process group,
+/// which no longer shares ud's group, and ud must die by that signal.
+#[test]
+fn sigterm_during_inspection_stops_the_plugin_group() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let mut ud = std::process::Command::new(env!("CARGO_BIN_EXE_ud"))
+        .args(["plugin", "info", "example"])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    wait_for_plugin_pids(&mut ud, &pids_file);
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let status = ud.wait().unwrap();
+    assert_eq!(status.signal(), Some(15), "ud status: {status:?}");
+    assert_plugin_processes_stopped(&pids_file);
+}
+
+/// ud blocks SIGINT and SIGTERM around spawn; the plugin must not inherit
+/// that block. A plugin that SIGTERMs itself must die before printing. The
+/// plugin is Python because bash resets its signal mask at startup. It
+/// writes a marker first, which proves it ran up to the self-signal.
+#[test]
+fn plugin_inspection_starts_with_termination_signals_unblocked() {
+    let python = std::process::Command::new("python3")
+        .args(["-c", ""])
+        .status();
+    assert!(
+        python.is_ok_and(|status| status.success()),
+        "this test needs python3 on PATH to run its probe plugin"
+    );
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    let marker = temp.path().join("marker");
+    write_plugin(
+        &plugins,
+        "example",
+        r#"#!/usr/bin/env python3
+import os, signal
+open(os.environ["PLUGIN_MARKER"], "w").close()
+os.kill(os.getpid(), signal.SIGTERM)
+print('{"apiVersion":1,"name":"example","description":"Survived"}')
+"#,
+    );
+    let output = isolated_ud(&temp)
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_MARKER", &marker)
+        .args(["plugin", "info", "example"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    assert!(marker.is_file(), "the probe plugin did not run");
+    assert!(!output.status.success(), "stdout: {}", stdout(&output));
+    assert!(stderr(&output).contains("metadata command failed: example"));
+}
+
+/// An inherited SIG_IGN for SIGINT, as `cmd &` gives in a script, must keep
+/// ud running until the metadata timeout.
+#[test]
+fn inherited_ignored_sigint_does_not_stop_inspection() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let started = Instant::now();
+    // bash's empty trap sets SIG_IGN, which exec passes on to ud.
+    let mut ud = std::process::Command::new("bash")
+        .args([
+            "-c",
+            "trap '' INT; exec \"$0\" plugin info example",
+            env!("CARGO_BIN_EXE_ud"),
+        ])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_plugin_pids(&mut ud, &pids_file);
+
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let output = ud.wait_with_output().unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(output.status.signal(), None, "ud died by a signal");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        elapsed >= Duration::from_millis(1900),
+        "ud took {elapsed:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ud plugin metadata command timed out after 2s: example")
+    );
+    assert_plugin_processes_stopped(&pids_file);
 }
 
 /// Ambiguous plugin paths must fail instead of silently choosing an executable.

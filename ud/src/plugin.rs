@@ -2,11 +2,17 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, Permissions};
+use std::io::Read;
+use std::mem;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::ptr;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Once, mpsc};
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -20,6 +26,14 @@ const RESERVED_NAMES: &[&str] = &[
     "go", "rs", "md", "nibi", "docker", "health", "quick", "q", "cfg", "plugin",
     "help", "h", "fs",
 ];
+
+/// Bound `--plugin-info` so one broken plugin cannot hang help or doctor.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
+const METADATA_POLL: Duration = Duration::from_millis(5);
+
+/// Process group of the plugin under inspection, or 0 when none runs.
+static INSPECTED_GROUP: AtomicI32 = AtomicI32::new(0);
+static FORWARD_SIGNALS: Once = Once::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,18 +137,199 @@ fn load_metadata(
         return Ok((plugin, metadata));
     }
 
-    let output = Command::new(&plugin)
-        .arg("--plugin-info")
-        .output()
-        .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
-    if !output.status.success() {
+    let (status, stdout) = inspect_plugin(name, &plugin)?;
+    if !status.success() {
         bail!("ud plugin metadata command failed: {name}");
     }
-    let metadata: PluginMetadata = serde_json::from_slice(&output.stdout)
+    let metadata: PluginMetadata = serde_json::from_slice(&stdout)
         .with_context(|| format!("Invalid metadata from ud plugin: {name}"))?;
     validate_metadata(name, &metadata)?;
     let _ = write_cache(name, &plugin_path, fingerprint, &metadata);
     Ok((plugin, metadata))
+}
+
+/// Run `plugin --plugin-info` and return its status and stdout, or fail
+/// after `METADATA_TIMEOUT`. The plugin runs in its own process group so a
+/// timeout also kills helpers that inherited its stdout. Leaving ud's group
+/// also means Ctrl-C no longer reaches the plugin, so SIGINT and SIGTERM to
+/// ud kill the plugin group before ud exits.
+fn inspect_plugin(name: &str, plugin: &Path) -> Result<(ExitStatus, Vec<u8>)> {
+    forward_termination_signals();
+    // Hold SIGINT and SIGTERM until the handler can see the new group, so a
+    // signal right after spawn cannot orphan the plugin. The reader thread
+    // starts inside the bracket and keeps them blocked, which leaves this
+    // thread to take them. std passes the mask to the child, so the child
+    // restores ud's previous mask before exec.
+    let blocked = BlockedTermination::block();
+    let previous = blocked.previous;
+    let mut command = Command::new(plugin);
+    command
+        .arg("--plugin-info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    // SAFETY: the hook only calls pthread_sigmask, which is
+    // async-signal-safe, on a mask copied before fork.
+    unsafe {
+        command.pre_exec(move || {
+            match libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                &previous,
+                ptr::null_mut(),
+            ) {
+                0 => Ok(()),
+                error => Err(std::io::Error::from_raw_os_error(error)),
+            }
+        });
+    }
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to inspect ud plugin: {name}"))?;
+    let _group = InspectedGroup::track(&child);
+    let deadline = Instant::now() + METADATA_TIMEOUT;
+    let mut pipe = child
+        .stdout
+        .take()
+        .context("ud plugin metadata command has no stdout")?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = Vec::new();
+        let result = pipe.read_to_end(&mut stdout).map(|_| stdout);
+        let _ = sender.send(result);
+    });
+    drop(blocked);
+
+    // Stdout closes when the plugin and every helper holding it exit.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let Ok(stdout) = receiver.recv_timeout(remaining) else {
+        stop_process_group(&mut child);
+        bail!(metadata_timeout(name));
+    };
+    let stdout = stdout.with_context(|| {
+        format!("failed to read metadata from ud plugin: {name}")
+    })?;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok((status, stdout));
+        }
+        if Instant::now() >= deadline {
+            stop_process_group(&mut child);
+            bail!(metadata_timeout(name));
+        }
+        thread::sleep(METADATA_POLL);
+    }
+}
+
+fn metadata_timeout(name: &str) -> String {
+    format!(
+        "ud plugin metadata command timed out after {}s: {name}",
+        METADATA_TIMEOUT.as_secs()
+    )
+}
+
+/// Publishes the inspected plugin's process group to the signal handler
+/// until the inspection returns.
+struct InspectedGroup;
+
+impl InspectedGroup {
+    fn track(child: &Child) -> Self {
+        let group = i32::try_from(child.id()).unwrap_or(0);
+        INSPECTED_GROUP.store(group, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InspectedGroup {
+    fn drop(&mut self) {
+        INSPECTED_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Blocks SIGINT and SIGTERM on this thread until dropped, then restores
+/// the previous mask. A signal that arrived meanwhile is delivered then.
+struct BlockedTermination {
+    previous: libc::sigset_t,
+}
+
+impl BlockedTermination {
+    fn block() -> Self {
+        // SAFETY: the sets are initialized by sigemptyset or written by
+        // pthread_sigmask before use.
+        unsafe {
+            let mut set: libc::sigset_t = mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            let mut previous: libc::sigset_t = mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous);
+            Self { previous }
+        }
+    }
+}
+
+impl Drop for BlockedTermination {
+    fn drop(&mut self) {
+        // SAFETY: `previous` holds the mask pthread_sigmask returned.
+        unsafe {
+            libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                &self.previous,
+                ptr::null_mut(),
+            );
+        }
+    }
+}
+
+/// Whether ud inherited `signal` as ignored, e.g. from `cmd &` in a script.
+fn is_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: a null new action only queries; `current` is written on
+    // success.
+    unsafe {
+        let mut current: libc::sigaction = mem::zeroed();
+        libc::sigaction(signal, ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+/// Install SIGINT and SIGTERM handlers once. Each kills the inspected
+/// plugin group, if any, then terminates ud as the default action would, so
+/// the shell still sees exit status 130 or 143. An inherited ignore stays in
+/// place, and the plugin inherits it too.
+fn forward_termination_signals() {
+    FORWARD_SIGNALS.call_once(|| {
+        for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
+        {
+            if is_ignored(signal) {
+                continue;
+            }
+            // SAFETY: the action only loads an atomic and calls kill(2) and
+            // emulate_default_handler, which are async-signal-safe.
+            let _ = unsafe {
+                signal_hook::low_level::register(signal, move || {
+                    let group = INSPECTED_GROUP.load(Ordering::SeqCst);
+                    if group > 0 {
+                        libc::kill(-group, libc::SIGKILL);
+                    }
+                    let _ =
+                        signal_hook::low_level::emulate_default_handler(signal);
+                })
+            };
+        }
+    });
+}
+
+/// SIGKILL the plugin's process group, then reap the plugin itself.
+fn stop_process_group(child: &mut Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    // Fall back to the direct child if kill(1) is unavailable.
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn validate_metadata(name: &str, metadata: &PluginMetadata) -> Result<()> {

@@ -75,7 +75,9 @@ ud evm --help
 
 Each plugin implements `--plugin-info` and prints JSON with `apiVersion`,
 `name`, and `description`. API version 1 is the current contract. Rust validates
-and caches this metadata without requiring `jq`.
+and caches this metadata without requiring `jq`. Metadata inspection stops
+after two seconds and kills the plugin's process group; running the plugin as
+a command has no limit.
 
 ## Public Files
 
