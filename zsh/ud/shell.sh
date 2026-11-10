@@ -30,18 +30,16 @@ ud_shell_quick() {
   esac
 }
 
+# Recover a test-keyring key. The mnemonic arrives on stdin and passes
+# through to nibiru unchanged, so it never appears in an argument list.
+# Usage: ud_shell_nibi_keys_add_mnem --name NAME < mnemonic
 ud_shell_nibi_keys_add_mnem() {
   local name=""
-  local mnemonic=""
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --name)
         name="${2:-}"
-        shift 2
-        ;;
-      --mnem)
-        mnemonic="${2:-}"
         shift 2
         ;;
       *)
@@ -51,16 +49,16 @@ ud_shell_nibi_keys_add_mnem() {
     esac
   done
 
-  if [[ -z "$name" || -z "$mnemonic" ]]; then
-    echo "Mnemonic helper requires --name and --mnem." >&2
+  if [[ -z "$name" ]]; then
+    echo "Mnemonic helper requires --name." >&2
+    return 1
+  fi
+  if [[ -t 0 ]]; then
+    echo "Mnemonic helper reads the mnemonic from stdin." >&2
     return 1
   fi
 
-  local -a pipeline_status
-  printf '%s\n' "$mnemonic" | \
-    nibiru keys add "$name" --recover --keyring-backend=test
-  pipeline_status=("${PIPESTATUS[@]}")
-  return "${pipeline_status[1]}"
+  nibiru keys add "$name" --recover --keyring-backend=test
 }
 
 UD_DOCKER_DESKTOP_EXE="/mnt/c/Program Files/Docker/Docker/Docker Desktop.exe"
@@ -156,12 +154,21 @@ ud_shell_docker_kill_all() {
     echo "No running docker compose apps found."
   fi
 
-  local running_container_ids
-  running_container_ids=$(docker ps --format '{{.ID}}')
-  if [[ -n "$running_container_ids" ]]; then
+  local container_output
+  if ! container_output="$(docker ps --format '{{.ID}}')"; then
+    echo "Failed to list running containers."
+    return 1
+  fi
+  local -a container_ids=()
+  if [[ -n "$container_output" ]]; then
+    mapfile -t container_ids <<< "$container_output"
+  fi
+  if [[ "${#container_ids[@]}" -gt 0 ]]; then
     echo "Stopping remaining running containers..."
-    # shellcheck disable=SC2086
-    docker stop $running_container_ids
+    if ! docker stop "${container_ids[@]}"; then
+      echo "Failed to stop running containers."
+      return 1
+    fi
   else
     echo "No remaining running containers found."
   fi

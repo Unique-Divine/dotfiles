@@ -1,12 +1,12 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::CommandFactory;
@@ -15,7 +15,7 @@ use clap_complete::aot::{Shell, generate};
 use crate::cli::{
     Cli, CommandPreview, CompletionShell, DockerCommand, GoCommand,
     HealthCommand, MarkdownCommand, NibiCommand, NibiKeysCommand, NibiNetwork,
-    QuickCommand, RustCommand,
+    NibiStopArgs, QuickCommand, RustCommand,
 };
 use crate::process;
 
@@ -330,7 +330,7 @@ pub fn run_nibi(command: NibiCommand) -> Result<i32> {
         NibiCommand::GetNibiru => {
             run_shell_helper([OsStr::new("nibi-get-nibiru")])
         }
-        NibiCommand::Stop => stop_nibiru(),
+        NibiCommand::Stop(args) => stop_nibiru(args),
         NibiCommand::Keys(keys) => match keys.command {
             Some(command) => run_nibi_keys(command),
             None => bail!("missing Nibiru keys command"),
@@ -382,47 +382,150 @@ fn configure_nibi(network: NibiNetwork) -> Result<i32> {
 }
 
 fn run_nibi_keys(command: NibiKeysCommand) -> Result<i32> {
-    let (name, mnemonic) = command.into_parts();
-    run_shell_helper([
-        OsStr::new("nibi-keys-add-mnem"),
-        OsStr::new("--name"),
-        OsStr::new(&name),
-        OsStr::new("--mnem"),
-        OsStr::new(&mnemonic),
-    ])
+    let name = command.key_name();
+    let stdin = io::stdin();
+    if stdin.is_terminal() {
+        bail!(
+            "add-mnem reads the mnemonic from standard input; pipe it in, \
+             for example: pass show path/to/mnemonic | ud nibi keys add-mnem \
+             --name {name} --stdin"
+        );
+    }
+    let mut input = String::new();
+    stdin
+        .lock()
+        .read_to_string(&mut input)
+        .context("failed to read the mnemonic from standard input")?;
+    let mnemonic = input.trim();
+    if mnemonic.is_empty() {
+        bail!("standard input did not contain a mnemonic");
+    }
+    run_shell_helper_with_input(
+        [
+            OsStr::new("nibi-keys-add-mnem"),
+            OsStr::new("--name"),
+            OsStr::new(&name),
+        ],
+        format!("{mnemonic}\n").as_bytes(),
+    )
 }
 
-fn stop_nibiru() -> Result<i32> {
-    let output = Command::new("pgrep")
-        .args(["-x", "nibid|nibiru"])
-        .output()
-        .context("failed to inspect nibiru processes")?;
-    if !output.status.success() {
-        println!("No nibiru processes are running.");
+/// Process names that `ud nibi stop --all` matches exactly with pgrep.
+const NIBIRU_PROCESS_PATTERN: &str = "nibid|nibiru";
+/// How long matched processes get to exit after SIGTERM.
+const NIBIRU_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+const NIBIRU_STOP_POLL: Duration = Duration::from_millis(200);
+
+fn stop_nibiru(args: NibiStopArgs) -> Result<i32> {
+    if !args.all {
+        bail!(
+            "ud nibi stop sends no signal without --all. Run `ud nibi stop \
+             --all` to stop every nibid and nibiru process you own."
+        );
+    }
+
+    let uid = current_uid()?;
+    let pids = find_nibiru_pids(&uid)?;
+    if pids.is_empty() {
+        println!("No nibiru processes you own are running.");
         println!("Done stopping nibiru processes.");
         return Ok(0);
     }
 
-    for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-        let status = Command::new("kill").arg(pid).status()?;
-        if status.success() {
-            println!("Killed process {pid} (nibiru)");
+    for pid in &pids {
+        println!("Found nibiru process {pid}");
+    }
+    let mut signaled = Vec::new();
+    let mut unsignaled = Vec::new();
+    for &pid in &pids {
+        if send_signal("-TERM", pid)? {
+            println!("Sent SIGTERM to process {pid}");
+            signaled.push(pid);
+        } else if send_signal("-0", pid)? {
+            unsignaled.push(pid.to_string());
+        } else {
+            println!("Process {pid} exited before SIGTERM");
         }
     }
-    for _ in 0..50 {
-        let running = Command::new("pgrep")
-            .args(["-x", "nibid|nibiru"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !running {
+    if !unsignaled.is_empty() {
+        bail!(
+            "could not send SIGTERM to nibiru processes: {}",
+            unsignaled.join(" ")
+        );
+    }
+
+    let deadline = Instant::now() + NIBIRU_STOP_TIMEOUT;
+    loop {
+        let remaining = find_nibiru_pids(&uid)?
+            .into_iter()
+            .filter(|pid| signaled.contains(pid))
+            .collect::<Vec<_>>();
+        if remaining.is_empty() {
             println!("Done stopping nibiru processes.");
             return Ok(0);
         }
-        thread::sleep(Duration::from_millis(200));
+        if Instant::now() >= deadline {
+            let remaining = remaining
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            bail!(
+                "nibiru processes still running after {} seconds: {remaining}",
+                NIBIRU_STOP_TIMEOUT.as_secs()
+            );
+        }
+        thread::sleep(NIBIRU_STOP_POLL);
     }
-    bail!("nibiru processes did not stop within 10 seconds")
+}
+
+/// Send `signal` to `pid` with kill(1); return whether kill succeeded.
+fn send_signal(signal: &str, pid: u32) -> Result<bool> {
+    let status = Command::new("kill")
+        .args([signal, "--", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to run kill")?;
+    Ok(status.success())
+}
+
+/// Return the effective user ID from `id -u`, which works on Linux and macOS.
+fn current_uid() -> Result<String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to run id -u")?;
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || uid.parse::<u32>().is_err() {
+        bail!("id -u did not print a user ID");
+    }
+    Ok(uid)
+}
+
+/// List PIDs owned by `uid` whose process name is exactly nibid or nibiru.
+fn find_nibiru_pids(uid: &str) -> Result<Vec<u32>> {
+    let output = Command::new("pgrep")
+        .args(["-u", uid, "-x", NIBIRU_PROCESS_PATTERN])
+        .output()
+        .context("failed to inspect nibiru processes")?;
+    match output.status.code() {
+        Some(0) => parse_pids(&String::from_utf8_lossy(&output.stdout)),
+        // pgrep exits 1 when no process matches.
+        Some(1) => Ok(Vec::new()),
+        _ => bail!(
+            "pgrep failed while inspecting nibiru processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+fn parse_pids(text: &str) -> Result<Vec<u32>> {
+    text.split_whitespace()
+        .map(|pid| {
+            pid.parse::<u32>()
+                .with_context(|| format!("pgrep printed an invalid PID: {pid}"))
+        })
+        .collect()
 }
 
 pub fn run_docker(command: DockerCommand) -> Result<i32> {
@@ -459,4 +562,30 @@ where
     let mut command = Command::new("bash");
     command.arg(&helper).args(args);
     process::run_quiet(command)
+}
+
+/// Run the shell helper with `input` as its standard input. Data that must
+/// not appear in process arguments goes here.
+fn run_shell_helper_with_input<I, S>(args: I, input: &[u8]) -> Result<i32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let helper = shell_helper_path()?;
+    if !helper.is_file() {
+        bail!("ud shell helper is missing: {}", helper.display());
+    }
+    let mut child = Command::new("bash")
+        .arg(&helper)
+        .args(args)
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to run bash")?;
+    let mut child_stdin =
+        child.stdin.take().context("failed to open helper stdin")?;
+    let written = child_stdin.write_all(input);
+    drop(child_stdin);
+    let status = child.wait().context("failed to wait for bash")?;
+    written.context("failed to write helper stdin")?;
+    Ok(process::exit_code(status))
 }

@@ -2,9 +2,14 @@
 
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{ExitStatus, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -153,8 +158,11 @@ fn help_command_accepts_a_nested_path() {
         .output()
         .unwrap();
     assert_success(&output);
-    assert!(stdout(&output).contains("--mnem <MNEM>"));
-    assert!(stdout(&output).contains("shell history"));
+    assert!(stdout(&output).contains("--stdin"));
+    assert!(!stdout(&output).contains("--mnem"));
+    assert!(stdout(&output).contains(
+        "pass show path/to/mnemonic | ud nibi keys add-mnem --name alice --stdin"
+    ));
 }
 
 /// Preview mode must expose commands without running Cargo or Go.
@@ -242,6 +250,124 @@ fn shell_backed_commands_receive_only_the_selected_operation() {
         .unwrap();
     assert_success(&output);
     assert_eq!(stdout(&output), "<docker>\n<start>");
+}
+
+/// Run `ud docker kill-all` through the real helper with a fake docker that
+/// lists `compose` projects and container `ids`, and record each docker call
+/// with every argument in angle brackets.
+fn docker_kill_all(compose: &str, ids: &str) -> (Output, Vec<String>) {
+    docker_kill_all_failing(compose, ids, "")
+}
+
+/// Like `docker_kill_all`, but the fake docker exits 1 for the subcommand
+/// named in `fail` (`ps-ids` for the ID listing, or `stop`).
+fn docker_kill_all_failing(
+    compose: &str,
+    ids: &str,
+    fail: &str,
+) -> (Output, Vec<String>) {
+    let temp = TempDir::new().unwrap();
+    let compose_file = temp.path().join("compose");
+    let ids_file = temp.path().join("ids");
+    let calls_file = temp.path().join("calls");
+    fs::write(&compose_file, compose).unwrap();
+    fs::write(&ids_file, ids).unwrap();
+    write_executable(
+        &temp.path().join("docker"),
+        "#!/usr/bin/env bash\n\
+         printf '<%s>' \"$@\" >> \"$DOCKER_CALLS_FILE\"\n\
+         printf '\\n' >> \"$DOCKER_CALLS_FILE\"\n\
+         case \"$1\" in\n\
+         \x20 ps)\n\
+         \x20   if [[ \"$*\" == *com.docker.compose.project* ]]; then\n\
+         \x20     cat \"$DOCKER_COMPOSE_FILE\"\n\
+         \x20   elif [[ \"$DOCKER_FAIL\" == ps-ids ]]; then\n\
+         \x20     exit 1\n\
+         \x20   else\n\
+         \x20     cat \"$DOCKER_IDS_FILE\"\n\
+         \x20   fi\n\
+         \x20   ;;\n\
+         \x20 stop)\n\
+         \x20   [[ \"$DOCKER_FAIL\" != stop ]]\n\
+         \x20   ;;\n\
+         esac\n",
+    );
+    let helper =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../zsh/ud/shell.sh");
+    let output = ud()
+        .env("UD_SHELL_HELPER", helper)
+        .env("PATH", path_with(temp.path()))
+        .env("DOCKER_CALLS_FILE", &calls_file)
+        .env("DOCKER_COMPOSE_FILE", &compose_file)
+        .env("DOCKER_IDS_FILE", &ids_file)
+        .env("DOCKER_FAIL", fail)
+        .args(["docker", "kill-all"])
+        .output()
+        .unwrap();
+    let calls = fs::read_to_string(calls_file)
+        .unwrap()
+        .lines()
+        .filter(|call| !call.starts_with("<info>") && !call.starts_with("<ps>"))
+        .map(str::to_owned)
+        .collect();
+    (output, calls)
+}
+
+/// With no running containers, kill-all must not call docker stop.
+#[test]
+fn docker_kill_all_skips_stop_without_containers() {
+    let (output, calls) = docker_kill_all("", "");
+    assert_success(&output);
+    assert!(calls.is_empty(), "calls: {calls:?}");
+    assert!(stdout(&output).contains("No remaining running containers found."));
+}
+
+/// One container ID is passed as one docker stop argument.
+#[test]
+fn docker_kill_all_stops_one_container() {
+    let (output, calls) = docker_kill_all("", "abc123\n");
+    assert_success(&output);
+    assert_eq!(calls, ["<stop><abc123>"]);
+}
+
+/// Each container ID is its own argument, and Compose projects still get
+/// `docker compose down -v` with their directory and config files.
+#[test]
+fn docker_kill_all_tears_down_compose_and_stops_many_containers() {
+    let (output, calls) = docker_kill_all(
+        "app|/work dir|/work dir/compose.yml,/work dir/override.yml\n",
+        "abc123\ndef456\n789abc\n",
+    );
+    assert_success(&output);
+    assert_eq!(
+        calls,
+        [
+            "<compose><--project-directory></work dir>\
+             <-f></work dir/compose.yml><-f></work dir/override.yml>\
+             <down><-v>",
+            "<stop><abc123><def456><789abc>",
+        ]
+    );
+    assert!(stdout(&output).contains("Docker compose app: app"));
+}
+
+/// A failed container listing ends the command without calling docker stop.
+#[test]
+fn docker_kill_all_fails_when_listing_containers_fails() {
+    let (output, calls) = docker_kill_all_failing("", "abc123\n", "ps-ids");
+    assert!(!output.status.success());
+    assert!(stdout(&output).contains("Failed to list running containers."));
+    assert!(calls.is_empty(), "calls: {calls:?}");
+}
+
+/// A failed docker stop fails the command instead of reporting success.
+#[test]
+fn docker_kill_all_fails_when_docker_stop_fails() {
+    let (output, calls) = docker_kill_all_failing("", "abc123\n", "stop");
+    assert!(!output.status.success());
+    assert_eq!(calls, ["<stop><abc123>"]);
+    assert!(stdout(&output).contains("Failed to stop running containers."));
+    assert!(!stdout(&output).contains("Done."));
 }
 
 /// Notes must resolve the configured repository before launching the editor.
@@ -358,82 +484,384 @@ fn nibi_cfg_help_excludes_dev_and_documents_archive() {
     assert!(stderr(&output).contains("unrecognized subcommand 'dev'"));
 }
 
-/// Mnemonic import must preserve the selected network, wallet name and input.
+/// A disposable child process that stands in for a running nibid node.
+struct FakeNode {
+    pid: u32,
+    exit: Receiver<ExitStatus>,
+}
+
+impl FakeNode {
+    /// Start `sleep`; `ignore_term` makes it survive SIGTERM.
+    fn spawn(ignore_term: bool) -> Self {
+        let trap = if ignore_term { "trap '' TERM; " } else { "" };
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", &format!("{trap}echo ready; exec sleep 60")])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        let pid = child.id();
+        let (sender, exit) = mpsc::channel();
+        // Reap promptly so an exited node does not linger as a zombie.
+        thread::spawn(move || {
+            let _ = sender.send(child.wait().unwrap());
+        });
+        Self { pid, exit }
+    }
+
+    fn is_running(&self) -> bool {
+        matches!(self.exit.try_recv(), Err(TryRecvError::Empty))
+    }
+}
+
+impl Drop for FakeNode {
+    fn drop(&mut self) {
+        if self.is_running() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &self.pid.to_string()])
+                .status();
+        }
+    }
+}
+
+/// Fake pgrep that reports only the fixture PIDs that are still alive, so
+/// tests never see or signal a real nibid on the machine.
+fn fake_pgrep(temp: &TempDir, nodes: &[&FakeNode]) -> Command {
+    let pids = nodes
+        .iter()
+        .map(|node| node.pid.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    write_executable(
+        &temp.path().join("pgrep"),
+        &format!(
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$PGREP_CALLS_FILE\"\n\
+             status=1\n\
+             for pid in {pids}; do\n\
+             \x20 if kill -0 \"$pid\" 2>/dev/null; then\n\
+             \x20   printf '%s\\n' \"$pid\"\n\
+             \x20   status=0\n\
+             \x20 fi\n\
+             done\n\
+             exit \"$status\"\n"
+        ),
+    );
+    let mut command = ud();
+    command
+        .env("PATH", path_with(temp.path()))
+        .env("PGREP_CALLS_FILE", temp.path().join("pgrep-calls"));
+    command
+}
+
+/// A bare stop must not inspect or signal any process.
+#[test]
+fn nibi_stop_without_all_sends_no_signal() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("ud nibi stop --all"));
+    assert!(!temp.path().join("pgrep-calls").exists());
+    thread::sleep(Duration::from_millis(300));
+    assert!(node.is_running());
+}
+
+/// The broad stop lists each matched PID before sending SIGTERM to it.
+#[test]
+fn nibi_stop_all_lists_and_terminates_every_match() {
+    let temp = TempDir::new().unwrap();
+    let first = FakeNode::spawn(false);
+    let second = FakeNode::spawn(false);
+
+    let output = fake_pgrep(&temp, &[&first, &second])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines[..4],
+        [
+            format!("Found nibiru process {}", first.pid),
+            format!("Found nibiru process {}", second.pid),
+            format!("Sent SIGTERM to process {}", first.pid),
+            format!("Sent SIGTERM to process {}", second.pid),
+        ]
+    );
+    assert_eq!(lines.last(), Some(&"Done stopping nibiru processes."));
+    for node in [&first, &second] {
+        let status = node.exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(status.signal(), Some(15));
+    }
+    let calls = fs::read_to_string(temp.path().join("pgrep-calls")).unwrap();
+    let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+    let expected = format!(
+        "-u {} -x nibid|nibiru",
+        String::from_utf8_lossy(&uid.stdout).trim()
+    );
+    assert!(calls.lines().all(|line| line == expected), "calls: {calls}");
+}
+
+/// Fake kill(1) whose SIGTERM fails. With `kill_first`, it SIGKILLs the
+/// target before failing, as if the process exited on its own. Other signals,
+/// including the `-0` liveness check, use Bash's builtin kill.
+fn write_failing_kill(temp: &TempDir, kill_first: bool) {
+    let exit_first = if kill_first {
+        "  builtin kill -KILL \"$3\"\n\
+         \x20 while builtin kill -0 \"$3\" 2>/dev/null; do sleep 0.05; done\n"
+    } else {
+        ""
+    };
+    write_executable(
+        &temp.path().join("kill"),
+        &format!(
+            "#!/usr/bin/env bash\n\
+             if [[ \"$1\" == -TERM ]]; then\n\
+             {exit_first}\
+             \x20 echo 'kill: Operation not permitted' >&2\n\
+             \x20 exit 1\n\
+             fi\n\
+             builtin kill \"$@\"\n"
+        ),
+    );
+}
+
+/// A live process that cannot be signaled fails at once instead of waiting
+/// for the timeout.
+#[test]
+fn nibi_stop_all_fails_fast_when_sigterm_is_refused() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+    write_failing_kill(&temp, false);
+
+    let started = std::time::Instant::now();
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(stderr(&output).contains(&format!(
+        "could not send SIGTERM to nibiru processes: {}",
+        node.pid
+    )));
+    assert!(!stdout(&output).contains("Sent SIGTERM"));
+    assert!(node.is_running());
+}
+
+/// A process that is gone by the time kill runs is dropped from the wait.
+#[test]
+fn nibi_stop_all_drops_a_process_that_already_exited() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(false);
+    write_failing_kill(&temp, true);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        stdout(&output)
+            .contains(&format!("Process {} exited before SIGTERM", node.pid))
+    );
+    assert!(stdout(&output).ends_with("Done stopping nibiru processes."));
+}
+
+/// Finding nothing to stop is a success, not an error.
+#[test]
+fn nibi_stop_all_succeeds_when_nothing_matches() {
+    let temp = TempDir::new().unwrap();
+
+    let output = fake_pgrep(&temp, &[])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "No nibiru processes you own are running.\nDone stopping nibiru processes."
+    );
+}
+
+/// A process that ignores SIGTERM must fail the command after the timeout.
+#[test]
+fn nibi_stop_all_fails_when_a_process_outlives_the_timeout() {
+    let temp = TempDir::new().unwrap();
+    let node = FakeNode::spawn(true);
+
+    let output = fake_pgrep(&temp, &[&node])
+        .args(["nibi", "stop", "--all"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stdout(&output).contains(&format!("Found nibiru process {}", node.pid))
+    );
+    assert!(stderr(&output).contains(&format!(
+        "nibiru processes still running after 10 seconds: {}",
+        node.pid
+    )));
+    assert!(node.is_running());
+}
+
+/// Help must say that a broad stop needs --all.
+#[test]
+fn nibi_stop_help_documents_all() {
+    let output = run(&["nibi", "stop", "--help"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("--all"));
+    assert!(stdout(&output).contains("Without --all"));
+}
+
+/// The helper receives the key name as an argument and the mnemonic only on
+/// stdin.
 #[test]
 fn mnemonic_import_forwards_to_the_shell_helper() {
     let temp = TempDir::new().unwrap();
     let helper = temp.path().join("helper.sh");
     write_executable(
         &helper,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$HELPER_ARGS_FILE\"\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$HELPER_ARGS_FILE\"\ncat > \"$HELPER_STDIN_FILE\"\n",
     );
     let args_file = temp.path().join("args");
+    let stdin_file = temp.path().join("stdin");
     let mnemonic = "word1 word2 word3";
 
     let output = ud()
         .env("UD_SHELL_HELPER", helper)
         .env("HELPER_ARGS_FILE", &args_file)
-        .args([
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", mnemonic,
-        ])
+        .env("HELPER_STDIN_FILE", &stdin_file)
+        .args(["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"])
+        .write_stdin(format!("{mnemonic}\n"))
         .output()
         .unwrap();
     assert_success(&output);
     assert_eq!(
         fs::read_to_string(args_file).unwrap(),
-        format!("nibi-keys-add-mnem\n--name\nalice\n--mnem\n{mnemonic}\n")
+        "nibi-keys-add-mnem\n--name\nalice\n"
+    );
+    assert_eq!(
+        fs::read_to_string(stdin_file).unwrap(),
+        format!("{mnemonic}\n")
     );
 }
 
-/// Invalid mnemonic arguments must fail before launching an importing process.
+/// Invalid arguments, a missing input mode, and empty stdin must fail before
+/// launching an importing process.
 #[test]
 fn mnemonic_import_rejects_invalid_arguments() {
-    for args in [
-        vec!["nibi", "keys", "add-mnem", "--name", "alice"],
-        vec!["nibi", "keys", "add-mnem", "--mnem", "words"],
-        vec![
-            "nibi", "keys", "add-mnem", "--name", "alice", "--name", "bob",
-            "--mnem", "words",
-        ],
-        vec![
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", "words",
-            "extra",
-        ],
+    let temp = TempDir::new().unwrap();
+    let helper = temp.path().join("helper.sh");
+    let called = temp.path().join("called");
+    write_executable(
+        &helper,
+        "#!/usr/bin/env bash\ntouch \"$HELPER_CALLED_FILE\"\n",
+    );
+    for (args, input) in [
+        (
+            vec!["nibi", "keys", "add-mnem", "--name", "alice"],
+            "words\n",
+        ),
+        (vec!["nibi", "keys", "add-mnem", "--stdin"], "words\n"),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", "words",
+            ],
+            "",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--stdin",
+                "--mnem", "words",
+            ],
+            "",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--name", "bob",
+                "--stdin",
+            ],
+            "words\n",
+        ),
+        (
+            vec![
+                "nibi", "keys", "add-mnem", "--name", "alice", "--stdin",
+                "extra",
+            ],
+            "words\n",
+        ),
+        (
+            vec!["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"],
+            " \n\n",
+        ),
     ] {
-        let output = run(&args);
+        let output = ud()
+            .env("UD_SHELL_HELPER", &helper)
+            .env("HELPER_CALLED_FILE", &called)
+            .args(&args)
+            .write_stdin(input)
+            .output()
+            .unwrap();
         assert!(!output.status.success(), "args: {args:?}");
+        assert!(!called.exists(), "args: {args:?}");
     }
 }
 
-/// Mnemonic material belongs on stdin rather than the child command line.
+/// Mnemonic material reaches nibiru on stdin and never appears in the
+/// argument list of ud, the Bash helper, or nibiru.
 #[test]
 fn mnemonic_shell_helper_pipes_the_secret_to_nibiru() {
     let temp = TempDir::new().unwrap();
     let nibiru = temp.path().join("nibiru");
     let args_file = temp.path().join("args");
+    let parent_args_file = temp.path().join("parent-args");
     let stdin_file = temp.path().join("stdin");
+    // The fake also records its parent's argv, which is the Bash helper.
     write_executable(
         &nibiru,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$NIBIRU_ARGS_FILE\"\ncat > \"$NIBIRU_STDIN_FILE\"\n",
+        "#!/usr/bin/env bash\n\
+         printf '%s\\n' \"$@\" > \"$NIBIRU_ARGS_FILE\"\n\
+         tr '\\0' '\\n' < \"/proc/$PPID/cmdline\" > \"$NIBIRU_PARENT_ARGS_FILE\"\n\
+         cat > \"$NIBIRU_STDIN_FILE\"\n",
     );
     let helper =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../zsh/ud/shell.sh");
     let mnemonic = "word1 word2 word3";
+    let ud_args = ["nibi", "keys", "add-mnem", "--name", "alice", "--stdin"];
 
     let output = ud()
-        .env("UD_SHELL_HELPER", helper)
+        .env("UD_SHELL_HELPER", &helper)
         .env("PATH", path_with(temp.path()))
         .env("NIBIRU_ARGS_FILE", &args_file)
+        .env("NIBIRU_PARENT_ARGS_FILE", &parent_args_file)
         .env("NIBIRU_STDIN_FILE", &stdin_file)
-        .args([
-            "nibi", "keys", "add-mnem", "--name", "alice", "--mnem", mnemonic,
-        ])
+        .args(ud_args)
+        .write_stdin(format!("{mnemonic}\n"))
         .output()
         .unwrap();
     assert_success(&output);
+    assert!(!ud_args.join(" ").contains("word1"));
     assert_eq!(
         fs::read_to_string(args_file).unwrap(),
         "keys\nadd\nalice\n--recover\n--keyring-backend=test\n"
+    );
+    assert_eq!(
+        fs::read_to_string(parent_args_file).unwrap(),
+        format!(
+            "bash\n{}\nnibi-keys-add-mnem\n--name\nalice\n",
+            helper.display()
+        )
     );
     assert_eq!(
         fs::read_to_string(stdin_file).unwrap(),
@@ -574,6 +1002,282 @@ fn plugin_doctor_rejects_built_in_collisions() {
         .unwrap();
     assert!(!output.status.success());
     assert!(stderr(&output).contains("collides with built-in: health"));
+}
+
+/// A plugin whose `--plugin-info` hangs while a background helper holds its
+/// stdout. It records both PIDs in `$PLUGIN_PIDS`. When `$PLUGIN_HANG_FLAG`
+/// is set, it hangs only after that file exists.
+const HANGING_PLUGIN: &str = r#"#!/usr/bin/env bash
+if [[ -n "${PLUGIN_HANG_FLAG:-}" && ! -e "$PLUGIN_HANG_FLAG" ]]; then
+  printf '%s\n' '{"apiVersion":1,"name":"example","description":"Cached plugin"}'
+  exit 0
+fi
+sleep 60 &
+printf '%s %s\n' "$$" "$!" > "$PLUGIN_PIDS"
+wait
+"#;
+
+/// Return whether `pid` has exited, treating a zombie awaiting its reaper as
+/// exited. Uses ps(1) so the probe works on Linux and macOS alike.
+fn process_exited(pid: &str) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("failed to run ps");
+    let stat = String::from_utf8_lossy(&output.stdout);
+    let stat = stat.trim();
+    stat.is_empty() || stat.starts_with('Z')
+}
+
+/// Assert that a timed-out plugin and its helper no longer run.
+fn assert_plugin_processes_stopped(pids_file: &Path) {
+    let pids = fs::read_to_string(pids_file).unwrap();
+    let pids = pids.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2, "unexpected PID record: {pids:?}");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !pids.iter().all(|pid| process_exited(pid)) {
+        assert!(
+            Instant::now() < deadline,
+            "plugin processes survived the timeout: {pids:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Run `ud` against the hanging plugin and assert it returns near the limit.
+fn run_with_hanging_plugin(
+    temp: &TempDir,
+    plugins: &Path,
+    args: &[&str],
+) -> Output {
+    let started = Instant::now();
+    let output = isolated_ud(temp)
+        .env("UD_PLUGIN_PATH", plugins)
+        .env("PLUGIN_PIDS", temp.path().join("pids"))
+        .env("PLUGIN_HANG_FLAG", temp.path().join("hang"))
+        .args(args)
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1900)
+            && elapsed < Duration::from_secs(5),
+        "ud {args:?} took {elapsed:?}"
+    );
+    output
+}
+
+/// A hanging `--plugin-info` must fail after two seconds and name the plugin.
+#[test]
+fn plugin_info_times_out_on_a_hanging_plugin() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let output =
+        run_with_hanging_plugin(&temp, &plugins, &["plugin", "info", "example"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output)
+            .contains("ud plugin metadata command timed out after 2s: example"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+    assert!(
+        !temp
+            .path()
+            .join("cache/ud/plugin-metadata/example.json")
+            .exists()
+    );
+}
+
+/// Root help must still list a plugin whose metadata command hangs.
+#[test]
+fn root_help_lists_a_hanging_plugin_without_metadata() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let output = run_with_hanging_plugin(&temp, &plugins, &["--help"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("Installed plugins:\n  example"));
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+}
+
+/// Valid cached metadata skips inspection, while doctor still refreshes and
+/// reports the timeout.
+#[test]
+fn cached_metadata_survives_a_plugin_that_starts_hanging() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let ud_with_plugin = |args: &[&str]| {
+        isolated_ud(&temp)
+            .env("UD_PLUGIN_PATH", &plugins)
+            .env("PLUGIN_PIDS", temp.path().join("pids"))
+            .env("PLUGIN_HANG_FLAG", temp.path().join("hang"))
+            .args(args)
+            .timeout(Duration::from_secs(10))
+            .output()
+            .unwrap()
+    };
+
+    assert_success(&ud_with_plugin(&["plugin", "info", "example"]));
+    fs::write(temp.path().join("hang"), "").unwrap();
+
+    let started = Instant::now();
+    let cached = ud_with_plugin(&["plugin", "info", "example"]);
+    assert_success(&cached);
+    assert!(stdout(&cached).contains("\"description\": \"Cached plugin\""));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(!temp.path().join("pids").exists());
+
+    let doctor = run_with_hanging_plugin(&temp, &plugins, &["plugin", "doctor"]);
+    assert!(!doctor.status.success());
+    assert!(
+        stderr(&doctor)
+            .contains("ud plugin metadata command timed out after 2s: example")
+    );
+    assert_plugin_processes_stopped(&temp.path().join("pids"));
+}
+
+/// Wait until the hanging plugin records both PIDs, or kill `ud` and fail.
+fn wait_for_plugin_pids(ud: &mut std::process::Child, pids_file: &Path) {
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while fs::read_to_string(pids_file)
+        .map_or(true, |pids| pids.split_whitespace().count() < 2)
+    {
+        if Instant::now() >= deadline {
+            let _ = ud.kill();
+            let _ = ud.wait();
+            panic!("plugin did not record its PIDs before the deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// SIGTERM to ud mid-inspection must also stop the plugin's process group,
+/// which no longer shares ud's group, and ud must die by that signal.
+#[test]
+fn sigterm_during_inspection_stops_the_plugin_group() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let mut ud = std::process::Command::new(env!("CARGO_BIN_EXE_ud"))
+        .args(["plugin", "info", "example"])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    wait_for_plugin_pids(&mut ud, &pids_file);
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let status = ud.wait().unwrap();
+    assert_eq!(status.signal(), Some(15), "ud status: {status:?}");
+    assert_plugin_processes_stopped(&pids_file);
+}
+
+/// ud blocks SIGINT and SIGTERM around spawn; the plugin must not inherit
+/// that block. A plugin that SIGTERMs itself must die before printing. The
+/// plugin is Python because bash resets its signal mask at startup. It
+/// writes a marker first, which proves it ran up to the self-signal.
+#[test]
+fn plugin_inspection_starts_with_termination_signals_unblocked() {
+    let python = std::process::Command::new("python3")
+        .args(["-c", ""])
+        .status();
+    assert!(
+        python.is_ok_and(|status| status.success()),
+        "this test needs python3 on PATH to run its probe plugin"
+    );
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    let marker = temp.path().join("marker");
+    write_plugin(
+        &plugins,
+        "example",
+        r#"#!/usr/bin/env python3
+import os, signal
+open(os.environ["PLUGIN_MARKER"], "w").close()
+os.kill(os.getpid(), signal.SIGTERM)
+print('{"apiVersion":1,"name":"example","description":"Survived"}')
+"#,
+    );
+    let output = isolated_ud(&temp)
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_MARKER", &marker)
+        .args(["plugin", "info", "example"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    assert!(marker.is_file(), "the probe plugin did not run");
+    assert!(!output.status.success(), "stdout: {}", stdout(&output));
+    assert!(stderr(&output).contains("metadata command failed: example"));
+}
+
+/// An inherited SIG_IGN for SIGINT, as `cmd &` gives in a script, must keep
+/// ud running until the metadata timeout.
+#[test]
+fn inherited_ignored_sigint_does_not_stop_inspection() {
+    let temp = TempDir::new().unwrap();
+    let plugins = temp.path().join("plugins");
+    write_plugin(&plugins, "example", HANGING_PLUGIN);
+    let pids_file = temp.path().join("pids");
+    let started = Instant::now();
+    // bash's empty trap sets SIG_IGN, which exec passes on to ud.
+    let mut ud = std::process::Command::new("bash")
+        .args([
+            "-c",
+            "trap '' INT; exec \"$0\" plugin info example",
+            env!("CARGO_BIN_EXE_ud"),
+        ])
+        .env("HOME", temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("UD_PLUGIN_PATH", &plugins)
+        .env("PLUGIN_PIDS", &pids_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_plugin_pids(&mut ud, &pids_file);
+
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &ud.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+
+    let output = ud.wait_with_output().unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(output.status.signal(), None, "ud died by a signal");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        elapsed >= Duration::from_millis(1900),
+        "ud took {elapsed:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ud plugin metadata command timed out after 2s: example")
+    );
+    assert_plugin_processes_stopped(&pids_file);
 }
 
 /// Ambiguous plugin paths must fail instead of silently choosing an executable.

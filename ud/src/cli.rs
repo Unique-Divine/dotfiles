@@ -132,10 +132,20 @@ pub enum NibiCommand {
     /// Install the published Nibiru CLI through Bun.
     #[command(name = "get-nibiru", alias = "gn")]
     GetNibiru,
-    /// Stop running nibiru processes.
-    Stop,
+    /// Stop every nibid and nibiru process you own; requires --all.
+    #[command(
+        after_help = "Without --all, the command exits without sending a signal. With --all, it lists each matching PID owned by the current user, sends SIGTERM, and fails if any process is still running after 10 seconds."
+    )]
+    Stop(NibiStopArgs),
     /// Manage local Nibiru test keys.
     Keys(Nested<NibiKeysCommand>),
+}
+
+#[derive(Debug, Args, Clone, Copy)]
+pub struct NibiStopArgs {
+    /// Stop every nibid or nibiru process you own, not one selected node.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Subcommand, Clone, Copy)]
@@ -157,25 +167,26 @@ pub struct NibiCfgArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum NibiKeysCommand {
-    /// Recover a local test key from a mnemonic.
+    /// Recover a local test key from a mnemonic read on standard input.
     #[command(
         name = "add-mnem",
-        after_help = "The mnemonic is passed as a command argument and may be saved in shell history. This command uses the test keyring backend."
+        after_help = "Pipe the mnemonic on standard input, for example:\n  pass show path/to/mnemonic | ud nibi keys add-mnem --name alice --stdin\n\nThe mnemonic reaches `nibiru keys add --recover` only on standard input. This command uses the test keyring backend."
     )]
     AddMnemonic {
         /// Name for the local key.
         #[arg(long)]
         name: String,
-        /// Mnemonic used to recover the local key.
-        #[arg(long)]
-        mnem: String,
+        /// Read the mnemonic from standard input (required).
+        #[arg(long, required = true)]
+        stdin: bool,
     },
 }
 
 impl NibiKeysCommand {
-    pub fn into_parts(self) -> (String, String) {
+    /// Return the key name; `--stdin` is the only input mode.
+    pub fn key_name(self) -> String {
         match self {
-            Self::AddMnemonic { name, mnem } => (name, mnem),
+            Self::AddMnemonic { name, .. } => name,
         }
     }
 }

@@ -41,11 +41,18 @@ personal shell setup or WSL:
 
 - personal shortcuts from `zsh/quick.sh`
 - Docker Desktop and Docker Compose operations
-- local Nibiru mnemonic import
+- local Nibiru mnemonic import, which reads the mnemonic on stdin
 - the published `nibiru` installer through Bun
 
 The shell file is internal. Run these operations through `ud`, which validates
 the command before invoking the helper.
+
+Pipe the mnemonic in with `--stdin`. `ud` passes it to the helper and on to
+`nibiru keys add --recover` on stdin, never as a command argument.
+
+```bash
+pass show path/to/mnemonic | ud nibi keys add-mnem --name alice --stdin
+```
 
 ## Executable plugins
 
@@ -68,7 +75,9 @@ ud evm --help
 
 Each plugin implements `--plugin-info` and prints JSON with `apiVersion`,
 `name`, and `description`. API version 1 is the current contract. Rust validates
-and caches this metadata without requiring `jq`.
+and caches this metadata without requiring `jq`. Metadata inspection stops
+after two seconds and kills the plugin's process group; running the plugin as
+a command has no limit.
 
 ## Public Files
 
