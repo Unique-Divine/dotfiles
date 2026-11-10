@@ -301,11 +301,10 @@ describe("paths and modes", () => {
 
 describe("oauth helpers", () => {
   test("PKCE S256 is base64url(sha256(verifier))", () => {
-    // Expected value from: printf %s VERIFIER | openssl dgst -sha256
-    //   -binary | base64 | tr '+/' '-_' | tr -d '='
-    const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_GW1gFXjONnuE";
+    // RFC 7636 Appendix B test vector.
+    const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     expect(pkceChallenge(verifier)).toBe(
-      "RZpRRL_VK2aEvynGv2pNMa3psJHQtESVOttioBcEfoc",
+      "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
     );
   });
   test("auth url carries PKCE, offline access, and login hint", () => {
