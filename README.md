@@ -106,8 +106,8 @@ just i-brew
 # Install development tools
 bun install
 
-# Create and repair configuration links. Command `just sync` refreshes Jiyuu
-# from `origin/main` before building `gh-rev`; it stops if Jiyuu has local changes.
+# Create and repair configuration links. Command `just sync` merges Jiyuu's
+# `origin/main` into its current branch before building `gh-rev`.
 just sync
 just list
 ```
@@ -177,6 +177,58 @@ Claude Code uses its native installation. Commands `just sync` and
 `just claude-install` install it when missing, while `just claude-health` checks
 that the shell selects the native executable. The native installer manages
 Claude updates independently of the Bun package lock.
+
+Codex works the same way: `just sync` and `just codex-install` install the
+standalone CLI with OpenAI's installer when it's missing
+([`codex/native.sh`](codex/native.sh)).
+
+`just sync` also merges `origin/main` into whatever branch Jiyuu is on, using
+[`git_mf main`](bin/git_mf). Uncommitted changes, a conflict, or a
+`main` that has diverged from `origin` leave Jiyuu untouched with a warning, and
+the rest of the sync still runs. A failed fetch from `origin` stops the sync.
+
+### Merging From main
+
+`git_mf main` brings the current branch up to date with `origin/main`: a
+fast-forward on `main`, and a merge commit on any other branch. A detached
+checkout switches to `main`, or moves forward and stays detached when another
+worktree has `main` checked out. Any other target works the same way. When the merge needs judgment, it stops without
+changing anything. `git_mf main --agent` then hands the merge to `claude -p`,
+or `codex exec` when Claude is missing, with the instructions in
+[`git_mf.prompt.md`](bin/git_mf.prompt.md). Those instructions
+also work when pasted into any agent chat.
+
+Each run prints its plan (`git_mf: plan: ...`) and every command that changes
+the repository (`RUN ...`). `git_mf main --dry-run` prints them without running
+anything; only remote-tracking refs are fetched. It predicts conflicts with
+`git merge-tree`, git's own merge engine, so the conflicted files it names are
+the ones a real merge would hit. Extra flags go to `git merge`, and the plan
+passes `-X` and `--allow-unrelated-histories` to `git merge-tree` too. It can't
+predict hooks, which only run during a real merge, or flags such as `-s`,
+`--squash`, and `--no-commit`, which it notes in the plan. `git_mf --help` lists the exit codes, and
+[`git_mf.test.ts`](bin/git_mf.test.ts) checks each scenario's dry run against
+its real run.
+
+### Boku Run Log
+
+`just sync` and `git_mf` record every run as JSONL under `~/.boku/runs/`
+(`BOKU_HOME` moves it; `BOKU_RUNLOG=0` turns it off). Nested runs link, so a
+sync reads as a tree. A `git_mf --agent` run also keeps the prompt, a redacted
+copy of the agent's stream, its report with a Challenges section, and the
+remerge diff showing how each conflict was resolved. Logging never changes an
+exit code or what happens to the repository.
+
+```bash
+ud runs                        # recent runs (or: just runs)
+ud runs show last --tree       # the latest run and its children
+ud runs agent <id> --at 57     # the agent's stream around line 57
+ud runs challenges --since 30d # what agents found hard
+```
+
+`sync` prunes runs older than 30 days. The writers are
+[`runlog/runlog.sh`](runlog/runlog.sh) and
+[`runlog/runlog.ts`](runlog/runlog.ts); the design, including the call stack,
+is in [`docs/run-log-design.md`](docs/run-log-design.md).
 
 ### AI agent skills
 

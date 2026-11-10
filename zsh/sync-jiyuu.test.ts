@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const dotfilesRoot = join(import.meta.dir, "..")
+
+// Each test runs the real sync-jiyuu.sh and git_mf, with run logging on,
+// once or twice. That takes about 2 s locally and over 5 s (bun's
+// default) on CI runners.
+setDefaultTimeout(30_000)
+/** Run-log home for these tests, so nothing writes into the real ~/.boku. */
+const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 const scriptPath = join(dotfilesRoot, "zsh", "sync-jiyuu.sh")
 const temporaryRoots: string[] = []
 
@@ -20,7 +28,16 @@ const run = async (
 ): Promise<CommandResult> => {
   const proc = Bun.spawn(["bash", "-lc", command], {
     cwd,
-    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env },
+    env: {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      BOKU_HOME: testBokuHome,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+      ...env,
+    },
     stderr: "pipe",
     stdout: "pipe",
   })
@@ -74,8 +91,11 @@ const createFixture = async () => {
   const latest = await expectOk(source, "git rev-parse HEAD")
 
   await expectOk(root, `git clone ${bokuSource} ${boku}`)
-  return { boku, latest, root }
+  return { boku, latest, root, source }
 }
+
+const syncOnce = (root: string) =>
+  run(root, `bash ${scriptPath}`, { GIT_ALLOW_PROTOCOL: "file", REPO: root })
 
 afterEach(async () => {
   await Promise.all(
@@ -86,7 +106,7 @@ afterEach(async () => {
 })
 
 describe("sync-jiyuu.sh", () => {
-  test("initializes Jiyuu and checks out the latest remote main commit", async () => {
+  test("initializes Jiyuu on main at the latest remote commit", async () => {
     const { boku, latest, root } = await createFixture()
     const result = await run(root, `bash ${scriptPath}`, {
       GIT_ALLOW_PROTOCOL: "file",
@@ -95,9 +115,95 @@ describe("sync-jiyuu.sh", () => {
 
     expect(result.exitCode, result.stderr).toBe(0)
     expect(await expectOk(boku, "git -C jiyuu rev-parse HEAD")).toBe(latest)
+    expect(await expectOk(boku, "git -C jiyuu branch --show-current")).toBe(
+      "main",
+    )
+  })
+
+  test("merges origin/main into the branch Jiyuu is on", async () => {
+    const { boku, root, source } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "git -C jiyuu switch -q -c feature")
+    await expectOk(
+      boku,
+      "printf mine > jiyuu/MINE && git -C jiyuu add MINE && git -C jiyuu commit -qm mine",
+    )
+    await writeFile(join(source, "UPSTREAM"), "upstream\n")
+    await expectOk(source, "git add UPSTREAM && git commit -qm upstream && git push -q")
+    const upstream = await expectOk(source, "git rev-parse HEAD")
+
+    const result = await syncOnce(root)
+    expect(result.exitCode, result.stderr).toBe(0)
+    expect(await expectOk(boku, "git -C jiyuu branch --show-current")).toBe(
+      "feature",
+    )
     expect(
-      await expectOk(boku, "git -C jiyuu symbolic-ref -q HEAD || true"),
-    ).toBe("")
+      await expectOk(boku, `git -C jiyuu merge-base --is-ancestor ${upstream} HEAD && echo yes`),
+    ).toBe("yes")
+  })
+
+  test("a conflict leaves Jiyuu as it was and the sync continues", async () => {
+    const { boku, root, source } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "git -C jiyuu switch -q -c feature")
+    await expectOk(
+      boku,
+      "printf mine > jiyuu/gh-rev/LATEST && git -C jiyuu commit -qam mine",
+    )
+    await writeFile(join(source, "gh-rev", "LATEST"), "theirs\n")
+    await expectOk(source, "git commit -qam theirs && git push -q")
+    const before = await expectOk(boku, "git -C jiyuu rev-parse HEAD")
+
+    const result = await syncOnce(root)
+    expect(result.exitCode, result.stderr).toBe(0)
+    expect(result.stderr).toContain("conflicts in: gh-rev/LATEST")
+    expect(result.stderr).toContain("left Jiyuu as it is")
+    expect(await expectOk(boku, "git -C jiyuu rev-parse HEAD")).toBe(before)
+    expect(await expectOk(boku, "git -C jiyuu status --porcelain")).toBe("")
+  })
+
+  test("a rebase in progress in Jiyuu is left alone and the sync continues", async () => {
+    const { boku, root, source } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "git -C jiyuu switch -q -c feature")
+    await expectOk(
+      boku,
+      "printf mine > jiyuu/gh-rev/LATEST && git -C jiyuu commit -qam mine",
+    )
+    await writeFile(join(source, "gh-rev", "LATEST"), "theirs\n")
+    await expectOk(source, "git commit -qam theirs && git push -q")
+    await run(boku, "git -C jiyuu fetch -q && git -C jiyuu rebase origin/main")
+
+    const result = await syncOnce(root)
+    expect(result.exitCode, result.stderr).toBe(0)
+    expect(result.stderr).toContain("in-progress: rebase")
+    expect(result.stderr).toContain("left Jiyuu as it is")
+  })
+
+  test("logs its own run and links git_mf beneath it", async () => {
+    const { boku, root } = await createFixture()
+    await syncOnce(root)
+    await expectOk(boku, "printf local > jiyuu/LOCAL")
+    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    temporaryRoots.push(home)
+    const result = await run(root, `bash ${scriptPath}`, {
+      GIT_ALLOW_PROTOCOL: "file",
+      REPO: root,
+      BOKU_HOME: home,
+    })
+    expect(result.exitCode, result.stderr).toBe(0)
+    const text = await expectOk(home, "cat runs/*/*.jsonl")
+    const events = text.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    const jiyuu = events.filter((e) => e.tool === "sync-jiyuu")
+    const gitMf = events.filter((e) => e.tool === "git_mf")
+    expect(jiyuu.some((e) => e.code === "jiyuu-left-as-is")).toBe(true)
+    expect(jiyuu.find((e) => e.event === "end")).toMatchObject({
+      exit: 0, status: "ok",
+    })
+    expect(gitMf[0].parent_run_id).toBe(jiyuu[0].run_id)
+    expect(gitMf.find((e) => e.event === "end")).toMatchObject({
+      exit: 2, status: "stopped",
+    })
   })
 
   test.each(["staged", "unstaged", "untracked"])(
@@ -126,8 +232,9 @@ describe("sync-jiyuu.sh", () => {
         REPO: root,
       })
 
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain("Jiyuu has local changes")
+      expect(result.exitCode, result.stderr).toBe(0)
+      expect(result.stderr).toContain("uncommitted changes")
+      expect(result.stderr).toContain("left Jiyuu as it is")
       expect(await expectOk(boku, "git -C jiyuu rev-parse HEAD")).toBe(before)
     },
   )

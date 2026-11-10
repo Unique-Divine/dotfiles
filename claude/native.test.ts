@@ -22,9 +22,19 @@ async function fixture() {
   return { home, bin, target }
 }
 
-async function run(home: string, bin: string, mode = "--check") {
+async function run(
+  home: string,
+  bin: string,
+  mode = "--check",
+  extraEnv: Record<string, string> = {},
+) {
   const proc = Bun.spawn(["bash", script, mode], {
-    env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin` },
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${bin}:/usr/bin:/bin`,
+      ...extraEnv,
+    },
     stdout: "pipe", stderr: "pipe",
   })
   const [code, stderr] = await Promise.all([
@@ -70,4 +80,23 @@ test("refuses to replace an unrelated executable", async () => {
   expect(result.code).toBe(1)
   expect(result.stderr).toContain("Unexpected Claude installation")
   expect(await readFile(executable)).toEqual(before)
+})
+
+test("--run installs a missing Claude with the native installer", async () => {
+  const f = await fixture()
+  // Mirrors the real installer: a versioned binary and a launcher symlink.
+  const installer = join(f.home, "install.sh")
+  await writeFile(
+    installer,
+    [
+      'v="$HOME/.local/share/claude/versions/9.9.9"',
+      `printf '#!/bin/sh\\necho "9.9.9 (Claude Code)"\\n' > "$v"`,
+      'chmod +x "$v"',
+      'ln -sf "$v" "$HOME/.local/bin/claude"',
+      "",
+    ].join("\n"),
+  )
+  const env = { CLAUDE_INSTALL_URL: `file://${installer}` }
+  expect(await run(f.home, f.bin, "--run", env)).toEqual({ code: 0, stderr: "" })
+  expect(await run(f.home, f.bin)).toEqual({ code: 0, stderr: "" })
 })
