@@ -419,8 +419,16 @@ export function backoffMs(
   return Math.round(exp * (0.5 + jitter / 2));
 }
 
-/** 25 ms spacing = 40 requests/s = 12,000 units/min for 5-unit gets. */
-export const REQUEST_INTERVAL_MS = 25;
+/**
+ * 60 ms spacing = about 16.7 requests/s = 5,000 units/min for 5-unit gets.
+ * The ud-tooling-2611 project's per-user `total_query_cost` limit is 6,000
+ * units/min (checked 2026-11-10 via serviceusage consumerQuotaMetrics),
+ * below Gmail's documented 15,000 default.
+ */
+export const REQUEST_INTERVAL_MS = 60;
+
+/** Per-user query-cost limit for this project, in units per minute. */
+export const QUERY_COST_LIMIT_PER_MIN = 6_000;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -817,6 +825,7 @@ export async function fetchMeta(
       await saveCache(acct.email, meta);
     }
   };
+  try {
   await mapPool(missing, FETCH_CONCURRENCY, async (id) => {
     const params = new URLSearchParams({ format: "metadata" });
     params.append("metadataHeaders", "Message-ID");
@@ -838,8 +847,11 @@ export async function fetchMeta(
     }
     await tick();
   });
-  process.stdout.write("\n");
-  if (persist) await saveCache(acct.email, meta);
+  } finally {
+    // Keep progress even when a fetch fails, so a rerun resumes.
+    process.stdout.write("\n");
+    if (persist) await saveCache(acct.email, meta);
+  }
 }
 
 async function batchArchive(

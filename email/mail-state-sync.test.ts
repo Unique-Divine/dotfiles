@@ -16,6 +16,7 @@ import {
   isPrivateMode,
   isRetryableStatus,
   REQUEST_INTERVAL_MS,
+  QUERY_COST_LIMIT_PER_MIN,
   messageIdSet,
   normalizeMessageId,
   parseArgs,
@@ -308,9 +309,9 @@ describe("rate limits", () => {
     expect(isRetryableStatus(403, body)).toBe(true);
     expect(isRetryableStatus(403, "Insufficient Permission")).toBe(false);
   });
-  test("request spacing stays under 15,000 units per minute", () => {
+  test("request spacing stays under the project's per-user limit", () => {
     const getsPerMinute = 60_000 / REQUEST_INTERVAL_MS;
-    expect(getsPerMinute * 5).toBeLessThan(15_000);
+    expect(getsPerMinute * 5).toBeLessThan(QUERY_COST_LIMIT_PER_MIN);
   });
 });
 
