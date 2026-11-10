@@ -15,6 +15,7 @@ import {
   formatRunCommand,
   isPrivateMode,
   isRetryableStatus,
+  REQUEST_INTERVAL_MS,
   messageIdSet,
   normalizeMessageId,
   parseArgs,
@@ -296,6 +297,20 @@ describe("paths and modes", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("rate limits", () => {
+  test("treats Gmail per-user quota 403s as retryable", () => {
+    const body =
+      "Quota exceeded for quota metric 'Total Query Cost' and limit " +
+      "'Units per minute per user' of service 'gmail.googleapis.com'";
+    expect(isRetryableStatus(403, body)).toBe(true);
+    expect(isRetryableStatus(403, "Insufficient Permission")).toBe(false);
+  });
+  test("request spacing stays under 15,000 units per minute", () => {
+    const getsPerMinute = 60_000 / REQUEST_INTERVAL_MS;
+    expect(getsPerMinute * 5).toBeLessThan(15_000);
   });
 });
 
