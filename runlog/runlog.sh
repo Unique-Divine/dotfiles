@@ -643,7 +643,7 @@ _runlog_head_lines() {
   return 1
 }
 
-# _runlog_redact_file FILE: redacts FILE in place, with `ud runs
+# _runlog_redact_file FILE: redacts FILE in place, with `ud boku runs
 # redact-file` (cli.ts beside this file, or BOKU_RUNS_CLI) when it works,
 # else the shared patterns through jq. A broken CLI must not cost the
 # artifact. The jq fallback keeps the first 1 MiB of FILE, cut at a line,

@@ -173,7 +173,7 @@ sync:
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
-  # Each step goes to the Boku run log (ud runs show last --tree).
+  # Each step goes to the Boku run log (ud boku runs show last --tree).
   source runlog/runlog.sh || true
   if ! declare -F runlog_start >/dev/null; then
     runlog_start() { :; }
@@ -304,8 +304,8 @@ win-sync:
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
-# Read the Boku run log (same as `ud runs`). For commands: `just runs --help`.
-# Arguments pass through quoted, never re-parsed by the shell.
+# Read the Boku run log (same as `ud boku runs`). For commands:
+# `just runs --help`. Arguments pass through quoted, never re-parsed.
 [positional-arguments]
 runs *ARGS:
   bun run runlog/cli.ts "$@"

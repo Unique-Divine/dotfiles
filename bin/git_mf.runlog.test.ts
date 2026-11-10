@@ -1,6 +1,6 @@
 // End-to-end run logging for `git_mf --agent`: fake claude and codex CLIs
 // change a real repository and print real-shaped stream fixtures, which go
-// through the real `ud runs tap`. Checks what lands in BOKU_HOME.
+// through the real `ud boku runs tap`. Checks what lands in BOKU_HOME.
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
@@ -145,7 +145,7 @@ describe("git_mf --agent run log", () => {
     expect(copy.join("\n")).toContain("[redacted:")
     // The report reaches the terminal, with a pointer to the run.
     expect(res.stderr).toContain("----- agent report")
-    expect(res.stderr).toContain("run log: ud runs show ")
+    expect(res.stderr).toContain("run log: ud boku runs show ")
   })
 
   test("an agent that stops mid-merge exits 5 and saves the conflict", async () => {
