@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "id": "19a0000000000001",
+      "threadId": "19b0000000000001"
+    },
+    {
+      "id": "19a0000000000002",
+      "threadId": "19b0000000000002"
+    },
+    {
+      "id": "19a0000000000003",
+      "threadId": "19b0000000000003"
+    }
+  ],
+  "nextPageToken": "source-fixture-page-token",
+  "resultSizeEstimate": 201
+}

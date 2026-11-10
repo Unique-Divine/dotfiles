@@ -1,0 +1,24 @@
+{
+  "id": "19a0000000000001",
+  "threadId": "19b0000000000001",
+  "labelIds": [
+    "SENT"
+  ],
+  "snippet": "Fixture snippet for source message 1.",
+  "payload": {
+    "mimeType": "multipart/alternative",
+    "headers": [
+      {
+        "name": "Message-Id",
+        "value": "<fixture-source-1@mail.example.com>"
+      },
+      {
+        "name": "Subject",
+        "value": "Fixture subject 1"
+      }
+    ]
+  },
+  "sizeEstimate": 1500,
+  "historyId": "1000002",
+  "internalDate": "1762560000000"
+}
