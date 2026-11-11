@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add search, unlimited keyboard navigation, and agent status to pane quick
+  jump. Keep pane IDs separate from digit shortcuts.
+
 - Refresh open agent pickers while preserving the selected agent identity.
 - Show query hints and a result count in the agent popup.
 
