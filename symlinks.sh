@@ -6,6 +6,7 @@
 # Dependencies:
 #   - $DOTFILES: Path to the dotfiles repository root.
 #   - zsh/managed-links.txt: Source and destination mappings to reconcile.
+#   - zsh/retired-links.txt: Mappings sync used to create, to remove.
 
 if [[ -z "${DOTFILES:-}" ]]; then
   echo "ERROR: \$DOTFILES is not set. Run this script through just sync." >&2
@@ -45,6 +46,31 @@ while IFS=' ' read -r source_relative destination_relative; do
   mkdir -p "$(dirname "$destination_path")"
   _symlink "$source_path" "$destination_path"
 done < "$manifest_path"
+
+# Remove links that sync used to create and no longer manages
+# (zsh/retired-links.txt). Only a symlink that still resolves to its
+# recorded source is removed, so a replacement someone made stays.
+retired_path="$DOTFILES/zsh/retired-links.txt"
+if [[ -r "$retired_path" ]]; then
+  while IFS=' ' read -r source_relative destination_relative; do
+    [[ -z "$source_relative" || "$source_relative" == \#* ]] && continue
+
+    destination_path="$HOME/$destination_relative"
+    [[ -L "$destination_path" ]] || continue
+    # readlink -f prints nothing when a parent folder is missing; two empty
+    # results must not count as a match.
+    destination_target="$(readlink -f -- "$destination_path" || true)"
+    source_target="$(readlink -f -- "$DOTFILES/$source_relative" || true)"
+    if [[ -n "$source_target" && "$destination_target" == "$source_target" ]]
+    then
+      if rm -f -- "$destination_path"; then
+        echo "removed retired link: $destination_path"
+      else
+        echo "WARNING: could not remove retired link: $destination_path" >&2
+      fi
+    fi
+  done < "$retired_path"
+fi
 
 # Deprecated in favor of skills, as skills are always visible by the Cursor-CLI
 # (Command "agent" or "cursor-agent"), while commands are not.
