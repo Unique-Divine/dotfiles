@@ -1960,6 +1960,8 @@ mod tests {
                 json!({"tabs": []}),
                 json!({"agents": [agent.clone()]}),
                 json!({"tabs": []}),
+                json!({"agents": [agent.clone()]}),
+                json!({"tabs": [{"tab_id": "w1:t2"}]}),
             ],
             "w1:p1",
         );
@@ -1976,7 +1978,15 @@ mod tests {
         assert_eq!(agents, original);
         assert_eq!(rows.len(), 1);
         assert_eq!(labels["w1:t2"], "t1");
-        assert_eq!(receiver.iter().count(), 4);
+        let recovered = refresh_agent_rows(
+            &Client::new(target.socket_path.clone()),
+            &mut agents,
+            &mut labels,
+            0,
+        )
+        .unwrap();
+        assert_eq!(recovered[0].cells[3], "t0");
+        assert_eq!(receiver.iter().count(), 6);
     }
 
     #[test]
