@@ -207,6 +207,7 @@ describe("claude settings", () => {
   test("allows gcloud and firebase but still asks before bucket deletes", () => {
     expect(managedAllowRules).toContain("Bash(gcloud:*)")
     expect(managedAllowRules).toContain("Bash(firebase:*)")
+    expect(managedAllowRules).toContain("Bash(gh pr merge:*)")
     expect(managedAskRules).toEqual(["Bash(gcloud storage rm:*)"])
   })
 
