@@ -790,14 +790,8 @@ pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
                     rows,
                     ["Agent", "Harness", "Status", "Tab", "Title"],
                     || {
-                        let updated =
-                            client.agent_list().map_err(io::Error::other)?;
-                        // Tab positions can change without moving agents.
-                        *labels =
-                            agent_tab_labels(&client, &updated, index_base)
-                                .map_err(io::Error::other)?;
-                        *agents = updated;
-                        agent_rows(agents, labels).map_err(io::Error::other)
+                        refresh_agent_rows(&client, agents, labels, index_base)
+                            .map_err(io::Error::other)
                     },
                 )? {
                     crate::picker::Choice::Select(index) => {
@@ -809,6 +803,31 @@ pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
         },
         index_base,
     )
+}
+
+fn refresh_agent_rows(
+    client: &Client,
+    agents: &mut Vec<AgentInfo>,
+    labels: &mut HashMap<String, String>,
+    index_base: usize,
+) -> Result<Vec<crate::picker::Row>, HerdrError> {
+    // Agent and tab queries are separate snapshots. A tab can close between
+    // them; retry that race without replacing the last coherent display.
+    for _ in 0..2 {
+        let updated = client.agent_list()?;
+        let updated_labels = agent_tab_labels(client, &updated, index_base)?;
+        if updated
+            .iter()
+            .any(|agent| !updated_labels.contains_key(&agent.tab_id))
+        {
+            continue;
+        }
+        let rows = agent_rows(&updated, &updated_labels)?;
+        *agents = updated;
+        *labels = updated_labels;
+        return Ok(rows);
+    }
+    agent_rows(agents, labels)
 }
 
 fn agent_rows(
@@ -1930,6 +1949,34 @@ mod tests {
             receiver.iter().last().unwrap()["params"],
             json!({"target":"w1:p2"})
         );
+    }
+
+    #[test]
+    fn refresh_retains_coherent_rows_during_a_tab_close_race() {
+        let agent = selector_agent("w1:p1", "term-1", true, "task");
+        let (_directory, target, receiver) = scripted_server(
+            vec![
+                json!({"agents": [agent.clone()]}),
+                json!({"tabs": []}),
+                json!({"agents": [agent.clone()]}),
+                json!({"tabs": []}),
+            ],
+            "w1:p1",
+        );
+        let mut agents = vec![serde_json::from_value(agent).unwrap()];
+        let original = agents.clone();
+        let mut labels = HashMap::from([("w1:t2".into(), "t1".into())]);
+        let rows = refresh_agent_rows(
+            &Client::new(target.socket_path.clone()),
+            &mut agents,
+            &mut labels,
+            0,
+        )
+        .unwrap();
+        assert_eq!(agents, original);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(labels["w1:t2"], "t1");
+        assert_eq!(receiver.iter().count(), 4);
     }
 
     #[test]
