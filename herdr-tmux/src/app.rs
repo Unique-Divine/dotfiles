@@ -1914,12 +1914,22 @@ mod tests {
             json!({"agent": focused}),
         ];
         let (_directory, target, receiver) = scripted_server(results, "w1:p1");
-        pick_agent_using(&target, &mut Vec::new(), |_, agents, _| {
-            assert_eq!(agents.len(), 2, "shell rows must be excluded");
-            *agents = Client::new(target.socket_path.clone()).agent_list()?;
-            Ok(PickerChoice::Select(0))
-        }, 0).unwrap();
-        assert_eq!(receiver.iter().last().unwrap()["params"], json!({"target":"w1:p2"}));
+        pick_agent_using(
+            &target,
+            &mut Vec::new(),
+            |_, agents, _| {
+                assert_eq!(agents.len(), 2, "shell rows must be excluded");
+                *agents =
+                    Client::new(target.socket_path.clone()).agent_list()?;
+                Ok(PickerChoice::Select(0))
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.iter().last().unwrap()["params"],
+            json!({"target":"w1:p2"})
+        );
     }
 
     #[test]
