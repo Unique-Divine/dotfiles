@@ -245,57 +245,70 @@ pub(crate) fn render<W: Write>(
     if width == 0 || height == 0 {
         return writer.flush();
     }
+    let width = usize::from(width);
     if height <= 3 {
         state.scroll(rows.len(), 1);
-        if let Some(row) = rows.get(state.selected) {
-            queue!(writer, SetAttribute(Attribute::Reverse))?;
-            write!(
-                writer,
-                "{}",
-                clip(
-                    &format!(
-                        "{} {} {}",
-                        row.cells[0], row.cells[4], row.cells[2]
-                    ),
-                    usize::from(width)
-                )
-            )?;
-            queue!(writer, SetAttribute(Attribute::Reset), ResetColor)?;
+        let range_width = if height == 1 {
+            width.saturating_sub(width.min(12))
+        } else {
+            width
+        };
+        let range = row_range(state.offset, 1, rows.len(), range_width);
+        let title = rows
+            .get(state.selected)
+            .map(|row| {
+                format!("{} {} {}", row.cells[0], row.cells[4], row.cells[2])
+            })
+            .unwrap_or_else(|| "No matches".into());
+        queue!(writer, SetAttribute(Attribute::Reverse))?;
+        if height == 1 {
+            write_split_line(writer, &title, &range, width)?;
+        } else {
+            write!(writer, "{}", clip(&title, width))?;
+            queue!(writer, SetAttribute(Attribute::Reset), MoveTo(0, 1))?;
+            write_split_line(writer, "", &range, width)?;
+            if height == 3 {
+                queue!(writer, MoveTo(0, 2))?;
+                write!(
+                    writer,
+                    "{}",
+                    clip("j/k move · enter open · esc close", width)
+                )?;
+            }
         }
+        queue!(writer, SetAttribute(Attribute::Reset), ResetColor)?;
         return writer.flush();
     }
-    let body_height = usize::from(height.saturating_sub(3));
+
+    let separator = height >= 6;
+    let header_y = if separator { 2 } else { 1 };
+    let body_y = header_y + 1;
+    let body_height = usize::from(height - body_y - 1);
     state.scroll(rows.len(), body_height);
-    let widths: [usize; 4] = std::array::from_fn(|column| {
-        rows.iter()
-            .map(|row| row.cells[column].width())
-            .chain([headings[column].width()])
-            .max()
-            .unwrap_or(0)
-    });
-    write!(
-        writer,
-        "{}",
-        clip(
-            &format!(
-                "/ {}{}  · {} result{}",
-                state.query,
-                if state.searching { "▏" } else { "" },
-                rows.len(),
-                if rows.len() == 1 { "" } else { "s" },
-            ),
-            usize::from(width)
-        )
-    )?;
-    if height < 2 {
-        return writer.flush();
+    let range = row_range(state.offset, body_height, rows.len(), width);
+    let query = format!(
+        "/ {}{}",
+        if state.query.is_empty() && !state.searching {
+            "search".to_owned()
+        } else {
+            state.query.clone()
+        },
+        if state.searching { "▏" } else { "" }
+    );
+    queue!(writer, SetForegroundColor(Color::DarkGrey))?;
+    write_split_line(writer, &query, &range, width)?;
+    if separator {
+        queue!(writer, MoveTo(0, 1), SetForegroundColor(Color::DarkGrey))?;
+        write!(writer, "{}", "─".repeat(width))?;
+        queue!(writer, ResetColor)?;
     }
-    queue!(writer, MoveTo(0, 1))?;
+    let widths = column_widths(rows, headings, width);
+    queue!(writer, MoveTo(0, header_y))?;
     write_line(
         writer,
         &headings.map(str::to_owned),
         widths,
-        usize::from(width),
+        width,
         true,
         false,
         "",
@@ -303,37 +316,115 @@ pub(crate) fn render<W: Write>(
     for (index, row) in
         rows.iter().enumerate().skip(state.offset).take(body_height)
     {
-        queue!(writer, MoveTo(0, (index - state.offset + 2) as u16))?;
+        queue!(writer, MoveTo(0, body_y + (index - state.offset) as u16))?;
         write_line(
             writer,
             &row.cells,
             widths,
-            usize::from(width),
+            width,
             false,
             index == state.selected,
             &row.status,
         )?;
     }
     if rows.is_empty() && body_height > 0 {
-        queue!(writer, MoveTo(0, 2))?;
-        write!(writer, "{}", clip("No matches", usize::from(width)))?;
+        queue!(writer, MoveTo(0, body_y))?;
+        write!(writer, "{}", clip("No matches", width))?;
     }
-    if height > 1 {
-        queue!(writer, MoveTo(0, height - 1))?;
-        write!(
-            writer,
-            "{}",
-            clip(
-                if state.searching {
-                    "type to search · enter/esc navigate"
-                } else {
-                    "0-9 jump · j/k move · / search · enter open · esc close"
-                },
-                usize::from(width)
-            )
-        )?;
-    }
+    queue!(
+        writer,
+        MoveTo(0, height - 1),
+        SetForegroundColor(Color::DarkGrey)
+    )?;
+    write!(
+        writer,
+        "{}",
+        clip(
+            if state.searching {
+                "type to search · enter/esc navigate"
+            } else {
+                "↑↓/j/k rows · / search · 0-9 jump · enter open · esc close"
+            },
+            width
+        )
+    )?;
+    queue!(writer, ResetColor)?;
     writer.flush()
+}
+
+/// Reserve range metadata before clipping the query so overflow stays visible.
+fn write_split_line<W: Write>(
+    writer: &mut W,
+    left: &str,
+    right: &str,
+    width: usize,
+) -> io::Result<()> {
+    let right_width = right.width().min(width);
+    let left_width = width.saturating_sub(
+        right_width + usize::from(right_width > 0 && right_width < width),
+    );
+    let fitted = clip(left, left_width);
+    write!(
+        writer,
+        "{fitted}{}",
+        " ".repeat(width - right_width - fitted.width())
+    )?;
+    queue!(
+        writer,
+        SetAttribute(Attribute::Reset),
+        SetForegroundColor(Color::Cyan)
+    )?;
+    write!(writer, "{right}")?;
+    queue!(writer, ResetColor)?;
+    Ok(())
+}
+
+fn row_range(
+    offset: usize,
+    visible: usize,
+    count: usize,
+    width: usize,
+) -> String {
+    if count == 0 {
+        return clip("0/0", width);
+    }
+    let start = offset + 1;
+    let end = (offset + visible).min(count);
+    let above = if offset > 0 { "↑" } else { "" };
+    let below = if end < count { "↓" } else { "" };
+    let range = format!("{above}{start}-{end}/{count}{below}");
+    if range.width() <= width {
+        range
+    } else {
+        clip(&format!("{above}{start}/{count}{below}"), width)
+    }
+}
+
+/// Drop location and harness columns before sacrificing the destination title.
+fn column_widths(rows: &[Row], headings: [&str; 5], width: usize) -> [usize; 4] {
+    let mut widths: [usize; 4] = std::array::from_fn(|column| {
+        rows.iter()
+            .map(|row| row.cells[column].width())
+            .chain([headings[column].width()])
+            .max()
+            .unwrap_or(0)
+    });
+    if width < 12 {
+        widths[0] = if width < 6 { 0 } else { 3 };
+    }
+    let title_width = 16.min(width.saturating_sub(5));
+    for column in [3, 1, 2] {
+        let metadata_width: usize = widths
+            .iter()
+            .filter(|size| **size > 0)
+            .map(|size| size + 2)
+            .sum();
+        if metadata_width + title_width <= width {
+            break;
+        }
+        widths[column] = 0;
+    }
+    widths
 }
 
 fn write_line<W: Write>(
@@ -347,6 +438,9 @@ fn write_line<W: Write>(
 ) -> io::Result<()> {
     let mut remaining = width;
     for (column, cell) in cells.iter().enumerate() {
+        if column < 4 && widths[column] == 0 {
+            continue;
+        }
         let available = if column < 4 {
             widths[column].min(remaining)
         } else {
@@ -453,7 +547,11 @@ mod tests {
     }
 
     fn rows() -> Vec<Row> {
-        (0..15)
+        rows_with_count(15)
+    }
+
+    fn rows_with_count(count: usize) -> Vec<Row> {
+        (0..count)
             .map(|index| Row {
                 identity: format!("pane-{index}"),
                 cells: [
@@ -596,6 +694,162 @@ mod tests {
                 assert!(String::from_utf8(output).is_ok());
             }
         }
+    }
+
+    fn render_frame(
+        rows: &[Row],
+        state: &mut State,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let mut output = Vec::new();
+        render(
+            &mut output,
+            rows,
+            ["Agent", "Harness", "Status", "Tab", "Title"],
+            state,
+            width,
+            height,
+        )
+        .unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn large_popup_shows_every_agent_in_a_fourteen_row_session() {
+        let rows = rows_with_count(14);
+        let frame = render_frame(
+            &matched_rows(&rows, &State::default().matches(&rows)),
+            &mut State::default(),
+            116,
+            42,
+        );
+        for index in 0..14 {
+            assert!(frame.contains(&format!("Task {index} 界")));
+        }
+        assert!(frame.contains("1-14/14\x1b"));
+    }
+
+    #[test]
+    fn overflow_ranges_identify_hidden_rows_at_top_middle_and_end() {
+        let rows = rows_with_count(50);
+        let mut state = State::default();
+        for (selected, expected) in
+            [(0, "1-6/50↓"), (25, "↑21-26/50↓"), (49, "↑45-50/50")]
+        {
+            state.selected = selected;
+            let frame = render_frame(&rows, &mut state, 72, 10);
+            assert!(frame.contains(expected), "missing {expected}");
+            assert!(frame.contains(&format!("Task {selected} 界")));
+        }
+    }
+
+    #[test]
+    fn long_query_cannot_displace_the_range_or_overflow_cue() {
+        let rows = rows_with_count(50);
+        let mut state = State {
+            query: "界very-long-query".repeat(20),
+            searching: true,
+            ..State::default()
+        };
+        let frame = render_frame(&rows, &mut state, 24, 10);
+        assert!(frame.contains("1-6/50↓"));
+        assert!(!frame.contains(&state.query));
+    }
+
+    #[test]
+    fn constrained_resize_preserves_selected_title_and_row_range() {
+        let rows = rows_with_count(60);
+        let mut state = State {
+            selected: 45,
+            ..State::default()
+        };
+        for (width, height) in [(116, 42), (32, 9), (32, 2), (32, 1), (116, 42)]
+        {
+            let frame = render_frame(&rows, &mut state, width, height);
+            assert!(
+                frame.contains("Task 45 界"),
+                "selected title missing at {width}x{height}"
+            );
+            assert!(
+                frame.contains("/60"),
+                "row range missing at {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn searching_after_scroll_resets_viewport_and_keeps_result_shortcuts() {
+        let rows = rows_with_count(50);
+        let mut state = State {
+            selected: 49,
+            ..State::default()
+        };
+        render_frame(&rows, &mut state, 72, 10);
+        assert_eq!(state.offset, 44);
+        state.handle(key(KeyCode::Char('/')), 50);
+        for character in "Task 4".chars() {
+            state.handle(key(KeyCode::Char(character)), 50);
+        }
+        assert_eq!((state.selected, state.offset), (0, 0));
+        let matches = state.matches(&rows);
+        let filtered = matched_rows(&rows, &matches);
+        assert_eq!(matches.len(), 11);
+        assert_eq!(filtered[9].cells[0], "9  ");
+        assert_eq!(filtered[10].cells[0], "   ");
+        state.handle(key(KeyCode::Enter), matches.len());
+        assert_eq!(
+            state.handle(key(KeyCode::Char('9')), matches.len()),
+            Some(Choice::Select(9))
+        );
+        assert_eq!(matches[9], 48);
+        state.selected = 10;
+        let frame = render_frame(&filtered, &mut state, 72, 10);
+        assert!(frame.contains("↑6-11/11"));
+        assert_eq!(filtered[9].cells[0], "9  ");
+    }
+
+    #[test]
+    #[ignore = "manual ANSI captures of the production picker renderer"]
+    fn capture_picker_geometry_frames() {
+        let directory =
+            std::env::temp_dir().join("herdr-navigation/geometry-captures");
+        std::fs::create_dir_all(&directory).unwrap();
+        for (name, count, selected, width, height, query) in [
+            ("large-fourteen", 14, 6, 116, 42, ""),
+            ("overflow-top", 50, 0, 72, 10, ""),
+            ("overflow-middle", 50, 25, 72, 10, ""),
+            ("overflow-end", 50, 49, 72, 10, ""),
+            (
+                "narrow-long-query",
+                50,
+                25,
+                32,
+                10,
+                "界very-long-query-containing-lots-of-text",
+            ),
+        ] {
+            let mut rows = rows_with_count(count);
+            if !query.is_empty() {
+                for row in &mut rows {
+                    row.cells[4].push_str(&format!(" {query}"));
+                }
+            }
+            let mut state = State {
+                selected,
+                query: query.into(),
+                ..State::default()
+            };
+            let frame = render_frame(
+                &matched_rows(&rows, &(0..count).collect::<Vec<_>>()),
+                &mut state,
+                width,
+                height,
+            );
+            std::fs::write(directory.join(format!("{name}.ansi")), frame)
+                .unwrap();
+        }
+        eprintln!("ANSI captures: {}", directory.display());
     }
 
     #[test]

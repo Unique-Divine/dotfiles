@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Enlarge both popup pickers to 116 columns by 42 rows, with visible row
+  ranges, overflow arrows, and title-first constrained layouts.
+
 - Add search, unlimited keyboard navigation, and agent status to pane quick
   jump. Keep pane IDs separate from digit shortcuts.
 
