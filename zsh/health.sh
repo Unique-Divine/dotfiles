@@ -16,6 +16,7 @@ bash_files=(
   zsh/ud/shell.sh
   ud/source-hash.sh
   claude/native.sh
+  grok/native.sh
 )
 
 zsh_files=(
@@ -128,6 +129,14 @@ if ! bash claude/native.sh --check; then
 fi
 
 if ! bun run codex/config.ts --check; then
+  failed=1
+fi
+
+if ! bash grok/native.sh --check; then
+  failed=1
+fi
+
+if ! bun run grok/config.ts --check; then
   failed=1
 fi
 

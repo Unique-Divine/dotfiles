@@ -47,3 +47,19 @@ bun run grok/config.ts --check
 # Apply portable defaults
 bun run grok/config.ts --run
 ```
+
+## Install
+
+`native.sh` checks that `grok --version` runs. `--run` uses the xAI installer
+only when the command is missing. A working install, including one provided by
+mise, is left alone.
+
+```bash
+just grok-install
+bash grok/native.sh --check
+```
+
+`just sync` runs the installer and then `grok/config.ts --run`. `just health`
+runs both checks. `zsh/managed-links.txt` links `AGENTS.md` to
+`$HOME/.grok/AGENTS.md`. That file is only the unslop instruction. Grok already
+loads `$HOME/.claude/CLAUDE.md`, so those rules are not copied here.

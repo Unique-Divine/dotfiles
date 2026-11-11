@@ -17,3 +17,4 @@ zsh/gitconfig.ini .gitconfig
 cursor/hooks .config/git/hooks
 claude/CLAUDE.md .claude/CLAUDE.md
 codex/AGENTS.md .codex/AGENTS.md
+grok/AGENTS.md .grok/AGENTS.md

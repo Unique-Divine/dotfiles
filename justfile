@@ -166,8 +166,8 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI, and
-# Claude Code config, and managed AI skills for Cursor, Codex, and Claude Code.
+# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI,
+# Claude Code, and Grok config, and managed AI skills.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
@@ -218,6 +218,7 @@ sync:
   runlog_step mise-install just mise-install
   runlog_step bun-sync just bun-sync
   runlog_step claude-install just claude-install
+  runlog_step grok-install just grok-install
   runlog_step i-jiyuu just i-jiyuu
   runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
@@ -242,6 +243,7 @@ sync:
     runlog_event step name=clipboard-install msg=skipped
   fi
   runlog_step codex-config bun run codex/config.ts --run
+  runlog_step grok-config bun run grok/config.ts --run
   runlog_step cursor-cli-config bun run cursor/cli-config.ts --run
   runlog_step cursor-mcp bun run cursor/mcp.ts --run
   runlog_step claude-config bun run claude/config.ts --run
@@ -347,6 +349,10 @@ claude-health:
 codex-install:
   bash codex/native.sh --run
 
+# Install the Grok CLI when it's missing, then verify it runs.
+grok-install:
+  bash grok/native.sh --run
+
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
   #!/usr/bin/env bash
@@ -390,6 +396,10 @@ claude TOOL *ARGS:
 # Run the portable Codex config CLI. For options, run `just codex`.
 codex *ARGS:
   bun run codex/config.ts {{ARGS}}
+
+# Run the portable Grok config CLI. For options, run `just grok`.
+grok *ARGS:
+  bun run grok/config.ts {{ARGS}}
 
 # Clone Zinit into XDG data if the checkout is missing.
 [private]
