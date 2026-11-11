@@ -278,10 +278,11 @@ pub(crate) fn render<W: Write>(
         "{}",
         clip(
             &format!(
-                "/ {}{}  · {} results",
+                "/ {}{}  · {} result{}",
                 state.query,
                 if state.searching { "▏" } else { "" },
                 rows.len(),
+                if rows.len() == 1 { "" } else { "s" },
             ),
             usize::from(width)
         )
