@@ -95,6 +95,12 @@ table scrolls to keep that row visible. Escape closes the picker; it stays
 open until selection or cancellation. Before focusing, the picker confirms
 the selected agent still occupies its pane.
 
+Press `/` to search the title, harness, status, or tab label. Matching ignores
+case and includes title text beyond the popup width. While editing a query,
+digits are text. Enter or Escape returns to navigation; Escape in navigation
+closes the picker. Digit shortcuts refer to the first ten matching rows,
+independent of the scroll position.
+
 The Tab column shows `t0` when all listed agents share a workspace and `t0_w6`
 when agents span multiple workspaces. Status icons and colors are:
 

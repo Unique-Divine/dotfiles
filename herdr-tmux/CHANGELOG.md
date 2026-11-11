@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Search the agent table by title, harness, status, or location with `/`.
+
 - Remove the agent picker limit. Keep digits for the first ten agents and
   navigate every row with Vim keys, arrows, and Enter.
 - Keep the agent picker open until selection or cancellation.
