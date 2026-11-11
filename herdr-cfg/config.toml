@@ -79,6 +79,8 @@ detach = "prefix+d"
 # open_notification_target = "prefix+o"
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
+# Compare native agent-only Go To with the plugin picker on prefix+a.
+goto_agents = "prefix+A"
 # Mirror tab keys with Shift: prefix+c/n for tabs, prefix+C/N for workspaces.
 new_workspace = "prefix+C"
 # new_worktree = "prefix+shift+g"

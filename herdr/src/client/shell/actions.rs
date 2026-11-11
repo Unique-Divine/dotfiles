@@ -43,6 +43,11 @@ impl ClientShellState {
                     self.begin_worktree_action(action, outcome);
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenAgentNavigator {
+                    self.open_agent_navigator_overlay();
+                    outcome.repaint = true;
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;

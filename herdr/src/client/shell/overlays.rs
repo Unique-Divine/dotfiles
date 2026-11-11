@@ -13,6 +13,7 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_popup: Rect,
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(crate) navigator_shortcuts: Vec<(u8, ClientNavigatorTarget)>,
     pub(crate) navigator_scrollbar: Rect,
     pub(crate) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) worktree_search: Rect,
@@ -719,7 +720,11 @@ fn render_navigator_overlay(
         q.x + 2,
         q.y,
         q.width.saturating_sub(4),
-        " Go to ",
+        if n.agents_only {
+            " Go to agent "
+        } else {
+            " Go to "
+        },
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
     let rows =
@@ -737,7 +742,12 @@ fn render_navigator_overlay(
             }
         )
     } else if n.query.is_empty() {
-        " / search agents and terminals".to_owned()
+        if n.agents_only {
+            " / search agents"
+        } else {
+            " / search agents and terminals"
+        }
+        .to_owned()
     } else {
         format!(" / {}", n.query)
     };
@@ -747,10 +757,11 @@ fn render_navigator_overlay(
         .count();
     let count = format!(
         "{terminal_count} {}",
-        if terminal_count == 1 {
-            "terminal"
-        } else {
-            "terminals"
+        match (n.agents_only, terminal_count == 1) {
+            (true, true) => "agent",
+            (true, false) => "agents",
+            (false, true) => "terminal",
+            (false, false) => "terminals",
         }
     );
     put_text(
@@ -816,7 +827,11 @@ fn render_navigator_overlay(
             body.x,
             body.y,
             body.width,
-            " No matching agents or terminals",
+            if n.agents_only {
+                " No matching agents"
+            } else {
+                " No matching agents or terminals"
+            },
             Style::default().fg(p.overlay0).bg(p.panel_bg),
         );
     }
@@ -865,8 +880,18 @@ fn render_navigator_overlay(
             "└─ "
         };
         let padding = u16::from(r.depth.saturating_sub(u8::from(is_pane))) * 2 + 1;
-        let connector_x = rect.x + padding;
-        let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
+        let badge = if n.agents_only {
+            r.quick_digit
+                .map_or_else(|| "  ".to_owned(), |digit| format!("{digit} "))
+        } else {
+            String::new()
+        };
+        let connector_x = rect.x + display_width(&badge) + padding;
+        let indent = format!(
+            "{badge}{:width$}{connector}",
+            "",
+            width = usize::from(padding)
+        );
         let current = if r.current { "◆ " } else { "" };
         let status = r.status.map(status_dot).unwrap_or_default();
         let status_separator = if status.is_empty() { "" } else { " " };
@@ -896,6 +921,15 @@ fn render_navigator_overlay(
             &label,
             st,
         );
+        if r.quick_digit.is_some() {
+            let badge_style = if ix == selected {
+                st
+            } else {
+                st.fg(r.status.map_or(p.accent, |status| status_color(status, p)))
+                    .add_modifier(Modifier::BOLD)
+            };
+            put_text(b, rect.x, rect.y, rect.width.min(2), &badge, badge_style);
+        }
         if is_pane {
             put_text(
                 b,
@@ -1021,6 +1055,8 @@ fn render_navigator_overlay(
         i.width,
         if n.search_focused {
             " search type · move ↑↓/ctrl+n/p · open enter · back esc"
+        } else if n.agents_only {
+            " 0-9 ready · ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i/d filter · enter open · esc close"
         } else {
             " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i/d filter · enter open · esc close"
         },
@@ -1034,6 +1070,10 @@ fn render_navigator_overlay(
         navigator_popup: q,
         navigator_search: Rect::new(i.x, i.y, i.width, 1),
         navigator_rows: row_hits,
+        navigator_shortcuts: rows
+            .iter()
+            .filter_map(|row| row.quick_digit.map(|digit| (digit, row.target.clone())))
+            .collect(),
         navigator_scrollbar: scrollbar.unwrap_or_default(),
         navigator_scroll_metrics: Some(metrics),
         worktree_search: Rect::default(),

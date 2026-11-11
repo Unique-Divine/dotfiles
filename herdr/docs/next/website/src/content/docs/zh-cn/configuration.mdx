@@ -133,6 +133,7 @@ Herdr 提供类似 tmux 的前缀模式。默认前缀是 `ctrl+b`。按键绑�
 [keys]
 prefix = "ctrl+b"
 goto = "prefix+g"
+goto_agents = ""
 new_tab = "prefix+c"
 next_tab = "prefix+n"
 previous_tab = "prefix+p"
@@ -610,3 +611,14 @@ switch_ascii_input_source_in_prefix = true
 ```
 
 日志会自动轮转。报告问题时，请附上当前日志和轮转后的同级日志文件。
+
+## 仅代理导航
+
+设置 `keys.goto_agents = "prefix+A"` 可打开 **Go to agent**。
+它复用普通 Go To 的搜索、Vim 导航和已连接机器的跳转功能，
+同时隐藏普通终端与空分组。`keys.goto` 的行为保持不变。
+
+数字 `0` 到 `9` 按过滤后的显示顺序，直接跳转到前十个 blocked、done 或 idle
+代理。当前聚焦的代理和已断开的机器不显示数字。working 和 unknown
+代理仍可通过导航和搜索选择。搜索框聚焦时，数字作为查询文字输入。
+按 Escape 离开搜索框，再按一次关闭菜单。
