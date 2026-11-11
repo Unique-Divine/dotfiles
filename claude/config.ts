@@ -98,6 +98,9 @@ export const managedAllowRules: readonly string[] = [
   // managedAskRules.
   "Bash(gcloud:*)",
   "Bash(firebase:*)",
+  // PR merges the user approved in chat. Auto mode's "Merge Without Review"
+  // check ignores approval given in chat and held every merge for a prompt.
+  "Bash(gh pr merge:*)",
 ]
 
 /**
