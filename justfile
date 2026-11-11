@@ -114,9 +114,10 @@ gh-rev-install:
 herdr-install *ARGS:
   bun run herdr-release/install.ts {{ARGS}}
 
-# Install or repair required Codex, Claude Code, and Cursor Herdr hooks.
+# Install or repair Codex, Claude Code, Cursor, and Grok Herdr hooks.
 herdr-integrations:
   bun run herdr-cfg/integrations.ts --run
+  bun run grok/herdr.ts --run
 
 # Preview one agent per tab in the current workspace; use --run to move.
 [positional-arguments]

@@ -178,6 +178,10 @@ if ! bun run herdr-cfg/integrations.ts --check; then
   failed=1
 fi
 
+if ! bun run grok/herdr.ts --check; then
+  failed=1
+fi
+
 # Linked plugins run from their source directory, so a PATH copy of the
 # binary does not prove that Herdr key bindings can launch them.
 if which_ok herdr && ! bun run herdr-cfg/plugins.ts --check; then

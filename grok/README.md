@@ -63,3 +63,7 @@ bash grok/native.sh --check
 runs both checks. `zsh/managed-links.txt` links `AGENTS.md` to
 `$HOME/.grok/AGENTS.md`. That file is only the unslop instruction. Grok already
 loads `$HOME/.claude/CLAUDE.md`, so those rules are not copied here.
+
+`just herdr-integrations` then runs `herdr integration install grok` when that
+hook is not current. Herdr writes only its own files under the Grok config
+directory. `just health` requires the status line `grok: current`.
