@@ -11,10 +11,11 @@ through its default compatibility scans. See [`mcp/README.md`](../mcp/README.md)
 ## Managed settings
 
 The TypeScript `dotfileConfig` object owns prompt Vim (`keys.vim = "all"`),
-`ui.permission_mode = "auto"`, and the status line command. `dotfilePager`
-owns `terminal.alt_screen = "never"`, so Tmux and Herdr copy mode can scroll
-earlier output. `/vim-mode` can only store `off` or `nav`. The next sync puts
-`all` back.
+always-approve (`ui.yolo = true` and
+`ui.permission_mode = "always-approve"`), and the status line command.
+`dotfilePager` owns `terminal.alt_screen = "never"`, so Tmux and Herdr
+copy mode can scroll earlier output. `/vim-mode` can only store `off` or
+`nav`. The next sync puts `all` back.
 
 Authentication, sessions, marketplace flags, the privacy acknowledgement, and
 MCP servers are local data. Do not symlink either runtime file. Grok follows a

@@ -23,7 +23,8 @@ export const dotfileConfig = {
     vim: "all",
   },
   ui: {
-    permission_mode: "auto",
+    yolo: true,
+    permission_mode: "always-approve",
     status_line: {
       type: "command",
       command: statusLinePath,

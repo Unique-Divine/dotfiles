@@ -57,8 +57,8 @@ describe("grok config", () => {
       privacy: { privacy_banner_acked: "2026-11-10T00:00:00Z" },
     })
     expect(merged.ui).toEqual({
-      yolo: false,
-      permission_mode: "auto",
+      yolo: true,
+      permission_mode: "always-approve",
       max_thoughts_width: 120,
       status_line: {
         type: "command",
@@ -143,6 +143,10 @@ describe("grok config", () => {
         private: { command: "launch", env: { TOKEN: "secret-value" } },
       })
       expect(config.keys).toEqual({ vim: "all" })
+      expect(config.ui).toMatchObject({
+        yolo: true,
+        permission_mode: "always-approve",
+      })
       expect(pager).toEqual({ terminal: { fps: 30, alt_screen: "never" } })
     } finally {
       await rm(root, { recursive: true, force: true })
