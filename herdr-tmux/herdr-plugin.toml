@@ -36,14 +36,14 @@ command = ["./target/release/herdr-tmux", "plugin", "open", "agent"]
 id = "pane-picker"
 title = "Panes"
 placement = "popup"
-width = 60
-height = 14
+width = 116
+height = 42
 command = ["./target/release/herdr-tmux", "focus-pane"]
 
 [[panes]]
 id = "agent-picker"
 title = "Agents"
 placement = "popup"
-width = 72
-height = 14
+width = 116
+height = 42
 command = ["./target/release/herdr-tmux", "focus-agent"]

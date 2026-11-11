@@ -178,6 +178,12 @@ mod tests {
         let source: toml::Value = toml::from_str(MANIFEST).unwrap();
         assert_eq!(source["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(source["id"].as_str(), Some(PLUGIN_ID));
+        assert_eq!(source["min_herdr_version"].as_str(), Some("0.9.5"));
+        for pane in source["panes"].as_array().unwrap() {
+            assert_eq!(pane["placement"].as_str(), Some("popup"));
+            assert_eq!(pane["width"].as_integer(), Some(116));
+            assert_eq!(pane["height"].as_integer(), Some(42));
+        }
         let executable = Path::new("/tmp/path with spaces/herdr-tmux");
         let installed: toml::Value =
             toml::from_str(&installed_manifest(executable).unwrap()).unwrap();

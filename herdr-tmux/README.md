@@ -106,7 +106,14 @@ digits are text. Enter or Escape returns to navigation; Escape in navigation
 closes the picker. Digit shortcuts refer to the first ten matching rows,
 independent of the scroll position.
 
-The search line shows the result count. Agent metadata refreshes once per
+Both popup pickers request 116 columns by 42 rows. Herdr clamps that size to
+the available terminal area. The search line reserves its right side for the
+visible row range and total, such as `1-14/14` or `↑21-26/50↓`. Arrows show
+that more matching rows are above or below the viewport, even with a long
+query. Narrow layouts hide location and harness columns before clipping the
+destination title. Tiny layouts keep the selected row visible first.
+
+Agent metadata refreshes once per
 second while the popup is open, and the highlighted agent follows its pane
 and terminal identity when rows change. Filtering uses the local snapshot.
 The plugin lists agents in the current session; the native Go To menu can
