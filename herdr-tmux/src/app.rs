@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+#[cfg(test)]
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 #[cfg(test)]
 use crossterm::queue;
 use crossterm::style::Color;
@@ -19,7 +20,6 @@ use crossterm::style::Color;
 use crossterm::style::{
     Attribute, ResetColor, SetAttribute, SetForegroundColor,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -27,9 +27,6 @@ use sha2::{Digest, Sha256};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
-/// Default time a pane or agent picker waits for a selection before cancelling.
-const PICKER_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PICKER_PANES: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -123,14 +120,15 @@ pub(crate) enum HerdrError {
     Json(serde_json::Error),
     Api { code: String, message: String },
     Protocol(String),
+    SnapshotChanged(String),
 }
 
 impl fmt::Display for HerdrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Target(message) | Self::Protocol(message) => {
-                f.write_str(message)
-            }
+            Self::Target(message)
+            | Self::Protocol(message)
+            | Self::SnapshotChanged(message) => f.write_str(message),
             Self::Busy => {
                 f.write_str("an equal-layout command is already running")
             }
@@ -213,6 +211,10 @@ struct PaneInfo {
     pane_id: String,
     tab_id: String,
     focused: bool,
+    #[serde(default)]
+    terminal_id: Option<String>,
+    #[serde(default)]
+    agent_status: Option<String>,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -485,27 +487,18 @@ enum PickerChoice {
     Cancel,
 }
 
+#[cfg(test)]
 trait RawModeControl {
     fn enable(&mut self) -> io::Result<()>;
     fn disable(&mut self) -> io::Result<()>;
 }
 
-struct CrosstermRawMode;
-
-impl RawModeControl for CrosstermRawMode {
-    fn enable(&mut self) -> io::Result<()> {
-        enable_raw_mode()
-    }
-
-    fn disable(&mut self) -> io::Result<()> {
-        disable_raw_mode()
-    }
-}
-
+#[cfg(test)]
 struct RawModeGuard<'a, T: RawModeControl> {
     mode: &'a mut T,
 }
 
+#[cfg(test)]
 impl<'a, T: RawModeControl> RawModeGuard<'a, T> {
     fn enter(mode: &'a mut T) -> io::Result<Self> {
         mode.enable()?;
@@ -513,12 +506,14 @@ impl<'a, T: RawModeControl> RawModeGuard<'a, T> {
     }
 }
 
+#[cfg(test)]
 impl<T: RawModeControl> Drop for RawModeGuard<'_, T> {
     fn drop(&mut self) {
         let _ = self.mode.disable();
     }
 }
 
+#[cfg(test)]
 fn parse_picker_event(event: Event, pane_count: usize) -> PickerChoice {
     let Event::Key(key) = event else {
         return PickerChoice::Cancel;
@@ -540,6 +535,7 @@ fn parse_picker_event(event: Event, pane_count: usize) -> PickerChoice {
     }
 }
 
+#[cfg(test)]
 fn read_picker_choice_with<M, P, R>(
     mode: &mut M,
     pane_count: usize,
@@ -559,16 +555,6 @@ where
     Ok(parse_picker_event(read()?, pane_count))
 }
 
-fn read_picker_choice(pane_count: usize) -> Result<PickerChoice, HerdrError> {
-    read_picker_choice_with(
-        &mut CrosstermRawMode,
-        pane_count,
-        PICKER_TIMEOUT,
-        event::poll,
-        event::read,
-    )
-}
-
 fn sort_panes(panes: &mut [PaneLayoutPane]) {
     panes.sort_by(|left, right| {
         (left.rect.y, left.rect.x, &left.pane_id).cmp(&(
@@ -583,6 +569,7 @@ fn nonempty(value: &Option<String>) -> Option<&str> {
     value.as_deref().filter(|value| !value.trim().is_empty())
 }
 
+#[cfg(test)]
 fn pane_description(pane: &PaneInfo) -> String {
     let description = nonempty(&pane.label)
         .or_else(|| nonempty(&pane.display_agent))
@@ -668,6 +655,7 @@ fn agent_status_style(status: &str) -> (&'static str, Option<Color>, bool) {
     }
 }
 
+#[cfg(test)]
 fn write_picker<W: Write>(
     writer: &mut W,
     panes: &[(PaneLayoutPane, PaneInfo)],
@@ -687,7 +675,87 @@ fn write_picker<W: Write>(
 }
 
 pub(crate) fn pick_pane(target: &Target) -> Result<(), HerdrError> {
-    pick_pane_with(target, &mut io::stdout().lock(), read_picker_choice)
+    let client = Client::new(target.socket_path.clone());
+    pick_pane_using(target, &mut io::stdout().lock(), |_, panes| {
+        Ok(
+            match crate::picker::run(
+                pane_rows(panes),
+                ["Jump", "Harness", "Status", "Pane", "Title"],
+                || {
+                    refresh_pane_rows(&client, target, panes)
+                        .map_err(io::Error::other)
+                },
+            )? {
+                crate::picker::Choice::Select(index) => {
+                    PickerChoice::Select(index)
+                }
+                crate::picker::Choice::Cancel => PickerChoice::Cancel,
+            },
+        )
+    })
+}
+
+fn refresh_pane_rows(
+    client: &Client,
+    target: &Target,
+    panes: &mut Vec<(PaneLayoutPane, PaneInfo)>,
+) -> Result<Vec<crate::picker::Row>, HerdrError> {
+    // Pane layout and metadata are separate requests, so retain the last good
+    // frame if a pane moves or closes during both snapshot attempts.
+    for _ in 0..2 {
+        match load_panes(client, target) {
+            Ok(updated) => {
+                let rows = pane_rows(&updated);
+                *panes = updated;
+                return Ok(rows);
+            }
+            Err(HerdrError::SnapshotChanged(_)) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(pane_rows(panes))
+}
+
+fn pane_rows(panes: &[(PaneLayoutPane, PaneInfo)]) -> Vec<crate::picker::Row> {
+    panes
+        .iter()
+        .map(|(layout, pane)| {
+            let status = if pane.agent.is_some() {
+                pane.agent_status.as_deref().unwrap_or("unknown")
+            } else {
+                "shell"
+            };
+            let (icon, _, _) = agent_status_style(status);
+            let title = nonempty(&pane.label)
+                .or_else(|| nonempty(&pane.title))
+                .or_else(|| nonempty(&pane.terminal_title_stripped))
+                .or_else(|| nonempty(&pane.display_agent))
+                .or_else(|| nonempty(&pane.agent))
+                .or_else(|| nonempty(&pane.foreground_cwd))
+                .or_else(|| nonempty(&pane.cwd))
+                .unwrap_or(&pane.pane_id);
+            crate::picker::Row {
+                identity: format!(
+                    "{}:{}",
+                    layout.pane_id,
+                    pane.terminal_id.as_deref().unwrap_or("")
+                ),
+                cells: [
+                    String::new(),
+                    sanitize_cell(pane.agent.as_deref().unwrap_or("terminal")),
+                    if status == "shell" {
+                        "shell".into()
+                    } else {
+                        format!("{icon} {}", sanitize_cell(status))
+                    },
+                    layout.pane_id.clone(),
+                    sanitize_cell(title),
+                ],
+                status: status.into(),
+                focused: pane.focused,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1038,6 +1106,7 @@ fn tab_display_index_base_from_config(content: &str) -> usize {
     }
 }
 
+#[cfg(test)]
 fn pick_pane_with<W, C>(
     target: &Target,
     writer: &mut W,
@@ -1047,7 +1116,16 @@ where
     W: Write,
     C: FnMut(usize) -> Result<PickerChoice, HerdrError>,
 {
-    let client = Client::new(target.socket_path.clone());
+    pick_pane_using(target, writer, |writer, panes| {
+        write_picker(writer, panes, &target.pane_id)?;
+        choose(panes.len())
+    })
+}
+
+fn load_panes(
+    client: &Client,
+    target: &Target,
+) -> Result<Vec<(PaneLayoutPane, PaneInfo)>, HerdrError> {
     let mut layout = client.pane_layout(&target.pane_id)?;
     if layout.tab_id != target.tab_id
         || layout.focused_pane_id != target.pane_id
@@ -1060,39 +1138,67 @@ where
             "the active pane is no longer in the originating tab".into(),
         ));
     }
-    if layout.panes.len() > MAX_PICKER_PANES {
-        return Err(HerdrError::Protocol(format!(
-            "pane picker supports at most {MAX_PICKER_PANES} panes; this tab has {}",
-            layout.panes.len()
-        )));
-    }
     if layout.panes.len() <= 1 {
-        return Ok(());
+        return Ok(Vec::new());
     }
-
     sort_panes(&mut layout.panes);
-    let panes = layout
+    layout
         .panes
         .into_iter()
         .map(|layout_pane| {
-            let pane = client.pane_get(&layout_pane.pane_id)?;
-            if pane.tab_id != target.tab_id {
-                return Err(HerdrError::Protocol(format!(
+            let pane = match client.pane_get(&layout_pane.pane_id) {
+                Err(HerdrError::Api { code, .. })
+                    if code == "pane_not_found" =>
+                {
+                    return Err(HerdrError::SnapshotChanged(format!(
+                        "pane {} closed during refresh",
+                        layout_pane.pane_id
+                    )))
+                }
+                result => result?,
+            };
+            if pane.tab_id != target.tab_id
+                || pane.pane_id != layout_pane.pane_id
+            {
+                return Err(HerdrError::SnapshotChanged(format!(
                     "pane {} moved outside the originating tab",
                     layout_pane.pane_id
                 )));
             }
             Ok((layout_pane, pane))
         })
-        .collect::<Result<Vec<_>, HerdrError>>()?;
+        .collect::<Result<Vec<_>, HerdrError>>()
+}
 
-    write_picker(writer, &panes, &target.pane_id)?;
-    let PickerChoice::Select(index) = choose(panes.len())? else {
+fn pick_pane_using<W, C>(
+    target: &Target,
+    writer: &mut W,
+    mut choose: C,
+) -> Result<(), HerdrError>
+where
+    W: Write,
+    C: FnMut(
+        &mut W,
+        &mut Vec<(PaneLayoutPane, PaneInfo)>,
+    ) -> Result<PickerChoice, HerdrError>,
+{
+    let client = Client::new(target.socket_path.clone());
+    let mut panes = load_panes(&client, target)?;
+    if panes.len() <= 1 {
+        return Ok(());
+    }
+    let PickerChoice::Select(index) = choose(writer, &mut panes)? else {
         return Ok(());
     };
-    let selected_id = &panes[index].0.pane_id;
+    let (layout, original) = panes.get(index).ok_or_else(|| {
+        HerdrError::Protocol("selected pane is outside the list".into())
+    })?;
+    let selected_id = &layout.pane_id;
     let selected = client.pane_get(selected_id)?;
-    if selected.tab_id != target.tab_id {
+    if selected.tab_id != target.tab_id
+        || selected.pane_id != *selected_id
+        || selected.terminal_id != original.terminal_id
+    {
         return Err(HerdrError::Protocol(format!(
             "pane {selected_id} moved outside the originating tab"
         )));
@@ -1103,6 +1209,7 @@ where
     let focused = client.pane_focus(selected_id)?;
     if focused.pane_id != *selected_id
         || focused.tab_id != target.tab_id
+        || focused.terminal_id != original.terminal_id
         || !focused.focused
     {
         return Err(HerdrError::Protocol(format!(
@@ -2079,7 +2186,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_rejects_more_than_ten_panes_before_input() {
+    fn picker_selects_a_pane_beyond_ten() {
         let pane_specs = (0..11)
             .map(|index| (format!("w1:p{index}"), index as u16, 0_u16))
             .collect::<Vec<_>>();
@@ -2089,17 +2196,141 @@ mod tests {
                 "pane_id": pane_id, "rect": {"x": x, "y": y}
             })).collect::<Vec<_>>()
         }});
-        let (_directory, target, receiver) =
-            scripted_server(vec![layout], "w1:p0");
+        let mut results = vec![layout];
+        results.extend((0..11).map(|index| {
+            picker_pane(&format!("w1:p{index}"), "w1:t1", index == 0)
+        }));
+        results.push(picker_pane("w1:p10", "w1:t1", false));
+        results.push(picker_pane("w1:p10", "w1:t1", true));
+        let (_directory, target, receiver) = scripted_server(results, "w1:p0");
         let mut input_called = false;
-        let error = pick_pane_with(&target, &mut Vec::new(), |_| {
+        pick_pane_with(&target, &mut Vec::new(), |count| {
+            assert_eq!(count, 11);
             input_called = true;
-            Ok(PickerChoice::Cancel)
+            Ok(PickerChoice::Select(10))
         })
-        .unwrap_err();
-        assert!(error.to_string().contains("at most 10 panes"));
-        assert!(!input_called);
-        assert_eq!(receiver.iter().count(), 1);
+        .unwrap();
+        assert!(input_called);
+        assert_eq!(
+            receiver.iter().last().unwrap()["params"],
+            json!({"pane_id":"w1:p10"})
+        );
+    }
+
+    #[test]
+    fn pane_rows_keep_full_titles_status_and_location_separate() {
+        let mut agent = picker_pane("w1:p10", "w1:t1", false);
+        agent["pane"]["agent"] = json!("codex");
+        agent["pane"]["agent_status"] = json!("blocked");
+        agent["pane"]["title"] =
+            json!(format!("{} searchable-suffix 界", "long title ".repeat(12)));
+        let shell = picker_pane("w1:p20", "w1:t1", true);
+        let panes = [agent, shell]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    PaneLayoutPane {
+                        pane_id: value["pane"]["pane_id"]
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        rect: PaneRect {
+                            x: index as u16,
+                            y: 0,
+                        },
+                    },
+                    serde_json::from_value(value["pane"].clone()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let rows = pane_rows(&panes);
+        assert_eq!(rows[0].cells[3], "w1:p10");
+        assert_eq!(rows[1].status, "shell");
+        assert_eq!(rows[0].status, "blocked");
+        for query in ["searchable-suffix", "codex", "blocked", "w1:p10", "界"] {
+            let state = crate::picker::State {
+                query: query.into(),
+                ..Default::default()
+            };
+            assert_eq!(state.matches(&rows), [0]);
+        }
+        let state = crate::picker::State {
+            query: "shell".into(),
+            ..Default::default()
+        };
+        assert_eq!(state.matches(&rows), [1]);
+    }
+
+    #[test]
+    fn pane_picker_rejects_a_replaced_terminal_before_focus() {
+        let mut original = picker_pane("w1:p2", "w1:t1", false);
+        original["pane"]["terminal_id"] = json!("term-old");
+        let mut replacement = original.clone();
+        replacement["pane"]["terminal_id"] = json!("term-new");
+        let (_directory, target, receiver) = scripted_server(
+            vec![
+                picker_layout(&[("w1:p1", 0, 0), ("w1:p2", 10, 0)], "w1:p1"),
+                picker_pane("w1:p1", "w1:t1", true),
+                original,
+                replacement,
+            ],
+            "w1:p1",
+        );
+        assert!(pick_pane_with(&target, &mut Vec::new(), |_| Ok(
+            PickerChoice::Select(1)
+        ))
+        .is_err());
+        assert!(!receiver
+            .iter()
+            .any(|request| request["method"] == "pane.focus"));
+    }
+
+    #[test]
+    fn pane_refresh_keeps_last_good_rows_when_a_pane_moves_mid_snapshot() {
+        let first = picker_pane("w1:p1", "w1:t1", true);
+        let second = picker_pane("w1:p2", "w1:t1", false);
+        let moved = picker_pane("w1:p2", "w1:t2", false);
+        let mut results = Vec::new();
+        for _ in 0..2 {
+            results.push(picker_layout(
+                &[("w1:p1", 0, 0), ("w1:p2", 10, 0)],
+                "w1:p1",
+            ));
+            results.push(first.clone());
+            results.push(moved.clone());
+        }
+        results.push(picker_layout(&[("w1:p1", 0, 0)], "w1:p1"));
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        let mut panes = [first, second]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    PaneLayoutPane {
+                        pane_id: value["pane"]["pane_id"]
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        rect: PaneRect {
+                            x: index as u16 * 10,
+                            y: 0,
+                        },
+                    },
+                    serde_json::from_value(value["pane"].clone()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let original = panes.clone();
+        let client = Client::new(target.socket_path.clone());
+        let rows = refresh_pane_rows(&client, &target, &mut panes).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(panes, original);
+        assert!(refresh_pane_rows(&client, &target, &mut panes)
+            .unwrap()
+            .is_empty());
+        assert!(panes.is_empty());
+        assert_eq!(receiver.iter().count(), 7);
     }
 
     #[test]

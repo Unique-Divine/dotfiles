@@ -76,11 +76,16 @@ left-to-right. Both commands unzoom the active tab, preserve its focused pane,
 and restore the original layout if a recoverable mutation fails.
 
 Command `herdr-tmux focus-pane` lists panes in the active tab from top to bottom,
-then left to right. Press one digit without Enter to focus that pane. The
-command supports up to ten panes and cancels on Escape, invalid input, or a
-five-second timeout. A one-pane tab and selecting the active pane are successful
-no-ops. Before changing focus, the command verifies that the selected pane still
-belongs to the originating tab.
+then left to right, including shell terminals. Its table shows a quick-jump
+badge, focused-pane marker, harness, status, pane ID, and title. Pane IDs are
+location labels; digits `0` through `9` select the first ten matching rows.
+Use `j`/`k` or arrows and Enter to reach every pane, with no pane count limit.
+Press `/` to search the displayed fields. Digits are text in search mode;
+Enter or Escape returns to navigation, and Escape in navigation closes.
+The picker stays open until selection or cancellation and refreshes metadata
+once per second. A one-pane tab and selecting the active pane are successful
+no-ops. Before changing focus, it validates the selected pane's tab and
+terminal identity.
 
 Command `herdr-tmux focus-agent` lists every live agent in the session.
 The columns are Agent, Harness, Status, Tab, and Title. Agent shows the jump
