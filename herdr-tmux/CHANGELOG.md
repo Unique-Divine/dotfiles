@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Refresh open agent pickers while preserving the selected agent identity.
+- Show query hints and a result count in the agent popup.
+
 - Search the agent table by title, harness, status, or location with `/`.
 
 - Remove the agent picker limit. Keep digits for the first ten agents and

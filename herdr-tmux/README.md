@@ -101,6 +101,12 @@ digits are text. Enter or Escape returns to navigation; Escape in navigation
 closes the picker. Digit shortcuts refer to the first ten matching rows,
 independent of the scroll position.
 
+The search line shows the result count. Agent metadata refreshes once per
+second while the popup is open, and the highlighted agent follows its pane
+and terminal identity when rows change. Filtering uses the local snapshot.
+The plugin lists agents in the current session; the native Go To menu can
+also aggregate connected machines.
+
 The Tab column shows `t0` when all listed agents share a workspace and `t0_w6`
 when agents span multiple workspaces. Status icons and colors are:
 

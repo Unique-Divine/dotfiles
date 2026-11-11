@@ -451,7 +451,10 @@ impl Client {
     fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
         Ok(self
             .request::<AgentListResponse>("agent.list", json!({}))?
-            .agents)
+            .agents
+            .into_iter()
+            .filter(|agent| nonempty(&agent.agent).is_some())
+            .collect())
     }
     fn agent_get(&self, target: &str) -> Result<AgentInfo, HerdrError> {
         Ok(self
@@ -775,6 +778,8 @@ fn write_agent_selector<W: Write>(
 }
 
 pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
+    let client = Client::new(target.socket_path.clone());
+    let index_base = configured_tab_display_index_base();
     pick_agent_using(
         target,
         &mut io::stdout().lock(),
@@ -782,8 +787,18 @@ pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
             let rows = agent_rows(agents, labels)?;
             Ok(
                 match crate::picker::run(
-                    &rows,
+                    rows,
                     ["Agent", "Harness", "Status", "Tab", "Title"],
+                    || {
+                        let updated =
+                            client.agent_list().map_err(io::Error::other)?;
+                        // Tab positions can change without moving agents.
+                        *labels =
+                            agent_tab_labels(&client, &updated, index_base)
+                                .map_err(io::Error::other)?;
+                        *agents = updated;
+                        agent_rows(agents, labels).map_err(io::Error::other)
+                    },
                 )? {
                     crate::picker::Choice::Select(index) => {
                         PickerChoice::Select(index)
@@ -792,7 +807,7 @@ pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
                 },
             )
         },
-        configured_tab_display_index_base(),
+        index_base,
     )
 }
 
@@ -812,6 +827,7 @@ fn agent_rows(
             })?;
             let (icon, _, _) = agent_status_style(&agent.agent_status);
             Ok(crate::picker::Row {
+                identity: format!("{}:{}", agent.pane_id, agent.terminal_id),
                 cells: [
                     format!(
                         "{} {}",
@@ -866,18 +882,20 @@ where
     W: Write,
     C: FnMut(
         &mut W,
-        &[AgentInfo],
-        &HashMap<String, String>,
+        &mut Vec<AgentInfo>,
+        &mut HashMap<String, String>,
     ) -> Result<PickerChoice, HerdrError>,
 {
     let client = Client::new(target.socket_path.clone());
-    let agents = client.agent_list()?;
+    let mut agents = client.agent_list()?;
     if agents.is_empty() {
         return Ok(());
     }
 
-    let tab_labels = agent_tab_labels(&client, &agents, tab_display_index_base)?;
-    let PickerChoice::Select(index) = choose(writer, &agents, &tab_labels)?
+    let mut tab_labels =
+        agent_tab_labels(&client, &agents, tab_display_index_base)?;
+    let PickerChoice::Select(index) =
+        choose(writer, &mut agents, &mut tab_labels)?
     else {
         return Ok(());
     };
@@ -1878,6 +1896,30 @@ mod tests {
         assert!(!receiver
             .iter()
             .any(|request| request["method"] == "agent.focus"));
+    }
+
+    #[test]
+    fn refreshed_selection_focuses_the_displayed_identity() {
+        let first = selector_agent("w1:p1", "term-1", true, "first");
+        let second = selector_agent("w1:p2", "term-2", false, "second");
+        let mut focused = second.clone();
+        focused["focused"] = json!(true);
+        let mut shell = second.clone();
+        shell["agent"] = Value::Null;
+        let results = vec![
+            json!({"agents": [first.clone(), second.clone(), shell]}),
+            json!({"tabs": [{"tab_id": "w1:t2"}]}),
+            json!({"agents": [second.clone(), first]}),
+            json!({"agent": second}),
+            json!({"agent": focused}),
+        ];
+        let (_directory, target, receiver) = scripted_server(results, "w1:p1");
+        pick_agent_using(&target, &mut Vec::new(), |_, agents, _| {
+            assert_eq!(agents.len(), 2, "shell rows must be excluded");
+            *agents = Client::new(target.socket_path.clone()).agent_list()?;
+            Ok(PickerChoice::Select(0))
+        }, 0).unwrap();
+        assert_eq!(receiver.iter().last().unwrap()["params"], json!({"target":"w1:p2"}));
     }
 
     #[test]
