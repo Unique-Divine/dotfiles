@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -12,21 +12,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+#[cfg(test)]
 use crossterm::queue;
+use crossterm::style::Color;
+#[cfg(test)]
 use crossterm::style::{
-    Attribute, Color, ResetColor, SetAttribute, SetForegroundColor,
+    Attribute, ResetColor, SetAttribute, SetForegroundColor,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Default time a pane or agent picker waits for a selection before cancelling.
 const PICKER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PICKER_PANES: usize = 10;
-const MAX_PICKER_AGENTS: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -630,6 +633,7 @@ fn sanitize_cell(text: &str) -> String {
         .collect()
 }
 
+#[cfg(test)]
 fn fit_cell(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_owned();
@@ -683,6 +687,7 @@ pub(crate) fn pick_pane(target: &Target) -> Result<(), HerdrError> {
     pick_pane_with(target, &mut io::stdout().lock(), read_picker_choice)
 }
 
+#[cfg(test)]
 fn write_agent_selector<W: Write>(
     writer: &mut W,
     agents: &[AgentInfo],
@@ -702,7 +707,14 @@ fn write_agent_selector<W: Write>(
         })?;
         let (icon, _, _) = agent_status_style(&agent.agent_status);
         rows.push([
-            format!("{index} {marker}"),
+            format!(
+                "{} {marker}",
+                if index < 10 {
+                    index.to_string()
+                } else {
+                    " ".into()
+                }
+            ),
             sanitize_cell(kind),
             format!("{icon} {}", sanitize_cell(&agent.agent_status)),
             sanitize_cell(location),
@@ -763,14 +775,66 @@ fn write_agent_selector<W: Write>(
 }
 
 pub(crate) fn pick_agent(target: &Target) -> Result<(), HerdrError> {
-    pick_agent_with(
+    pick_agent_using(
         target,
         &mut io::stdout().lock(),
-        read_picker_choice,
+        |_, agents, labels| {
+            let rows = agent_rows(agents, labels)?;
+            Ok(
+                match crate::picker::run(
+                    &rows,
+                    ["Agent", "Harness", "Status", "Tab", "Title"],
+                )? {
+                    crate::picker::Choice::Select(index) => {
+                        PickerChoice::Select(index)
+                    }
+                    crate::picker::Choice::Cancel => PickerChoice::Cancel,
+                },
+            )
+        },
         configured_tab_display_index_base(),
     )
 }
 
+fn agent_rows(
+    agents: &[AgentInfo],
+    labels: &HashMap<String, String>,
+) -> Result<Vec<crate::picker::Row>, HerdrError> {
+    agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| {
+            let location = labels.get(&agent.tab_id).ok_or_else(|| {
+                HerdrError::Protocol(format!(
+                    "agent refers to missing tab {}",
+                    agent.tab_id
+                ))
+            })?;
+            let (icon, _, _) = agent_status_style(&agent.agent_status);
+            Ok(crate::picker::Row {
+                cells: [
+                    format!(
+                        "{} {}",
+                        if index < 10 {
+                            index.to_string()
+                        } else {
+                            " ".into()
+                        },
+                        if agent.focused { "*" } else { " " }
+                    ),
+                    sanitize_cell(agent.agent.as_deref().unwrap_or("unknown")),
+                    format!("{icon} {}", sanitize_cell(&agent.agent_status)),
+                    location.clone(),
+                    agent_description(agent),
+                ],
+                focused: agent.focused,
+                status: agent.agent_status.clone(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn pick_agent_with<W, C>(
     target: &Target,
     writer: &mut W,
@@ -781,34 +845,45 @@ where
     W: Write,
     C: FnMut(usize) -> Result<PickerChoice, HerdrError>,
 {
+    pick_agent_using(
+        target,
+        writer,
+        |writer, agents, labels| {
+            write_agent_selector(writer, agents, labels, 70, false)?;
+            choose(agents.len())
+        },
+        tab_display_index_base,
+    )
+}
+
+fn pick_agent_using<W, C>(
+    target: &Target,
+    writer: &mut W,
+    mut choose: C,
+    tab_display_index_base: usize,
+) -> Result<(), HerdrError>
+where
+    W: Write,
+    C: FnMut(
+        &mut W,
+        &[AgentInfo],
+        &HashMap<String, String>,
+    ) -> Result<PickerChoice, HerdrError>,
+{
     let client = Client::new(target.socket_path.clone());
     let agents = client.agent_list()?;
-    if agents.len() > MAX_PICKER_AGENTS {
-        return Err(HerdrError::Protocol(format!(
-            "agent selector supports at most {MAX_PICKER_AGENTS} agents; \
-             this session has {}",
-            agents.len()
-        )));
-    }
     if agents.is_empty() {
         return Ok(());
     }
 
     let tab_labels = agent_tab_labels(&client, &agents, tab_display_index_base)?;
-    let width = crossterm::terminal::size()
-        .map(|(cols, _)| usize::from(cols).saturating_sub(1))
-        .unwrap_or(70);
-    write_agent_selector(
-        writer,
-        &agents,
-        &tab_labels,
-        width,
-        io::stdout().is_terminal(),
-    )?;
-    let PickerChoice::Select(index) = choose(agents.len())? else {
+    let PickerChoice::Select(index) = choose(writer, &agents, &tab_labels)?
+    else {
         return Ok(());
     };
-    let selected = &agents[index];
+    let selected = agents.get(index).ok_or_else(|| {
+        HerdrError::Protocol("selected agent is outside the list".into())
+    })?;
     let current = client.agent_get(&selected.pane_id)?;
     if current.pane_id != selected.pane_id
         || current.terminal_id != selected.terminal_id
@@ -1742,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_selector_rejects_more_than_ten_agents_before_input() {
+    fn agent_selector_focuses_an_agent_beyond_ten() {
         let agents = (0..11)
             .map(|index| {
                 selector_agent(
@@ -1753,22 +1828,35 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let (_directory, target, receiver) =
-            scripted_server(vec![json!({"agents": agents})], "w1:p0");
+        let selected = agents[10].clone();
+        let mut focused = selected.clone();
+        focused["focused"] = json!(true);
+        let (_directory, target, receiver) = scripted_server(
+            vec![
+                json!({"agents": agents}),
+                json!({"tabs": [{"tab_id": "w1:t2"}]}),
+                json!({"agent": selected}),
+                json!({"agent": focused}),
+            ],
+            "w1:p0",
+        );
         let mut input_called = false;
-        let error = pick_agent_with(
+        pick_agent_with(
             &target,
             &mut Vec::new(),
-            |_| {
+            |count| {
+                assert_eq!(count, 11);
                 input_called = true;
-                Ok(PickerChoice::Cancel)
+                Ok(PickerChoice::Select(10))
             },
             0,
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("at most 10 agents"));
-        assert!(!input_called);
-        assert_eq!(receiver.iter().count(), 1);
+        .unwrap();
+        assert!(input_called);
+        assert_eq!(
+            receiver.iter().last().unwrap()["params"],
+            json!({"target":"w1:p10"})
+        );
     }
 
     #[test]

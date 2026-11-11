@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Remove the agent picker limit. Keep digits for the first ten agents and
+  navigate every row with Vim keys, arrows, and Enter.
+- Keep the agent picker open until selection or cancellation.
+
 ## 0.1.0
 
 - Add a Herdr plugin with even-layout actions and pane and agent popup pickers.

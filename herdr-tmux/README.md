@@ -88,9 +88,12 @@ number and an asterisk for the focused agent; Harness shows its detected kind.
 Titles fit the popup width and end with an ellipsis when truncated.
 The tab position follows `keys.switch_tab`: `0..8`
 renders `t0` through `t8`, while `1..9` renders `t1` through `t9`. Press
-`0`–`9` without Enter to focus an agent, even when it is in another workspace
-or tab. It shares the pane focus command's cancellation and timeout behavior,
-and confirms the selected agent still occupies its pane before focus.
+`0` through `9` without Enter to focus one of the first ten agents, even when
+it is in another workspace or tab. There is no agent count limit. Use `j`/`k`
+or the arrow keys to move the highlighted row, then Enter to focus it. The
+table scrolls to keep that row visible. Escape closes the picker; it stays
+open until selection or cancellation. Before focusing, the picker confirms
+the selected agent still occupies its pane.
 
 The Tab column shows `t0` when all listed agents share a workspace and `t0_w6`
 when agents span multiple workspaces. Status icons and colors are:

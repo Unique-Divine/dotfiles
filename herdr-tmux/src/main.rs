@@ -1,4 +1,5 @@
 mod app;
+mod picker;
 mod plugin;
 
 use std::path::PathBuf;
