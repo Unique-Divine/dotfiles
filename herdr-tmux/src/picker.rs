@@ -121,7 +121,12 @@ pub(crate) fn run(rows: &[Row], headings: [&str; 5]) -> io::Result<Choice> {
             width,
             height,
         )?;
-        if let Some(choice) = state.handle(event::read()?, rows.len()) {
+        let selectable = if width == 0 || height == 0 {
+            0
+        } else {
+            rows.len()
+        };
+        if let Some(choice) = state.handle(event::read()?, selectable) {
             return Ok(choice);
         }
     }
@@ -137,6 +142,25 @@ pub(crate) fn render<W: Write>(
 ) -> io::Result<()> {
     queue!(writer, MoveTo(0, 0), Clear(ClearType::All))?;
     if width == 0 || height == 0 {
+        return writer.flush();
+    }
+    if height <= 3 {
+        state.scroll(rows.len(), 1);
+        if let Some(row) = rows.get(state.selected) {
+            queue!(writer, SetAttribute(Attribute::Reverse))?;
+            write!(
+                writer,
+                "{}",
+                clip(
+                    &format!(
+                        "{} {} {}",
+                        row.cells[0], row.cells[4], row.cells[2]
+                    ),
+                    usize::from(width)
+                )
+            )?;
+            queue!(writer, SetAttribute(Attribute::Reset), ResetColor)?;
+        }
         return writer.flush();
     }
     let body_height = usize::from(height.saturating_sub(2));
@@ -299,5 +323,40 @@ mod tests {
         assert_eq!(clip("你好 world", 4), "你…");
         assert_eq!(clip("abc", 0), "");
         assert_eq!(clip("abc", 3), "abc");
+    }
+
+    #[test]
+    fn tiny_resize_prioritizes_selected_row_over_chrome() {
+        let rows: Vec<_> = (0..15)
+            .map(|index| Row {
+                cells: [
+                    index.to_string(),
+                    "codex".into(),
+                    "idle".into(),
+                    "t1".into(),
+                    format!("task-{index}"),
+                ],
+                status: "idle".into(),
+                focused: false,
+            })
+            .collect();
+        let mut state = State {
+            selected: 14,
+            ..State::default()
+        };
+        for height in [14, 1, 2, 3, 14] {
+            let mut output = Vec::new();
+            render(
+                &mut output,
+                &rows,
+                ["Agent", "Harness", "Status", "Tab", "Title"],
+                &mut state,
+                72,
+                height,
+            )
+            .unwrap();
+            assert!(String::from_utf8(output).unwrap().contains("task-14"));
+        }
+        assert_eq!(state.selected, 14);
     }
 }
