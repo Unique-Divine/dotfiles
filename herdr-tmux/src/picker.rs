@@ -1,6 +1,7 @@
 //! Keyboard selection and bounded terminal rendering shared by popup pickers.
 
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -13,8 +14,9 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Row {
+    pub identity: String,
     pub cells: [String; 5],
     pub status: String,
     pub focused: bool,
@@ -108,6 +110,21 @@ impl State {
             .collect()
     }
 
+    pub fn replace_rows(&mut self, previous: &[Row], updated: &[Row]) {
+        let selected = self
+            .matches(previous)
+            .get(self.selected)
+            .map(|index| &previous[*index].identity);
+        let matches = self.matches(updated);
+        self.selected = selected
+            .and_then(|identity| {
+                matches
+                    .iter()
+                    .position(|index| &updated[*index].identity == identity)
+            })
+            .unwrap_or(self.selected.min(matches.len().saturating_sub(1)));
+    }
+
     pub fn scroll(&mut self, count: usize, height: usize) {
         self.selected = self.selected.min(count.saturating_sub(1));
         self.offset = self.offset.min(count.saturating_sub(height));
@@ -145,16 +162,30 @@ impl Drop for Terminal {
     }
 }
 
-pub(crate) fn run(rows: &[Row], headings: [&str; 5]) -> io::Result<Choice> {
+pub(crate) fn run<F>(
+    mut rows: Vec<Row>,
+    headings: [&str; 5],
+    mut refresh: F,
+) -> io::Result<Choice>
+where
+    F: FnMut() -> io::Result<Vec<Row>>,
+{
     let _terminal = Terminal::enter()?;
     let mut state = State {
         selected: rows.iter().position(|row| row.focused).unwrap_or(0),
         ..State::default()
     };
+    let mut refreshed_at = Instant::now();
     loop {
+        if refreshed_at.elapsed() >= Duration::from_secs(1) {
+            let updated = refresh()?;
+            state.replace_rows(&rows, &updated);
+            rows = updated;
+            refreshed_at = Instant::now();
+        }
         let (width, height) = terminal::size()?;
-        let matches = state.matches(rows);
-        let filtered = matched_rows(rows, &matches);
+        let matches = state.matches(&rows);
+        let filtered = matched_rows(&rows, &matches);
         render(
             &mut io::stdout().lock(),
             &filtered,
@@ -163,6 +194,11 @@ pub(crate) fn run(rows: &[Row], headings: [&str; 5]) -> io::Result<Choice> {
             width,
             height,
         )?;
+        if !event::poll(
+            Duration::from_secs(1).saturating_sub(refreshed_at.elapsed()),
+        )? {
+            continue;
+        }
         let selectable = if width == 0 || height == 0 {
             0
         } else {
@@ -242,9 +278,10 @@ pub(crate) fn render<W: Write>(
         "{}",
         clip(
             &format!(
-                "/ {}{}",
+                "/ {}{}  · {} results",
                 state.query,
-                if state.searching { "▏" } else { "" }
+                if state.searching { "▏" } else { "" },
+                rows.len(),
             ),
             usize::from(width)
         )
@@ -417,6 +454,7 @@ mod tests {
     fn rows() -> Vec<Row> {
         (0..15)
             .map(|index| Row {
+                identity: format!("pane-{index}"),
                 cells: [
                     String::new(),
                     "Codex".into(),
@@ -516,5 +554,86 @@ mod tests {
         )
         .unwrap();
         assert!(String::from_utf8(output).unwrap().contains("No matches"));
+    }
+
+    #[test]
+    fn refresh_keeps_selected_identity_across_insertions_and_removal() {
+        let original = rows();
+        let mut state = State {
+            selected: 12,
+            ..State::default()
+        };
+        let mut updated = original.clone();
+        updated.remove(0);
+        state.replace_rows(&original, &updated);
+        assert_eq!(state.selected, 11);
+        assert_eq!(updated[state.selected].identity, original[12].identity);
+        let previous = updated.clone();
+        updated.remove(11);
+        state.replace_rows(&previous, &updated);
+        assert_eq!(state.selected, 11);
+        assert_eq!(updated[state.selected].identity, original[13].identity);
+        state.replace_rows(&updated, &[]);
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn renderer_fits_unicode_rows_after_resize() {
+        let rows = rows();
+        for width in [0, 1, 8, 32, 72] {
+            for height in [0, 1, 2, 3, 4, 14] {
+                let mut output = Vec::new();
+                render(
+                    &mut output,
+                    &rows,
+                    ["Agent", "Harness", "Status", "Tab", "Title"],
+                    &mut State::default(),
+                    width,
+                    height,
+                )
+                .unwrap();
+                assert!(String::from_utf8(output).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual render and filter scaling measurement"]
+    fn picker_render_scale_profile() {
+        let headings = ["Agent", "Harness", "Status", "Tab", "Title"];
+        for count in [1, 15, 52, 512] {
+            let rows: Vec<_> = (0..count)
+                .map(|index| {
+                    let mut row = rows()[0].clone();
+                    row.identity = index.to_string();
+                    row.cells[4] = format!("Task {index}");
+                    row
+                })
+                .collect();
+            for query in ["", "Task 1"] {
+                let mut state = State {
+                    query: query.into(),
+                    ..State::default()
+                };
+                let start = Instant::now();
+                for _ in 0..200 {
+                    let matches = state.matches(&rows);
+                    let filtered = matched_rows(&rows, &matches);
+                    render(
+                        &mut io::sink(),
+                        &filtered,
+                        headings,
+                        &mut state,
+                        100,
+                        30,
+                    )
+                    .unwrap();
+                }
+                eprintln!(
+                    "plugin rows={count} query={query:?} filter+render_us={:.2}",
+                    start.elapsed().as_secs_f64() * 1_000_000.0 / 200.0
+                );
+            }
+        }
     }
 }
