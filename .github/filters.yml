@@ -12,6 +12,7 @@ bun:
   - 'codex/**'
   - 'cursor/**'
   - 'claude/**'
+  - 'grok/**'
   - 'windows/sharex/**'
   - 'symlinks.sh'
   - 'justfile'

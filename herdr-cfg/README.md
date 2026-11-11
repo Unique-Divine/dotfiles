@@ -59,6 +59,12 @@ and Cursor after applying their portable settings. All three CLIs are required;
 Cursor can be available as `cursor-agent` or `agent`. A missing CLI fails setup
 instead of silently skipping its integration. Install the missing CLI first.
 
+Grok is separate. After those three hooks, `just herdr-integrations` runs
+`herdr integration install grok` when `herdr integration status` does not
+report `grok: current`. Herdr writes `hooks/herdr.json` and
+`hooks/herdr-agent-state.sh` under `$GROK_HOME` or `~/.grok` and leaves every
+other hook file alone. Resume uses `grok --resume <id>`.
+
 Run `just herdr-integrations` to repair hooks without running the full sync.
 `just health` checks CLI availability, hook versions, script syntax, hook
 registration, and Codex's hook feature flag without changing configuration.

@@ -16,6 +16,7 @@ bash_files=(
   zsh/ud/shell.sh
   ud/source-hash.sh
   claude/native.sh
+  grok/native.sh
 )
 
 zsh_files=(
@@ -131,6 +132,14 @@ if ! bun run codex/config.ts --check; then
   failed=1
 fi
 
+if ! bash grok/native.sh --check; then
+  failed=1
+fi
+
+if ! bun run grok/config.ts --check; then
+  failed=1
+fi
+
 if ! bun run cursor/cli-config.ts --check; then
   failed=1
 fi
@@ -166,6 +175,10 @@ else
 fi
 
 if ! bun run herdr-cfg/integrations.ts --check; then
+  failed=1
+fi
+
+if ! bun run grok/herdr.ts --check; then
   failed=1
 fi
 
