@@ -52,7 +52,9 @@ bun run grok/config.ts --run
 
 `native.sh` checks that `grok --version` runs. `--run` uses the xAI installer
 only when the command is missing. A working install, including one provided by
-mise, is left alone.
+mise, is left alone. The installer runs with `SHELL=/bin/sh` and
+`$HOME/.local/bin` on `PATH`, so it does not follow the managed `~/.zshrc`
+symlink into this repo.
 
 ```bash
 just grok-install
@@ -65,5 +67,7 @@ runs both checks. `zsh/managed-links.txt` links `AGENTS.md` to
 loads `$HOME/.claude/CLAUDE.md`, so those rules are not copied here.
 
 `just herdr-integrations` then runs `herdr integration install grok` when that
-hook is not current. Herdr writes only its own files under the Grok config
-directory. `just health` requires the status line `grok: current`.
+hook is not current. The script creates the Grok config directory first,
+because Herdr refuses the install when it is missing. Herdr writes only its
+own files under that directory. `just health` requires the status line
+`grok: current`.

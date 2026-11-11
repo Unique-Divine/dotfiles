@@ -33,6 +33,10 @@ if [ "$1" = integration ] && [ "$2" = status ]; then
   exit 0
 fi
 if [ "$1" = integration ] && [ "$2" = install ] && [ "$3" = grok ]; then
+  if [ ! -d "$HOME/.grok" ]; then
+    echo "grok config directory not found at $HOME/.grok" >&2
+    exit 1
+  fi
   printf '%s\\n' "grok: current (v2) (/tmp/grok)" > "$HERDR_STATUS_FILE"
   exit 0
 fi
@@ -54,6 +58,8 @@ async function fixture(status: string) {
   return {
     env: {
       ...process.env,
+      HOME: root,
+      GROK_HOME: "",
       PATH: `${bin}:/usr/bin:/bin`,
       HERDR_LOG: join(root, "log"),
       HERDR_STATUS_FILE: statusFile,

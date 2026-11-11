@@ -23,7 +23,14 @@ grok_ok() {
 case "$mode" in
   --run)
     if ! grok_ok; then
-      curl -fsSL "$install_url" | bash
+      # SHELL=/bin/sh keeps the installer off ~/.zshrc. That file is a
+      # managed symlink, and the installer follows it into this repo.
+      mkdir -p "$HOME/.local/bin"
+      (
+        export SHELL=/bin/sh
+        export PATH="$HOME/.local/bin:$PATH"
+        curl -fsSL "$install_url" | bash
+      )
     fi
     ;;
   --check) ;;

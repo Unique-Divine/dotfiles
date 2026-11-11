@@ -1,4 +1,8 @@
+import { mkdir } from "node:fs/promises"
+
 import { Command } from "commander"
+
+import { grokDirectory } from "./config.ts"
 
 /**
  * Herdr's own installer owns the Grok session hook. It writes
@@ -71,6 +75,9 @@ export const ensureGrokHook = async (
   if (grokHookCurrent(status)) {
     return false
   }
+
+  // Herdr refuses to install until this directory exists.
+  await mkdir(grokDirectory(env), { recursive: true })
 
   const installed = await runHerdr(["integration", "install", "grok"], env)
 
