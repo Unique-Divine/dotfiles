@@ -30,6 +30,8 @@ pub(crate) enum Choice {
 pub(crate) struct State {
     pub selected: usize,
     pub offset: usize,
+    pub query: String,
+    pub searching: bool,
 }
 
 impl State {
@@ -43,10 +45,34 @@ impl State {
         {
             return Some(Choice::Cancel);
         }
+        if self.searching {
+            let changed = match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.searching = false;
+                    false
+                }
+                KeyCode::Backspace => self.query.pop().is_some(),
+                KeyCode::Char(character)
+                    if !key.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT,
+                    ) =>
+                {
+                    self.query.push(character);
+                    true
+                }
+                _ => false,
+            };
+            if changed {
+                self.selected = 0;
+                self.offset = 0;
+            }
+            return None;
+        }
         if !key.modifiers.is_empty() {
             return None;
         }
         match key.code {
+            KeyCode::Char('/') => self.searching = true,
             KeyCode::Esc => return Some(Choice::Cancel),
             KeyCode::Enter if count > 0 => {
                 return Some(Choice::Select(self.selected.min(count - 1)))
@@ -66,6 +92,20 @@ impl State {
             _ => {}
         }
         None
+    }
+
+    pub fn matches(&self, rows: &[Row]) -> Vec<usize> {
+        let query = self.query.to_lowercase();
+        rows.iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                (query.is_empty()
+                    || row.cells[1..]
+                        .iter()
+                        .any(|cell| cell.to_lowercase().contains(&query)))
+                .then_some(index)
+            })
+            .collect()
     }
 
     pub fn scroll(&mut self, count: usize, height: usize) {
@@ -113,9 +153,11 @@ pub(crate) fn run(rows: &[Row], headings: [&str; 5]) -> io::Result<Choice> {
     };
     loop {
         let (width, height) = terminal::size()?;
+        let matches = state.matches(rows);
+        let filtered = matched_rows(rows, &matches);
         render(
             &mut io::stdout().lock(),
-            rows,
+            &filtered,
             headings,
             &mut state,
             width,
@@ -124,12 +166,35 @@ pub(crate) fn run(rows: &[Row], headings: [&str; 5]) -> io::Result<Choice> {
         let selectable = if width == 0 || height == 0 {
             0
         } else {
-            rows.len()
+            matches.len()
         };
         if let Some(choice) = state.handle(event::read()?, selectable) {
-            return Ok(choice);
+            return Ok(match choice {
+                Choice::Select(index) => Choice::Select(matches[index]),
+                Choice::Cancel => Choice::Cancel,
+            });
         }
     }
+}
+
+fn matched_rows(rows: &[Row], matches: &[usize]) -> Vec<Row> {
+    matches
+        .iter()
+        .enumerate()
+        .map(|(shortcut, index)| {
+            let mut row = rows[*index].clone();
+            row.cells[0] = format!(
+                "{} {}",
+                if shortcut < 10 {
+                    shortcut.to_string()
+                } else {
+                    " ".into()
+                },
+                if row.focused { "*" } else { " " }
+            );
+            row
+        })
+        .collect()
 }
 
 pub(crate) fn render<W: Write>(
@@ -163,7 +228,7 @@ pub(crate) fn render<W: Write>(
         }
         return writer.flush();
     }
-    let body_height = usize::from(height.saturating_sub(2));
+    let body_height = usize::from(height.saturating_sub(3));
     state.scroll(rows.len(), body_height);
     let widths: [usize; 4] = std::array::from_fn(|column| {
         rows.iter()
@@ -172,6 +237,22 @@ pub(crate) fn render<W: Write>(
             .max()
             .unwrap_or(0)
     });
+    write!(
+        writer,
+        "{}",
+        clip(
+            &format!(
+                "/ {}{}",
+                state.query,
+                if state.searching { "▏" } else { "" }
+            ),
+            usize::from(width)
+        )
+    )?;
+    if height < 2 {
+        return writer.flush();
+    }
+    queue!(writer, MoveTo(0, 1))?;
     write_line(
         writer,
         &headings.map(str::to_owned),
@@ -184,7 +265,7 @@ pub(crate) fn render<W: Write>(
     for (index, row) in
         rows.iter().enumerate().skip(state.offset).take(body_height)
     {
-        queue!(writer, MoveTo(0, (index - state.offset + 1) as u16))?;
+        queue!(writer, MoveTo(0, (index - state.offset + 2) as u16))?;
         write_line(
             writer,
             &row.cells,
@@ -195,13 +276,21 @@ pub(crate) fn render<W: Write>(
             &row.status,
         )?;
     }
+    if rows.is_empty() && body_height > 0 {
+        queue!(writer, MoveTo(0, 2))?;
+        write!(writer, "{}", clip("No matches", usize::from(width)))?;
+    }
     if height > 1 {
         queue!(writer, MoveTo(0, height - 1))?;
         write!(
             writer,
             "{}",
             clip(
-                "0-9 jump · j/k move · enter open · esc close",
+                if state.searching {
+                    "type to search · enter/esc navigate"
+                } else {
+                    "0-9 jump · j/k move · / search · enter open · esc close"
+                },
                 usize::from(width)
             )
         )?;
@@ -325,21 +414,25 @@ mod tests {
         assert_eq!(clip("abc", 3), "abc");
     }
 
-    #[test]
-    fn tiny_resize_prioritizes_selected_row_over_chrome() {
-        let rows: Vec<_> = (0..15)
+    fn rows() -> Vec<Row> {
+        (0..15)
             .map(|index| Row {
                 cells: [
-                    index.to_string(),
-                    "codex".into(),
+                    String::new(),
+                    "Codex".into(),
                     "idle".into(),
-                    "t1".into(),
-                    format!("task-{index}"),
+                    "t2_w1".into(),
+                    format!("Task {index} 界"),
                 ],
                 status: "idle".into(),
                 focused: false,
             })
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn tiny_resize_prioritizes_selected_row_over_chrome() {
+        let rows = rows();
         let mut state = State {
             selected: 14,
             ..State::default()
@@ -355,8 +448,73 @@ mod tests {
                 height,
             )
             .unwrap();
-            assert!(String::from_utf8(output).unwrap().contains("task-14"));
+            assert!(String::from_utf8(output).unwrap().contains("Task 14"));
         }
         assert_eq!(state.selected, 14);
+    }
+
+    #[test]
+    fn search_digits_are_text_and_navigation_digits_use_filtered_indices() {
+        let rows = rows();
+        let mut state = State::default();
+        state.handle(key(KeyCode::Char('/')), rows.len());
+        for character in "TASK 14".chars() {
+            assert_eq!(
+                state.handle(key(KeyCode::Char(character)), rows.len()),
+                None
+            );
+        }
+        assert_eq!(state.matches(&rows), [14]);
+        assert_eq!(
+            matched_rows(&rows, &state.matches(&rows))[0].cells[0],
+            "0  "
+        );
+        assert_eq!(state.handle(key(KeyCode::Enter), 1), None);
+        let Some(Choice::Select(index)) =
+            state.handle(key(KeyCode::Char('0')), 1)
+        else {
+            panic!("expected shortcut")
+        };
+        assert_eq!(state.matches(&rows)[index], 14);
+    }
+
+    #[test]
+    fn search_exit_does_not_close_and_backspace_handles_unicode() {
+        let mut state = State::default();
+        state.handle(key(KeyCode::Char('/')), 0);
+        state.handle(key(KeyCode::Char('界')), 0);
+        assert_eq!(state.query, "界");
+        state.handle(key(KeyCode::Backspace), 0);
+        assert!(state.query.is_empty());
+        assert_eq!(state.handle(key(KeyCode::Esc), 0), None);
+        assert_eq!(state.handle(key(KeyCode::Esc), 0), Some(Choice::Cancel));
+    }
+
+    #[test]
+    fn search_matches_every_display_field_before_clipping() {
+        let rows = rows();
+        for query in ["codex", "IDLE", "t2_w1", "界"] {
+            let state = State {
+                query: query.into(),
+                ..State::default()
+            };
+            assert_eq!(state.matches(&rows).len(), 15);
+        }
+        let mut state = State {
+            query: "missing".into(),
+            ..State::default()
+        };
+        assert!(state.matches(&rows).is_empty());
+        let mut output = Vec::new();
+        render(
+            &mut output,
+            &[],
+            ["Agent", "Harness", "Status", "Tab", "Title"],
+            &mut state,
+            72,
+            14,
+        )
+        .unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("No matches"));
     }
 }
