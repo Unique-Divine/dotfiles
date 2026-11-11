@@ -191,7 +191,16 @@ impl ClientShellState {
     }
 
     pub(super) fn open_navigator_overlay(&mut self) {
+        self.open_navigator_overlay_with_scope(false);
+    }
+
+    pub(super) fn open_agent_navigator_overlay(&mut self) {
+        self.open_navigator_overlay_with_scope(true);
+    }
+
+    fn open_navigator_overlay_with_scope(&mut self, agents_only: bool) {
         let mut navigator = ClientNavigatorOverlay {
+            agents_only,
             query: TextEditor::default(),
             search_focused: false,
             selected: None,
@@ -287,6 +296,41 @@ impl ClientShellState {
         if let Some((_, pair)) = destination {
             navigator.selected = Some(pair[1].target.clone());
         }
+    }
+
+    fn accept_navigator_shortcut(&mut self, digit: u8, outcome: &mut ClientShellInput) -> bool {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return false;
+        };
+        if !navigator.agents_only {
+            return false;
+        }
+        // A newer snapshot must not silently redirect a digit that was painted
+        // for another agent. Keep its rendered target, then check current eligibility.
+        let Some((_, target)) = self
+            .hits
+            .navigator_shortcuts
+            .iter()
+            .find(|(key, _)| *key == digit)
+        else {
+            return false;
+        };
+        let rows = render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            navigator,
+            self.config.keybinds.keybinds.tab_display_index_base(),
+        );
+        let Some(row) = rows
+            .iter()
+            .find(|row| &row.target == target && row.quick_digit.is_some())
+        else {
+            outcome.repaint = true;
+            return true;
+        };
+        navigator.selected = Some(row.target.clone());
+        self.accept_navigator_selection(outcome);
+        true
     }
 
     pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
@@ -711,6 +755,13 @@ impl ClientShellState {
                     return;
                 }
                 return;
+            }
+            if let KeyCode::Char(digit @ '0'..='9') = code {
+                if modifiers.is_empty()
+                    && self.accept_navigator_shortcut(digit as u8 - b'0', outcome)
+                {
+                    return;
+                }
             }
             if matches!(code, KeyCode::Left | KeyCode::Right) && modifiers.is_empty() {
                 self.move_navigator_workspace(code == KeyCode::Right);

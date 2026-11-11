@@ -349,6 +349,10 @@ pub(super) fn navigator_rows(
                         .unwrap_or_default();
                     for (index, pane) in tab_panes.iter().enumerate() {
                         let agent = agents.get(pane.pane_id.as_str()).copied();
+                        if navigator.agents_only && agent.is_none_or(|agent| agent.agent.is_none())
+                        {
+                            continue;
+                        }
                         let status = agent
                             .map_or(crate::api::schema::AgentStatus::Unknown, |agent| {
                                 agent.agent_status
@@ -419,6 +423,7 @@ pub(super) fn navigator_rows(
                                 stale,
                                 current: endpoint.endpoint_id == *active_endpoint_id
                                     && snapshot.focused_pane_id.as_deref() == Some(&pane.pane_id),
+                                quick_digit: None,
                                 target: ClientNavigatorTarget::Pane {
                                     endpoint_id: endpoint.endpoint_id.clone(),
                                     pane_id: pane.pane_id.clone(),
@@ -427,9 +432,12 @@ pub(super) fn navigator_rows(
                         }
                     }
                 }
-                if !filtering
-                    || !children.is_empty()
-                    || (navigator.filter.is_none() && !query.is_empty() && workspace_matches)
+                if !children.is_empty()
+                    || (!navigator.agents_only
+                        && (!filtering
+                            || (navigator.filter.is_none()
+                                && !query.is_empty()
+                                && workspace_matches)))
                 {
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
@@ -440,6 +448,7 @@ pub(super) fn navigator_rows(
                         status: None,
                         stale,
                         current: false,
+                        quick_digit: None,
                         target: ClientNavigatorTarget::Workspace {
                             endpoint_id: endpoint.endpoint_id.clone(),
                             workspace_id: workspace.workspace_id.clone(),
@@ -449,7 +458,9 @@ pub(super) fn navigator_rows(
                 }
             }
         }
-        if !filtering || endpoint_query_matches || !endpoint_rows.is_empty() {
+        if !endpoint_rows.is_empty()
+            || (!navigator.agents_only && (!filtering || endpoint_query_matches))
+        {
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
@@ -460,12 +471,38 @@ pub(super) fn navigator_rows(
                     status: None,
                     stale,
                     current: false,
+                    quick_digit: None,
                     target: ClientNavigatorTarget::Machine {
                         endpoint_id: endpoint.endpoint_id.clone(),
                     },
                 });
             }
             rows.extend(endpoint_rows);
+        }
+    }
+    if navigator.agents_only {
+        // Shortcuts belong to the filtered presentation, so drawing and input
+        // share endpoint-qualified targets without changing navigation order.
+        let mut digit = 0;
+        for row in &mut rows {
+            if !row.current
+                && !row.stale
+                && matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                && matches!(
+                    row.status,
+                    Some(
+                        crate::api::schema::AgentStatus::Blocked
+                            | crate::api::schema::AgentStatus::Done
+                            | crate::api::schema::AgentStatus::Idle
+                    )
+                )
+            {
+                row.quick_digit = Some(digit);
+                digit += 1;
+                if digit == 10 {
+                    break;
+                }
+            }
         }
     }
     rows

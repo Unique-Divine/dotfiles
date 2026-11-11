@@ -121,6 +121,7 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_popup: Rect,
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(super) navigator_shortcuts: Vec<(u8, ClientNavigatorTarget)>,
     pub(super) navigator_scrollbar: Rect,
     pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) worktree_search: Rect,
@@ -356,11 +357,13 @@ pub(super) struct ClientNavigatorRow {
     pub(super) status: Option<crate::api::schema::AgentStatus>,
     pub(super) stale: bool,
     pub(super) current: bool,
+    pub(super) quick_digit: Option<u8>,
     pub(super) target: ClientNavigatorTarget,
 }
 
 #[derive(Debug)]
 pub(super) struct ClientNavigatorOverlay {
+    pub(super) agents_only: bool,
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) selected: Option<ClientNavigatorTarget>,
