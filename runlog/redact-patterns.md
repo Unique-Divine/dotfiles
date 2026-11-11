@@ -108,8 +108,8 @@ its decoded strings redacted, so `KEY=\"value\"` in the raw line reads as
 `KEY="value"`. The line is re-encoded only when a string changed. Every
 line is then redacted as text, which catches `"password": "..."` pairs.
 
-When `ud runs redact-file` can't run, `runlog.sh` falls back to jq. That
-path keeps the first 1 MiB of a file, cut at a full line, marks the
+When `ud boku runs redact-file` can't run, `runlog.sh` falls back to jq.
+That path keeps the first 1 MiB of a file, cut at a full line, marks the
 artifact `truncated`, and logs `warn redact-fallback-capped`. If redaction
 fails outright, a source inside the run folder is deleted, not left raw.
 

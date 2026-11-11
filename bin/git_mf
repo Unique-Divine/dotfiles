@@ -49,12 +49,12 @@ Options:
   --dry-run     Print the plan and commands without running them.
   --agent       On exit 2 or 3, run an agent with the merge prompt instead.
   --json        Print this run's events to stdout as JSONL. Command output
-                moves to stderr. The agent's own events (from ud runs
+                moves to stderr. The agent's own events (from ud boku runs
                 tap) are in the run file, not on stdout.
   -h, --help    Show this help.
 
 Each run is logged to the Boku run log (~/.boku/runs; BOKU_HOME moves it,
-BOKU_RUNLOG=0 turns it off). Read it with ud runs.
+BOKU_RUNLOG=0 turns it off). Read it with ud boku runs.
 EOF
 }
 
@@ -112,7 +112,8 @@ prompt_file="$script_dir/git_mf.prompt.md"
 
 # The run log is optional: without it, every runlog_* call does nothing.
 runlog_sh="$script_dir/../runlog/runlog.sh"
-# `ud runs`, called directly: its tap and redact-file run in the agent path.
+# `ud boku runs`, called directly: its tap and redact-file run in the agent
+# path.
 runs_cli="${BOKU_RUNS_CLI:-$script_dir/../runlog/cli.ts}"
 if [[ -r "$runlog_sh" ]]; then
   # shellcheck source=../runlog/runlog.sh
@@ -258,7 +259,8 @@ claude_args=(
 # before committing; verify reports what actually happened.
 codex_args=(exec -C "$repo" --approve-for-me)
 
-# Run the agent through `ud runs tap`, which saves and summarizes its stream.
+# Run the agent through `ud boku runs tap`, which saves and summarizes its
+# stream.
 run_stream_pipeline() {
   set +e
   if [[ "$agent" == claude ]]; then
@@ -375,7 +377,7 @@ save_artifacts() {
     runlog_artifact report "$report_tmp"
   elif [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
     # The tap's report for claude: redact (and chmod 0600) in place. The
-    # writer falls back to jq if `ud runs` can't.
+    # writer falls back to jq if `ud boku runs` can't.
     runlog_artifact report "$run_dir/report.md"
   fi
   if [[ -n "$run_dir" && -s "$run_dir/report.md" ]]; then
@@ -446,7 +448,7 @@ run_agent() {
   fi
   say "agent outcome: $outcome (git_mf exits $code)"
   if [[ -n "$run_dir" ]]; then
-    say "run log: ud runs show ${run_dir##*/}"
+    say "run log: ud boku runs show ${run_dir##*/}"
   fi
   return "$code"
 }

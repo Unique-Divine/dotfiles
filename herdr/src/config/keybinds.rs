@@ -363,6 +363,7 @@ pub struct Keybinds {
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
     pub goto: ActionKeybinds,
+    pub goto_agents: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
@@ -571,6 +572,7 @@ impl Config {
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
             goto: empty_action!(),
+            goto_agents: empty_action!(),
             detach: empty_action!(),
             reload_config: empty_action!(),
             open_notification_target: empty_action!(),
@@ -700,6 +702,7 @@ impl Config {
             apply_action!(keybinds.close_workspace, close_workspace, source);
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
             apply_action!(keybinds.goto, goto, source);
+            apply_action!(keybinds.goto_agents, goto_agents, source);
             apply_action!(keybinds.detach, detach, source);
             apply_action!(keybinds.reload_config, reload_config, source);
             apply_action!(
@@ -1746,6 +1749,19 @@ next_tab = "prefix+n"
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('g'),
                 KeyModifiers::empty()
+            ))]
+        );
+    }
+
+    #[test]
+    fn agent_navigator_is_unbound_by_default_and_supports_profile_overrides() {
+        assert!(Config::default().keybinds().goto_agents.bindings.is_empty());
+        let config: Config = toml::from_str("[keys]\ngoto_agents = \"prefix+A\"\n").unwrap();
+        assert_eq!(
+            binding_triggers(&config.keybinds().goto_agents),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('a'),
+                KeyModifiers::SHIFT
             ))]
         );
     }

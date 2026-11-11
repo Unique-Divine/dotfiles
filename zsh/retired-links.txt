@@ -1,0 +1,4 @@
+# Links that sync used to create: source relative to DOTFILES, destination
+# relative to HOME. symlinks.sh removes a destination only while it is a
+# symlink resolving to that source; anything else there is left alone.
+runlog/cli.ts .local/share/ud/plugins/ud-runs

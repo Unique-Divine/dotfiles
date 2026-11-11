@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Enlarge both popup pickers to 116 columns by 42 rows, with visible row
+  ranges, overflow arrows, and title-first constrained layouts.
+
+- Add search, unlimited keyboard navigation, and agent status to pane quick
+  jump. Keep pane IDs separate from digit shortcuts.
+
+- Refresh open agent pickers while preserving the selected agent identity.
+- Show query hints and a result count in the agent popup.
+
+- Search the agent table by title, harness, status, or location with `/`.
+
+- Remove the agent picker limit. Keep digits for the first ten agents and
+  navigate every row with Vim keys, arrows, and Enter.
+- Keep the agent picker open until selection or cancellation.
+
 ## 0.1.0
 
 - Add a Herdr plugin with even-layout actions and pane and agent popup pickers.

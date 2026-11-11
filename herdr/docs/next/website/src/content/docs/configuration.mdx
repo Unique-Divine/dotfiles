@@ -133,6 +133,7 @@ A small keybinding override looks like this:
 [keys]
 prefix = "ctrl+b"
 goto = "prefix+g"
+goto_agents = "" # optional agent-only navigator
 new_tab = "prefix+c"
 next_tab = "prefix+n"
 previous_tab = "prefix+p"
@@ -617,3 +618,16 @@ Common log files:
 ```
 
 Logs rotate automatically. Include the current log and rotated siblings when reporting issues.
+
+## Agent-Only Navigation
+
+Set `keys.goto_agents = "prefix+A"` to open **Go to agent**. It uses the
+session navigator's search, Vim navigation, and connected-machine targets,
+while omitting ordinary terminals and empty groups. The ordinary `keys.goto`
+action keeps its existing behavior.
+
+Digit badges `0` through `9` jump directly to the first ten blocked, done, or
+idle agents in the filtered display order. The focused agent and disconnected
+machines receive no badges. Working and unknown agents remain available through
+navigation and search. While the search field is focused, digits enter query
+text. Escape leaves search; another Escape closes the menu.

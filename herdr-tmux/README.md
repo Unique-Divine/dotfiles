@@ -76,11 +76,16 @@ left-to-right. Both commands unzoom the active tab, preserve its focused pane,
 and restore the original layout if a recoverable mutation fails.
 
 Command `herdr-tmux focus-pane` lists panes in the active tab from top to bottom,
-then left to right. Press one digit without Enter to focus that pane. The
-command supports up to ten panes and cancels on Escape, invalid input, or a
-five-second timeout. A one-pane tab and selecting the active pane are successful
-no-ops. Before changing focus, the command verifies that the selected pane still
-belongs to the originating tab.
+then left to right, including shell terminals. Its table shows a quick-jump
+badge, focused-pane marker, harness, status, pane ID, and title. Pane IDs are
+location labels; digits `0` through `9` select the first ten matching rows.
+Use `j`/`k` or arrows and Enter to reach every pane, with no pane count limit.
+Press `/` to search the displayed fields. Digits are text in search mode;
+Enter or Escape returns to navigation, and Escape in navigation closes.
+The picker stays open until selection or cancellation and refreshes metadata
+once per second. A one-pane tab and selecting the active pane are successful
+no-ops. Before changing focus, it validates the selected pane's tab and
+terminal identity.
 
 Command `herdr-tmux focus-agent` lists every live agent in the session.
 The columns are Agent, Harness, Status, Tab, and Title. Agent shows the jump
@@ -88,9 +93,31 @@ number and an asterisk for the focused agent; Harness shows its detected kind.
 Titles fit the popup width and end with an ellipsis when truncated.
 The tab position follows `keys.switch_tab`: `0..8`
 renders `t0` through `t8`, while `1..9` renders `t1` through `t9`. Press
-`0`–`9` without Enter to focus an agent, even when it is in another workspace
-or tab. It shares the pane focus command's cancellation and timeout behavior,
-and confirms the selected agent still occupies its pane before focus.
+`0` through `9` without Enter to focus one of the first ten agents, even when
+it is in another workspace or tab. There is no agent count limit. Use `j`/`k`
+or the arrow keys to move the highlighted row, then Enter to focus it. The
+table scrolls to keep that row visible. Escape closes the picker; it stays
+open until selection or cancellation. Before focusing, the picker confirms
+the selected agent still occupies its pane.
+
+Press `/` to search the title, harness, status, or tab label. Matching ignores
+case and includes title text beyond the popup width. While editing a query,
+digits are text. Enter or Escape returns to navigation; Escape in navigation
+closes the picker. Digit shortcuts refer to the first ten matching rows,
+independent of the scroll position.
+
+Both popup pickers request 116 columns by 42 rows. Herdr clamps that size to
+the available terminal area. The search line reserves its right side for the
+visible row range and total, such as `1-14/14` or `↑21-26/50↓`. Arrows show
+that more matching rows are above or below the viewport, even with a long
+query. Narrow layouts hide location and harness columns before clipping the
+destination title. Tiny layouts keep the selected row visible first.
+
+Agent metadata refreshes once per
+second while the popup is open, and the highlighted agent follows its pane
+and terminal identity when rows change. Filtering uses the local snapshot.
+The plugin lists agents in the current session; the native Go To menu can
+also aggregate connected machines.
 
 The Tab column shows `t0` when all listed agents share a workspace and `t0_w6`
 when agents span multiple workspaces. Status icons and colors are:

@@ -1,4 +1,5 @@
 mod app;
+mod picker;
 mod plugin;
 
 use std::path::PathBuf;
@@ -41,9 +42,9 @@ enum Command {
         #[command(subcommand)]
         layout: Layout,
     },
-    /// Focus a pane in the active tab by number.
+    /// Search or navigate panes in the active tab, with digit shortcuts.
     FocusPane,
-    /// Focus a live agent anywhere in the session by number.
+    /// Search or navigate live agents in the session, with digit shortcuts.
     FocusAgent,
 }
 

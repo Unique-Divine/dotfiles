@@ -64,9 +64,9 @@ match, the newest wins and the others are named on stderr.
 Why the index is per day: pruning deletes whole day folders and never
 edits a file, so today's and yesterday's files are append-only. A killed
 run never writes its index line, so run files are the truth. For today
-and yesterday, `ud runs` reads the run files directly; the index is a fast
+and yesterday, `ud boku runs` reads the run files directly; the index is a fast
 path for older days, and run files missing from it show as `incomplete`.
-`ud runs reindex`, and prune for any kept past day, rebuild an index
+`ud boku runs reindex`, and prune for any kept past day, rebuild an index
 through a temp file and a rename.
 
 ## Event Schema
@@ -258,9 +258,9 @@ run_agent() {                     # caller: run_agent "$reason"; exit $?
 It keeps its early exits for "no agent installed" and `--dry-run`.
 `needs_judgment` logs `warn needs-judgment` before it hands off.
 
-`ud runs` is the plugin `runlog/cli.ts`, linked as
-`~/.local/share/ud/plugins/ud-runs`. `git_mf` and `runlog.sh` call it by
-path as `$runs_cli`; `BOKU_RUNS_CLI` overrides the path. The stream
+`ud boku runs` forwards to `runlog/cli.ts` (see Decisions). `git_mf` and
+`runlog.sh` call `cli.ts` by path as `$runs_cli`; `BOKU_RUNS_CLI`
+overrides the path. The stream
 pipeline, Claude shown:
 
 ```bash
@@ -380,7 +380,7 @@ Two more failures:
 ```
 runlog/runlog.sh              bash writer, sourced
 runlog/runlog.ts              TS writer, imported
-runlog/cli.ts                 ud runs: reader, tap, prune, redact-file
+runlog/cli.ts                 ud boku runs: reader, tap, prune, redact-file
 runlog/redact-patterns.json   shared redaction patterns
 runlog/redact-patterns.md     their rules and gaps
 runlog/*.test.ts
@@ -511,19 +511,18 @@ event's `challenges` holds that section.
 
 ### Reviewing Runs
 
-`ud runs`, or `just runs` with the same arguments (passed quoted, never
+`ud boku runs`, or `just runs` with the same arguments (passed quoted, never
 re-parsed by the shell):
 
 ```
-ud runs [-n N]                  last 20 top-level runs (also: list)
-ud runs show last --tree        a run's events and its children
-ud runs agent 8b9c              the agent stream, one readable line each
-ud runs agent 8b9c --at 57      jump to line 57 (-C context, --raw JSON)
-ud runs challenges --since 30d  the learning view, newest first
-ud runs redact-file FILE        redact a file in place
-ud runs reindex [DAYS...]       rebuild past days' index files
-ud runs prune [DAYS]            delete old days (--max-bytes N)
-ud runs --plugin-info           metadata ud reads to list the plugin
+ud boku runs [-n N]                  last 20 top-level runs (also: list)
+ud boku runs show last --tree        a run's events and its children
+ud boku runs agent 8b9c              the agent stream, one readable line each
+ud boku runs agent 8b9c --at 57      jump to line 57 (-C context, --raw JSON)
+ud boku runs challenges --since 30d  the learning view, newest first
+ud boku runs redact-file FILE        redact a file in place
+ud boku runs reindex [DAYS...]       rebuild past days' index files
+ud boku runs prune [DAYS]            delete old days (--max-bytes N)
 ```
 
 - A run is top-level when it has no parent or its parent isn't loaded.
@@ -537,9 +536,7 @@ ud runs --plugin-info           metadata ud reads to list the plugin
 - `challenges` lists every agent run, including those with no report.
   Each gets its outcome, its Challenges text (or `(no report)`), and each
   failed command as a ready-to-run line:
-  `ud runs agent 8b9c --at 57  # exit 1: just test`.
-- `--plugin-info`, as the only argument, prints
-  `{"apiVersion":1,"name":"runs",...}` for `ud`.
+  `ud boku runs agent 8b9c --at 57  # exit 1: just test`.
 - Control characters print as `\xNN` (see Privacy).
 
 The learning loop: run `challenges`, paste the `--at` lines, and fix what
@@ -626,8 +623,7 @@ works with `BOKU_RUNLOG=0`. `git_mf` parses `--json` as its own flag.
 
 Phase 1:
 
-- [x] Add `runlog/` (writers, tap, `ud runs`, tests), link `cli.ts` as
-  the `ud-runs` plugin, and add `just runs *ARGS`.
+- [x] Add `runlog/` (writers, tap, reader, tests) and `just runs *ARGS`.
   - Why: every producer needs one writer and schema, readable anywhere.
 - [x] Restructure `run_agent`; log `git_mf` with `on_exit`, tap, verify.
   - Why: agent merges are where you most want to learn from failures.
@@ -676,8 +672,11 @@ become warnings.
 1. Sync never passes `--agent`: unattended agents could clobber work.
 2. Agent runs keep 30-day retention; the Challenges review stays manual.
 3. Homebox runs come later; `host` is already logged.
-4. Reader: the `ud runs` plugin plus `just runs`, so it sits with the other
-   `ud` commands instead of being its own tool.
+4. 2026-11-11: the reader is `ud boku runs`, a subcommand of `ud boku`
+   (crate `crates/ud-boku` in boku) that forwards to `runlog/cli.ts`,
+   plus `just runs` in dotfiles. `ud boku` is the single entry point for
+   `~/.boku`, so the run log sits with the rest of it. This replaces the
+   earlier top-level `ud` plugin.
 5. Root is `~/.boku`, not XDG folders (see Layout).
 6. 2026-11-09: `agent-command` logs every command, not only failed ones.
    The user confirmed this in round 2. Successes show which checks the

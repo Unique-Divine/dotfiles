@@ -114,9 +114,10 @@ gh-rev-install:
 herdr-install *ARGS:
   bun run herdr-release/install.ts {{ARGS}}
 
-# Install or repair required Codex, Claude Code, and Cursor Herdr hooks.
+# Install or repair Codex, Claude Code, Cursor, and Grok Herdr hooks.
 herdr-integrations:
   bun run herdr-cfg/integrations.ts --run
+  bun run grok/herdr.ts --run
 
 # Preview one agent per tab in the current workspace; use --run to move.
 [positional-arguments]
@@ -166,14 +167,14 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI, and
-# Claude Code config, and managed AI skills for Cursor, Codex, and Claude Code.
+# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI,
+# Claude Code, and Grok config, and managed AI skills.
 sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
-  # Each step goes to the Boku run log (ud runs show last --tree).
+  # Each step goes to the Boku run log (ud boku runs show last --tree).
   source runlog/runlog.sh || true
   if ! declare -F runlog_start >/dev/null; then
     runlog_start() { :; }
@@ -218,6 +219,7 @@ sync:
   runlog_step mise-install just mise-install
   runlog_step bun-sync just bun-sync
   runlog_step claude-install just claude-install
+  runlog_step grok-install just grok-install
   runlog_step i-jiyuu just i-jiyuu
   runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
@@ -242,6 +244,7 @@ sync:
     runlog_event step name=clipboard-install msg=skipped
   fi
   runlog_step codex-config bun run codex/config.ts --run
+  runlog_step grok-config bun run grok/config.ts --run
   runlog_step cursor-cli-config bun run cursor/cli-config.ts --run
   runlog_step cursor-mcp bun run cursor/mcp.ts --run
   runlog_step claude-config bun run claude/config.ts --run
@@ -309,8 +312,8 @@ win-sync:
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
-# Read the Boku run log (same as `ud runs`). For commands: `just runs --help`.
-# Arguments pass through quoted, never re-parsed by the shell.
+# Read the Boku run log (same as `ud boku runs`). For commands:
+# `just runs --help`. Arguments pass through quoted, never re-parsed.
 [positional-arguments]
 runs *ARGS:
   bun run runlog/cli.ts "$@"
@@ -351,6 +354,10 @@ claude-health:
 # Install the standalone Codex CLI when it's missing, then verify it runs.
 codex-install:
   bash codex/native.sh --run
+
+# Install the Grok CLI when it's missing, then verify it runs.
+grok-install:
+  bash grok/native.sh --run
 
 # Restore missing Neovim tools from nvim/mason.lock.
 nvim-mason-restore:
@@ -395,6 +402,10 @@ claude TOOL *ARGS:
 # Run the portable Codex config CLI. For options, run `just codex`.
 codex *ARGS:
   bun run codex/config.ts {{ARGS}}
+
+# Run the portable Grok config CLI. For options, run `just grok`.
+grok *ARGS:
+  bun run grok/config.ts {{ARGS}}
 
 # Clone Zinit into XDG data if the checkout is missing.
 [private]

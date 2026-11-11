@@ -219,10 +219,10 @@ remerge diff showing how each conflict was resolved. Logging never changes an
 exit code or what happens to the repository.
 
 ```bash
-ud runs                        # recent runs (or: just runs)
-ud runs show last --tree       # the latest run and its children
-ud runs agent <id> --at 57     # the agent's stream around line 57
-ud runs challenges --since 30d # what agents found hard
+ud boku runs                        # recent runs (or: just runs)
+ud boku runs show last --tree       # the latest run and its children
+ud boku runs agent <id> --at 57     # the agent's stream around line 57
+ud boku runs challenges --since 30d # what agents found hard
 ```
 
 `sync` prunes runs older than 30 days. The writers are
