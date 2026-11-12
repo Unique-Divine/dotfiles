@@ -233,9 +233,15 @@ export class GmailClient {
       method, ...(body ? { headers: { "content-type": "application/json" },
         body: JSON.stringify(body) } : {}),
     }, safeRetry);
-    const text = await response.text();
+    let text: string;
+    try { text = await response.text(); }
+    catch { throw new BridgeError(safeRetry ? "network_error" : "uncertain_result",
+      safeRetry ? "Gmail response could not be read" :
+        "Gmail response is unreadable; reconcile before retrying", safeRetry); }
     try { return text ? JSON.parse(text) : {}; }
-    catch { throw new BridgeError("provider_protocol", "Invalid Gmail JSON"); }
+    catch { throw new BridgeError(safeRetry ? "provider_protocol" : "uncertain_result",
+      safeRetry ? "Invalid Gmail JSON" :
+        "Gmail response is invalid; reconcile before retrying"); }
   }
   async batch(children: BatchChild[]): Promise<ChildResult[]> {
     const complete: ChildResult[] = [];
@@ -374,6 +380,8 @@ export function unsubscribeTarget(message: Json): URL {
     String(h.name).toLowerCase() === name).map((h: Json) => String(h.value));
   const from = values("from").join(" ");
   if (values("x-google-group-id").length || values("x-groupsio-msgnum").length ||
+    values("x-beenthere").length || values("x-mailman-version").length ||
+    values("list-post").some((v) => !/^\s*NO\s*$/i.test(v)) ||
     /@(googlegroups\.com|groups\.io|groups\.google\.com)\b/i.test(from) ||
     values("list-id").some((v) => /\.(googlegroups\.com|groups\.io)>?\s*$/i.test(v))) {
     throw new BridgeError("group_unsubscribe", "Group membership unsubscribe is unsupported");
@@ -393,6 +401,9 @@ export function unsubscribeTarget(message: Json): URL {
   try { url = new URL(urls[0]!); }
   catch { throw new BridgeError("unsupported_unsubscribe", "Invalid unsubscribe URL"); }
   // Never contact workstation/local services based on untrusted mail headers.
+  if (/(^|\.)(groups\.google\.com|googlegroups\.com|groups\.io)$/i.test(url.hostname)) {
+    throw new BridgeError("group_unsubscribe", "Group destination unsubscribe is unsupported");
+  }
   if (url.username || url.password || url.port && url.port !== "443" ||
     !url.hostname.includes(".") || /^\d+(\.\d+){3}$/.test(url.hostname) ||
     url.hostname.startsWith("[") ||
