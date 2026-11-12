@@ -650,7 +650,7 @@ function tryOpenBrowser(url: string): void {
   }
 }
 
-async function tokenRequest(
+export async function tokenRequest(
   params: Record<string, string>,
 ): Promise<OAuthTokenResponse> {
   const res = await fetch(TOKEN_URL, {
@@ -672,11 +672,12 @@ async function tokenRequest(
   return body as unknown as OAuthTokenResponse;
 }
 
-async function loopbackAuth(
+export async function loopbackAuth(
   creds: ClientCredentials,
   email: string,
   scope: string,
   role: string,
+  log: (message: string) => void = console.log,
 ): Promise<StoredToken> {
   const verifier = base64Url(randomBytes(48));
   const state = base64Url(randomBytes(16));
@@ -718,11 +719,11 @@ async function loopbackAuth(
       challenge: pkceChallenge(verifier),
       loginHint: email,
     });
-    console.log(
+    log(
       `Sign in as the ${role} account ${c.bold(email)} ` +
         `(scope ${scope.split("/").pop()}):`,
     );
-    console.log(c.cyan(url));
+    log(c.cyan(url));
     tryOpenBrowser(url);
     const code = await codePromise;
     const body = await tokenRequest({
