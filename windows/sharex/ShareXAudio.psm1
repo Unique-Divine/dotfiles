@@ -227,12 +227,12 @@ function Invoke-ShareXProcess {
     -RedirectStandardError $stderrPath
 
   $stdout = if (Test-Path -LiteralPath $stdoutPath) {
-    Get-Content -LiteralPath $stdoutPath -Raw
+    Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8
   } else {
     ""
   }
   $stderr = if (Test-Path -LiteralPath $stderrPath) {
-    Get-Content -LiteralPath $stderrPath -Raw
+    Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
   } else {
     ""
   }
@@ -588,7 +588,7 @@ function Read-ShareXJsonFile {
     throw "ShareX configuration does not exist: $Path"
   }
 
-  $text = Get-Content -LiteralPath $Path -Raw
+  $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
   if ([string]::IsNullOrWhiteSpace($text)) {
     throw "ShareX configuration is empty: $Path"
   }
