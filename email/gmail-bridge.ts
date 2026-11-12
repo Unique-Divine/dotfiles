@@ -36,7 +36,23 @@ export const COST = {
   full: 60, minimal: 20, threadFull: 120, threadMinimal: 40,
   attachment: 20, modify: 50,
 };
+export interface Metrics {
+  http_requests: number;
+  logical_requests: number;
+  quota_units_reserved: number;
+  retries: number;
+  quota_wait_ms: number;
+  retry_wait_ms: number;
+  bytes_received: number;
+  external_http_requests: number;
+}
+export function emptyMetrics(): Metrics {
+  return { http_requests: 0, logical_requests: 0, quota_units_reserved: 0,
+    retries: 0, quota_wait_ms: 0, retry_wait_ms: 0, bytes_received: 0,
+    external_http_requests: 0 };
+}
 export class QuotaPacer {
+  readonly metrics = emptyMetrics();
   private projectNext = 0;
   private accounts = new Map<string, number>();
   constructor(readonly rt: Runtime = runtime,
@@ -51,6 +67,8 @@ export class QuotaPacer {
       this.accounts.get(account) ?? 0);
     this.projectNext = start + units * 60000 / this.projectBudget;
     this.accounts.set(account, start + units * 60000 / this.accountBudget);
+    this.metrics.quota_units_reserved += units;
+    this.metrics.quota_wait_ms += Math.max(0, start - now);
     if (start > now) await this.rt.sleep(start - now);
   }
 }
@@ -161,7 +179,7 @@ export function parseMultipart(contentType: string, body: string,
 
 export interface GmailClientOptions {
   apiBase?: string; batchUrl?: string; rt?: Runtime; pacer?: QuotaPacer;
-  refresh?: () => Promise<string>;
+  refresh?: () => Promise<string>; metrics?: Metrics;
 }
 /** Authenticated HTTP client. No provider bodies enter diagnostics/errors. */
 export class GmailClient {
@@ -169,6 +187,7 @@ export class GmailClient {
   readonly pacer: QuotaPacer;
   readonly apiBase: string;
   readonly batchUrl: string;
+  readonly metrics: Metrics;
   private invalidToken = false;
   constructor(readonly account: string,
     private getToken: () => Promise<string>, options: GmailClientOptions = {}) {
@@ -177,10 +196,11 @@ export class GmailClient {
     this.apiBase = options.apiBase ?? "https://gmail.googleapis.com/gmail/v1/users/me";
     this.batchUrl = options.batchUrl ?? "https://gmail.googleapis.com/batch/gmail/v1";
     this.refresh = options.refresh;
+    this.metrics = options.metrics ?? emptyMetrics();
   }
   private refresh?: () => Promise<string>;
   async request(url: string, cost: number, init: RequestInit = {},
-    safeRetry = true): Promise<Response> {
+    safeRetry = true, logicalRequests = 1): Promise<Response> {
     for (let attempt = 0; attempt < 5; attempt++) {
       await this.pacer.reserve(this.account, cost);
       let token: string;
@@ -193,6 +213,8 @@ export class GmailClient {
       }
       let response: Response;
       try {
+        this.metrics.http_requests++;
+        this.metrics.logical_requests += logicalRequests;
         response = await this.rt.fetch(url, { ...init,
           signal: AbortSignal.timeout(60000),
           headers: { ...Object.fromEntries(new Headers(init.headers)),
@@ -202,21 +224,26 @@ export class GmailClient {
           "Request outcome is unknown; reconcile before retrying");
         if (attempt === 4) throw new BridgeError("network_error",
           "Gmail network request failed", true);
-        await this.rt.sleep(backoffMs(attempt, this.rt.random()));
+        await this.retryWait(backoffMs(attempt, this.rt.random()));
         continue;
       }
       if (response.ok) return response;
-      const text = await response.text();
+      let text: string;
+      try { text = await this.readText(response); }
+      catch { throw new BridgeError(safeRetry ? "network_error" : "uncertain_result",
+        safeRetry ? "Gmail response could not be read" :
+          "Gmail error response is unreadable; reconcile before retrying", safeRetry); }
       if (response.status === 401 && attempt < 4 && this.refresh) {
         this.invalidToken = true;
+        this.metrics.retries++;
         continue;
       }
       const error = httpError(response.status, text);
       if (error.retryable && (safeRetry || response.status === 403 ||
         response.status === 429) && attempt < 4) {
-        await this.rt.sleep(Math.max(
+        await this.retryWait(Math.max(
           retryAfterMs(response.headers.get("retry-after"), this.rt.now()),
-          backoffMs(attempt, this.rt.random())));
+          backoffMs(attempt, this.rt.random())), response.status === 403 || response.status === 429);
         continue;
       }
       if (!safeRetry && response.status >= 500) {
@@ -234,7 +261,7 @@ export class GmailClient {
         body: JSON.stringify(body) } : {}),
     }, safeRetry);
     let text: string;
-    try { text = await response.text(); }
+    try { text = await this.readText(response); }
     catch { throw new BridgeError(safeRetry ? "network_error" : "uncertain_result",
       safeRetry ? "Gmail response could not be read" :
         "Gmail response is unreadable; reconcile before retrying", safeRetry); }
@@ -254,11 +281,12 @@ export class GmailClient {
             method: "POST", headers: {
               "content-type": `multipart/mixed; boundary=${boundary}`,
             }, body: multipartRequest(pending, boundary),
-          });
+          }, true, pending.length);
         const results = parseMultipart(response.headers.get("content-type") ?? "",
-          await response.text(), pending);
+          await this.readText(response), pending);
         const retry: BatchChild[] = [];
         let wait = 0;
+        let quota = false;
         for (let i = 0; i < results.length; i++) {
           const result = results[i]!;
           const retryable = result.status === 0 || result.status === 401 ||
@@ -266,15 +294,27 @@ export class GmailClient {
           if (retryable && attempt < 4) {
             if (result.status === 401 && this.refresh) this.invalidToken = true;
             retry.push(pending[i]!);
+            quota ||= result.status === 403 || result.status === 429;
             wait = Math.max(wait, retryAfterMs(result.retryAfter, this.rt.now()));
           } else complete.push(result);
         }
         pending = retry;
-        if (pending.length) await this.rt.sleep(Math.max(wait,
-          backoffMs(attempt, this.rt.random())));
+        if (pending.length) await this.retryWait(Math.max(wait,
+          backoffMs(attempt, this.rt.random())), quota);
       }
     }
     return complete;
+  }
+  async readText(response: Response): Promise<string> {
+    const text = await response.text();
+    this.metrics.bytes_received += Buffer.byteLength(text);
+    return text;
+  }
+  private async retryWait(ms: number, quota = false): Promise<void> {
+    this.metrics.retries++;
+    this.metrics.retry_wait_ms += ms;
+    if (quota) this.metrics.quota_wait_ms += ms;
+    await this.rt.sleep(ms);
   }
   childPath(path: string): string {
     return new URL(this.apiBase).pathname + path;
@@ -439,6 +479,9 @@ export async function unsubscribe(client: GmailClient, messageId: string,
     throw new BridgeError("unsupported_unsubscribe", "Unsubscribe host is not public");
   }
   try {
+    client.metrics.http_requests++;
+    client.metrics.external_http_requests++;
+    client.metrics.logical_requests++;
     const response = await externalFetch(url, {
       method: "POST", redirect: "manual", credentials: "omit",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -454,7 +497,7 @@ export async function unsubscribe(client: GmailClient, messageId: string,
 
 export interface ConnectionOptions {
   home?: string; credentialsPath?: string; tokenDir?: string;
-  pacer?: QuotaPacer; rt?: Runtime;
+  pacer?: QuotaPacer; rt?: Runtime; metrics?: Metrics;
 }
 export async function connectAccount(account: string, interactive: boolean,
   options: ConnectionOptions = {}): Promise<GmailClient> {
@@ -498,7 +541,7 @@ export async function connectAccount(account: string, interactive: boolean,
   };
   const client = new GmailClient(account, async () =>
     Date.now() < token!.expiresAt - 60000 ? token!.accessToken : refresh(), {
-      refresh, rt: options.rt, pacer: options.pacer,
+      refresh, rt: options.rt, pacer: options.pacer, metrics: options.metrics,
     });
   const profile = await client.call("/profile", COST.profile);
   if (String(profile.emailAddress).toLowerCase() !== account) {
@@ -517,9 +560,31 @@ export function safeError(error: unknown): {
 }
 export class GmailBridge {
   private clients = new Map<string, GmailClient>();
-  constructor(private connector = connectAccount,
-    private options: ConnectionOptions = {}) {}
+  private options: ConnectionOptions;
+  constructor(private connector = connectAccount, options: ConnectionOptions = {}) {
+    this.options = { ...options, metrics: options.metrics ?? emptyMetrics(),
+      pacer: options.pacer ?? new QuotaPacer(options.rt ?? runtime) };
+  }
+  private totals(): Metrics {
+    const totals = emptyMetrics();
+    const counters = new Set<Metrics>([this.options.metrics!, this.options.pacer!.metrics]);
+    for (const client of this.clients.values()) {
+      counters.add(client.metrics); counters.add(client.pacer.metrics);
+    }
+    for (const counter of counters) {
+      for (const key of Object.keys(totals) as (keyof Metrics)[]) totals[key] += counter[key];
+    }
+    return totals;
+  }
   async handle(input: unknown): Promise<Json> {
+    const before = this.totals();
+    const response = await this.dispatch(input);
+    const after = this.totals();
+    const delta = emptyMetrics();
+    for (const key of Object.keys(delta) as (keyof Metrics)[]) delta[key] = after[key] - before[key];
+    return { ...response, metrics: delta };
+  }
+  private async dispatch(input: unknown): Promise<Json> {
     const raw = input as Partial<BridgeRequest> | null;
     const envelope = { version: 1, request_id: typeof raw?.request_id === "string"
       ? raw.request_id : null };
@@ -537,7 +602,7 @@ export class GmailBridge {
         if (typeof args.interactive !== "boolean") {
           throw new BridgeError("invalid_request", "interactive must be boolean");
         }
-        client = await this.connector(account, args.interactive, this.options);
+        client ??= await this.connector(account, args.interactive, this.options);
         this.clients.set(account, client);
         return { ...envelope, ok: true,
           data: await client.call("/profile", COST.profile) };
@@ -643,7 +708,8 @@ export async function main(): Promise<void> {
     let result: Json;
     try { result = await bridge.handle(JSON.parse(line)); }
     catch { result = { version: 1, request_id: null, ok: false,
-      error: { code: "invalid_json", message: "Expected one JSON object per line", retryable: false } }; }
+      error: { code: "invalid_json", message: "Expected one JSON object per line", retryable: false },
+      metrics: emptyMetrics() }; }
     process.stdout.write(JSON.stringify(result) + "\n");
   }
 }

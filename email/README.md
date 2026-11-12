@@ -142,3 +142,14 @@ Callers own approval, protected-mail checks, and durable cleanup records.
 Run `just email-test` for transport and existing filter/sync tests, and
 `just email-check` for native Bun type checking. Tests use local HTTP servers
 and synthetic mail. They do not contact live mailboxes.
+
+Every JSONL response, including errors, includes a per-request `metrics`
+delta. `http_requests` counts Gmail HTTP attempts plus external one-click
+POST attempts; `logical_requests` counts individual Gmail API children plus
+external POSTs. OAuth exchange traffic is outside these counters.
+`quota_units_reserved` sums reserved method costs, including retries.
+`retries` counts retry rounds, `retry_wait_ms` counts their waits, and
+`quota_wait_ms` includes quota pacing plus quota-error waits. `bytes_received`
+counts decoded response-body bytes read by the Gmail client, including
+multipart wrappers. `external_http_requests` distinguishes one-click calls.
+Counters include failed attempts and never contain credentials or URLs.
