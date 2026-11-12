@@ -234,6 +234,41 @@ describe("bridge operations", () => {
     expect(result.error.retryable).toBe(false);
     expect(calls).toBe(1);
   });
+  test("response metrics are per-request deltas including partial retries and errors", async () => {
+    let batchCalls = 0;
+    const { client } = local(async (request) => {
+      if (request.url.includes("batch/")) {
+        batchCalls++;
+        const paths = childRequests(await request.text());
+        return batchResponse(paths.map((path, index) => {
+          const id = /messages\/([^?]+)/.exec(path)![1]!;
+          return { index, status: batchCalls === 1 && id === "b" ? 403 : 200,
+            retryAfter: batchCalls === 1 && id === "b" ? 1 : undefined,
+            body: batchCalls === 1 && id === "b" ?
+              { error: { errors: [{ reason: "rateLimitExceeded" }] } } : { id } };
+        }));
+      }
+      return Response.json({ error: { errors: [{ reason: "forbidden" }] } }, { status: 403 });
+    });
+    const bridge = new GmailBridge(async () => client);
+    const fetched = await bridge.handle(envelope("fetch", { ids: ["a", "b"], format: "minimal" }));
+    expect(fetched.metrics.http_requests).toBe(2);
+    expect(fetched.metrics.logical_requests).toBe(3);
+    expect(fetched.metrics.quota_units_reserved).toBe(60);
+    expect(fetched.metrics.retries).toBe(1);
+    expect(fetched.metrics.quota_wait_ms).toBeGreaterThanOrEqual(1000);
+    expect(fetched.metrics.bytes_received).toBeGreaterThan(0);
+    const failed = await bridge.handle(envelope("labels"));
+    expect(failed.ok).toBe(false);
+    expect(failed.metrics.http_requests).toBe(1);
+    expect(failed.metrics.logical_requests).toBe(1);
+    expect(failed.metrics.quota_units_reserved).toBe(1);
+    expect(failed.metrics.retries).toBe(0);
+    expect(failed.metrics.bytes_received).toBeGreaterThan(0);
+    const invalid = await bridge.handle(envelope("modify", { ids: [], add_label_ids: [], remove_label_ids: [] }));
+    expect(invalid.metrics.http_requests).toBe(0);
+    expect(invalid.metrics.quota_units_reserved).toBe(0);
+  });
   test("noninteractive missing auth returns auth_required without reading credentials", async () => {
     const home = await mkdtemp(join(tmpdir(), "gmail-bridge-"));
     try { await expect(connectAccount(ACCOUNT, false, { home })).rejects.toThrow("authorization is required"); }
