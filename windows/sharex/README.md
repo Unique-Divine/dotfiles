@@ -101,6 +101,20 @@ preserves all other hotkeys and runtime-owned values.
 The checked-in `HotkeysConfig.json` is a sanitized schema reference and test
 fixture. It is not copied over the live ShareX configuration.
 
+## Managed Hotkeys
+
+On WSL, `just sync` runs `just sharex-sync`. On Windows, run
+`Sync-ShareX.ps1` in PowerShell. The script skips machines without ShareX and
+requires an existing live configuration. Use `-Check` to report drift without
+changing the configuration.
+
+`ManagedHotkeys.json` defines Ctrl+Home for region screenshots, Shift+Home
+for video, Ctrl+Shift+Home for GIF, and Ctrl+F2 for playback plus microphone
+audio. The sync preserves unrelated settings and shortcuts. It refuses
+conflicting bindings, duplicate managed jobs, or missing audio devices. When
+changes are needed it backs up the live file and restarts ShareX if running;
+this interrupts an active recording. The microphone is selected at sync time.
+
 ## Probe the sources
 
 Run the discovery checks without recording:

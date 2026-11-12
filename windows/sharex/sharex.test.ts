@@ -92,6 +92,13 @@ const expectSuccessfulPowerShellJson = (path: string) => {
 }
 
 sharexDescribe("ShareX audio scripts", () => {
+  test("reconciles managed shortcuts without losing other settings", () => {
+    const result = runPowerShellFile(join(sharexDir, "tests", "Run-ShareXSyncTests.ps1"))
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr.toString()).toBe("")
+    expect(result.stdout.toString()).toContain("PASS: ShareX sync tests")
+  })
+
   test("passes the PowerShell unit suite", () => {
     const result = runPowerShellFile(powershellTestPath)
 

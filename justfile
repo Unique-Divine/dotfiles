@@ -240,6 +240,7 @@ sync:
   if is_wsl >/dev/null; then
     runlog_step clipboard-install just clipboard-install
     runlog_step win-sync just win-sync
+    runlog_step sharex-sync just sharex-sync
   else
     runlog_event step name=clipboard-install msg=skipped
   fi
@@ -323,6 +324,10 @@ win-sync:
   mkdir -p "$dest"
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
+
+# Reconcile managed ShareX hotkeys on the Windows host.
+sharex-sync *ARGS:
+  powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w windows/sharex/Sync-ShareX.ps1)" {{ARGS}}
 
 # Read the Boku run log (same as `ud boku runs`). For commands:
 # `just runs --help`. Arguments pass through quoted, never re-parsed.
