@@ -1,11 +1,20 @@
 {
   "Hotkeys": [
     {
-      "HotkeyInfo": { "Hotkey": "Home, Control", "Win": false },
-      "TaskSettings": { "Job": "RectangleRegion", "UseDefaultCaptureSettings": true }
+      "HotkeyInfo": {
+        "Hotkey": "Home, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Job": "RectangleRegion",
+        "UseDefaultCaptureSettings": true
+      }
     },
     {
-      "HotkeyInfo": { "Hotkey": "Home, Shift", "Win": false },
+      "HotkeyInfo": {
+        "Hotkey": "Home, Shift",
+        "Win": false
+      },
       "TaskSettings": {
         "Job": "ScreenRecorder",
         "UseDefaultCaptureSettings": false,
@@ -18,11 +27,20 @@
       }
     },
     {
-      "HotkeyInfo": { "Hotkey": "Home, Shift, Control", "Win": false },
-      "TaskSettings": { "Job": "ScreenRecorderGIF", "UseDefaultCaptureSettings": true }
+      "HotkeyInfo": {
+        "Hotkey": "Home, Shift, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Job": "ScreenRecorderGIF",
+        "UseDefaultCaptureSettings": true
+      }
     },
     {
-      "HotkeyInfo": { "Hotkey": "F2, Control", "Win": false },
+      "HotkeyInfo": {
+        "Hotkey": "F2, Control",
+        "Win": false
+      },
       "TaskSettings": {
         "Description": "Audio Virtual Record",
         "Job": "ScreenRecorderActiveWindow",

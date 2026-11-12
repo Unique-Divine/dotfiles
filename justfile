@@ -292,6 +292,7 @@ email-sync:
 win-sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  bun run windows/sharex/managed-hotkeys.ts --write
   for tool in cmd.exe wslpath rsync; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "win-sync: $tool is unavailable; skipping" >&2
@@ -308,8 +309,12 @@ win-sync:
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
+# Generate the ShareX hotkey JSON used by Windows.
+sharex-generate:
+  bun run windows/sharex/managed-hotkeys.ts --write
+
 # Reconcile managed ShareX hotkeys on the Windows host.
-sharex-sync *ARGS:
+sharex-sync *ARGS: sharex-generate
   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w windows/sharex/Sync-ShareX.ps1)" {{ARGS}}
 
 # Read the Boku run log (same as `ud boku runs`). For commands:
