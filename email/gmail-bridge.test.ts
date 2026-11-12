@@ -224,6 +224,16 @@ describe("bridge operations", () => {
     expect((await bridge.handle(envelope("modify", args))).ok).toBe(true);
     expect(writes[1]!.ids).toHaveLength(1000);
   });
+  test("malformed successful writes remain uncertain", async () => {
+    let calls = 0;
+    const { client } = local(() => { calls++; return new Response("not JSON"); });
+    const bridge = new GmailBridge(async () => client);
+    const result = await bridge.handle(envelope("modify", { ids: ["a"],
+      add_label_ids: ["INBOX"], remove_label_ids: [] }));
+    expect(result.error.code).toBe("uncertain_result");
+    expect(result.error.retryable).toBe(false);
+    expect(calls).toBe(1);
+  });
   test("noninteractive missing auth returns auth_required without reading credentials", async () => {
     const home = await mkdtemp(join(tmpdir(), "gmail-bridge-"));
     try { await expect(connectAccount(ACCOUNT, false, { home })).rejects.toThrow("authorization is required"); }
@@ -262,6 +272,16 @@ describe("one-click unsubscribe", () => {
     expect(() => unsubscribeTarget(message)).toThrow("host");
     message.payload.headers.pop();
     expect(() => unsubscribeTarget(message)).toThrow("one-click");
+  });
+  test("rejects custom-domain group relays and group destination URLs", () => {
+    expect(() => unsubscribeTarget(listMessage([
+      { name: "X-BeenThere", value: "finance@example.org" },
+      { name: "List-Id", value: "<finance.example.org>" },
+    ]))).toThrow("Group");
+    const message = listMessage();
+    message.payload.headers[0].value =
+      "<https://groups.google.com/a/example.org/g/finance/subscribe>";
+    expect(() => unsubscribeTarget(message)).toThrow("Group destination");
   });
   test("external POST has no Gmail auth, no redirect, and uncertain errors do not retry", async () => {
     const { client } = local(() => Response.json(listMessage()));
