@@ -286,6 +286,18 @@ email-sync:
   email_build gmailctl-nibi.ts gmailctl
   email_build gmailctl-ud.ts gmailctl-ud
 
+# Run the persistent Gmail JSONL archive transport.
+gmail-bridge:
+  bun run email/gmail-bridge.ts
+
+# Test email filters, mailbox sync, and the Gmail bridge without live writes.
+email-test:
+  bun test email/
+
+# Typecheck the email tooling with native Bun.
+email-check:
+  bun check email/*.ts
+
 # Archive target inbox mail that is archived in the source Gmail account.
 # Dry run unless --run is given.
 mail-state-sync *ARGS:
