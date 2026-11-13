@@ -103,13 +103,14 @@ namespace AudioCapture {
         return 1;
       }
 
-      Log.Write($"start v{Version} pid={Environment.ProcessId} " +
-        $"command={cli.Command}");
+      Log.Info("app.start", $"audio-capture {Version} started", new {
+        version = Version, pid = Environment.ProcessId, command = cli.Command,
+      });
       LoadedConfig loaded;
       try {
         loaded = ConfigLoader.Load(cli.ConfigPath);
       } catch (Exception e) {
-        Log.Write("config error: " + e.Message);
+        Log.Error("config.error", e.Message);
         MessageBox.Show(e.Message, "audio-capture: config error",
           MessageBoxButtons.OK, MessageBoxIcon.Error);
         return 1;
@@ -123,9 +124,14 @@ namespace AudioCapture {
       Application.SetUnhandledExceptionMode(
         UnhandledExceptionMode.CatchException);
       Application.ThreadException += (_, e) =>
-        Log.Write("ui exception: " + e.Exception);
+        Log.Error("app.ui_exception", e.Exception.Message, new {
+          type = e.Exception.GetType().FullName,
+          stack = e.Exception.ToString(),
+        });
       AppDomain.CurrentDomain.UnhandledException += (_, e) => {
-        Log.Write("fatal exception: " + e.ExceptionObject);
+        Log.Error("app.fatal_exception", "unhandled exception", new {
+          detail = e.ExceptionObject?.ToString(),
+        });
         App.Current?.WriteManifestNow();
       };
       Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -134,7 +140,7 @@ namespace AudioCapture {
       using var app = new App(loaded, cli.ConfigPath);
       bool startNow = cli.Command == "toggle" || cli.Command == "start";
       app.Run(startNow);
-      Log.Write("exit");
+      Log.Info("app.exit", "audio-capture exited");
       return 0;
     }
   }
@@ -324,25 +330,93 @@ commands:
     }
   }
 
+  /// JSON Lines log: one object per event with ts, level, event, msg, and
+  /// the event's fields. Rotates at 10 MB, keeping three old files.
   static class Log {
+    public const long MaxBytes = 10L * 1024 * 1024;
+    const int Keep = 3;
     static readonly object Gate = new();
+    // Readable in a terminal: no \u escapes for +, <, >, or quotes.
+    static readonly JsonSerializerOptions DataOptions = new() {
+      Encoder = System.Text.Encodings.Web.JavaScriptEncoder
+        .UnsafeRelaxedJsonEscaping,
+    };
 
     public static string Dir => Path.Combine(Environment.GetFolderPath(
       Environment.SpecialFolder.LocalApplicationData), "audio-capture");
 
-    public static string FilePath => Path.Combine(Dir, "audio-capture.log");
+    public static string LogDir => Dir;
 
-    public static void Write(string message) {
-      string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",
-        CultureInfo.InvariantCulture) + " " + message + Environment.NewLine;
+    public static string FilePath => Path.Combine(LogDir, "audio-capture.jsonl");
+
+    public static void Info(string evt, string msg, object? data = null) =>
+      Write("info", evt, msg, data);
+
+    public static void Warn(string evt, string msg, object? data = null) =>
+      Write("warn", evt, msg, data);
+
+    public static void Error(string evt, string msg, object? data = null) =>
+      Write("error", evt, msg, data);
+
+    /// One log line. Fields come from an anonymous object; null fields are
+    /// left out.
+    public static string Format(DateTimeOffset ts, string level, string evt,
+        string msg, object? data) {
+      using var stream = new MemoryStream();
+      using (var w = new Utf8JsonWriter(stream, new JsonWriterOptions {
+          Encoder = DataOptions.Encoder,
+        })) {
+        w.WriteStartObject();
+        w.WriteString("ts", ts.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz",
+          CultureInfo.InvariantCulture));
+        w.WriteString("level", level);
+        w.WriteString("event", evt);
+        w.WriteString("msg", msg);
+        if (data != null) {
+          var element = JsonSerializer.SerializeToElement(data, DataOptions);
+          if (element.ValueKind == JsonValueKind.Object) {
+            foreach (var prop in element.EnumerateObject()) {
+              if (prop.Value.ValueKind == JsonValueKind.Null) {
+                continue;
+              }
+              w.WritePropertyName(prop.Name);
+              prop.Value.WriteTo(w);
+            }
+          }
+        }
+        w.WriteEndObject();
+      }
+      return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    public static void Write(string level, string evt, string msg,
+        object? data = null) {
+      string line = Format(DateTimeOffset.Now, level, evt, msg, data) +
+        Environment.NewLine;
       lock (Gate) {
         try {
-          Directory.CreateDirectory(Dir);
+          Directory.CreateDirectory(LogDir);
+          RotateIfNeeded();
           File.AppendAllText(FilePath, line);
         } catch (IOException) {
           // Logging must never break recording.
         }
       }
+    }
+
+    static void RotateIfNeeded() {
+      var info = new FileInfo(FilePath);
+      if (!info.Exists || info.Length < MaxBytes) {
+        return;
+      }
+      string Old(int i) => Path.Combine(LogDir, $"audio-capture.{i}.jsonl");
+      File.Delete(Old(Keep));
+      for (int i = Keep - 1; i >= 1; i--) {
+        if (File.Exists(Old(i))) {
+          File.Move(Old(i), Old(i + 1));
+        }
+      }
+      File.Move(FilePath, Old(1));
     }
   }
 
@@ -1197,8 +1271,9 @@ commands:
         client = c;
       } catch (Exception e) {
         // Fall back to checking the defaults once a second.
-        Log.Write("endpoint notifications unavailable, polling: " +
-          e.Message);
+        Log.Warn("devices.polling",
+          "endpoint notifications unavailable; polling defaults every 1 s",
+          new { error = e.Message });
         lastDefaults = DefaultsKey();
         poll = new System.Threading.Timer(_ => {
           string now = DefaultsKey();
@@ -1500,8 +1575,8 @@ commands:
       try {
         Marshal.StructureToPtr(info, ptr, false);
         if (!Native.SetInformationJobObject(handle, 9, ptr, (uint)size)) {
-          Log.Write("job object setup failed: " +
-            Marshal.GetLastWin32Error());
+          Log.Warn("job.setup_failed", "job object setup failed",
+            new { win32_error = Marshal.GetLastWin32Error() });
         }
       } finally {
         Marshal.FreeHGlobal(ptr);
@@ -1511,7 +1586,8 @@ commands:
     public void Add(Process p) {
       try {
         if (!Native.AssignProcessToJobObject(handle, p.Handle)) {
-          Log.Write("job assign failed: " + Marshal.GetLastWin32Error());
+          Log.Warn("job.assign_failed", "could not add a process to the job",
+            new { win32_error = Marshal.GetLastWin32Error() });
         }
       } catch (InvalidOperationException) {
         // The process already exited.
@@ -1628,6 +1704,8 @@ commands:
     public long Bytes => Interlocked.Read(ref bytes);
     public int DropWarnings => Volatile.Read(ref dropWarnings);
     public string? FatalLine => fatalLine;
+    string SessionName =>
+      Path.GetFileName(Path.GetDirectoryName(FilePath)) ?? "";
 
     /// FFmpeg arguments. A "lavfi:" spec is a generated test signal paced
     /// in real time (--simulate); anything else is a DirectShow device.
@@ -1691,6 +1769,11 @@ commands:
             lock (logGate) {
               log.WriteLine(tag + line);
             }
+            Log.Write(watch ? "warn" : "info",
+              watch ? "ffmpeg.stderr" : "ffmpeg.stdout", line, new {
+                session = SessionName, kind = Kind, pid = Pid,
+                file = Path.GetFileName(FilePath),
+              });
             if (!watch) {
               continue;
             }
@@ -1699,7 +1782,10 @@ commands:
             }
             if (fatalLine == null && FatalStderr.IsMatch(line)) {
               fatalLine = line;
-              Log.Write($"{Kind} ffmpeg pid {Pid}: {line.Trim()}");
+              Log.Warn("ffmpeg.fatal_line", line.Trim(), new {
+                session = SessionName, kind = Kind, pid = Pid,
+                file = Path.GetFileName(FilePath),
+              });
             }
           }
         } catch (Exception e) when (e is IOException or
@@ -1836,7 +1922,8 @@ commands:
           System.ComponentModel.Win32Exception or ObjectDisposedException) {
       }
       if (!(reader?.Join(3000) ?? true)) {
-        Log.Write($"{Kind} reader stuck after kill; closing its pipe");
+        Log.Warn("capture.reader_stuck", "reader stuck after kill; closing " +
+          "its pipe", new { session = SessionName, kind = Kind, pid = Pid });
         pipe?.Dispose();
         reader?.Join(3000);
       }
@@ -2210,6 +2297,9 @@ commands:
     public Source? Mic;
     public double? StopAt;
 
+    /// The folder name, e.g. 20261113-191849-432: the session's id in logs.
+    public string Name => Path.GetFileName(Dir);
+
     public Session(int id, string dir, long origin, DateTime startedLocal,
         MicPolicy policy, IDeviceResolver resolver) {
       Id = id;
@@ -2249,7 +2339,7 @@ commands:
           manifest.Write(Path.Combine(Dir, SessionManifest.FileName));
         }
       } catch (Exception e) {
-        Log.Write("manifest write failed: " + e.Message);
+        Log.Error("manifest.write_failed", e.Message, new { session = Name });
       }
     }
   }
@@ -2326,7 +2416,7 @@ commands:
       try {
         ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
       } catch (FileNotFoundException e) {
-        Log.Write(e.Message);
+        Log.Error("ffmpeg.not_found", e.Message);
         ShowPill().ShowError("ffmpeg not found");
         return;
       }
@@ -2346,9 +2436,10 @@ commands:
       reconcileAgain = false;
       Native.KeepAwake(true);
       CheckDiskSpace(dir);
-      Log.Write($"recording start session={dir} mic={ses.Policy}" +
-        (savesRunning > 0 ? $" ({savesRunning} earlier save still running)"
-          : ""));
+      Log.Info("recording.start", "recording started", new {
+        session = ses.Name, dir, mic_policy = ses.Policy.ToString(),
+        earlier_saves_running = savesRunning,
+      });
       ShowPill().ShowRecording();
       status("recording");
 
@@ -2370,11 +2461,11 @@ commands:
         var drive = new DriveInfo(Path.GetPathRoot(dir)!);
         long free = drive.AvailableFreeSpace;
         if (free < 3L * 1024 * 1024 * 1024) {
-          Log.Write($"warning: only {free / (1024 * 1024)} MB free for temp " +
-            "audio (about 1.4 GB per hour)");
+          Log.Warn("disk.low", "little free space for temp audio (about " +
+            "1.4 GB per hour)", new { free_mb = free / (1024 * 1024) });
         }
       } catch (Exception e) {
-        Log.Write("disk check failed: " + e.Message);
+        Log.Warn("disk.check_failed", e.Message);
       }
     }
 
@@ -2393,14 +2484,21 @@ commands:
       try {
         cap.Start(ffmpeg);
       } catch (Exception e) {
-        Log.Write($"{src.Kind} start failed on {target.Display}: {e.Message}");
+        Log.Error("segment.start_failed", e.Message, new {
+          session = ses.Name, kind = src.Kind, device = target.Display,
+          endpoint = target.EndpointId, spec = target.Spec,
+        });
         cap.Dispose();
         src.Failures++;
         SetRetry(src);
         return null;
       }
-      Log.Write($"{src.Kind} segment {src.Count} started pid={cap.Pid} on " +
-        $"{target.Display} ({target.Spec}) at {ses.Elapsed:0.000} s");
+      Log.Info("segment.start", $"{src.Kind} segment {src.Count} started", new {
+        session = ses.Name, kind = src.Kind, segment = src.Count,
+        device = target.Display, endpoint = target.EndpointId,
+        spec = target.Spec, method = target.Method, pid = cap.Pid,
+        at = Math.Round(ses.Elapsed, 3),
+      });
       return cap;
     }
 
@@ -2418,8 +2516,11 @@ commands:
       if (src == ses.Mic) {
         Pill?.SetMicLost(false);
         if (src.LastDevice != null && src.LastDevice != target.Display) {
-          Log.Write($"mic now {target.Display} (was {src.LastDevice}), " +
-            $"{ses.Policy}, reason: {reason}");
+          Log.Info("mic.device_changed", $"mic now {target.Display}", new {
+            session = ses.Name, from = src.LastDevice, to = target.Display,
+            endpoint = target.EndpointId, policy = ses.Policy.ToString(),
+            role = ses.Policy.Role?.ToString(), reason,
+          });
           Pill?.Flash(DeviceMatch.ShortName(target.Display));
         }
         src.LastDevice = target.Display;
@@ -2440,7 +2541,7 @@ commands:
       if (current?.Mic == null) {
         return;
       }
-      Log.Write("device event: " + description);
+      Log.Info("device.event", description, new { session = current?.Name });
       ScheduleReconcile("device event", 500);
     }
 
@@ -2492,13 +2593,18 @@ commands:
         return;
       }
       if (error != null) {
-        Log.Write($"mic check ({reason}): {error}");
+        Log.Warn("mic.check_error", error, new {
+          session = ses.Name, reason,
+        });
       }
       var active = mic.Pending ?? mic.Live;
       if (target == null) {
         if (mic.Live == null && !mic.WaitingLogged) {
           mic.WaitingLogged = true;
-          Log.Write($"mic waiting: no device for {ses.Policy} ({reason})");
+          Log.Warn("mic.waiting", "no device for the mic policy; waiting", new {
+            session = ses.Name, policy = ses.Policy.ToString(),
+            role = ses.Policy.Role?.ToString(), reason,
+          });
           Pill?.SetMicLost(true);
         }
       } else if (active == null) {
@@ -2515,8 +2621,13 @@ commands:
         if (cap != null) {
           mic.Pending = cap;
           mic.PendingReason = reason;
-          Log.Write($"mic switching {mic.Live?.Target.Display ?? "(none)"} " +
-            $"-> {target.Display}, {ses.Policy}, reason: {reason}");
+          Log.Info("mic.switch_begin", "default changed; starting the new " +
+            "device", new {
+              session = ses.Name, from = mic.Live?.Target.Display,
+              to = target.Display, to_endpoint = target.EndpointId,
+              policy = ses.Policy.ToString(),
+              role = ses.Policy.Role?.ToString(), reason,
+            });
         }
       }
       if (reconcileAgain) {
@@ -2565,9 +2676,11 @@ commands:
         lock (ses.Gate) {
           src.Live = null;
         }
-        Log.Write($"{src.Kind} lost at {ses.Elapsed:0.000} s on " +
-          $"{lost.Target.Display}: {reason} (pid {lost.Pid}, " +
-          $"{lost.Bytes} bytes)");
+        Log.Warn($"{src.Kind}.lost", reason, new {
+          session = ses.Name, kind = src.Kind, device = lost.Target.Display,
+          endpoint = lost.Target.EndpointId, pid = lost.Pid,
+          bytes = lost.Bytes, at = Math.Round(ses.Elapsed, 3),
+        });
         CloseSegment(ses, src, lost, graceful: false, endAt: null);
         src.Failures++;
         SetRetry(src);
@@ -2592,7 +2705,10 @@ commands:
       }
       string? reason = pending.LossReason(now);
       if (reason != null) {
-        Log.Write($"mic switch to {pending.Target.Display} failed: {reason}");
+        Log.Warn("mic.switch_failed", reason, new {
+          session = ses.Name, to = pending.Target.Display,
+          endpoint = pending.Target.EndpointId,
+        });
         src.Pending = null;
         CloseSegment(ses, src, pending, graceful: false, endAt: null);
         src.Failures++;
@@ -2614,9 +2730,12 @@ commands:
       if (old != null) {
         CloseSegment(ses, src, old, graceful: true, endAt: start);
       }
-      Log.Write($"mic switched {old?.Target.Display ?? "(none)"} -> " +
-        $"{next.Target.Display} at {start:0.000} s, {ses.Policy}, reason: " +
-        src.PendingReason);
+      Log.Info("mic.switched", $"mic switched to {next.Target.Display}", new {
+        session = ses.Name, from = old?.Target.Display,
+        to = next.Target.Display, to_endpoint = next.Target.EndpointId,
+        at = Math.Round(start, 3), policy = ses.Policy.ToString(),
+        role = ses.Policy.Role?.ToString(), reason = src.PendingReason,
+      });
       Pill?.SetMicLost(false);
       Pill?.Flash(DeviceMatch.ShortName(next.Target.Display));
       src.LastDevice = next.Target.Display;
@@ -2636,7 +2755,9 @@ commands:
             cap.Kill();
           }
         } catch (Exception e) {
-          Log.Write($"{src.Kind} close error: {e.Message}");
+          Log.Error("segment.close_error", e.Message, new {
+            session = ses.Name, kind = src.Kind,
+          });
         }
         var seg = cap.ToSegment(endAt);
         int drops = cap.DropWarnings;
@@ -2647,8 +2768,8 @@ commands:
           }
         }
         if (seg.Bytes > 0) {
-          Log.Write($"{src.Kind} segment done: {DescribeSegment(seg)}" +
-            (drops > 0 ? $", {drops} dshow drop warnings" : ""));
+          Log.Info("segment.done", DescribeSegment(seg),
+            SegmentFields(ses.Name, seg, drops));
         } else {
           TryDelete(cap.FilePath);
         }
@@ -2658,6 +2779,17 @@ commands:
         src.Closing.Add(task);
       }
     }
+
+    static object SegmentFields(string session, SegmentInfo s, int drops) =>
+      new {
+        session, kind = s.Kind, file = Path.GetFileName(s.Path),
+        device = s.Device, endpoint = s.EndpointId,
+        start = Math.Round(s.Start, 3),
+        media_seconds = Math.Round(s.MediaSeconds, 3),
+        end = s.End is double e ? Math.Round(e, 3) : (double?)null,
+        drift_ppm = s.Slope is double sl ? Math.Round(sl * 1e6) : (double?)null,
+        bytes = s.Bytes, dshow_drop_warnings = drops,
+      };
 
     static string DescribeSegment(SegmentInfo s) =>
       $"{Path.GetFileName(s.Path)} from {s.Device}, start {s.Start:0.000} s, " +
@@ -2699,7 +2831,9 @@ commands:
       reconcileReasons.Clear();
       Native.KeepAwake(false);
       ses.StopAt = ses.Elapsed;
-      Log.Write($"recording stop at {ses.StopAt:0.000} s");
+      Log.Info("recording.stop", "recording stopped; saving", new {
+        session = ses.Name, stop_at = Math.Round(ses.StopAt.Value, 3),
+      });
       Pill?.ShowSaving();
       status("saving");
       // A switch caught mid-handoff: finish it if the new mic has audio,
@@ -2717,7 +2851,10 @@ commands:
       bool keep = cfg.KeepSession;
       Task.Run(() => {
         var result = Save(ses, exe, output, keep);
-        Log.Write(result.Message);
+        Log.Write(result.Ok ? "info" : "error", "mix.done", result.Message,
+          new {
+            session = ses.Name, ok = result.Ok, output = result.OutputPath,
+          });
         Post(() => FinishSave(result));
       });
     }
@@ -2757,7 +2894,8 @@ commands:
         LastSegments = segments;
         ses.WriteManifest();
         foreach (var s in segments) {
-          Log.Write("segment " + DescribeSegment(s));
+          Log.Info("mix.segment", DescribeSegment(s),
+            SegmentFields(ses.Name, s, 0));
         }
         var result = Mixer.MixAndVerify(exe, segments, output, ses.Dir,
           ses.StopAt);
@@ -2815,7 +2953,7 @@ commands:
       try {
         Directory.Delete(dir, true);
       } catch (Exception e) {
-        Log.Write($"could not delete {dir}: {e.Message}");
+        Log.Warn("session.delete_failed", e.Message, new { dir });
       }
     }
   }
@@ -2980,7 +3118,7 @@ commands:
         RenderCore();
       } catch (Exception e) when (e is ExternalException or
           ArgumentException or InvalidOperationException) {
-        Log.Write("pill render failed: " + e.Message);
+        Log.Warn("pill.render_failed", e.Message);
       }
     }
 
@@ -3154,18 +3292,20 @@ commands:
     public App(LoadedConfig loaded, string? configPath) {
       this.configPath = configPath;
       cfg = loaded.Config;
-      Log.Write("config " + (loaded.Path ?? "(defaults)"));
+      Log.Info("config.loaded", "config " + (loaded.Path ?? "(defaults)"),
+        new { path = loaded.Path });
       foreach (string dir in SessionManifest.Unfinished(Paths.SessionsDir)) {
-        Log.Write($"unfinished session {dir}; mix it with --recover");
+        Log.Warn("session.unfinished", "unfinished session; mix it with " +
+          "--recover", new { dir });
       }
       foreach (string w in loaded.Warnings) {
-        Log.Write("config warning: " + w);
+        Log.Warn("config.warning", w);
       }
       invoker.CreateControl();
       _ = invoker.Handle;
       endpoints = new MMDeviceSource();
-      Log.Write("device changes via " + (endpoints.UsesNotifications
-        ? "MMDevice notifications" : "polling"));
+      Log.Info("devices.watch", "device changes via " +
+        (endpoints.UsesNotifications ? "MMDevice notifications" : "polling"));
       recorder = new Recorder(invoker, cfg, endpoints, SetStatus);
       Current = this;
       foreach (string name in Program.SignalNames) {
@@ -3188,7 +3328,7 @@ commands:
       SystemEvents.PowerModeChanged += (_, e) => {
         if (e.Mode == PowerModes.Suspend &&
             recorder.State == RecorderState.Recording) {
-          Log.Write("suspend: stopping and saving");
+          Log.Info("power.suspend", "system suspending; stopping and saving");
           recorder.Stop();
         }
       };
@@ -3205,13 +3345,14 @@ commands:
     void RegisterHotkey() {
       string? error = hotkeys.Register(cfg.Toggle);
       if (error != null) {
-        Log.Write($"hotkey {cfg.Toggle.Text} not registered: {error}");
+        Log.Warn("hotkey.unavailable", error, new { chord = cfg.Toggle.Text });
         tray.Text = Clip($"audio-capture: {cfg.Toggle.Text} unavailable");
         tray.ShowBalloonTip(5000, "audio-capture",
           $"Could not register {cfg.Toggle.Text}: {error}",
           ToolTipIcon.Warning);
       } else {
-        Log.Write($"hotkey {cfg.Toggle.Text} registered");
+        Log.Info("hotkey.registered", "hotkey registered",
+          new { chord = cfg.Toggle.Text });
       }
     }
 
@@ -3230,7 +3371,7 @@ commands:
         });
       });
       menu.Items.Add("Open log", null, (_, _) =>
-        Process.Start(new ProcessStartInfo(Log.FilePath) {
+        Process.Start(new ProcessStartInfo("notepad.exe", Log.FilePath) {
           UseShellExecute = true,
         }));
       menu.Items.Add("Quit", null, (_, _) => OnCommand("quit"));
@@ -3261,7 +3402,7 @@ commands:
     }
 
     void OnCommand(string name) {
-      Log.Write("command " + name);
+      Log.Info("command", name, new { command = name });
       switch (name) {
         case "toggle":
           if (recorder.State != RecorderState.Recording) {
@@ -3295,15 +3436,17 @@ commands:
       try {
         var loaded = ConfigLoader.Load(configPath);
         foreach (string w in loaded.Warnings) {
-          Log.Write("config warning: " + w);
+          Log.Warn("config.warning", w);
         }
         if (loaded.Config.Toggle != cfg.Toggle) {
-          Log.Write("keys.toggle changed; restart audio-capture to apply");
+          Log.Warn("config.hotkey_changed", "keys.toggle changed; restart " +
+            "audio-capture to apply");
         }
         cfg = loaded.Config with { Toggle = cfg.Toggle };
         recorder.UpdateConfig(cfg);
       } catch (Exception e) {
-        Log.Write("config reload failed, keeping previous: " + e.Message);
+        Log.Error("config.reload_failed", "config reload failed; keeping the " +
+          "previous config", new { error = e.Message });
       }
     }
 
@@ -3697,7 +3840,7 @@ commands:
       };
       var resolver = new FakeResolver(e => Devices.TryGetValue(e.Id,
           out var d) ? $"sine=frequency={d.Hz}:sample_rate=48000" : null);
-      Log.Write($"simulate {scenario} start");
+      Log.Info("simulate.start", scenario, new { scenario });
       Console.WriteLine($"== {scenario}");
 
       using var invoker = new Control();
@@ -3800,7 +3943,7 @@ commands:
       });
       Application.Run();
       recorder.Pill?.Dispose();
-      Log.Write($"simulate {scenario} " + (exit == 0 ? "passed" : "failed"));
+      Log.Info("simulate.done", scenario, new { scenario, passed = exit == 0 });
       return exit;
     }
 
@@ -3955,6 +4098,7 @@ commands:
         ("policy", TestMicPolicy),
         ("tones", TestTones),
         ("manifest", TestManifest),
+        ("log", TestLogFormat),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
         ("timing", TestTiming),
@@ -4363,6 +4507,23 @@ commands:
         } catch (IOException) {
         }
       }
+    }
+
+    static void TestLogFormat() {
+      var ts = new DateTimeOffset(2026, 11, 13, 9, 5, 7, 123,
+        TimeSpan.FromHours(7));
+      string line = Log.Format(ts, "warn", "mic.lost", "no audio for 1.6 s",
+        new { session = "s1", bytes = 42L, at = 3.25, endpoint = (string?)null,
+          note = "quote \" here" });
+      Eq("log line", "{\"ts\":\"2026-11-13T09:05:07.123+07:00\"," +
+        "\"level\":\"warn\",\"event\":\"mic.lost\"," +
+        "\"msg\":\"no audio for 1.6 s\",\"session\":\"s1\",\"bytes\":42," +
+        "\"at\":3.25,\"note\":\"quote \\\" here\"}", line);
+      using var doc = JsonDocument.Parse(line);
+      Eq("log parses", "mic.lost", doc.RootElement.GetProperty("event")
+        .GetString());
+      Check("log no data", Log.Format(ts, "info", "x", "y", null)
+        .EndsWith("\"msg\":\"y\"}"));
     }
 
     static void TestHealth() {
