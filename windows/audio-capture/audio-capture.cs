@@ -1524,6 +1524,40 @@ commands:
   // FFmpeg: discovery, child processes, and PCM capture
   // ------------------------------------------------------------------
 
+  /// FFmpeg's version, checked once per path. The mixer's filter-file
+  /// option changed in FFmpeg 7.
+  static class FfmpegVersion {
+    static readonly Dictionary<string, (int? Major, string Line)> Cache = new();
+
+    /// The major version from `ffmpeg -version`'s first line, or null for
+    /// a git build ("N-12345-g...") or an unknown format.
+    public static int? ParseMajor(string versionOutput) {
+      var m = Regex.Match(versionOutput,
+        @"ffmpeg version n?(?<major>\d+)\.(?<minor>\d+)");
+      return m.Success ? int.Parse(m.Groups["major"].Value) : null;
+    }
+
+    public static (int? Major, string Line) Get(string ffmpeg) {
+      lock (Cache) {
+        if (Cache.TryGetValue(ffmpeg, out var hit)) {
+          return hit;
+        }
+      }
+      var run = Proc.Run(ffmpeg, new[] { "-hide_banner", "-version" }, 15000);
+      string line = (run.Stdout + "\n" + run.Stderr).Split('\n')
+        .FirstOrDefault(l => l.StartsWith("ffmpeg version"))?.Trim() ?? "?";
+      var result = (ParseMajor(line), line);
+      lock (Cache) {
+        Cache[ffmpeg] = result;
+      }
+      return result;
+    }
+
+    /// True when the mixer must use the pre-7 `-filter_complex_script`.
+    /// Unknown versions (git builds) are treated as current.
+    public static bool NeedsLegacyFilterScript(int? major) => major < 7;
+  }
+
   static class FfmpegLocator {
     public static IEnumerable<string> Candidates(string configured,
         string? pathVariable, string? programFiles, string? programFilesX86) {
@@ -2123,9 +2157,10 @@ commands:
     /// FFmpeg runs in the session folder: inputs are bare file names and
     /// the graph comes from a file, so the command line stays far below
     /// Windows' 32,767-character limit even with hundreds of segments.
-    /// `-/filter_complex <file>` needs FFmpeg 7 or newer.
+    /// `-/filter_complex <file>` needs FFmpeg 7 or newer; older builds get
+    /// `-filter_complex_script`, which FFmpeg 7 deprecated and 8 removed.
     public static List<string> BuildArgs(IReadOnlyList<SegmentInfo> segments,
-        string outputPath) {
+        string outputPath, bool legacyFilterScript = false) {
       var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
       foreach (var s in segments) {
         args.AddRange(new[] {
@@ -2136,7 +2171,8 @@ commands:
         });
       }
       args.AddRange(new[] {
-        "-/filter_complex", FilterFile, "-map", "[mixed]",
+        legacyFilterScript ? "-filter_complex_script" : "-/filter_complex",
+        FilterFile, "-map", "[mixed]",
         "-c:a", "libmp3lame", "-qscale:a", "4", "-f", "mp3", outputPath,
       });
       return args;
@@ -2190,7 +2226,8 @@ commands:
       }
       File.WriteAllText(Path.Combine(sessionDir, FilterFile),
         BuildFilter(segments, stopAt));
-      var args = BuildArgs(segments, partial);
+      var args = BuildArgs(segments, partial,
+        FfmpegVersion.NeedsLegacyFilterScript(FfmpegVersion.Get(ffmpeg).Major));
       File.WriteAllText(Path.Combine(sessionDir, "mix-command.txt"),
         "cd " + Quote(sessionDir) + Environment.NewLine +
         "ffmpeg " + string.Join(" ", args.Select(Quote)) + Environment.NewLine);
@@ -3385,6 +3422,7 @@ commands:
       hotkeys.Pressed += () => OnCommand("toggle");
       RegisterHotkey();
       SetupTray();
+      CheckFfmpeg();
       timer.Tick += (_, _) => {
         recorder.Tick();
         if (recorder.State == RecorderState.Saving) {
@@ -3407,6 +3445,27 @@ commands:
         OnCommand("start");
       }
       Application.Run();
+    }
+
+    /// Logs FFmpeg's path and version once at start, and warns in the tray
+    /// when it is missing or older than 7.
+    void CheckFfmpeg() {
+      try {
+        string path = FfmpegLocator.Find(cfg.Ffmpeg);
+        var (major, line) = FfmpegVersion.Get(path);
+        Log.Info("ffmpeg.version", line, new { path, major });
+        if (FfmpegVersion.NeedsLegacyFilterScript(major)) {
+          Log.Warn("ffmpeg.old", "FFmpeg older than 7; saves use the " +
+            "legacy -filter_complex_script", new { path, major });
+          tray.ShowBalloonTip(8000, "audio-capture",
+            $"FFmpeg {major} is old. Recording works; consider " +
+            "winget install Gyan.FFmpeg.", ToolTipIcon.Warning);
+        }
+      } catch (Exception e) {
+        Log.Error("ffmpeg.unavailable", e.Message);
+        tray.ShowBalloonTip(8000, "audio-capture", "FFmpeg not found: " +
+          e.Message, ToolTipIcon.Error);
+      }
     }
 
     void RegisterHotkey() {
@@ -4681,6 +4740,17 @@ commands:
       Eq("mix first input", "system-01.pcm", args[10]);
       Check("mix filter from file", args.Contains("-/filter_complex") &&
         args.Contains(Mixer.FilterFile));
+      Check("mix legacy filter script", Mixer.BuildArgs(segs, "o.mp3", true)
+        .Contains("-filter_complex_script"));
+      Eq("ffmpeg version sharex", (int?)9, FfmpegVersion.ParseMajor(
+        "ffmpeg version n9.0.2-48-gd4070a14ce-20261107 Copyright (c)"));
+      Eq("ffmpeg version gyan", (int?)6, FfmpegVersion.ParseMajor(
+        "ffmpeg version 6.1.1-full_build-www.gyan.dev Copyright"));
+      Eq("ffmpeg version git", null, FfmpegVersion.ParseMajor(
+        "ffmpeg version N-118000-g1234abcd Copyright"));
+      Check("legacy below 7", FfmpegVersion.NeedsLegacyFilterScript(6) &&
+        !FfmpegVersion.NeedsLegacyFilterScript(7) &&
+        !FfmpegVersion.NeedsLegacyFilterScript(null));
       Eq("mix output", "C:\\out.mp3.partial", args[^1]);
       Check("mix codec", args.Contains("libmp3lame"));
       double expected = Mixer.ExpectedSeconds(segs);
