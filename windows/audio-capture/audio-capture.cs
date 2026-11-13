@@ -27,31 +27,33 @@ namespace AudioCapture {
   // Entry point and command line
   // ------------------------------------------------------------------
 
-  /// Which copy of the app this is. The installed exe
-  /// (%LOCALAPPDATA%\Programs\audio-capture) is the main instance. Any other
-  /// copy, such as a development build, gets its own mutex, signals, busy
-  /// flag, and state folder, so it can never quit or confuse the main one.
+  /// Which copy of the app this is. The installed exe is the main
+  /// instance: build.cmd writes install.marker next to it. Any other copy,
+  /// such as a development build, gets its own mutex, signals, busy flag,
+  /// and state folder, so it can never quit or confuse the main one. A
+  /// marker file avoids comparing paths, which 8.3 names, junctions, or a
+  /// moved profile can spell differently.
   static class Instance {
-    public static string InstallDir => Path.Combine(Environment.GetFolderPath(
-      Environment.SpecialFolder.LocalApplicationData), "Programs",
-      "audio-capture");
+    public const string MarkerFile = "install.marker";
 
     public static readonly string Suffix = SuffixFor(AppContext.BaseDirectory,
-      InstallDir);
+      File.Exists(Path.Combine(AppContext.BaseDirectory, MarkerFile)));
 
     /// "" for the installed exe, else "-dev-" plus a hash of the exe folder.
-    public static string SuffixFor(string exeDir, string installDir) {
-      string Norm(string d) => Path.GetFullPath(d).TrimEnd('\\', '/')
-        .ToLowerInvariant();
-      if (Norm(exeDir) == Norm(installDir)) {
+    public static string SuffixFor(string exeDir, bool hasMarker) {
+      if (hasMarker) {
         return "";
       }
+      string norm = Path.GetFullPath(exeDir).TrimEnd('\\', '/')
+        .ToLowerInvariant();
       byte[] hash = System.Security.Cryptography.SHA256.HashData(
-        Encoding.UTF8.GetBytes(Norm(exeDir)));
+        Encoding.UTF8.GetBytes(norm));
       return "-dev-" + Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
     }
 
     public static bool IsMain => Suffix.Length == 0;
+
+    public static string Name => IsMain ? "main" : Suffix.TrimStart('-');
   }
 
   static class Program {
@@ -161,6 +163,8 @@ namespace AudioCapture {
       }
 
       Log.Info("app.start", $"audio-capture {Version} started", new {
+        instance = Instance.Name, state_dir = StateDir.Root,
+        exe_dir = AppContext.BaseDirectory,
         version = Version, pid = Environment.ProcessId, command = cli.Command,
       });
       LoadedConfig loaded;
@@ -3831,8 +3835,12 @@ commands:
 
     void SetupTray() {
       tray.Icon = TrayIcon.Make();
-      tray.Text = Clip($"audio-capture: idle ({cfg.Toggle.Text})");
+      tray.Text = Clip($"{TrayName}: idle ({cfg.Toggle.Text})");
       var menu = new ContextMenuStrip();
+      if (!Instance.IsMain) {
+        menu.Items.Add($"Dev instance ({Instance.Name}): state in " +
+          StateDir.Root).Enabled = false;
+      }
       menu.Items.Add("Start / stop recording", null,
         (_, _) => OnCommand("toggle"));
       menu.Items.Add("Open recordings folder", null, (_, _) => {
@@ -3854,8 +3862,11 @@ commands:
 
     static string Clip(string s) => s.Length > 63 ? s[..63] : s;
 
+    static string TrayName => Instance.IsMain ? "audio-capture"
+      : "audio-capture (dev)";
+
     void SetStatus(string status) {
-      tray.Text = Clip($"audio-capture: {status} ({cfg.Toggle.Text})");
+      tray.Text = Clip($"{TrayName}: {status} ({cfg.Toggle.Text})");
     }
 
     void WaitForSignals() {
@@ -5173,10 +5184,9 @@ commands:
       Check("state dir in home",
         StateDir.MainRoot.EndsWith("\\.audio-capture"));
       Eq("instance installed", "", Instance.SuffixFor(
-        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture\\",
-        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture"));
-      string dev = Instance.SuffixFor("C:\\dev\\bin\\",
-        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture");
+        "C:\\PROGRA~1\\anything\\", true));
+      string dev = Instance.SuffixFor("C:\\dev\\bin\\", false);
+      Eq("instance dev stable", dev, Instance.SuffixFor("C:\\DEV\\bin", false));
       Check("instance dev suffix", dev.StartsWith("-dev-") && dev.Length == 13,
         dev);
       Check("dev state is separate", Instance.IsMain ||

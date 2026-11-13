@@ -20,6 +20,9 @@ if exist "%OUT%\audio-capture.exe" (
 dotnet publish "%~dp0audio-capture.cs" -o "%OUT%"
 if errorlevel 1 exit /b 1
 
+rem Marks this folder's exe as the main instance (see Instance in the source).
+echo This folder holds the installed audio-capture. > "%OUT%\install.marker"
+
 rem A first install gets the example config. An old config in %APPDATA%
 rem is left for the app, which copies it over on its next start.
 if not exist "%CFG%" if not exist "%OLDCFG%" (
