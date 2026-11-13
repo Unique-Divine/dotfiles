@@ -80,6 +80,7 @@ their command to it and exit.
 | `--recover <dir>` | Mix a session folder that never got saved |
 | `--self-test` | Run the unit tests, including short FFmpeg captures |
 | `--simulate <name>` | Run a device scenario with fake mics and check the MP3 |
+| `--watch-devices [s]` | Print recording devices and every Windows change event for s seconds |
 | `--config <path>` | Use this config file instead of the usual search |
 
 ## Which Mic
@@ -133,12 +134,20 @@ mic is lost, its segment closes and the next default takes over.
 
 ## Testing Without Hardware
 
-`--simulate` swaps the Windows devices for scripted fakes. Each fake mic is
-an FFmpeg sine at its own frequency (Yeti 440 Hz, laptop 660 Hz, AirPods
-880 Hz, system audio 150 Hz). An unplug freezes the fake's FFmpeg, the way
-a vanished USB device freezes the real one. After the save, the app decodes
-the MP3 and checks which tone plays when, the gaps, and that each segment
-sits where the recorder placed it.
+`--simulate` swaps the Windows devices for scripted fakes. Each fake device
+is this exe in a hidden `--fake-device` mode, started in place of FFmpeg. It
+writes PCM into the capture pipe in real time: a steady tone of its own
+(Yeti 440 Hz, laptop 660 Hz, AirPods 880 Hz, system audio 150 Hz), plus a
+50 ms burst at a fixed point of every wall-clock second (system 2 kHz at
+:00.000, mics 3 kHz at :00.500). An unplug freezes the fake process, the
+way a vanished USB device freezes FFmpeg. After the save, the app decodes
+the MP3 and checks which tone plays when, the gaps, and where each burst
+lands against the wall clock. A wrong start estimate or offset moves the
+bursts; shifting the mic by 40 ms in a test build fails the check.
+
+The fakes skip two real parts: Windows device notifications and the
+DirectShow device mapping. `--watch-devices` checks those on real
+hardware: run it, plug and unplug mics, and watch the events and defaults.
 
 | Scenario | Script |
 | --- | --- |

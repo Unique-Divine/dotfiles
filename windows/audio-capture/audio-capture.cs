@@ -118,6 +118,14 @@ namespace AudioCapture {
         case "simulate":
           Native.EnsureConsole();
           return Simulator.Run(cli.Argument!);
+        case "fake-device": {
+          string[] parts = cli.Argument!.Split('|', 2);
+          return FakeDevice.Run(parts[0], parts[1]);
+        }
+        case "watch-devices":
+          Native.EnsureConsole();
+          return Commands.WatchDevices(int.Parse(cli.Argument!,
+            CultureInfo.InvariantCulture));
         case "recover":
           Native.EnsureConsole();
           return Commands.Recover(cli.ConfigPath, cli.Argument!);
@@ -197,6 +205,7 @@ namespace AudioCapture {
   }
 
   sealed record Cli(string Command, string? ConfigPath, string? Argument) {
+    // Also: --fake-device <pipe> <spec>, the simulated device process.
     public const string Usage =
 @"usage: audio-capture [command] [--config <path>]
 
@@ -212,6 +221,9 @@ commands:
   --list-devices    print FFmpeg, DirectShow devices, and the resolved mic
   --recover <dir>   mix an unfinished session directory into an MP3
   --self-test       run the built-in unit tests
+  --watch-devices [s] print Windows recording devices and every change
+                    notification for s seconds (default 60); plug and
+                    unplug mics meanwhile to check the real device path
   --simulate <name> run a device scenario with fake mics (generated tones)
                     and check the saved MP3: replug, bump, airpods,
                     console-change, or all
@@ -229,6 +241,19 @@ commands:
               throw new ArgumentException("--config needs a path");
             }
             config = args[++i];
+            break;
+          case "--fake-device":
+            if (i + 2 >= args.Length) {
+              throw new ArgumentException("--fake-device needs a pipe and a " +
+                "spec");
+            }
+            command = "fake-device";
+            argument = args[++i] + "|" + args[++i];
+            break;
+          case "--watch-devices":
+            command = "watch-devices";
+            argument = i + 1 < args.Length && !args[i + 1].StartsWith("-")
+              ? args[++i] : "60";
             break;
           case "--simulate":
             if (i + 1 >= args.Length) {
@@ -283,6 +308,36 @@ commands:
         }
         Thread.Sleep(100);
       }
+    }
+
+    /// An opt-in hardware check of the real device path: MMDevice
+    /// notifications, the active list, both defaults, and which device each
+    /// follow mode would pick.
+    public static int WatchDevices(int seconds) {
+      void Snapshot(string why) {
+        Console.WriteLine($"--- {DateTime.Now:HH:mm:ss.fff} {why}");
+        foreach (var role in new[] { CaptureRole.Communications,
+            CaptureRole.Console }) {
+          var e = CoreAudio.GetDefaultCapture(role);
+          Console.WriteLine($"  default {role}: " +
+            (e == null ? "(none)" : $"{e.FriendlyName} ({e.Id})"));
+        }
+        foreach (var e in CoreAudio.ListActiveCapture()) {
+          Console.WriteLine($"  active: {e.FriendlyName}");
+        }
+      }
+      using var source = new MMDeviceSource();
+      Console.WriteLine("notifications: " + (source.UsesNotifications
+        ? "MMDevice callbacks" : "polling fallback"));
+      Snapshot("now");
+      var pending = new System.Threading.Timer(_ => Snapshot("after events"));
+      source.Changed += e => {
+        Console.WriteLine($"  event {DateTime.Now:HH:mm:ss.fff}: {e}");
+        pending.Change(500, Timeout.Infinite);
+      };
+      Thread.Sleep(TimeSpan.FromSeconds(seconds));
+      pending.Dispose();
+      return 0;
     }
 
     public static bool IsBusy(string? eventName = null) {
@@ -1627,17 +1682,18 @@ commands:
     DeviceTarget? ByName(string name);
   }
 
-  /// For --simulate: every fake endpoint is an FFmpeg lavfi tone.
+  /// For --simulate: maps each fake endpoint to a capture spec, such as a
+  /// "fake:" device process or an FFmpeg "lavfi:" tone.
   sealed class FakeResolver : IDeviceResolver {
-    readonly Func<Endpoint, string?> lavfi;
+    readonly Func<Endpoint, string?> spec;
 
-    public FakeResolver(Func<Endpoint, string?> lavfi) {
-      this.lavfi = lavfi;
+    public FakeResolver(Func<Endpoint, string?> spec) {
+      this.spec = spec;
     }
 
     public DeviceTarget? ForEndpoint(Endpoint e) =>
-      lavfi(e) is string expr
-        ? new DeviceTarget("lavfi:" + expr, e.FriendlyName, "Fake", e.Id)
+      spec(e) is string x
+        ? new DeviceTarget(x, e.FriendlyName, "Fake", e.Id)
         : null;
 
     public DeviceTarget? ByName(string name) => null;
@@ -1985,8 +2041,14 @@ commands:
     void StartCore(string ffmpeg) {
       pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1,
         PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 1 << 20, 0);
-      var p = Process.Start(Proc.Info(ffmpeg,
-          Args(Target.Spec, @"\\.\pipe\" + pipeName)))
+      string output = @"\\.\pipe\" + pipeName;
+      // A "fake:" spec runs this exe as a simulated device (--simulate).
+      var info = Target.Spec.StartsWith("fake:", StringComparison.Ordinal)
+        ? Proc.Info(Environment.ProcessPath!, new[] {
+            "--fake-device", output, Target.Spec[5..],
+          })
+        : Proc.Info(ffmpeg, Args(Target.Spec, output));
+      var p = Process.Start(info)
         ?? throw new InvalidOperationException("could not start ffmpeg");
       JobObject.Shared.Add(p);
       process = p;
@@ -2629,8 +2691,12 @@ commands:
     /// The folder name, e.g. 20261113-191849-432: the session's id in logs.
     public string Name => Path.GetFileName(Dir);
 
-    public Session(int id, string dir, long origin, DateTime startedLocal,
-        MicPolicy policy, IDeviceResolver resolver) {
+    /// UTC wall time at Origin, for checks against real time.
+    public readonly DateTime OriginWall;
+
+    public Session(int id, string dir, long origin, DateTime originWall,
+        DateTime startedLocal, MicPolicy policy, IDeviceResolver resolver) {
+      OriginWall = originWall;
       Id = id;
       Dir = dir;
       Origin = origin;
@@ -2697,6 +2763,7 @@ commands:
     public MixResult? LastResult { get; private set; }
     public List<MixResult> Results { get; } = new();
     public List<SegmentInfo> LastSegments { get; private set; } = new();
+    public DateTime LastOriginWall { get; private set; }
     public int? MicPid => current?.Mic?.Live?.Pid;
     /// Set when the app is quitting: no new recordings.
     public bool Closing { get; set; }
@@ -2756,12 +2823,14 @@ commands:
         return;
       }
       long origin = Stopwatch.GetTimestamp();
+      var originWall = DateTime.UtcNow;
       var startedLocal = DateTime.Now;
       string dir = Path.Combine(sessionsDir,
         startedLocal.ToString("yyyyMMdd-HHmmss-fff",
           CultureInfo.InvariantCulture));
       Directory.CreateDirectory(dir);
-      var ses = new Session(++sessionCounter, dir, origin, startedLocal,
+      var ses = new Session(++sessionCounter, dir, origin, originWall,
+        startedLocal,
         MicPolicy.Parse(cfg.Mic, new List<string>()),
         resolverFor(ffmpeg, cfg));
       current = ses;
@@ -3250,6 +3319,7 @@ commands:
             .OrderBy(s => s.Start).ToList();
         }
         LastSegments = segments;
+        LastOriginWall = ses.OriginWall;
         ses.WriteManifest();
         foreach (var s in segments) {
           Log.Info("mix.segment", DescribeSegment(s),
@@ -4198,12 +4268,130 @@ commands:
     }
   }
 
+  /// A simulated recording device for --simulate: this exe, started in
+  /// place of FFmpeg, writes 48 kHz stereo s16le into the capture pipe in
+  /// real time. It plays a steady tone plus a 50 ms burst at a fixed point
+  /// of every wall-clock second, so the saved MP3 can be checked against
+  /// real time. It stops on "q" like FFmpeg, and can be frozen like a
+  /// vanished USB device.
+  static class FakeDevice {
+    public const int Rate = 48000;
+    public const double BurstSeconds = 0.05;
+    public const double ToneAmplitude = 0.125;
+    public const double BurstAmplitude = 0.25;
+
+    public sealed record Spec(int Tone, int Burst, int PhaseMs);
+
+    /// "tone=440,burst=3000,phase=500"
+    public static Spec Parse(string spec) {
+      var kv = spec.Split(',').Select(x => x.Split('='))
+        .ToDictionary(x => x[0], x => int.Parse(x[1],
+          CultureInfo.InvariantCulture));
+      return new Spec(kv["tone"], kv["burst"], kv.GetValueOrDefault("phase"));
+    }
+
+    /// True when a sample at this wall-clock time is inside a burst.
+    public static bool InBurst(DateTime utc, int phaseMs) {
+      double ms = (utc.Ticks / 10000.0) % 1000.0;
+      double into = ((ms - phaseMs) % 1000.0 + 1000.0) % 1000.0;
+      return into < BurstSeconds * 1000;
+    }
+
+    public static int Run(string pipePath, string specText) {
+      var spec = Parse(specText);
+      string name = pipePath.Replace(@"\\.\pipe\", "");
+      using var pipe = new System.IO.Pipes.NamedPipeClientStream(".", name,
+        PipeDirection.Out);
+      pipe.Connect(10000);
+      bool stop = false;
+      var stdin = new Thread(() => {
+        try {
+          int c;
+          while ((c = Console.In.Read()) >= 0 && c != 'q') {
+          }
+        } catch (IOException) {
+        }
+        stop = true;
+      }) { IsBackground = true };
+      stdin.Start();
+      const int chunk = 480; // 10 ms
+      var buffer = new byte[chunk * 4];
+      long t0 = Stopwatch.GetTimestamp();
+      DateTime wall0 = DateTime.UtcNow;
+      long n = 0;
+      try {
+        while (!stop) {
+          long due = (long)(Clock.Seconds(Stopwatch.GetTimestamp() - t0) *
+            Rate);
+          while (n + chunk <= due) {
+            for (int i = 0; i < chunk; i++) {
+              double t = (double)(n + i) / Rate;
+              double v = ToneAmplitude * Math.Sin(2 * Math.PI * spec.Tone * t);
+              if (InBurst(wall0.AddTicks((long)(t * TimeSpan.TicksPerSecond)),
+                  spec.PhaseMs)) {
+                v += BurstAmplitude * Math.Sin(2 * Math.PI * spec.Burst * t);
+              }
+              short x = (short)Math.Clamp(v * 32767, -32768, 32767);
+              BitConverter.TryWriteBytes(buffer.AsSpan(i * 4), x);
+              BitConverter.TryWriteBytes(buffer.AsSpan(i * 4 + 2), x);
+            }
+            pipe.Write(buffer, 0, buffer.Length);
+            n += chunk;
+          }
+          Thread.Sleep(2);
+        }
+      } catch (IOException) {
+        // The app closed the pipe.
+      }
+      return 0;
+    }
+  }
+
+  static class BurstAnalysis {
+    /// Burst onsets (seconds into the signal) at one frequency: a 5 ms
+    /// Goertzel window slid 1 ms at a time; an onset is where the amplitude
+    /// first crosses half the burst amplitude, at which point the window is
+    /// half full, so the onset is the window start plus 2.5 ms.
+    public static List<double> Onsets(float[] mono, int rate, int hz) {
+      int win = rate / 200, step = rate / 1000;
+      var onsets = new List<double>();
+      bool on = false;
+      double threshold = FakeDevice.BurstAmplitude / 2;
+      for (int i = 0; i + win <= mono.Length; i += step) {
+        double a = ToneAnalysis.Amplitude(mono.AsSpan(i, win), hz, rate);
+        if (!on && a > threshold) {
+          onsets.Add((i + win / 2.0) / rate);
+          on = true;
+        } else if (on && a < threshold / 2) {
+          on = false;
+        }
+      }
+      return onsets;
+    }
+
+    /// Error of each onset against the nearest expected burst: expected
+    /// bursts sit at `phase` past every whole second of wall time, and the
+    /// file starts at `fileZero` (UTC).
+    public static List<double> Errors(IEnumerable<double> onsets,
+        DateTime fileZero, int phaseMs) {
+      double zeroMs = (fileZero.Ticks / 10000.0) % 1000.0;
+      // Seconds from the file's start to its first expected burst.
+      double first = (((phaseMs - zeroMs) % 1000.0 + 1000.0) % 1000.0) / 1000;
+      return onsets.Select(o => {
+        double k = Math.Round(o - first);
+        return o - (first + k);
+      }).ToList();
+    }
+  }
+
   static class Simulator {
     public static readonly string[] Scenarios = {
       "replug", "bump", "airpods", "console-change", "back-to-back",
     };
 
     const int SystemHz = 150;
+    const int SystemBurstHz = 2000; // at :00.000 of every second
+    const int MicBurstHz = 3000;    // at :00.500 of every second
     static readonly Dictionary<string, (string Name, int Hz)> Devices = new() {
       ["yeti"] = ("Yeti Microphone - Main (Yeti Stereo Microphone)", 440),
       ["surface"] = ("Microphone (Surface Stereo Microphones)", 660),
@@ -4240,12 +4428,13 @@ commands:
       var cfg = new AppConfig {
         OutputDir = dir.Replace("{", "").Replace("}", ""),
         OutputName = scenario + "-{HHmmss}.mp3",
-        System = $"lavfi:sine=frequency={SystemHz}:sample_rate=48000",
+        System = $"fake:tone={SystemHz},burst={SystemBurstHz},phase=0",
         Mic = "communications",
         KeepSession = true,
       };
       var resolver = new FakeResolver(e => Devices.TryGetValue(e.Id,
-          out var d) ? $"sine=frequency={d.Hz}:sample_rate=48000" : null);
+          out var d) ? $"fake:tone={d.Hz},burst={MicBurstHz},phase=500"
+          : null);
       Log.Info("simulate.start", scenario, new { scenario });
       Console.WriteLine($"== {scenario}");
 
@@ -4377,6 +4566,12 @@ commands:
       return ok;
     }
 
+    static string Ms(double seconds) {
+      double ms = Math.Round(seconds * 1000, 1);
+      return (ms >= 0 ? "+" : "") + ms.ToString("0.0",
+        CultureInfo.InvariantCulture);
+    }
+
     static bool Check(string scenario, Recorder recorder, AppConfig cfg) {
       var result = recorder.LastResult;
       if (result == null || !result.Ok) {
@@ -4389,7 +4584,7 @@ commands:
         Path.Combine(Path.GetTempPath(), "audio-capture-sim.f32"));
       var tones = new[] { SystemHz }.Concat(Devices.Values.Select(d => d.Hz))
         .ToArray();
-      // lavfi sine amplitude is 1/8; mixed tones keep it.
+      // Fake tones are 1/8 amplitude; mixing keeps it.
       var runs = ToneAnalysis.Merge(
         ToneAnalysis.Runs(mono, 48000, tones, 0.04), 0.05);
       double length = mono.Length / 48000.0;
@@ -4406,6 +4601,37 @@ commands:
       double sys = runs.Where(r => r.Hz == SystemHz).Sum(r => r.To - r.From);
       Expect($"system tone covers the file ({sys:0.00} of {length:0.00} s)",
         sys >= length - 0.1);
+
+      // Timing against the wall clock: each fake device bursts at known
+      // wall times, so a wrong start estimate or offset moves the bursts.
+      var segs0 = recorder.LastSegments;
+      var fileZero = recorder.LastOriginWall.AddSeconds(
+        segs0.Min(x => x.Start));
+      double sysMean = 0;
+      foreach (var (label, hz, phase) in new[] {
+          ("system", SystemBurstHz, 0), ("mic", MicBurstHz, 500) }) {
+        var onsets = BurstAnalysis.Onsets(mono, 48000, hz);
+        var errs = BurstAnalysis.Errors(onsets, fileZero, phase);
+        if (errs.Count == 0) {
+          Expect($"{label} bursts found", false);
+          continue;
+        }
+        double mean = errs.Average(), worst = errs.Max(Math.Abs);
+        if (label == "system") {
+          sysMean = mean;
+        }
+        Expect($"{label} bursts vs wall clock: {errs.Count} found, mean " +
+          $"{Ms(mean)} ms, worst {worst * 1000:0.0} ms",
+          Math.Abs(mean) <= 0.02 && worst <= 0.035);
+        if (label == "system") {
+          int expected = (int)Math.Floor(length) - 1;
+          Expect($"system bursts present ({errs.Count}, at least " +
+            $"{expected})", errs.Count >= expected);
+        } else {
+          Expect($"mic vs system alignment {Ms(mean - sysMean)} ms",
+            Math.Abs(mean - sysMean) <= 0.015);
+        }
+      }
 
       // Alignment: each mic segment's tone sits where the recorder placed
       // it, measured from the earliest segment.
@@ -4511,6 +4737,7 @@ commands:
         ("log", TestLogFormat),
         ("limiter", TestLineLimiter),
         ("decide", TestMicDecision),
+        ("bursts", TestBursts),
         ("rotation", TestLogRotation),
         ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
@@ -4986,6 +5213,34 @@ commands:
         .GetString());
       Check("log no data", Log.Format(ts, "info", "x", "y", null)
         .EndsWith("\"msg\":\"y\"}"));
+    }
+
+    static void TestBursts() {
+      var spec = FakeDevice.Parse("tone=440,burst=3000,phase=500");
+      Eq("fake spec", new FakeDevice.Spec(440, 3000, 500), spec);
+      var sec = new DateTime(2026, 11, 13, 12, 0, 0, DateTimeKind.Utc);
+      Check("burst at phase", FakeDevice.InBurst(sec.AddMilliseconds(510),
+        500));
+      Check("no burst outside", !FakeDevice.InBurst(sec.AddMilliseconds(560),
+        500));
+      Check("burst wraps", FakeDevice.InBurst(sec.AddMilliseconds(20), 0));
+      // A file starting at 12:00:00.300 has its :00.500 bursts at 0.2 s,
+      // 1.2 s, ...; onsets 3 ms late give +3 ms errors.
+      var errs = BurstAnalysis.Errors(new[] { 0.203, 1.203, 2.199 },
+        sec.AddMilliseconds(300), 500);
+      Check("burst errors", Math.Abs(errs[0] - 0.003) < 1e-4 &&
+        Math.Abs(errs[2] + 0.001) < 1e-4, string.Join(",", errs));
+      // Synthetic signal: bursts at 0.25 s and 1.25 s.
+      int rate = 48000;
+      var x = new float[rate * 2];
+      for (int i = 0; i < x.Length; i++) {
+        double t = (double)i / rate, into = t % 1.0;
+        x[i] = (float)(into >= 0.25 && into < 0.30
+          ? 0.25 * Math.Sin(2 * Math.PI * 2000 * t) : 0);
+      }
+      var on = BurstAnalysis.Onsets(x, rate, 2000);
+      Check("burst onsets", on.Count == 2 && Math.Abs(on[0] - 0.25) < 0.002 &&
+        Math.Abs(on[1] - 1.25) < 0.002, string.Join(",", on));
     }
 
     static void TestMicDecision() {
