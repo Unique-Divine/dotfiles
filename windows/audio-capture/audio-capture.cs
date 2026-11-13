@@ -967,6 +967,25 @@ commands:
     }
 
     public static string SessionsDir => StateDir.Sessions;
+
+    /// Picks a free output name and claims it by creating "<name>.partial"
+    /// with CreateNew, which fails if another save got there first. So two
+    /// saves running at once can't pick the same file.
+    public static string Reserve(string path) {
+      for (int attempt = 0; attempt < 1000; attempt++) {
+        string name = Unique(path, p => File.Exists(p) ||
+          File.Exists(p + ".partial"));
+        try {
+          using (new FileStream(name + ".partial", FileMode.CreateNew,
+              FileAccess.Write)) {
+          }
+          return name;
+        } catch (IOException) when (File.Exists(name + ".partial")) {
+          // Another save claimed it between the check and the create.
+        }
+      }
+      throw new IOException("could not reserve an output name for " + path);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -2260,7 +2279,7 @@ commands:
         return new MixResult(false, "nothing was recorded", null);
       }
       Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-      string final = Paths.Unique(outputPath, File.Exists);
+      string final = Paths.Reserve(outputPath);
       string partial = final + ".partial";
       if (segments.Any(s => !string.Equals(Path.GetDirectoryName(s.Path),
           Path.GetFullPath(sessionDir).TrimEnd('\\'),
@@ -4421,6 +4440,20 @@ commands:
       var taken = new HashSet<string> { "C:\\a\\x.mp3", "C:\\a\\x-2.mp3" };
       Eq("unique taken", "C:\\a\\x-3.mp3",
         Paths.Unique("C:\\a\\x.mp3", taken.Contains));
+      string rdir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(rdir);
+      try {
+        string want = Path.Combine(rdir, "a.mp3");
+        var names = new System.Collections.Concurrent.ConcurrentBag<string>();
+        Parallel.For(0, 8, _ => names.Add(Paths.Reserve(want)));
+        Eq("reserve gives distinct names", 8, names.Distinct().Count());
+        Check("reserve first is the plain name", names.Contains(want));
+        Check("reserve skips a .partial", Paths.Reserve(want) ==
+          Path.Combine(rdir, "a-9.mp3"));
+      } finally {
+        Directory.Delete(rdir, true);
+      }
       var cands = FfmpegLocator.Candidates("", "C:\\bin; ;D:\\tools",
         "C:\\Program Files", null).ToList();
       Eq("ffmpeg candidates", 3, cands.Count);
