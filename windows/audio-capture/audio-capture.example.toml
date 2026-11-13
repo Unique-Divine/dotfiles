@@ -1,0 +1,43 @@
+# audio-capture config. The app reads the first file that exists:
+#   1. --config <path>
+#   2. %APPDATA%\audio-capture\audio-capture.toml
+#   3. audio-capture.toml next to audio-capture.exe
+# Edits apply at the next recording start, except keys.toggle, which needs
+# a restart (audio-capture --quit, then launch it again).
+
+[keys]
+# One global chord in herdr's syntax: ctrl, alt, shift, and win (or super,
+# cmd) plus one key, such as a letter, a digit, f1 to f24, or a named key
+# (space, enter, esc, minus, comma, ...). ShareX owns ctrl+f2 until the
+# handover, so test on another chord.
+toggle = "ctrl+alt+f2"
+
+[pill]
+# bottom-right, bottom-left, bottom-center, top-right, top-left, or
+# top-center.
+position = "bottom-right"
+# primary, or cursor for the monitor under the mouse at recording start.
+monitor = "primary"
+# Recording dot color as #RRGGBB.
+dot_color = "#FF453A"
+
+[output]
+# {documents}, {music}, {videos}, {desktop}, {home}, {appdata}, and
+# {localappdata} are folders. Any other {token} is a .NET date format.
+dir = "{documents}/ShareX/Screenshots/{yyyy-MM}"
+name = "{yy-MM-dd}__{HHmmss}-audio.mp3"
+
+[audio]
+# DirectShow device for system audio (screen-capture-recorder's filter).
+system = "virtual-audio-capturer"
+# "default" follows the Windows default recording device at recording
+# start. Or a DirectShow name from `audio-capture --list-devices`, or
+# "none" for system audio only.
+mic = "default"
+# Path to ffmpeg.exe. Empty means PATH, then ShareX's copy.
+ffmpeg = ""
+
+[debug]
+# Keep the raw session folder in %LOCALAPPDATA%\audio-capture\sessions
+# after a successful save.
+keep_session = false

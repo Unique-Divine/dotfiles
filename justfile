@@ -330,6 +330,18 @@ win-sync:
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
+# Build audio-capture on Windows into %LOCALAPPDATA%\Programs\audio-capture.
+audio-capture-build: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\build.cmd'
+
+# Start audio-capture, or send ARGS (--toggle, --stop, --quit) to it.
+audio-capture-run *ARGS:
+  cd /mnt/c && powershell.exe -NoProfile -Command "Start-Process \"\$env:LOCALAPPDATA\Programs\audio-capture\audio-capture.exe\" {{ if ARGS == "" { "" } else { "-ArgumentList '" + ARGS + "'" } }}" > /dev/null 2>&1 < /dev/null
+
+# Run the audio-capture unit tests against the built exe.
+audio-capture-test:
+  cd /mnt/c && "$(wslpath -u "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/Programs/audio-capture/audio-capture.exe" --self-test
+
 # Generate the ShareX hotkey JSON used by Windows.
 sharex-generate:
   bun run windows/sharex/managed-hotkeys.ts --write
