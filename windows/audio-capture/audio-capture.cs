@@ -72,7 +72,12 @@ namespace AudioCapture {
       if (!isFirst) {
         // A running instance owns the hotkey: pass the command along.
         string signal = cli.Command == "run" ? "toggle" : cli.Command;
-        return Commands.Signal(signal) ? 0 : 1;
+        if (!Commands.Signal(signal)) {
+          return 1;
+        }
+        // --quit returns once the running instance has saved and exited,
+        // so a build can replace the exe right after.
+        return signal == "quit" ? Commands.WaitForExit(mutex) : 0;
       }
       if (cli.Command == "stop" || cli.Command == "quit") {
         Native.EnsureConsole();
@@ -92,6 +97,9 @@ namespace AudioCapture {
         return 1;
       }
 
+      // Release the caller's stdout/stderr pipes: a resident app holding
+      // them would keep a WSL or `just` caller waiting forever.
+      Native.DetachStdHandles();
       Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
       Application.EnableVisualStyles();
       Application.SetCompatibleTextRenderingDefault(false);
@@ -177,6 +185,20 @@ commands:
         }
         Thread.Sleep(100);
       }
+    }
+
+    public static int WaitForExit(Mutex mutex) {
+      try {
+        if (!mutex.WaitOne(TimeSpan.FromMinutes(5))) {
+          Native.EnsureConsole();
+          Console.Error.WriteLine("audio-capture: still running after 5 min");
+          return 1;
+        }
+      } catch (AbandonedMutexException) {
+        // It exited without releasing: still gone.
+      }
+      mutex.ReleaseMutex();
+      return 0;
     }
 
     public static int ListDevices(string? configPath) {
@@ -552,7 +574,7 @@ commands:
     BottomRight, BottomLeft, BottomCenter, TopRight, TopLeft, TopCenter
   }
 
-  sealed record AppConfig {
+  sealed partial record AppConfig {
     public Chord Toggle { get; init; } = Chord.Parse("ctrl+alt+f2");
     public PillPosition Position { get; init; } = PillPosition.BottomRight;
     public string Monitor { get; init; } = "primary";
@@ -563,9 +585,12 @@ commands:
     public string Mic { get; init; } = "default";
     public string Ffmpeg { get; init; } = "";
     public bool KeepSession { get; init; }
+    public static readonly Color DefaultDotColor = Color.FromArgb(255, 69, 58);
+    public Color DotColor { get; init; } = DefaultDotColor;
 
     static readonly string[] KnownKeys = {
-      "keys.toggle", "pill.position", "pill.monitor", "output.dir",
+      "keys.toggle", "pill.position", "pill.monitor", "pill.dot_color",
+      "output.dir",
       "output.name", "audio.system", "audio.mic", "audio.ffmpeg",
       "debug.keep_session",
     };
@@ -619,6 +644,15 @@ commands:
         Mic = Str("audio.mic", cfg.Mic),
         Ffmpeg = Str("audio.ffmpeg", cfg.Ffmpeg),
       };
+      string dot = Str("pill.dot_color", "");
+      if (dot.Length > 0) {
+        Color? parsed = ParseHexColor(dot);
+        if (parsed == null) {
+          warnings.Add($"pill.dot_color '{dot}' is not #RRGGBB; using default");
+        } else {
+          cfg = cfg with { DotColor = parsed.Value };
+        }
+      }
       if (values.TryGetValue("debug.keep_session", out object? keep)) {
         cfg = cfg with {
           KeepSession = keep as bool? ?? throw new FormatException(
@@ -629,6 +663,18 @@ commands:
       Templates.Expand(cfg.OutputDir, DateTime.Now, _ => "x");
       Templates.Expand(cfg.OutputName, DateTime.Now, _ => "x");
       return (cfg, warnings);
+    }
+  }
+
+  partial record AppConfig {
+    /// "#RRGGBB" to a color, or null if malformed.
+    public static Color? ParseHexColor(string s) {
+      var m = Regex.Match(s.Trim(), "^#([0-9a-fA-F]{6})$");
+      if (!m.Success) {
+        return null;
+      }
+      int v = Convert.ToInt32(m.Groups[1].Value, 16);
+      return Color.FromArgb(255, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
     }
   }
 
@@ -1865,7 +1911,7 @@ commands:
     }
 
     Pill ShowPill() {
-      Pill ??= new Pill();
+      Pill ??= new Pill(cfg.DotColor);
       Pill.Place(cfg.Position, cfg.Monitor);
       return Pill;
     }
@@ -1893,7 +1939,7 @@ commands:
 
   sealed class Pill : Form {
     // Layout in DIPs (scaled by the monitor's DPI).
-    const int WidthDip = 132;
+    const int WidthDip = 122;     // fits m:ss after the waveform
     const int HeightDip = 28;
     const int BarCount = 16;
     const float PadDip = 10;      // left and right inner padding
@@ -1913,7 +1959,10 @@ commands:
     float scale = 1;
     int frame;
 
-    public Pill() {
+    readonly Color recordingDot;
+
+    public Pill(Color recordingDot) {
+      this.recordingDot = recordingDot;
       FormBorderStyle = FormBorderStyle.None;
       ShowInTaskbar = false;
       StartPosition = FormStartPosition.Manual;
@@ -2056,7 +2105,7 @@ commands:
         Mode.Saving => text,
         Mode.Saved => green,
         Mode.Error => red,
-        _ => micLost ? amber : red,
+        _ => micLost ? amber : recordingDot,
       };
       // Recording dot pulses gently.
       int alpha = mode == Mode.Recording
@@ -2106,7 +2155,7 @@ commands:
       }
       using var tb = new SolidBrush(text);
       var timeFormat = new StringFormat {
-        Alignment = StringAlignment.Far,
+        Alignment = StringAlignment.Near,
         LineAlignment = StringAlignment.Center,
         FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip,
       };
@@ -2444,6 +2493,22 @@ commands:
     }
 
     [DllImport("kernel32.dll")]
+    static extern bool SetStdHandle(int which, IntPtr handle);
+
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public static void DetachStdHandles() {
+      foreach (int which in new[] { -10, -11, -12 }) {
+        IntPtr h = GetStdHandle(which);
+        if (h != IntPtr.Zero && h != new IntPtr(-1)) {
+          CloseHandle(h);
+        }
+        SetStdHandle(which, IntPtr.Zero);
+      }
+    }
+
+    [DllImport("kernel32.dll")]
     static extern uint SetThreadExecutionState(uint flags);
 
     public static void KeepAwake(bool on) {
@@ -2711,6 +2776,16 @@ commands:
       Eq("config dir", "D:/rec/{yyyy}", c.OutputDir);
       Eq("config mic", "none", c.Mic);
       Eq("config unknown warns", 1, w.Count);
+      var (dc, dw) = AppConfig.FromToml("[pill]\ndot_color = \"#E5484D\"\n");
+      Eq("config dot color", Color.FromArgb(255, 0xE5, 0x48, 0x4D).ToArgb(),
+        dc.DotColor.ToArgb());
+      Eq("config dot color no warning", 0, dw.Count);
+      var (bc, bw) = AppConfig.FromToml("[pill]\ndot_color = \"red\"\n");
+      Eq("config bad dot color falls back",
+        AppConfig.DefaultDotColor.ToArgb(), bc.DotColor.ToArgb());
+      Eq("config bad dot color warns", 1, bw.Count);
+      Eq("hex short", null, AppConfig.ParseHexColor("#fff"));
+      Eq("hex no hash", null, AppConfig.ParseHexColor("e5484d"));
       Throws<FormatException>("config bad position",
         () => AppConfig.FromToml("[pill]\nposition = \"middle\"\n"));
       Throws<FormatException>("config bad chord",
