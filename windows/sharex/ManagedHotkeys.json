@@ -46,6 +46,7 @@
         "Job": "ScreenRecorderActiveWindow",
         "UseDefaultCaptureSettings": false,
         "CaptureSettings": {
+          "ScreenRecordUseNative": false,
           "FFmpegOptions": {
             "AudioSource": "virtual-audio-capturer",
             "AudioCodec": "libmp3lame",

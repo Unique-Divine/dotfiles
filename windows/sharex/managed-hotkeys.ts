@@ -42,6 +42,9 @@ export const managedHotkeys = {
         Job: "ScreenRecorderActiveWindow",
         UseDefaultCaptureSettings: false,
         CaptureSettings: {
+          // ShareX's native recorder records video and ignores FFmpeg custom
+          // commands, so this audio-only hotkey must use FFmpeg.
+          ScreenRecordUseNative: false,
           FFmpegOptions: {
             AudioSource: "virtual-audio-capturer",
             AudioCodec: "libmp3lame",
