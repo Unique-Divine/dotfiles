@@ -1,6 +1,6 @@
 /**
- * Link each mise shim into ~/.local/bin so tools pinned in mise/config.toml
- * work in every shell, not only zsh.
+ * Link active mise shims into ~/.local/bin so pinned tools work in every
+ * shell, not only zsh.
  *
  * Usage: bun mise/links.ts --run | --check
  *
@@ -11,12 +11,14 @@
  * runs the pinned tool because mise picks the tool from the name it was
  * called by.
  *
- * Only links that point into the shims directory are managed. A real file
+ * Only active commands are linked. Obsolete links into the shims directory
+ * are removed, even when their inactive shim still exists. A real file
  * or a link elsewhere in ~/.local/bin is left alone and reported.
  */
 import { lstat, mkdir, readdir, readlink, symlink, unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { activeCommandNames } from "./commands"
 
 const repair = "repair: just mise-install"
 
@@ -82,13 +84,16 @@ async function readEntry(path: string): Promise<Entry> {
   }
 }
 
-async function main(mode: "--run" | "--check"): Promise<number> {
-  const shimDir = join(homedir(), ".local", "share", "mise", "shims")
-  const binDir = join(homedir(), ".local", "bin")
-  const shims = await readdir(shimDir).catch(() => [] as string[])
-  if (shims.length === 0) {
-    console.error(`mise: no shims in ${shimDir} (${repair})`)
-    return 1
+/** Reconcile only active commands, preserving unrelated installations. */
+export async function reconcileLinks(
+  mode: "--run" | "--check",
+  shimDir: string,
+  binDir: string,
+  shims: string[],
+): Promise<number> {
+  // Validate all active shims before changing any existing links.
+  for (const name of shims) {
+    await lstat(join(shimDir, name))
   }
 
   const names = new Set([...shims, ...(await readdir(binDir).catch(() => []))])
@@ -136,5 +141,17 @@ if (import.meta.main) {
     console.error("Usage: bun mise/links.ts --run | --check")
     process.exit(2)
   }
-  process.exit(await main(mode))
+  try {
+    const home = homedir()
+    const names = activeCommandNames(join(home, ".local", "bin", "mise"))
+    process.exit(await reconcileLinks(
+      mode,
+      join(home, ".local", "share", "mise", "shims"),
+      join(home, ".local", "bin"),
+      names,
+    ))
+  } catch (error) {
+    console.error(`mise: ${error} (${repair})`)
+    process.exit(1)
+  }
 }
