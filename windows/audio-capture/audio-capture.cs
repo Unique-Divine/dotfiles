@@ -66,6 +66,9 @@ namespace AudioCapture {
         case "list-devices":
           Native.EnsureConsole();
           return Commands.ListDevices(cli.ConfigPath);
+        case "simulate":
+          Native.EnsureConsole();
+          return Simulator.Run(cli.Argument!);
         case "recover":
           Native.EnsureConsole();
           return Commands.Recover(cli.ConfigPath, cli.Argument!);
@@ -142,6 +145,9 @@ commands:
   --list-devices    print FFmpeg, DirectShow devices, and the resolved mic
   --recover <dir>   mix an unfinished session directory into an MP3
   --self-test       run the built-in unit tests
+  --simulate <name> run a device scenario with fake mics (generated tones)
+                    and check the saved MP3: replug, bump, airpods,
+                    console-change, or all
   --version, --help";
 
     public static Cli Parse(string[] args) {
@@ -156,6 +162,14 @@ commands:
               throw new ArgumentException("--config needs a path");
             }
             config = args[++i];
+            break;
+          case "--simulate":
+            if (i + 1 >= args.Length) {
+              throw new ArgumentException("--simulate needs a scenario: " +
+                string.Join(", ", Simulator.Scenarios));
+            }
+            command = "simulate";
+            argument = args[++i];
             break;
           case "--recover":
             if (i + 1 >= args.Length) {
@@ -1318,9 +1332,31 @@ commands:
     }
   }
 
+  /// Maps endpoints to something FFmpeg can open.
+  interface IDeviceResolver {
+    DeviceTarget? ForEndpoint(Endpoint e);
+    DeviceTarget? ByName(string name);
+  }
+
+  /// For --simulate: every fake endpoint is an FFmpeg lavfi tone.
+  sealed class FakeResolver : IDeviceResolver {
+    readonly Func<Endpoint, string?> lavfi;
+
+    public FakeResolver(Func<Endpoint, string?> lavfi) {
+      this.lavfi = lavfi;
+    }
+
+    public DeviceTarget? ForEndpoint(Endpoint e) =>
+      lavfi(e) is string expr
+        ? new DeviceTarget("lavfi:" + expr, e.FriendlyName, "Fake", e.Id)
+        : null;
+
+    public DeviceTarget? ByName(string name) => null;
+  }
+
   /// DirectShow names for endpoints. FFmpeg lists devices only when an
   /// endpoint isn't in the cached list, not on a timer.
-  sealed class DshowCache {
+  sealed class DshowCache : IDeviceResolver {
     readonly Func<List<DshowDevice>> list;
     readonly string systemName;
     List<DshowDevice>? devices;
@@ -1575,14 +1611,29 @@ commands:
     public int DropWarnings => Volatile.Read(ref dropWarnings);
     public string? FatalLine => fatalLine;
 
-    public static List<string> Args(string spec, string output) => new() {
-      "-hide_banner", "-loglevel", "warning", "-y",
-      "-f", "dshow", "-thread_queue_size", "1024", "-rtbufsize", "256M",
-      "-audio_buffer_size", "40", "-i", "audio=" + spec,
-      "-vn", "-ac", SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
-      "-ar", SegmentInfo.SampleRate.ToString(CultureInfo.InvariantCulture),
-      "-f", "s16le", "-flush_packets", "1", output,
-    };
+    /// FFmpeg arguments. A "lavfi:" spec is a generated test signal paced
+    /// in real time (--simulate); anything else is a DirectShow device.
+    public static List<string> Args(string spec, string output) {
+      var args = new List<string> { "-hide_banner", "-loglevel", "warning",
+        "-y" };
+      if (spec.StartsWith("lavfi:", StringComparison.Ordinal)) {
+        // No initial burst: a real device delivers audio as it happens.
+        args.AddRange(new[] { "-re", "-readrate_initial_burst", "0", "-f",
+          "lavfi", "-i", spec[6..] });
+      } else {
+        args.AddRange(new[] {
+          "-f", "dshow", "-thread_queue_size", "1024", "-rtbufsize", "256M",
+          "-audio_buffer_size", "40", "-i", "audio=" + spec,
+        });
+      }
+      args.AddRange(new[] {
+        "-vn", "-ac",
+        SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
+        "-ar", SegmentInfo.SampleRate.ToString(CultureInfo.InvariantCulture),
+        "-f", "s16le", "-flush_packets", "1", output,
+      });
+      return args;
+    }
 
     public void Start(string ffmpeg) {
       pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1,
@@ -2101,7 +2152,8 @@ commands:
     readonly List<string> reconcileReasons = new();
     AppConfig cfg;
     MicPolicy micPolicy = new(MicMode.Communications, "");
-    DshowCache? dshow;
+    readonly Func<string, AppConfig, IDeviceResolver> resolverFor;
+    IDeviceResolver? dshow;
     string ffmpeg = "";
     string sessionDir = "";
     long origin;
@@ -2121,9 +2173,15 @@ commands:
 
     public RecorderState State { get; private set; } = RecorderState.Idle;
     public Pill? Pill { get; private set; }
+    public MixResult? LastResult { get; private set; }
+    public List<SegmentInfo> LastSegments { get; private set; } = new();
+    public int? MicPid => mic?.Live?.Pid;
 
     public Recorder(Control ui, AppConfig cfg, IEndpointSource endpoints,
-        Action<string> status) {
+        Action<string> status,
+        Func<string, AppConfig, IDeviceResolver>? resolverFor = null) {
+      this.resolverFor = resolverFor ?? ((exe, c) =>
+        new DshowCache(() => DirectShow.ListAudio(exe), c.System));
       this.ui = ui;
       this.cfg = cfg;
       this.endpoints = endpoints;
@@ -2181,8 +2239,7 @@ commands:
       Native.KeepAwake(true);
       CheckDiskSpace();
       micPolicy = MicPolicy.Parse(cfg.Mic, new List<string>());
-      string exe = ffmpeg;
-      dshow = new DshowCache(() => DirectShow.ListAudio(exe), cfg.System);
+      dshow = resolverFor(ffmpeg, cfg);
       Log.Write($"recording start session={sessionDir} mic={micPolicy}");
       ShowPill().ShowRecording();
       status("recording");
@@ -2584,6 +2641,7 @@ commands:
           }
           var segments = sources.SelectMany(s => s.Finished)
             .OrderBy(s => s.Start).ToList();
+          LastSegments = segments;
           WriteManifest();
           foreach (var s in segments) {
             Log.Write("segment " + DescribeSegment(s));
@@ -2600,6 +2658,7 @@ commands:
           result = new MixResult(false, "save failed: " + e.Message, null);
         }
         Log.Write(result.Message);
+        LastResult = result;
         Post(() => {
           State = RecorderState.Idle;
           busy.Reset();
@@ -3225,6 +3284,15 @@ commands:
       }
     }
 
+    [DllImport("ntdll.dll")]
+    static extern int NtSuspendProcess(IntPtr process);
+
+    /// Freezes a process, the way a vanished USB device freezes FFmpeg.
+    public static void SuspendProcess(int pid) {
+      using var p = Process.GetProcessById(pid);
+      NtSuspendProcess(p.Handle);
+    }
+
     [DllImport("kernel32.dll")]
     static extern bool SetStdHandle(int which, IntPtr handle);
 
@@ -3374,6 +3442,304 @@ commands:
   }
 
   // ------------------------------------------------------------------
+  // Simulation: scripted device changes with fake mics, checked by tone
+  // ------------------------------------------------------------------
+
+  /// A stretch of the output where one tone is present.
+  sealed record ToneRun(int Hz, double From, double To);
+
+  static class ToneAnalysis {
+    public const double WindowSeconds = 0.02;
+
+    /// Goertzel amplitude of one frequency in a window of mono samples.
+    public static double Amplitude(ReadOnlySpan<float> x, double hz,
+        int rate) {
+      double w = 2 * Math.PI * hz / rate;
+      double coeff = 2 * Math.Cos(w), s1 = 0, s2 = 0;
+      foreach (float v in x) {
+        double s0 = v + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      double power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+      return 2 * Math.Sqrt(Math.Max(power, 0)) / x.Length;
+    }
+
+    /// Runs of each tone across 20 ms windows; a tone counts when its
+    /// amplitude is over the threshold.
+    public static List<ToneRun> Runs(float[] mono, int rate, int[] tones,
+        double threshold) {
+      int n = (int)(rate * WindowSeconds);
+      var runs = new List<ToneRun>();
+      foreach (int hz in tones) {
+        double? from = null;
+        int windows = mono.Length / n;
+        for (int i = 0; i <= windows; i++) {
+          bool on = i < windows &&
+            Amplitude(mono.AsSpan(i * n, n), hz, rate) > threshold;
+          double t = i * WindowSeconds;
+          if (on && from == null) {
+            from = t;
+          } else if (!on && from != null) {
+            runs.Add(new ToneRun(hz, from.Value, t));
+            from = null;
+          }
+        }
+      }
+      return runs.OrderBy(r => r.From).ToList();
+    }
+
+    /// Joins runs of the same tone separated by less than `gap` (a single
+    /// weak window at a mix boundary).
+    public static List<ToneRun> Merge(List<ToneRun> runs, double gap) {
+      var result = new List<ToneRun>();
+      foreach (var r in runs.OrderBy(r => r.Hz).ThenBy(r => r.From)) {
+        if (result.Count > 0 && result[^1].Hz == r.Hz &&
+            r.From - result[^1].To < gap) {
+          result[^1] = result[^1] with { To = r.To };
+        } else {
+          result.Add(r);
+        }
+      }
+      return result.OrderBy(r => r.From).ToList();
+    }
+
+    public static float[] DecodeMono(string ffmpeg, string mp3, string tmp) {
+      var run = Proc.Run(ffmpeg, new[] {
+        "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", mp3,
+        "-ac", "1", "-ar", "48000", "-f", "f32le", tmp,
+      }, 120000);
+      if (run.ExitCode != 0) {
+        throw new InvalidOperationException("decode failed: " + run.Stderr);
+      }
+      byte[] bytes = File.ReadAllBytes(tmp);
+      var samples = new float[bytes.Length / 4];
+      Buffer.BlockCopy(bytes, 0, samples, 0, samples.Length * 4);
+      return samples;
+    }
+  }
+
+  static class Simulator {
+    public static readonly string[] Scenarios = {
+      "replug", "bump", "airpods", "console-change",
+    };
+
+    const int SystemHz = 150;
+    static readonly Dictionary<string, (string Name, int Hz)> Devices = new() {
+      ["yeti"] = ("Yeti Microphone - Main (Yeti Stereo Microphone)", 440),
+      ["surface"] = ("Microphone (Surface Stereo Microphones)", 660),
+      ["airpods"] = ("Headset (AirPods Pro)", 880),
+    };
+
+    public static int Run(string scenario) {
+      if (scenario == "all") {
+        int failed = 0;
+        foreach (string s in Scenarios) {
+          failed += Run(s) == 0 ? 0 : 1;
+        }
+        Console.WriteLine(failed == 0 ? "all scenarios passed"
+          : $"{failed} scenarios failed");
+        return failed == 0 ? 0 : 1;
+      }
+      if (!Scenarios.Contains(scenario)) {
+        Console.Error.WriteLine($"unknown scenario '{scenario}'; try " +
+          string.Join(", ", Scenarios) + ", or all");
+        return 2;
+      }
+      string dir = Path.Combine(Log.Dir, "simulate");
+      Directory.CreateDirectory(dir);
+      var fake = new FakeEndpointSource();
+      fake.Add("yeti", Devices["yeti"].Name);
+      fake.Add("surface", Devices["surface"].Name);
+      fake.SetDefault(CaptureRole.Communications, "yeti");
+      fake.SetDefault(CaptureRole.Console, "yeti");
+      var cfg = new AppConfig {
+        OutputDir = dir.Replace("{", "").Replace("}", ""),
+        OutputName = scenario + "-{HHmmss}.mp3",
+        System = $"lavfi:sine=frequency={SystemHz}:sample_rate=48000",
+        Mic = "communications",
+        KeepSession = true,
+      };
+      var resolver = new FakeResolver(e => Devices.TryGetValue(e.Id,
+          out var d) ? $"sine=frequency={d.Hz}:sample_rate=48000" : null);
+      Log.Write($"simulate {scenario} start");
+      Console.WriteLine($"== {scenario}");
+
+      using var invoker = new Control();
+      invoker.CreateControl();
+      var recorder = new Recorder(invoker, cfg, fake, _ => { },
+        (_, _) => resolver);
+      using var ticker = new System.Windows.Forms.Timer { Interval = 50 };
+      ticker.Tick += (_, _) => recorder.Tick();
+      ticker.Start();
+      int exit = 1;
+      var events = new List<string>();
+      void Note(string what) {
+        string line = $"{recorder.Elapsed,7:0.000} s  {what}";
+        events.Add(line);
+        Console.WriteLine("   " + line);
+      }
+      async Task Unplug(string id, string? newDefault) {
+        if (recorder.MicPid is int pid) {
+          Native.SuspendProcess(pid); // the device stops sending audio
+        }
+        fake.SetState(id, CoreAudio.DeviceStateNotPresent);
+        fake.SetDefault(CaptureRole.Communications, newDefault);
+        fake.SetDefault(CaptureRole.Console, newDefault);
+        Note($"unplug {id}; default -> {newDefault}");
+        await Task.CompletedTask;
+      }
+      void Replug(string id) {
+        fake.SetState(id, CoreAudio.DeviceStateActive);
+        fake.SetDefault(CaptureRole.Communications, id);
+        fake.SetDefault(CaptureRole.Console, id);
+        Note($"replug {id}; default -> {id}");
+      }
+      async Task Script() {
+        recorder.Start();
+        Note("start");
+        switch (scenario) {
+          case "replug":
+            await Task.Delay(3000);
+            await Unplug("yeti", "surface");
+            await Task.Delay(4000);
+            Replug("yeti");
+            await Task.Delay(3000);
+            break;
+          case "bump":
+            await Task.Delay(3000);
+            await Unplug("yeti", "surface");
+            await Task.Delay(700);
+            Replug("yeti");
+            await Task.Delay(4000);
+            break;
+          case "airpods":
+            await Task.Delay(3000);
+            fake.Add("airpods", Devices["airpods"].Name);
+            fake.SetDefault(CaptureRole.Communications, "airpods");
+            Note("airpods connect; communications default -> airpods");
+            await Task.Delay(4000);
+            break;
+          case "console-change":
+            await Task.Delay(3000);
+            fake.SetDefault(CaptureRole.Console, "surface");
+            Note("console default -> surface (communications unchanged)");
+            await Task.Delay(3000);
+            break;
+        }
+        Note("stop");
+        recorder.Stop(() => {
+          try {
+            exit = Check(scenario, recorder, cfg) ? 0 : 1;
+          } catch (Exception e) {
+            Console.WriteLine("   check failed: " + e.Message);
+          }
+          Application.ExitThread();
+        });
+      }
+      invoker.BeginInvoke(async () => {
+        try {
+          await Script();
+        } catch (Exception e) {
+          Console.WriteLine("   script failed: " + e);
+          Application.ExitThread();
+        }
+      });
+      Application.Run();
+      recorder.Pill?.Dispose();
+      Log.Write($"simulate {scenario} " + (exit == 0 ? "passed" : "failed"));
+      return exit;
+    }
+
+    static bool Check(string scenario, Recorder recorder, AppConfig cfg) {
+      var result = recorder.LastResult;
+      if (result == null || !result.Ok) {
+        Console.WriteLine("   FAIL save: " + (result?.Message ?? "no result"));
+        return false;
+      }
+      Console.WriteLine("   " + result.Message);
+      string ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
+      var mono = ToneAnalysis.DecodeMono(ffmpeg, result.OutputPath!,
+        Path.Combine(Path.GetTempPath(), "audio-capture-sim.f32"));
+      var tones = new[] { SystemHz }.Concat(Devices.Values.Select(d => d.Hz))
+        .ToArray();
+      // lavfi sine amplitude is 1/8; mixed tones keep it.
+      var runs = ToneAnalysis.Merge(
+        ToneAnalysis.Runs(mono, 48000, tones, 0.04), 0.05);
+      double length = mono.Length / 48000.0;
+      var mic = runs.Where(r => r.Hz != SystemHz).ToList();
+      Console.WriteLine($"   output {length:0.000} s; mic tones:");
+      foreach (var r in mic) {
+        Console.WriteLine($"     {r.Hz} Hz {r.From,7:0.000} .. {r.To,7:0.000} s");
+      }
+      bool ok = true;
+      void Expect(string what, bool pass) {
+        Console.WriteLine($"   {(pass ? "ok  " : "FAIL")} {what}");
+        ok &= pass;
+      }
+      double sys = runs.Where(r => r.Hz == SystemHz).Sum(r => r.To - r.From);
+      Expect($"system tone covers the file ({sys:0.00} of {length:0.00} s)",
+        sys >= length - 0.1);
+
+      // Alignment: each mic segment's tone sits where the recorder placed
+      // it, measured from the earliest segment.
+      var segs = recorder.LastSegments;
+      double origin = segs.Min(x => x.Start);
+      double stop = origin + length;
+      foreach (var seg in segs.Where(x => x.Kind == "mic")) {
+        int hz = Devices.Values.First(d => d.Name == seg.Device).Hz;
+        double from = seg.Start - origin;
+        double to = Math.Min(Mixer.EndOf(seg, null), stop) - origin;
+        var run = mic.Where(r => r.Hz == hz && r.To > from && r.From < to)
+          .OrderByDescending(r => Math.Min(r.To, to) - Math.Max(r.From, from))
+          .FirstOrDefault();
+        bool placed = run != null && Math.Abs(run.From - from) <= 0.04 &&
+          Math.Abs(run.To - to) <= 0.04;
+        Expect($"{hz} Hz placed at {from:0.000}..{to:0.000} s" + (run == null
+          ? " (not found)"
+          : $" (heard {run.From:0.000}..{run.To:0.000})"), placed);
+      }
+
+      var order = new List<int>();
+      foreach (var r in mic) {
+        if (order.Count == 0 || order[^1] != r.Hz) {
+          order.Add(r.Hz);
+        }
+      }
+      double maxGap = 0;
+      for (int i = 1; i < mic.Count; i++) {
+        maxGap = Math.Max(maxGap, mic[i].From - mic[i - 1].To);
+      }
+      double overlap = 0;
+      for (int i = 1; i < mic.Count; i++) {
+        overlap = Math.Max(overlap, mic[i - 1].To - mic[i].From);
+      }
+      string seq = string.Join(" -> ", order);
+      switch (scenario) {
+        case "replug":
+          Expect($"tones 440 -> 660 -> 440 (got {seq})",
+            seq == "440 -> 660 -> 440");
+          Expect($"unplug gap under 2.5 s ({maxGap:0.00} s)", maxGap < 2.5);
+          break;
+        case "bump":
+          Expect($"ends on 440 (got {seq})", order.LastOrDefault() == 440);
+          Expect($"bump gap under 2.5 s ({maxGap:0.00} s)", maxGap < 2.5);
+          break;
+        case "airpods":
+          Expect($"tones 440 -> 880 (got {seq})", seq == "440 -> 880");
+          Expect($"seamless switch: gap {maxGap * 1000:0} ms, overlap " +
+            $"{overlap * 1000:0} ms", maxGap <= 0.06 && overlap <= 0.06);
+          break;
+        case "console-change":
+          Expect($"stays on 440 (got {seq})", seq == "440");
+          Expect($"no gap ({maxGap:0.00} s)", mic.Count == 1);
+          break;
+      }
+      return ok;
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Self-tests for the pure parts: audio-capture --self-test
   // ------------------------------------------------------------------
 
@@ -3414,6 +3780,7 @@ commands:
         ("dshow", TestDirectShow),
         ("match", TestMatch),
         ("policy", TestMicPolicy),
+        ("tones", TestTones),
         ("health", TestHealth),
         ("timing", TestTiming),
         ("mix", TestMix),
@@ -3671,6 +4038,34 @@ commands:
       fake.Changed += events.Add;
       fake.SetDefault(CaptureRole.Console, "yeti-port2");
       Eq("fake fires events", 1, events.Count);
+    }
+
+    static void TestTones() {
+      int rate = 48000;
+      var x = new float[rate];
+      for (int i = 0; i < x.Length; i++) {
+        double t = (double)i / rate;
+        x[i] = (float)((t < 0.5 ? 0.125 * Math.Sin(2 * Math.PI * 440 * t)
+          : 0.125 * Math.Sin(2 * Math.PI * 880 * t)) +
+          0.125 * Math.Sin(2 * Math.PI * 150 * t));
+      }
+      double a = ToneAnalysis.Amplitude(x.AsSpan(0, 960), 440, rate);
+      Check("goertzel amplitude", Math.Abs(a - 0.125) < 0.01, a.ToString());
+      Check("goertzel rejects other tone",
+        ToneAnalysis.Amplitude(x.AsSpan(0, 960), 880, rate) < 0.02);
+      var runs = ToneAnalysis.Runs(x, rate, new[] { 150, 440, 880 }, 0.04);
+      var r440 = runs.Single(r => r.Hz == 440);
+      var r880 = runs.Single(r => r.Hz == 880);
+      Check("tone run 440", Math.Abs(r440.From) < 0.001 &&
+        Math.Abs(r440.To - 0.5) <= 0.021, r440.ToString());
+      Check("tone run 880", Math.Abs(r880.From - 0.5) <= 0.021 &&
+        Math.Abs(r880.To - 1.0) <= 0.021, r880.ToString());
+      var merged = ToneAnalysis.Merge(new List<ToneRun> {
+        new(440, 0, 1), new(440, 1.02, 2), new(440, 3, 4),
+      }, 0.05);
+      Eq("tone merge", 2, merged.Count);
+      Check("lavfi args", PcmCapture.Args("lavfi:sine=f=1", "o").Contains("lavfi"));
+      Check("dshow args", PcmCapture.Args("Mic", "o").Contains("audio=Mic"));
     }
 
     static void TestHealth() {
