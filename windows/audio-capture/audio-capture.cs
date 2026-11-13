@@ -171,6 +171,7 @@ namespace AudioCapture {
         Log.Error("app.fatal_exception", "unhandled exception", new {
           detail = e.ExceptionObject?.ToString(),
         });
+        Log.Flush();
         App.Current?.WriteManifestNow();
       };
       Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -180,6 +181,7 @@ namespace AudioCapture {
       bool startNow = cli.Command == "toggle" || cli.Command == "start";
       app.Run(startNow);
       Log.Info("app.exit", "audio-capture exited");
+      Log.Flush();
       return 0;
     }
   }
@@ -381,18 +383,16 @@ commands:
         .UnsafeRelaxedJsonEscaping,
     };
 
-    static string? redirect;
+    static volatile string? redirect;
 
     public static string FilePath => redirect ??
       Path.Combine(StateDir.Logs, "audio-capture.jsonl");
 
-    static string LogDir => Path.GetDirectoryName(FilePath)!;
 
     /// Sends the log to another file, e.g. for --simulate.
-    public static void Redirect(string path) {
-      lock (Gate) {
-        redirect = path;
-      }
+    public static void Redirect(string? path) {
+      Flush();
+      redirect = path;
     }
 
     public static void Info(string evt, string msg, object? data = null) =>
@@ -435,35 +435,116 @@ commands:
       return Encoding.UTF8.GetString(stream.ToArray());
     }
 
+    /// Queues one line for the writer thread. Never blocks on disk: a full
+    /// queue drops the line and counts it, so logging can't stall an
+    /// FFmpeg pipe reader.
     public static void Write(string level, string evt, string msg,
         object? data = null) {
-      string line = Format(DateTimeOffset.Now, level, evt, msg, data) +
-        Environment.NewLine;
+      string line = Format(DateTimeOffset.Now, level, evt, msg, data);
+      EnsureWriter();
+      if (!Queue.TryAdd(line)) {
+        Interlocked.Increment(ref dropped);
+      }
+    }
+
+    /// Waits until queued lines are on disk (at exit, or in tests).
+    public static void Flush(int timeoutMs = 3000) {
+      var sw = Stopwatch.StartNew();
+      while ((Queue.Count > 0 || Volatile.Read(ref writing) != 0) &&
+          sw.ElapsedMilliseconds < timeoutMs) {
+        Thread.Sleep(10);
+      }
+    }
+
+    /// Lowered by the self-test to exercise rotation.
+    internal static long RotateAt = MaxBytes;
+    static readonly System.Collections.Concurrent.BlockingCollection<string>
+      Queue = new(20000);
+    static Thread? writer;
+    static int dropped;
+    static int writing;
+
+    static void EnsureWriter() {
+      if (writer != null) {
+        return;
+      }
       lock (Gate) {
-        try {
-          Directory.CreateDirectory(LogDir);
-          RotateIfNeeded();
-          File.AppendAllText(FilePath, line);
-        } catch (IOException) {
-          // Logging must never break recording.
+        if (writer == null) {
+          writer = new Thread(WriterLoop) {
+            IsBackground = true, Name = "log-writer",
+          };
+          writer.Start();
         }
       }
     }
 
-    static void RotateIfNeeded() {
-      var info = new FileInfo(FilePath);
-      if (!info.Exists || info.Length < MaxBytes) {
-        return;
-      }
-      string stem = Path.GetFileNameWithoutExtension(FilePath);
-      string Old(int i) => Path.Combine(LogDir, $"{stem}.{i}.jsonl");
-      File.Delete(Old(Keep));
-      for (int i = Keep - 1; i >= 1; i--) {
-        if (File.Exists(Old(i))) {
-          File.Move(Old(i), Old(i + 1));
+    static void WriterLoop() {
+      StreamWriter? w = null;
+      string? openPath = null;
+      long nextRotateTry = 0;
+      foreach (string line in Queue.GetConsumingEnumerable()) {
+        Interlocked.Exchange(ref writing, 1);
+        try {
+          string path = FilePath;
+          if (w == null || openPath != path) {
+            w?.Dispose();
+            w = Open(path);
+            openPath = path;
+          }
+          int lost = Interlocked.Exchange(ref dropped, 0);
+          if (lost > 0) {
+            w.WriteLine(Format(DateTimeOffset.Now, "warn", "log.dropped",
+              $"{lost} log lines dropped (queue full)", new { lost }));
+          }
+          w.WriteLine(line);
+          if (Queue.Count == 0) {
+            w.Flush();
+          }
+          long now = Environment.TickCount64;
+          if (w.BaseStream.Length >= RotateAt && now >= nextRotateTry) {
+            w.Dispose();
+            w = null;
+            if (!TryRotate(path)) {
+              // A viewer holds the file without delete sharing: keep
+              // appending, try again in a minute.
+              nextRotateTry = now + 60000;
+            }
+          }
+        } catch (IOException) {
+          w?.Dispose();
+          w = null;
+        } finally {
+          Interlocked.Exchange(ref writing, 0);
         }
       }
-      File.Move(FilePath, Old(1));
+    }
+
+    static StreamWriter Open(string path) {
+      Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+      var fs = new FileStream(path, FileMode.Append, FileAccess.Write,
+        FileShare.ReadWrite | FileShare.Delete);
+      return new StreamWriter(fs, new UTF8Encoding(false)) {
+        NewLine = "\n",
+      };
+    }
+
+    static bool TryRotate(string path) {
+      try {
+        string dir = Path.GetDirectoryName(path)!;
+        string stem = Path.GetFileNameWithoutExtension(path);
+        string Old(int i) => Path.Combine(dir, $"{stem}.{i}.jsonl");
+        File.Delete(Old(Keep));
+        for (int i = Keep - 1; i >= 1; i--) {
+          if (File.Exists(Old(i))) {
+            File.Move(Old(i), Old(i + 1));
+          }
+        }
+        File.Move(path, Old(1));
+        return true;
+      } catch (Exception e) when (e is IOException or
+          UnauthorizedAccessException) {
+        return false;
+      }
     }
   }
 
@@ -1899,6 +1980,22 @@ commands:
       var log = new StreamWriter(FilePath + ".ffmpeg.log") {
         AutoFlush = true,
       };
+      var limiter = new LineLimiter((stream, text, suppressed) => {
+        var fields = new {
+          session = SessionName, kind = Kind, pid = Pid,
+          file = Path.GetFileName(FilePath),
+          suppressed = suppressed > 0 ? suppressed : (int?)null,
+        };
+        if (suppressed > 0) {
+          Log.Warn("ffmpeg.lines_suppressed", $"{suppressed} more {stream} " +
+            "lines (all are in the segment's .ffmpeg.log); last: " + text,
+            fields);
+        } else if (stream == "stderr") {
+          Log.Warn("ffmpeg.stderr", text, fields);
+        } else {
+          Log.Info("ffmpeg.stdout", text, fields);
+        }
+      });
       var logGate = new object();
       void Drain(StreamReader source, string tag, bool watch) {
         try {
@@ -1907,11 +2004,7 @@ commands:
             lock (logGate) {
               log.WriteLine(tag + line);
             }
-            Log.Write(watch ? "warn" : "info",
-              watch ? "ffmpeg.stderr" : "ffmpeg.stdout", line, new {
-                session = SessionName, kind = Kind, pid = Pid,
-                file = Path.GetFileName(FilePath),
-              });
+            limiter.Line(watch ? "stderr" : "stdout", line);
             if (!watch) {
               continue;
             }
@@ -1943,6 +2036,7 @@ commands:
         ReadLoop();
         errThread.Join(2000);
         outThread.Join(2000);
+        limiter.Finish();
         lock (logGate) {
           log.Dispose();
         }
@@ -2093,6 +2187,59 @@ commands:
       process?.Dispose();
       pipe?.Dispose();
       connectCancel.Dispose();
+    }
+  }
+
+  /// Passes the first lines of each stream through, then reports how many
+  /// more arrived, at most every 10 s and once at the end. An FFmpeg that
+  /// floods warnings can't flood the log.
+  sealed class LineLimiter {
+    public const int FreeLines = 20;
+    public const long SummaryMs = 10000;
+    readonly Action<string, string, int> emit;
+    readonly Func<long> clock;
+    readonly Dictionary<string, (int Seen, int Suppressed, string Last,
+      long LastSummary)> streams = new();
+
+    /// emit(stream, text, suppressed): suppressed is 0 for a passed line.
+    public LineLimiter(Action<string, string, int> emit,
+        Func<long>? clock = null) {
+      this.emit = emit;
+      this.clock = clock ?? (() => Environment.TickCount64);
+    }
+
+    public void Line(string stream, string text) {
+      lock (streams) {
+        streams.TryGetValue(stream, out var st);
+        st.Seen++;
+        if (st.Seen <= FreeLines) {
+          streams[stream] = st;
+          emit(stream, text, 0);
+          return;
+        }
+        st.Suppressed++;
+        st.Last = text;
+        long now = clock();
+        if (st.LastSummary == 0) {
+          st.LastSummary = now;
+        } else if (now - st.LastSummary >= SummaryMs) {
+          emit(stream, text, st.Suppressed);
+          st.Suppressed = 0;
+          st.LastSummary = now;
+        }
+        streams[stream] = st;
+      }
+    }
+
+    public void Finish() {
+      lock (streams) {
+        foreach (var (stream, st) in streams.ToList()) {
+          if (st.Suppressed > 0) {
+            emit(stream, st.Last, st.Suppressed);
+            streams[stream] = st with { Suppressed = 0 };
+          }
+        }
+      }
     }
   }
 
@@ -3277,13 +3424,17 @@ commands:
       Render();
     }
 
+    int renderFailures;
+
     /// Never lets a drawing error escape into the recorder's tick.
     void Render() {
       try {
         RenderCore();
       } catch (Exception e) when (e is ExternalException or
           ArgumentException or InvalidOperationException) {
-        Log.Warn("pill.render_failed", e.Message);
+        if (renderFailures++ == 0) {
+          Log.Warn("pill.render_failed", e.Message + " (logged once)");
+        }
       }
     }
 
@@ -4145,6 +4296,7 @@ commands:
       Application.Run();
       recorder.Pill?.Dispose();
       Log.Info("simulate.done", scenario, new { scenario, passed = exit == 0 });
+      Log.Flush();
       return exit;
     }
 
@@ -4301,6 +4453,8 @@ commands:
         ("tones", TestTones),
         ("manifest", TestManifest),
         ("log", TestLogFormat),
+        ("limiter", TestLineLimiter),
+        ("rotation", TestLogRotation),
         ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
@@ -4775,6 +4929,62 @@ commands:
         .GetString());
       Check("log no data", Log.Format(ts, "info", "x", "y", null)
         .EndsWith("\"msg\":\"y\"}"));
+    }
+
+    static void TestLineLimiter() {
+      long now = 1;
+      var out_ = new List<(string, string, int)>();
+      var lim = new LineLimiter((s, t, n) => out_.Add((s, t, n)), () => now);
+      for (int i = 0; i < 25; i++) {
+        lim.Line("stderr", "line " + i);
+      }
+      Eq("limiter passes first lines", LineLimiter.FreeLines, out_.Count);
+      now += LineLimiter.SummaryMs;
+      lim.Line("stderr", "line 25");
+      // Lines 20 to 25 were held back; the summary carries the last one.
+      Eq("limiter summary", ("stderr", "line 25", 6), out_[^1]);
+      lim.Line("stderr", "line 26");
+      lim.Line("stdout", "Received stop event");
+      lim.Finish();
+      Eq("limiter streams separate", ("stdout", "Received stop event", 0),
+        out_[^2]);
+      Eq("limiter final summary", ("stderr", "line 26", 1), out_[^1]);
+    }
+
+    /// Rotation must not stop logging when a viewer holds the file.
+    static void TestLogRotation() {
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      string path = Path.Combine(dir, "t.jsonl");
+      long saved = Log.RotateAt;
+      try {
+        Log.Redirect(path);
+        Log.RotateAt = 2000;
+        Log.Info("test.start", "x");
+        Log.Flush();
+        using (var viewer = new FileStream(path, FileMode.Open,
+            FileAccess.Read, FileShare.ReadWrite)) {
+          for (int i = 0; i < 40; i++) {
+            Log.Info("test.line", "line " + i, new { i });
+          }
+          Log.Flush();
+          Check("log keeps appending while held",
+            new FileInfo(path).Length > 2000);
+          Check("no rotation while held",
+            !File.Exists(Path.Combine(dir, "t.1.jsonl")));
+        }
+        using var read = new StreamReader(new FileStream(path, FileMode.Open,
+          FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+        Check("log has every line", read.ReadToEnd().Contains("line 39"));
+      } finally {
+        Log.RotateAt = saved;
+        Log.Redirect(null);
+        try {
+          Directory.Delete(dir, true);
+        } catch (IOException) {
+        }
+      }
     }
 
     static void TestHealth() {
