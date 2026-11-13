@@ -1035,7 +1035,9 @@ commands:
       public int PropertyId;
     }
 
-    [StructLayout(LayoutKind.Explicit)]
+    /// PROPVARIANT is 24 bytes on 64-bit Windows (16 on 32-bit); the
+    /// callee writes all of it, so the struct must be that big.
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
     internal struct PropVariant {
       [FieldOffset(0)] public ushort VarType;
       [FieldOffset(8)] public IntPtr Pointer;
@@ -1043,6 +1045,8 @@ commands:
 
     [DllImport("ole32.dll")]
     static extern int PropVariantClear(ref PropVariant value);
+
+    internal static int PropVariantSize => Marshal.SizeOf<PropVariant>();
 
     internal static IMMDeviceEnumerator Enumerator() =>
       (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
@@ -1635,7 +1639,24 @@ commands:
       return args;
     }
 
+    /// Starts FFmpeg and the reader threads. On failure it kills what it
+    /// started and closes the pipe before rethrowing.
     public void Start(string ffmpeg) {
+      try {
+        StartCore(ffmpeg);
+      } catch {
+        try {
+          process?.Kill();
+        } catch (Exception e) when (e is InvalidOperationException or
+            System.ComponentModel.Win32Exception) {
+        }
+        connectCancel.Cancel();
+        pipe?.Dispose();
+        throw;
+      }
+    }
+
+    void StartCore(string ffmpeg) {
       pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1,
         PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 1 << 20, 0);
       var p = Process.Start(Proc.Info(ffmpeg,
@@ -1844,8 +1865,12 @@ commands:
 
     public static string? LossReason(double sinceStart, double? sinceLastByte,
         bool exited, string? fatalLine) {
-      if (fatalLine != null && (exited || sinceLastByte == null ||
-          sinceLastByte > FatalGapSeconds)) {
+      // Before the first byte only an exit or the startup timeout counts:
+      // dshow prints warnings while it opens a healthy device.
+      bool gap = sinceLastByte == null
+        ? sinceStart > PcmCapture.StartupSeconds
+        : sinceLastByte > FatalGapSeconds;
+      if (fatalLine != null && (exited || gap)) {
         return "ffmpeg: " + fatalLine.Trim();
       }
       if (exited) {
@@ -4069,6 +4094,8 @@ commands:
     }
 
     static void TestHealth() {
+      Eq("propvariant size", IntPtr.Size == 8 ? 24 : 16,
+        CoreAudio.PropVariantSize);
       Eq("health ok", null, Health.LossReason(10, 0.2, false, null));
       Check("health stalled",
         Health.LossReason(10, 1.6, false, null)!.Contains("no audio"));
@@ -4081,6 +4108,10 @@ commands:
       Check("health fatal plus exit", Health.LossReason(10, 0.1, true,
         "Could not find audio only device")!.StartsWith("ffmpeg:"));
       Eq("health starting", null, Health.LossReason(3, null, false, null));
+      Eq("health warning before first byte", null, Health.LossReason(1, null,
+        false, "Could not set buffer size"));
+      Check("health fatal then exit before first byte", Health.LossReason(1,
+        null, true, "Could not find audio only device")!.StartsWith("ffmpeg:"));
       Check("health never started",
         Health.LossReason(9, null, false, null) != null);
     }
