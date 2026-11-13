@@ -243,17 +243,25 @@ commands:
         foreach (var d in devices) {
           Console.WriteLine($"  {d.Name}  [{d.AlternativeName}]");
         }
-        Endpoint? def = null;
-        try {
-          def = CoreAudio.GetDefaultCapture();
-          Console.WriteLine($"default recording device: {def.FriendlyName}" +
-            $" ({def.Id}, state {def.State})");
-        } catch (Exception e) {
-          Console.WriteLine("default recording device: error " + e.Message);
+        foreach (var role in new[] { CaptureRole.Communications,
+            CaptureRole.Console }) {
+          var e = CoreAudio.GetDefaultCapture(role);
+          Console.WriteLine($"default {role} recording device: " +
+            (e == null ? "(none)" : $"{e.FriendlyName} ({e.Id})"));
         }
-        var mic = DeviceMatch.ResolveMic(cfg.Mic, def, devices, cfg.System);
-        Console.WriteLine("mic: " + (mic == null
-          ? "(none)"
+        Console.WriteLine("active recording devices:");
+        foreach (var e in CoreAudio.ListActiveCapture()) {
+          Console.WriteLine($"  {e.FriendlyName} ({e.Id})");
+        }
+        var policy = MicPolicy.Parse(cfg.Mic, new List<string>());
+        using var source = new MMDeviceSource();
+        var desired = policy.Desired(source);
+        var cache = new DshowCache(() => devices, cfg.System);
+        var mic = desired != null ? cache.ForEndpoint(desired)
+          : policy.Mode == MicMode.Pinned ? cache.ByName(policy.Name) : null;
+        Console.WriteLine($"mic policy: {policy}");
+        Console.WriteLine("mic now: " + (mic == null
+          ? "(none, would wait)"
           : $"{mic.Display} via {mic.Method} -> {mic.Spec}"));
         var sys = DeviceMatch.ResolveByName(cfg.System, devices);
         Console.WriteLine("system: " + (sys?.Spec ?? "(not found)"));
@@ -618,7 +626,7 @@ commands:
       "{documents}/ShareX/Screenshots/{yyyy-MM}";
     public string OutputName { get; init; } = "{yy-MM-dd}__{HHmmss}-audio.mp3";
     public string System { get; init; } = "virtual-audio-capturer";
-    public string Mic { get; init; } = "default";
+    public string Mic { get; init; } = "communications";
     public string Ffmpeg { get; init; } = "";
     public bool KeepSession { get; init; }
     public static readonly Color DefaultDotColor = Color.FromArgb(255, 69, 58);
@@ -695,6 +703,7 @@ commands:
             "debug.keep_session must be true or false"),
         };
       }
+      MicPolicy.Parse(cfg.Mic, warnings);
       // Fail at load time, not at the end of a recording.
       Templates.Expand(cfg.OutputDir, DateTime.Now, _ => "x");
       Templates.Expand(cfg.OutputName, DateTime.Now, _ => "x");
@@ -871,74 +880,113 @@ commands:
       return null;
     }
 
-    public static DeviceTarget? ResolveMic(string setting, Endpoint? def,
+    /// The DirectShow device for a Windows endpoint: by the GUID shared by
+    /// the endpoint ID and the DirectShow alternative name, then by name.
+    public static DeviceTarget? ForEndpoint(Endpoint e,
         IReadOnlyList<DshowDevice> devices, string systemName) {
-      string s = setting.Trim();
-      if (s.Length == 0 || s.Equals("none", StringComparison.OrdinalIgnoreCase)) {
-        return null;
-      }
       var eligible = devices.Where(d => !string.Equals(d.Name, systemName,
         StringComparison.OrdinalIgnoreCase)).ToList();
-      if (!s.Equals("default", StringComparison.OrdinalIgnoreCase)) {
-        var exact = eligible.FirstOrDefault(d =>
-          string.Equals(d.Name, s, StringComparison.OrdinalIgnoreCase) ||
-          string.Equals(d.AlternativeName, s,
-            StringComparison.OrdinalIgnoreCase));
-        if (exact != null) {
-          return Target(exact, "ConfigName", null);
-        }
-        var norm = eligible.Where(d =>
-          NormalizeName(d.Name) == NormalizeName(s)).ToList();
-        return norm.Count == 1 ? Target(norm[0], "ConfigNormalized", null)
-          : null;
-      }
-      if (def == null) {
-        return eligible.Count == 1
-          ? Target(eligible[0], "SingleDevice", null)
-          : null;
-      }
-      string? guid = LastGuid(def.Id);
+      string? guid = LastGuid(e.Id);
+      DeviceTarget Make(DshowDevice d, string method) =>
+        new(d.AlternativeName ?? d.Name, e.FriendlyName, method, e.Id);
       if (guid != null) {
         var byGuid = eligible.Where(d =>
           LastGuid(d.AlternativeName) == guid).ToList();
         if (byGuid.Count == 1) {
-          return Target(byGuid[0], "EndpointGuid", def.Id);
+          return Make(byGuid[0], "EndpointGuid");
         }
       }
-      var byName = eligible.Where(d => string.Equals(d.Name,
-        def.FriendlyName, StringComparison.OrdinalIgnoreCase)).ToList();
+      var byName = eligible.Where(d => string.Equals(d.Name, e.FriendlyName,
+        StringComparison.OrdinalIgnoreCase)).ToList();
       if (byName.Count == 1) {
-        return Target(byName[0], "FriendlyName", def.Id);
+        return Make(byName[0], "FriendlyName");
       }
       var byNorm = eligible.Where(d => NormalizeName(d.Name) ==
-        NormalizeName(def.FriendlyName)).ToList();
-      if (byNorm.Count == 1) {
-        return Target(byNorm[0], "NormalizedName", def.Id);
-      }
-      return eligible.Count == 1
-        ? Target(eligible[0], "SingleDevice", def.Id)
-        : null;
+        NormalizeName(e.FriendlyName)).ToList();
+      return byNorm.Count == 1 ? Make(byNorm[0], "NormalizedName") : null;
     }
+
+    /// A pinned mic by its DirectShow name, when no endpoint matches it.
+    public static DeviceTarget? ByName(string name,
+        IReadOnlyList<DshowDevice> devices, string systemName) {
+      var eligible = devices.Where(d => !string.Equals(d.Name, systemName,
+        StringComparison.OrdinalIgnoreCase)).ToList();
+      var d = eligible.FirstOrDefault(x =>
+          string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(x.AlternativeName, name,
+            StringComparison.OrdinalIgnoreCase))
+        ?? eligible.FirstOrDefault(x =>
+          NormalizeName(x.Name) == NormalizeName(name));
+      return d == null ? null
+        : new DeviceTarget(d.AlternativeName ?? d.Name, d.Name, "DshowName",
+          null);
+    }
+
+    /// "Yeti Microphone - Main (Yeti Stereo Microphone)" -> "Yeti
+    /// Microphone - Main"; "Microphone (Surface Stereo Microphones)" ->
+    /// "Surface Stereo Microphones". For the pill's switch label.
+    public static string ShortName(string name) {
+      var m = Regex.Match(name.Trim(), @"^(?<head>.*?)\s*\((?<inner>[^()]*)\)$");
+      if (!m.Success) {
+        return name.Trim();
+      }
+      string head = Regex.Replace(m.Groups["head"].Value, @"^\d+-\s*", "");
+      bool generic = Regex.IsMatch(head,
+        @"^(microphone( array)?|headset( microphone)?|mic|line in|" +
+        @"external mic|headset mic|hands-free.*)$", RegexOptions.IgnoreCase);
+      return generic || head.Length == 0 ? m.Groups["inner"].Value : head;
+    }
+  }
+
+  /// Windows' two default-recording-device roles. Sound settings calls
+  /// them "Default Device" (eConsole: most apps) and "Default Communication
+  /// Device" (eCommunications: call apps like Zoom and Teams).
+  enum CaptureRole { Console = 0, Communications = 2 }
+
+  /// Recording endpoints and changes to them. MMDeviceSource is the real
+  /// one; FakeEndpointSource scripts devices for tests.
+  interface IEndpointSource : IDisposable {
+    /// The default recording endpoint for a role, or null if none.
+    Endpoint? GetDefault(CaptureRole role);
+    /// DEVICE_STATE_* for an endpoint ID, or -1 if unknown.
+    int GetState(string id);
+    IReadOnlyList<Endpoint> ListActive();
+    /// Fires on any thread when a default, a state, or the device set
+    /// changes. The string says what happened, for the log.
+    event Action<string>? Changed;
   }
 
   static class CoreAudio {
     public const int DeviceStateActive = 1;
+    public const int DeviceStateNotPresent = 4;
+    public const int DeviceStateUnplugged = 8;
 
     [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
     class MMDeviceEnumeratorComObject { }
 
     [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
      InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IMMDeviceEnumerator {
-      int EnumAudioEndpoints(int flow, int stateMask, out IntPtr devices);
+    internal interface IMMDeviceEnumerator {
+      int EnumAudioEndpoints(int flow, int stateMask,
+        out IMMDeviceCollection devices);
       int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device);
       int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id,
         out IMMDevice device);
+      int RegisterEndpointNotificationCallback(IMMNotificationClient client);
+      int UnregisterEndpointNotificationCallback(
+        IMMNotificationClient client);
+    }
+
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDeviceCollection {
+      int GetCount(out int count);
+      int Item(int index, out IMMDevice device);
     }
 
     [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"),
      InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IMMDevice {
+    internal interface IMMDevice {
       int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
         [MarshalAs(UnmanagedType.IUnknown)] out object result);
       int OpenPropertyStore(int access, out IPropertyStore store);
@@ -948,20 +996,33 @@ commands:
 
     [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),
      InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IPropertyStore {
+    internal interface IPropertyStore {
       int GetCount(out int count);
       int GetAt(int index, out PropertyKey key);
       int GetValue(ref PropertyKey key, out PropVariant value);
     }
 
+    [ComImport, Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMNotificationClient {
+      void OnDeviceStateChanged([MarshalAs(UnmanagedType.LPWStr)] string id,
+        int newState);
+      void OnDeviceAdded([MarshalAs(UnmanagedType.LPWStr)] string id);
+      void OnDeviceRemoved([MarshalAs(UnmanagedType.LPWStr)] string id);
+      void OnDefaultDeviceChanged(int flow, int role,
+        [MarshalAs(UnmanagedType.LPWStr)] string? defaultId);
+      void OnPropertyValueChanged(
+        [MarshalAs(UnmanagedType.LPWStr)] string id, PropertyKey key);
+    }
+
     [StructLayout(LayoutKind.Sequential)]
-    struct PropertyKey {
+    internal struct PropertyKey {
       public Guid FormatId;
       public int PropertyId;
     }
 
     [StructLayout(LayoutKind.Explicit)]
-    struct PropVariant {
+    internal struct PropVariant {
       [FieldOffset(0)] public ushort VarType;
       [FieldOffset(8)] public IntPtr Pointer;
     }
@@ -969,12 +1030,12 @@ commands:
     [DllImport("ole32.dll")]
     static extern int PropVariantClear(ref PropVariant value);
 
-    static IMMDeviceEnumerator Enumerator() =>
+    internal static IMMDeviceEnumerator Enumerator() =>
       (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
 
     /// Releases COM objects now instead of at some later GC, since the
-    /// app polls these every second for hours.
-    static void Release(params object?[] objects) {
+    /// app queries these for hours.
+    internal static void Release(params object?[] objects) {
       foreach (object? o in objects) {
         if (o != null && Marshal.IsComObject(o)) {
           Marshal.ReleaseComObject(o);
@@ -1003,20 +1064,21 @@ commands:
       }
     }
 
-    public static Endpoint GetDefaultCapture() {
+    /// The default recording endpoint for a role, or null if there is none.
+    public static Endpoint? GetDefaultCapture(CaptureRole role) {
       var enumerator = Enumerator();
       IMMDevice? device = null;
       try {
-        // eCapture = 1, eConsole = 0
-        Marshal.ThrowExceptionForHR(
-          enumerator.GetDefaultAudioEndpoint(1, 0, out device));
+        // eCapture = 1. E_NOTFOUND when no recording device exists.
+        if (enumerator.GetDefaultAudioEndpoint(1, (int)role, out device) != 0) {
+          return null;
+        }
         return Describe(device);
       } finally {
         Release(device, enumerator);
       }
     }
 
-    /// The endpoint's DEVICE_STATE_* value, or -1 if Windows doesn't know it.
     public static int GetState(string id) {
       var enumerator = Enumerator();
       IMMDevice? device = null;
@@ -1030,6 +1092,264 @@ commands:
       } finally {
         Release(device, enumerator);
       }
+    }
+
+    public static List<Endpoint> ListActiveCapture() {
+      var result = new List<Endpoint>();
+      var enumerator = Enumerator();
+      IMMDeviceCollection? collection = null;
+      try {
+        // eCapture = 1, DEVICE_STATE_ACTIVE = 1
+        Marshal.ThrowExceptionForHR(
+          enumerator.EnumAudioEndpoints(1, 1, out collection));
+        Marshal.ThrowExceptionForHR(collection.GetCount(out int count));
+        for (int i = 0; i < count; i++) {
+          IMMDevice? device = null;
+          try {
+            Marshal.ThrowExceptionForHR(collection.Item(i, out device));
+            result.Add(Describe(device));
+          } finally {
+            Release(device);
+          }
+        }
+      } finally {
+        Release(collection, enumerator);
+      }
+      return result;
+    }
+  }
+
+  /// Receives MMDevice notifications. Windows calls it on its own threads,
+  /// so it only forwards a description.
+  [ComVisible(true)]
+  sealed class EndpointNotifications : CoreAudio.IMMNotificationClient {
+    readonly Action<string> forward;
+
+    public EndpointNotifications(Action<string> forward) {
+      this.forward = forward;
+    }
+
+    public void OnDeviceStateChanged(string id, int newState) =>
+      forward($"state {newState} for {id}");
+
+    public void OnDeviceAdded(string id) => forward("added " + id);
+
+    public void OnDeviceRemoved(string id) => forward("removed " + id);
+
+    public void OnDefaultDeviceChanged(int flow, int role, string? defaultId) {
+      if (flow == 1) { // eCapture
+        forward($"default {(CaptureRole)role} capture is {defaultId ?? "none"}");
+      }
+    }
+
+    public void OnPropertyValueChanged(string id,
+        CoreAudio.PropertyKey key) {
+      // Fires constantly (volume, format); defaults and states are enough.
+    }
+  }
+
+  sealed class MMDeviceSource : IEndpointSource {
+    readonly CoreAudio.IMMDeviceEnumerator? notifier;
+    readonly EndpointNotifications? client;
+    readonly System.Threading.Timer? poll;
+    string lastDefaults = "";
+
+    public event Action<string>? Changed;
+    public bool UsesNotifications => client != null;
+
+    public MMDeviceSource() {
+      try {
+        var enumerator = CoreAudio.Enumerator();
+        var c = new EndpointNotifications(e => Changed?.Invoke(e));
+        int hr = enumerator.RegisterEndpointNotificationCallback(c);
+        if (hr != 0) {
+          Marshal.ThrowExceptionForHR(hr);
+        }
+        notifier = enumerator;
+        client = c;
+      } catch (Exception e) {
+        // Fall back to checking the defaults once a second.
+        Log.Write("endpoint notifications unavailable, polling: " +
+          e.Message);
+        lastDefaults = DefaultsKey();
+        poll = new System.Threading.Timer(_ => {
+          string now = DefaultsKey();
+          if (now != lastDefaults) {
+            lastDefaults = now;
+            Changed?.Invoke("poll: defaults now " + now);
+          }
+        }, null, 1000, 1000);
+      }
+    }
+
+    static string DefaultsKey() {
+      try {
+        return (CoreAudio.GetDefaultCapture(CaptureRole.Console)?.Id ?? "-") +
+          "|" + (CoreAudio.GetDefaultCapture(CaptureRole.Communications)?.Id
+            ?? "-");
+      } catch (Exception) {
+        return "error";
+      }
+    }
+
+    public Endpoint? GetDefault(CaptureRole role) =>
+      CoreAudio.GetDefaultCapture(role);
+
+    public int GetState(string id) => CoreAudio.GetState(id);
+
+    public IReadOnlyList<Endpoint> ListActive() =>
+      CoreAudio.ListActiveCapture();
+
+    public void Dispose() {
+      poll?.Dispose();
+      if (notifier != null && client != null) {
+        try {
+          notifier.UnregisterEndpointNotificationCallback(client);
+        } catch (Exception) {
+        }
+        CoreAudio.Release(notifier);
+      }
+    }
+  }
+
+  /// A scripted set of recording endpoints for tests and --simulate.
+  sealed class FakeEndpointSource : IEndpointSource {
+    readonly object gate = new();
+    readonly Dictionary<string, Endpoint> devices = new();
+    readonly Dictionary<CaptureRole, string?> defaults = new();
+
+    public event Action<string>? Changed;
+
+    public void Add(string id, string name) {
+      lock (gate) {
+        devices[id] = new Endpoint(id, name, CoreAudio.DeviceStateActive);
+      }
+      Changed?.Invoke("added " + id);
+    }
+
+    public void SetState(string id, int state) {
+      lock (gate) {
+        devices[id] = devices[id] with { State = state };
+      }
+      Changed?.Invoke($"state {state} for {id}");
+    }
+
+    public void SetDefault(CaptureRole role, string? id) {
+      lock (gate) {
+        defaults[role] = id;
+      }
+      Changed?.Invoke($"default {role} capture is {id ?? "none"}");
+    }
+
+    public Endpoint? GetDefault(CaptureRole role) {
+      lock (gate) {
+        return defaults.TryGetValue(role, out string? id) && id != null &&
+          devices.TryGetValue(id, out var e) ? e : null;
+      }
+    }
+
+    public int GetState(string id) {
+      lock (gate) {
+        return devices.TryGetValue(id, out var e) ? e.State : -1;
+      }
+    }
+
+    public IReadOnlyList<Endpoint> ListActive() {
+      lock (gate) {
+        return devices.Values
+          .Where(e => e.State == CoreAudio.DeviceStateActive).ToList();
+      }
+    }
+
+    public void Dispose() { }
+  }
+
+  enum MicMode { Communications, DefaultDevice, Pinned, None }
+
+  /// Which mic to record: follow one of Windows' default roles, or pin a
+  /// device by name.
+  sealed record MicPolicy(MicMode Mode, string Name) {
+    public static MicPolicy Parse(string setting, List<string> warnings) {
+      string s = setting.Trim();
+      switch (s.ToLowerInvariant()) {
+        case "communications":
+          return new MicPolicy(MicMode.Communications, "");
+        case "default-device":
+          return new MicPolicy(MicMode.DefaultDevice, "");
+        case "default":
+          warnings.Add("audio.mic \"default\" is ambiguous; following the " +
+            "Default Communication Device. Write \"communications\" or " +
+            "\"default-device\".");
+          return new MicPolicy(MicMode.Communications, "");
+        case "":
+        case "none":
+          return new MicPolicy(MicMode.None, "");
+        default:
+          return new MicPolicy(MicMode.Pinned, s);
+      }
+    }
+
+    public CaptureRole? Role => Mode switch {
+      MicMode.Communications => CaptureRole.Communications,
+      MicMode.DefaultDevice => CaptureRole.Console,
+      _ => null,
+    };
+
+    public override string ToString() => Mode switch {
+      MicMode.Pinned => $"pinned to \"{Name}\"",
+      MicMode.None => "none",
+      _ => $"follow {Role} default",
+    };
+
+    /// The endpoint the mic should be on right now, or null to wait.
+    public Endpoint? Desired(IEndpointSource source) {
+      if (Role is CaptureRole role) {
+        var e = source.GetDefault(role);
+        return e != null && e.State == CoreAudio.DeviceStateActive ? e : null;
+      }
+      if (Mode != MicMode.Pinned) {
+        return null;
+      }
+      var active = source.ListActive();
+      return active.FirstOrDefault(e => string.Equals(e.FriendlyName, Name,
+          StringComparison.OrdinalIgnoreCase))
+        ?? active.FirstOrDefault(e => DeviceMatch.NormalizeName(
+          e.FriendlyName) == DeviceMatch.NormalizeName(Name));
+    }
+  }
+
+  /// DirectShow names for endpoints. FFmpeg lists devices only when an
+  /// endpoint isn't in the cached list, not on a timer.
+  sealed class DshowCache {
+    readonly Func<List<DshowDevice>> list;
+    readonly string systemName;
+    List<DshowDevice>? devices;
+
+    public DshowCache(Func<List<DshowDevice>> list, string systemName) {
+      this.list = list;
+      this.systemName = systemName;
+    }
+
+    public int Refreshes { get; private set; }
+
+    List<DshowDevice> Refresh() {
+      Refreshes++;
+      devices = list();
+      return devices;
+    }
+
+    public DeviceTarget? ForEndpoint(Endpoint e) {
+      bool fresh = devices == null;
+      var t = DeviceMatch.ForEndpoint(e, devices ?? Refresh(), systemName);
+      if (t == null && !fresh) {
+        t = DeviceMatch.ForEndpoint(e, Refresh(), systemName);
+      }
+      return t;
+    }
+
+    public DeviceTarget? ByName(string name) {
+      var t = DeviceMatch.ByName(name, devices ?? Refresh(), systemName);
+      return t ?? DeviceMatch.ByName(name, Refresh(), systemName);
     }
   }
 
@@ -1192,8 +1512,11 @@ commands:
     }
   }
 
+  /// One recorded stretch of one input. End caps the segment (session
+  /// seconds) when a newer segment took over mid-stream.
   sealed record SegmentInfo(string Kind, string Path, string Device,
-    double Start, long Bytes, double? Slope) {
+    double Start, long Bytes, double? Slope, double? End = null,
+    string? EndpointId = null) {
     public const int SampleRate = 48000;
     public const int Channels = 2;
     public const int BytesPerSecond = SampleRate * Channels * 2;
@@ -1433,11 +1756,20 @@ commands:
       }
     }
 
-    public SegmentInfo ToSegment() {
+    /// Session seconds of this capture's first sample, once audio flows.
+    public double? StartEstimate {
+      get {
+        lock (levelGate) {
+          return timing.Start;
+        }
+      }
+    }
+
+    public SegmentInfo ToSegment(double? end = null) {
       lock (levelGate) {
         double start = timing.Start ?? Clock.Seconds(startedTicks - origin);
         return new SegmentInfo(Kind, FilePath, Target.Display, start, Bytes,
-          timing.Slope(Mixer.MinDriftSpanSeconds));
+          timing.Slope(Mixer.MinDriftSpanSeconds), end, Target.EndpointId);
       }
     }
 
@@ -1508,8 +1840,21 @@ commands:
     /// Segments that hold audio before the stop time (null: no stop time).
     public static List<SegmentInfo> Usable(IEnumerable<SegmentInfo> all,
         double? stopAt) =>
-      all.Where(s => s.Bytes > 0 && (stopAt == null || s.Start < stopAt))
+      all.Where(s => s.Bytes > 0 && s.Start < EndOf(s, stopAt) - 0.001)
         .ToList();
+
+    /// Where a segment's audio ends in session seconds: its own length,
+    /// cut by its End cap and the session's stop time.
+    public static double EndOf(SegmentInfo s, double? stopAt) {
+      double end = s.Start + WallSeconds(s);
+      if (s.End is double cap) {
+        end = Math.Min(end, cap);
+      }
+      if (stopAt is double stop) {
+        end = Math.Min(end, stop);
+      }
+      return end;
+    }
 
     /// The -filter_complex graph: per segment, an optional drift fix, a
     /// trim at the stop time, and a delay to its offset from the earliest
@@ -1535,8 +1880,9 @@ commands:
           chain.Add($"asetrate={rate}");
           chain.Add($"aresample={SegmentInfo.SampleRate}");
         }
-        if (stopAt is double stop && s.Start + WallSeconds(s) > stop) {
-          chain.Add($"atrim=end={Num(stop - s.Start, "0.000")}");
+        double end = EndOf(s, stopAt);
+        if (end < s.Start + WallSeconds(s)) {
+          chain.Add($"atrim=end={Num(end - s.Start, "0.000")}");
         }
         long delayMs = (long)Math.Round((s.Start - origin) * 1000);
         if (delayMs > 0) {
@@ -1576,8 +1922,7 @@ commands:
     public static double ExpectedSeconds(IReadOnlyList<SegmentInfo> segments,
         double? stopAt = null) {
       double origin = segments.Min(s => s.Start);
-      double end = segments.Max(s => s.Start + WallSeconds(s));
-      return (stopAt is double stop ? Math.Min(end, stop) : end) - origin;
+      return segments.Max(s => EndOf(s, stopAt)) - origin;
     }
 
     public static double WallSeconds(SegmentInfo s) =>
@@ -1666,6 +2011,8 @@ commands:
       public double Start { get; set; }
       public double? Slope { get; set; }
       public long Bytes { get; set; }
+      public double? End { get; set; }
+      public string? EndpointId { get; set; }
     }
 
     static readonly JsonSerializerOptions Options = new() {
@@ -1713,7 +2060,7 @@ commands:
         string path = Path.Combine(dir, m.File);
         long size = File.Exists(path) ? new FileInfo(path).Length : 0;
         return new SegmentInfo(m.Kind, path, m.Device, m.Start,
-          size - size % 4, m.Slope);
+          size - size % 4, m.Slope, m.End, m.EndpointId);
       }).ToList();
   }
 
@@ -1721,20 +2068,23 @@ commands:
   // Recording session
   // ------------------------------------------------------------------
 
-  /// One input (system audio or mic) over a session: its live capture,
-  /// the segments it has finished, and whether it is waiting for its
-  /// device to come back.
+  /// One input (system audio or mic) over a session: its live capture, a
+  /// pending capture that will take over (a mic switch), and the segments
+  /// it has finished.
   sealed class Source {
     public readonly string Kind;
     public DeviceTarget? Target;
     public PcmCapture? Live;
+    public PcmCapture? Pending;
+    public string PendingReason = "";
     public readonly List<SegmentInfo> Finished = new();
-    public bool Waiting;
     /// Segments being closed off the UI thread; Stop waits for them.
     public readonly List<Task> Closing = new();
     public int Failures;
     public int Count;
-    public string? LastLoss;
+    public long NextRetryTicks;
+    public bool WaitingLogged;
+    public string? LastDevice;
 
     public Source(string kind) {
       Kind = kind;
@@ -1746,7 +2096,12 @@ commands:
   sealed class Recorder {
     readonly Control ui;
     readonly Action<string> status;
+    readonly IEndpointSource endpoints;
+    readonly System.Windows.Forms.Timer reconcileTimer = new();
+    readonly List<string> reconcileReasons = new();
     AppConfig cfg;
+    MicPolicy micPolicy = new(MicMode.Communications, "");
+    DshowCache? dshow;
     string ffmpeg = "";
     string sessionDir = "";
     long origin;
@@ -1754,9 +2109,11 @@ commands:
     Source? system;
     Source? mic;
     int sessionId;
-    volatile int liveSession = -1; // read by polling threads
+    volatile int liveSession = -1; // read by background tasks
     long lastManifestTicks;
     double? stopAt;
+    bool reconcileBusy;
+    bool reconcileAgain;
     readonly List<Action> afterSave = new();
     /// Set while recording or saving, so `--quit-if-idle` can see it.
     readonly EventWaitHandle busy = new(false, EventResetMode.ManualReset,
@@ -1765,10 +2122,19 @@ commands:
     public RecorderState State { get; private set; } = RecorderState.Idle;
     public Pill? Pill { get; private set; }
 
-    public Recorder(Control ui, AppConfig cfg, Action<string> status) {
+    public Recorder(Control ui, AppConfig cfg, IEndpointSource endpoints,
+        Action<string> status) {
       this.ui = ui;
       this.cfg = cfg;
+      this.endpoints = endpoints;
       this.status = status;
+      reconcileTimer.Tick += (_, _) => {
+        reconcileTimer.Stop();
+        string reason = string.Join("; ", reconcileReasons.Distinct());
+        reconcileReasons.Clear();
+        Reconcile(reason);
+      };
+      endpoints.Changed += e => Post(() => OnDeviceEvent(e));
     }
 
     public void UpdateConfig(AppConfig next) {
@@ -1807,62 +2173,32 @@ commands:
       Directory.CreateDirectory(sessionDir);
       State = RecorderState.Recording;
       busy.Set();
+      liveSession = sessionId;
       lastManifestTicks = origin;
       stopAt = null;
-      liveSession = sessionId;
+      reconcileBusy = false;
+      reconcileAgain = false;
       Native.KeepAwake(true);
       CheckDiskSpace();
-      Log.Write($"recording start session={sessionDir}");
+      micPolicy = MicPolicy.Parse(cfg.Mic, new List<string>());
+      string exe = ffmpeg;
+      dshow = new DshowCache(() => DirectShow.ListAudio(exe), cfg.System);
+      Log.Write($"recording start session={sessionDir} mic={micPolicy}");
       ShowPill().ShowRecording();
       status("recording");
 
-      system = new Source("system");
-      mic = new Source("mic");
-      // virtual-audio-capturer is a fixed software name: start it now.
-      system.Target = new DeviceTarget(cfg.System, cfg.System, "Config", null);
-      StartSegment(system, system.Target, sessionId);
-
-      int id = sessionId;
-      string micSetting = cfg.Mic;
-      string systemName = cfg.System;
-      string exe = ffmpeg;
-      Task.Run(() => {
-        try {
-          Endpoint? def = null;
-          try {
-            def = CoreAudio.GetDefaultCapture();
-          } catch (Exception e) {
-            Log.Write("default mic lookup failed: " + e.Message);
-          }
-          var devices = DirectShow.ListAudio(exe);
-          var target = DeviceMatch.ResolveMic(micSetting, def, devices,
-            systemName);
-          Post(() => {
-            if (id != sessionId || State != RecorderState.Recording) {
-              return;
-            }
-            if (target == null) {
-              Log.Write($"no mic resolved for '{micSetting}'; " +
-                "recording system audio only");
-              mic = null;
-              Pill?.SetMicMissing();
-              return;
-            }
-            Log.Write($"mic {target.Display} via {target.Method} " +
-              $"spec={target.Spec}");
-            mic!.Target = target;
-            StartSegment(mic, target, id);
-          });
-        } catch (Exception e) {
-          Log.Write("mic resolve failed: " + e.Message);
-          Post(() => {
-            if (id == sessionId && mic != null && mic.Target == null) {
-              mic = null;
-              Pill?.SetMicMissing();
-            }
-          });
-        }
-      });
+      system = new Source("system") {
+        // virtual-audio-capturer is a fixed software name: start it now.
+        Target = new DeviceTarget(cfg.System, cfg.System, "Config", null),
+      };
+      StartLive(system, system.Target, "start");
+      if (micPolicy.Mode == MicMode.None) {
+        mic = null;
+        Pill?.SetMicMissing();
+      } else {
+        mic = new Source("mic");
+        Reconcile("start");
+      }
     }
 
     void CheckDiskSpace() {
@@ -1886,11 +2222,7 @@ commands:
       }
     }
 
-    void StartSegment(Source src, DeviceTarget target, int id) {
-      if (id != sessionId || State != RecorderState.Recording ||
-          src.Live != null) {
-        return;
-      }
+    PcmCapture? StartCapture(Source src, DeviceTarget target) {
       src.Count++;
       string file = Path.Combine(sessionDir,
         $"{src.Kind}-{src.Count:00}.pcm");
@@ -1898,22 +2230,138 @@ commands:
       try {
         cap.Start(ffmpeg);
       } catch (Exception e) {
-        Log.Write($"{src.Kind} start failed: {e.Message}");
+        Log.Write($"{src.Kind} start failed on {target.Display}: {e.Message}");
+        cap.Dispose();
         src.Failures++;
-        BeginWait(src, id);
+        SetRetry(src);
+        return null;
+      }
+      Log.Write($"{src.Kind} segment {src.Count} started pid={cap.Pid} on " +
+        $"{target.Display} ({target.Spec}) at {Elapsed:0.000} s");
+      return cap;
+    }
+
+    void StartLive(Source src, DeviceTarget target, string reason) {
+      var cap = StartCapture(src, target);
+      if (cap == null) {
         return;
       }
       src.Live = cap;
-      src.Waiting = false;
-      Log.Write($"{src.Kind} segment {src.Count} started pid={cap.Pid} " +
-        $"at {Elapsed:0.000} s");
+      src.Target = target;
+      src.WaitingLogged = false;
       if (src == mic) {
         Pill?.SetMicLost(false);
+        if (src.LastDevice != null && src.LastDevice != target.Display) {
+          Log.Write($"mic now {target.Display} (was {src.LastDevice}), " +
+            $"{micPolicy}, reason: {reason}");
+          Pill?.Flash(DeviceMatch.ShortName(target.Display));
+        }
+        src.LastDevice = target.Display;
       }
       WriteManifest();
     }
 
-    /// Called every UI tick: feeds the pill and catches lost devices.
+    void SetRetry(Source src) {
+      int delayMs = Math.Clamp(1000 * (1 << Math.Max(src.Failures - 1, 0)),
+        1000, 5000);
+      src.NextRetryTicks = Stopwatch.GetTimestamp() +
+        delayMs * Stopwatch.Frequency / 1000;
+    }
+
+    /// A Windows device event: re-check the mic after things settle
+    /// (Bluetooth and USB fire bursts of events).
+    void OnDeviceEvent(string description) {
+      if (State != RecorderState.Recording || mic == null) {
+        return;
+      }
+      Log.Write("device event: " + description);
+      ScheduleReconcile("device event", 500);
+    }
+
+    void ScheduleReconcile(string reason, int delayMs) {
+      reconcileReasons.Add(reason);
+      reconcileTimer.Stop();
+      reconcileTimer.Interval = Math.Max(delayMs, 1);
+      reconcileTimer.Start();
+    }
+
+    /// Works out which device the mic should be on (off the UI thread),
+    /// then starts it, or switches to it, or waits.
+    void Reconcile(string reason) {
+      if (State != RecorderState.Recording || mic == null || dshow == null) {
+        return;
+      }
+      if (reconcileBusy) {
+        reconcileAgain = true;
+        return;
+      }
+      reconcileBusy = true;
+      int id = sessionId;
+      var policy = micPolicy;
+      var cache = dshow;
+      Task.Run(() => {
+        Endpoint? desired = null;
+        DeviceTarget? target = null;
+        string? error = null;
+        try {
+          desired = policy.Desired(endpoints);
+          if (desired != null) {
+            target = cache.ForEndpoint(desired);
+            if (target == null) {
+              error = $"no DirectShow device for {desired.FriendlyName}";
+            }
+          } else if (policy.Mode == MicMode.Pinned) {
+            target = cache.ByName(policy.Name);
+          }
+        } catch (Exception e) {
+          error = e.Message;
+        }
+        Post(() => ApplyReconcile(id, reason, desired, target, error));
+      });
+    }
+
+    void ApplyReconcile(int id, string reason, Endpoint? desired,
+        DeviceTarget? target, string? error) {
+      reconcileBusy = false;
+      if (id != sessionId || State != RecorderState.Recording || mic == null) {
+        return;
+      }
+      if (error != null) {
+        Log.Write($"mic check ({reason}): {error}");
+      }
+      var current = mic.Pending ?? mic.Live;
+      if (target == null) {
+        if (mic.Live == null && !mic.WaitingLogged) {
+          mic.WaitingLogged = true;
+          Log.Write($"mic waiting: no device for {micPolicy} ({reason})");
+          Pill?.SetMicLost(true);
+        }
+      } else if (current == null) {
+        StartLive(mic, target, reason);
+      } else if (current.Target.Spec != target.Spec) {
+        // The default moved while the current mic still works: start the
+        // new device, and hand over once its audio flows.
+        if (mic.Pending != null) {
+          var stale = mic.Pending;
+          mic.Pending = null;
+          CloseSegment(mic, stale, graceful: false, endAt: null);
+        }
+        var cap = StartCapture(mic, target);
+        if (cap != null) {
+          mic.Pending = cap;
+          mic.PendingReason = reason;
+          Log.Write($"mic switching {mic.Live?.Target.Display ?? "(none)"} " +
+            $"-> {target.Display}, {micPolicy}, reason: {reason}");
+        }
+      }
+      if (reconcileAgain) {
+        reconcileAgain = false;
+        ScheduleReconcile("again", 100);
+      }
+    }
+
+    /// Called every UI tick: feeds the pill, hands over mic switches, and
+    /// catches lost inputs.
     public void Tick() {
       if (State != RecorderState.Recording) {
         return;
@@ -1922,8 +2370,24 @@ commands:
       float micPeak = mic?.Live?.TakePeak() ?? 0;
       float sysPeak = system?.Live?.TakePeak() ?? 0;
       Pill?.Push(mic != null ? micPeak : sysPeak, Elapsed);
+      if (mic?.Pending is PcmCapture pending) {
+        TickPending(mic, pending, now);
+      }
       foreach (var src in new[] { system, mic }) {
-        if (src?.Live == null) {
+        if (src == null) {
+          continue;
+        }
+        if (src.Live == null) {
+          if (src.Pending == null && now >= src.NextRetryTicks) {
+            SetRetry(src);
+            if (src == mic) {
+              if (!reconcileBusy) {
+                Reconcile("retry");
+              }
+            } else if (src.Target != null) {
+              StartLive(src, src.Target, "retry");
+            }
+          }
           continue;
         }
         string? reason = src.Live.LossReason(now);
@@ -1936,15 +2400,18 @@ commands:
         }
         var lost = src.Live;
         src.Live = null;
-        src.LastLoss = reason;
-        Log.Write($"{src.Kind} lost at {Elapsed:0.000} s: {reason} " +
-          $"(pid {lost.Pid}, {lost.Bytes} bytes)");
-        CloseSegment(src, lost);
+        Log.Write($"{src.Kind} lost at {Elapsed:0.000} s on " +
+          $"{lost.Target.Display}: {reason} (pid {lost.Pid}, " +
+          $"{lost.Bytes} bytes)");
+        CloseSegment(src, lost, graceful: false, endAt: null);
         src.Failures++;
+        SetRetry(src);
         if (src == mic) {
-          Pill?.SetMicLost(true);
+          if (mic.Pending == null) {
+            Pill?.SetMicLost(true);
+          }
+          ScheduleReconcile("mic lost", 500);
         }
-        BeginWait(src, sessionId);
       }
       // Keep session.json current so --recover has measured timing.
       if (Clock.Seconds(now - lastManifestTicks) >= 10) {
@@ -1953,12 +2420,52 @@ commands:
       }
     }
 
-    /// Kills a lost capture and files its segment, off the UI thread: the
-    /// kill can block for seconds and the pill must keep drawing.
-    void CloseSegment(Source src, PcmCapture cap) {
+    void TickPending(Source src, PcmCapture pending, long now) {
+      if (pending.Bytes > 0 && pending.StartEstimate is double start) {
+        Handoff(src, pending, start);
+        return;
+      }
+      string? reason = pending.LossReason(now);
+      if (reason != null) {
+        Log.Write($"mic switch to {pending.Target.Display} failed: {reason}");
+        src.Pending = null;
+        CloseSegment(src, pending, graceful: false, endAt: null);
+        src.Failures++;
+        SetRetry(src);
+      }
+    }
+
+    /// The pending capture has audio: it becomes live, and the old segment
+    /// ends where the new one starts, so the switch leaves no gap.
+    void Handoff(Source src, PcmCapture next, double start) {
+      var old = src.Live;
+      src.Live = next;
+      src.Pending = null;
+      src.Target = next.Target;
+      src.WaitingLogged = false;
+      if (old != null) {
+        CloseSegment(src, old, graceful: true, endAt: start);
+      }
+      Log.Write($"mic switched {old?.Target.Display ?? "(none)"} -> " +
+        $"{next.Target.Display} at {start:0.000} s, {micPolicy}, reason: " +
+        src.PendingReason);
+      Pill?.SetMicLost(false);
+      Pill?.Flash(DeviceMatch.ShortName(next.Target.Display));
+      src.LastDevice = next.Target.Display;
+      WriteManifest();
+    }
+
+    /// Stops or kills a capture and files its segment, off the UI thread:
+    /// it can block for seconds and the pill must keep drawing.
+    void CloseSegment(Source src, PcmCapture cap, bool graceful,
+        double? endAt) {
       var task = Task.Run(() => {
-        cap.Kill();
-        var seg = cap.ToSegment();
+        if (graceful) {
+          cap.Stop(3000);
+        } else {
+          cap.Kill();
+        }
+        var seg = cap.ToSegment(endAt);
         int drops = cap.DropWarnings;
         cap.Dispose();
         lock (src.Finished) {
@@ -1979,62 +2486,14 @@ commands:
 
     static string DescribeSegment(SegmentInfo s) =>
       $"{Path.GetFileName(s.Path)} from {s.Device}, start {s.Start:0.000} s, " +
-      $"{s.MediaSeconds:0.000} s of audio, drift " +
+      $"{s.MediaSeconds:0.000} s of audio" +
+      (s.End is double end ? $", cut at {end:0.000} s" : "") + ", drift " +
       (s.Slope is double sl ? $"{sl * 1e6:0} ppm" : "n/a");
 
-    /// Polls about once a second until the source's device is back, then
-    /// starts a new segment. The per-second check is cheap (the endpoint
-    /// state); FFmpeg lists DirectShow devices only once before a restart.
-    void BeginWait(Source src, int id) {
-      if (src.Waiting) {
+    void WriteManifest() {
+      if (sessionDir.Length == 0) {
         return;
       }
-      src.Waiting = true;
-      var target = src.Target!;
-      bool isMic = src == mic;
-      string exe = ffmpeg;
-      int failures = src.Failures;
-      Task.Run(async () => {
-        // Back off when the device keeps failing right after a restart.
-        int delayMs = Math.Clamp(1000 * (1 << Math.Max(failures - 1, 0)),
-          1000, 5000);
-        int polls = 0;
-        while (true) {
-          await Task.Delay(delayMs);
-          polls++;
-          if (liveSession != id) {
-            return;
-          }
-          try {
-            if (isMic && target.EndpointId != null) {
-              if (CoreAudio.GetState(target.EndpointId) !=
-                  CoreAudio.DeviceStateActive) {
-                continue;
-              }
-              await Task.Delay(1500); // let the driver settle
-            } else if (isMic && polls % 3 != 0) {
-              continue; // no endpoint to check: list devices every 3 s
-            }
-            if (isMic && !DirectShow.ListAudio(exe).Any(d =>
-                string.Equals(d.Name, target.Spec,
-                  StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(d.AlternativeName, target.Spec,
-                  StringComparison.OrdinalIgnoreCase))) {
-              continue;
-            }
-            Post(() => {
-              src.Waiting = false;
-              StartSegment(src, target, id);
-            });
-            return;
-          } catch (Exception e) {
-            Log.Write($"{src.Kind} poll error: {e.Message}");
-          }
-        }
-      });
-    }
-
-    void WriteManifest() {
       try {
         var manifest = new SessionManifest {
           StartedLocal = startedLocal, StopAt = stopAt,
@@ -2055,7 +2514,7 @@ commands:
             manifest.Segments.Add(new SessionManifest.ManifestSegment {
               Kind = s.Kind, File = Path.GetFileName(s.Path),
               Device = s.Device, Start = s.Start, Slope = s.Slope,
-              Bytes = s.Bytes,
+              Bytes = s.Bytes, End = s.End, EndpointId = s.EndpointId,
             });
           }
         }
@@ -2081,11 +2540,23 @@ commands:
       State = RecorderState.Saving;
       sessionId++;
       liveSession = -1;
+      reconcileTimer.Stop();
+      reconcileReasons.Clear();
       Native.KeepAwake(false);
       stopAt = Elapsed;
       Log.Write($"recording stop at {stopAt:0.000} s");
       Pill?.ShowSaving();
       status("saving");
+      // A switch caught mid-handoff: finish it if the new mic has audio,
+      // else drop it.
+      if (mic?.Pending is PcmCapture pending) {
+        if (pending.Bytes > 0 && pending.StartEstimate is double start) {
+          Handoff(mic, pending, start);
+        } else {
+          mic.Pending = null;
+          CloseSegment(mic, pending, graceful: false, endAt: null);
+        }
+      }
       var sources = new[] { system, mic }.Where(s => s != null)
         .Select(s => s!).ToList();
       var live = sources.Where(s => s.Live != null)
@@ -2095,6 +2566,7 @@ commands:
       string exe = ffmpeg;
       string output = Paths.OutputFile(cfg, startedLocal);
       bool keep = cfg.KeepSession;
+      double? stop = stopAt;
       Task.Run(() => {
         MixResult result;
         try {
@@ -2116,7 +2588,7 @@ commands:
           foreach (var s in segments) {
             Log.Write("segment " + DescribeSegment(s));
           }
-          result = Mixer.MixAndVerify(exe, segments, output, dir, stopAt);
+          result = Mixer.MixAndVerify(exe, segments, output, dir, stop);
           if (result.Ok) {
             if (keep) {
               SessionManifest.MarkSaved(dir, result.OutputPath!);
@@ -2265,6 +2737,16 @@ commands:
       Render();
     }
 
+    string flashText = "";
+    long flashUntil;
+
+    /// Shows a device name in place of the waveform for about 2 s.
+    public void Flash(string text) {
+      flashText = text;
+      flashUntil = Environment.TickCount64 + 2000;
+      Render();
+    }
+
     public void SetMicMissing() {
       micMissing = true;
       Render();
@@ -2368,7 +2850,12 @@ commands:
       float timeLeft = barsRight + TimeGapDip * s;
       float contentRight = w - PadDip * s;
       var textFormat = TextFormat;
-      if (mode == Mode.Recording && micLost) {
+      if (mode == Mode.Recording && !micLost &&
+          Environment.TickCount64 < flashUntil) {
+        using var b = new SolidBrush(text);
+        g.DrawString(flashText, font, b,
+          new RectangleF(left, 0, timeLeft - left, h), textFormat);
+      } else if (mode == Mode.Recording && micLost) {
         using var b = new SolidBrush(amber);
         g.DrawString("mic lost", font, b,
           new RectangleF(left, 0, timeLeft - left, h), textFormat);
@@ -2467,6 +2954,7 @@ commands:
     readonly System.Windows.Forms.Timer timer = new() { Interval = 50 };
     readonly List<EventWaitHandle> signals = new();
     readonly Recorder recorder;
+    readonly MMDeviceSource endpoints;
     readonly string? configPath;
     AppConfig cfg;
     volatile bool quitting;
@@ -2483,7 +2971,10 @@ commands:
       }
       invoker.CreateControl();
       _ = invoker.Handle;
-      recorder = new Recorder(invoker, cfg, SetStatus);
+      endpoints = new MMDeviceSource();
+      Log.Write("device changes via " + (endpoints.UsesNotifications
+        ? "MMDevice notifications" : "polling"));
+      recorder = new Recorder(invoker, cfg, endpoints, SetStatus);
       foreach (string name in Program.SignalNames) {
         signals.Add(new EventWaitHandle(false, EventResetMode.AutoReset,
           Program.SignalEventName(name)));
@@ -2626,6 +3117,7 @@ commands:
       timer.Dispose();
       hotkeys.Dispose();
       tray.Dispose();
+      endpoints.Dispose();
       foreach (var s in signals) {
         s.Dispose();
       }
@@ -2921,6 +3413,7 @@ commands:
         ("templates", TestTemplates),
         ("dshow", TestDirectShow),
         ("match", TestMatch),
+        ("policy", TestMicPolicy),
         ("health", TestHealth),
         ("timing", TestTiming),
         ("mix", TestMix),
@@ -3004,7 +3497,7 @@ commands:
     static void TestConfig() {
       var (d, w0) = AppConfig.FromToml("");
       Eq("config default toggle", "ctrl+alt+f2", d.Toggle.Text);
-      Eq("config default mic", "default", d.Mic);
+      Eq("config default mic", "communications", d.Mic);
       Eq("config no warnings", 0, w0.Count);
       var (c, w) = AppConfig.FromToml(
         "[keys]\ntoggle = \"ctrl+f2\"\n" +
@@ -3091,52 +3584,93 @@ commands:
 
     static void TestMatch() {
       var devices = DirectShow.Parse(ListOutput);
-      var def = new Endpoint(
+      var yeti = new Endpoint(
         "{0.0.1.00000000}.{af25d041-8695-4e1c-8672-b28919582119}",
         "Something Else", 1);
-      var m = DeviceMatch.ResolveMic("default", def, devices,
-        "virtual-audio-capturer");
+      var m = DeviceMatch.ForEndpoint(yeti, devices, "virtual-audio-capturer");
       Eq("match guid method", "EndpointGuid", m?.Method);
       Check("match spec is alt name", m!.Spec.StartsWith("@device_cm_"));
-      Eq("match keeps endpoint", def.Id, m.EndpointId);
-      var byName = DeviceMatch.ResolveMic("default",
+      Eq("match keeps endpoint", yeti.Id, m.EndpointId);
+      Eq("match display is endpoint name", "Something Else", m.Display);
+      var plain = new[] {
+        new DshowDevice("Yeti Microphone - Main (Yeti Stereo Microphone)",
+          null),
+        new DshowDevice("Other", null),
+      };
+      Eq("match friendly name", "FriendlyName", DeviceMatch.ForEndpoint(
         new Endpoint("{x}", "Yeti Microphone - Main (Yeti Stereo Microphone)",
-          1),
-        new[] {
-          new DshowDevice("Yeti Microphone - Main (Yeti Stereo Microphone)",
-            null),
-          new DshowDevice("Other", null),
-        }, "virtual-audio-capturer");
-      Eq("match friendly name", "FriendlyName", byName?.Method);
-      Eq("match no alt spec", "Yeti Microphone - Main (Yeti Stereo Microphone)",
-        byName?.Spec);
-      var norm = DeviceMatch.ResolveMic("default",
+          1), plain, "vac")?.Method);
+      Eq("match normalized prefix", "NormalizedName", DeviceMatch.ForEndpoint(
         new Endpoint("{x}", "Mic (USB Audio)", 1),
-        new[] {
-          new DshowDevice("2- Mic (USB Audio)", null),
-          new DshowDevice("Other", null),
-        }, "vac");
-      Eq("match normalized prefix", "NormalizedName", norm?.Method);
-      Eq("match none", null, DeviceMatch.ResolveMic("none", def, devices,
-        "virtual-audio-capturer"));
-      Eq("match explicit", "ConfigName", DeviceMatch.ResolveMic(
-        "yeti microphone - main (yeti stereo microphone)", null, devices,
+        new[] { new DshowDevice("2- Mic (USB Audio)", null) }, "vac")?.Method);
+      Eq("match no guess", null, DeviceMatch.ForEndpoint(
+        new Endpoint("{y}", "Gone", 1), devices, "virtual-audio-capturer"));
+      Eq("match by dshow name", "DshowName", DeviceMatch.ByName(
+        "yeti microphone - main (yeti stereo microphone)", devices,
         "virtual-audio-capturer")?.Method);
-      Eq("match explicit missing", null, DeviceMatch.ResolveMic("Nope", null,
-        devices, "virtual-audio-capturer"));
-      Eq("match excludes system", null, DeviceMatch.ResolveMic(
-        "virtual-audio-capturer", null, devices, "virtual-audio-capturer"));
-      Eq("match single fallback", "SingleDevice", DeviceMatch.ResolveMic(
-        "default", new Endpoint("{y}", "Gone", 1), devices,
-        "virtual-audio-capturer")?.Method);
-      Eq("match ambiguous", null, DeviceMatch.ResolveMic("default",
-        new Endpoint("{y}", "Gone", 1),
-        new[] { new DshowDevice("A", null), new DshowDevice("B", null) },
-        "vac"));
+      Eq("match by name excludes system", null, DeviceMatch.ByName(
+        "virtual-audio-capturer", devices, "virtual-audio-capturer"));
       Eq("system by name", "virtual-audio-capturer",
         DeviceMatch.ResolveByName("virtual-audio-capturer", devices)?.Spec);
       Eq("last guid", "af25d041-8695-4e1c-8672-b28919582119",
         DeviceMatch.LastGuid(devices[0].AlternativeName));
+      Eq("short yeti", "Yeti Microphone - Main", DeviceMatch.ShortName(
+        "Yeti Microphone - Main (Yeti Stereo Microphone)"));
+      Eq("short generic", "Surface Stereo Microphones", DeviceMatch.ShortName(
+        "Microphone (Surface Stereo Microphones)"));
+      Eq("short headset", "AirPods Pro", DeviceMatch.ShortName(
+        "Headset (AirPods Pro)"));
+      Eq("short plain", "Line 1", DeviceMatch.ShortName("Line 1"));
+
+      int lists = 0;
+      var cache = new DshowCache(() => { lists++; return devices; },
+        "virtual-audio-capturer");
+      cache.ForEndpoint(yeti);
+      cache.ForEndpoint(yeti);
+      Eq("dshow cache lists once", 1, lists);
+      cache.ForEndpoint(new Endpoint("{z}", "New Mic", 1));
+      Eq("dshow cache refreshes on miss", 2, lists);
+    }
+
+    static void TestMicPolicy() {
+      var w = new List<string>();
+      Eq("policy communications", MicMode.Communications,
+        MicPolicy.Parse("communications", w).Mode);
+      Eq("policy default-device", MicMode.DefaultDevice,
+        MicPolicy.Parse("Default-Device", w).Mode);
+      Eq("policy none", MicMode.None, MicPolicy.Parse("none", w).Mode);
+      Eq("policy no warnings yet", 0, w.Count);
+      Eq("policy default alias", MicMode.Communications,
+        MicPolicy.Parse("default", w).Mode);
+      Eq("policy default warns", 1, w.Count);
+      var pinned = MicPolicy.Parse("Yeti Microphone", w);
+      Eq("policy pinned", MicMode.Pinned, pinned.Mode);
+      Eq("policy pinned name", "Yeti Microphone", pinned.Name);
+
+      var fake = new FakeEndpointSource();
+      fake.Add("yeti", "Yeti Microphone");
+      fake.Add("surface", "Microphone (Surface)");
+      fake.Add("airpods", "Headset (AirPods)");
+      fake.SetDefault(CaptureRole.Communications, "yeti");
+      fake.SetDefault(CaptureRole.Console, "surface");
+      var comms = MicPolicy.Parse("communications", w);
+      var console = MicPolicy.Parse("default-device", w);
+      Eq("desired comms", "yeti", comms.Desired(fake)?.Id);
+      Eq("desired console", "surface", console.Desired(fake)?.Id);
+      fake.SetDefault(CaptureRole.Communications, "airpods");
+      Eq("desired follows comms change", "airpods", comms.Desired(fake)?.Id);
+      Eq("console ignores comms change", "surface", console.Desired(fake)?.Id);
+      fake.SetState("airpods", CoreAudio.DeviceStateNotPresent);
+      Eq("desired waits on inactive default", null, comms.Desired(fake));
+      Eq("pinned finds device", "yeti", pinned.Desired(fake)?.Id);
+      fake.SetState("yeti", CoreAudio.DeviceStateNotPresent);
+      Eq("pinned waits", null, pinned.Desired(fake));
+      fake.Add("yeti-port2", "2- Yeti Microphone");
+      Eq("pinned other port by name", "yeti-port2", pinned.Desired(fake)?.Id);
+      var events = new List<string>();
+      fake.Changed += events.Add;
+      fake.SetDefault(CaptureRole.Console, "yeti-port2");
+      Eq("fake fires events", 1, events.Count);
     }
 
     static void TestHealth() {
@@ -3206,6 +3740,20 @@ commands:
       Check("mix expected with stop",
         Math.Abs(Mixer.ExpectedSeconds(segs, 9.0) - 8.5) < 1e-9);
       Eq("usable drops late segments", 2, Mixer.Usable(segs, 5.0).Count);
+      var handoff = new List<SegmentInfo> {
+        new("system", "s.pcm", "vac", 0.0, 192000 * 10, null),
+        new("mic", "a.pcm", "yeti", 0.5, 192000 * 5, null, End: 3.25),
+        new("mic", "b.pcm", "airpods", 3.25, 192000 * 6, null),
+      };
+      string hf = Mixer.BuildFilter(handoff, 9.0);
+      Check("mix caps a switched segment",
+        hf.Contains("[1:a]atrim=end=2.750,adelay=delays=500:all=1[s1]"), hf);
+      Check("mix places the new device",
+        hf.Contains("[2:a]atrim=end=5.750,adelay=delays=3250:all=1[s2]"), hf);
+      Eq("usable drops fully capped", 1, Mixer.Usable(new List<SegmentInfo> {
+        new("mic", "x.pcm", "m", 2.0, 192000, null, End: 2.0),
+        new("mic", "y.pcm", "m", 2.0, 192000, null),
+      }, null).Count);
       Throws<ArgumentException>("mix empty",
         () => Mixer.BuildFilter(new List<SegmentInfo>()));
       Eq("parse decoded time", 3725.5, Mixer.ParseDecodedTime(
