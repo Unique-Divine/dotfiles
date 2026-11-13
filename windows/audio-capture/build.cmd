@@ -5,9 +5,15 @@ setlocal
 set "OUT=%LOCALAPPDATA%\Programs\audio-capture"
 set "CFG=%APPDATA%\audio-capture\audio-capture.toml"
 
-rem Stop a running copy so the exe can be replaced. --quit waits for it to
-rem save any recording and exit.
-if exist "%OUT%\audio-capture.exe" "%OUT%\audio-capture.exe" --quit >nul 2>&1
+rem Stop a running copy so the exe can be replaced, but never in the middle
+rem of a recording: --quit-if-idle exits 3 while recording or saving.
+if exist "%OUT%\audio-capture.exe" (
+  "%OUT%\audio-capture.exe" --quit-if-idle
+  if errorlevel 3 (
+    echo audio-capture is recording or saving. Stop it, then build again.
+    exit /b 1
+  )
+)
 
 dotnet publish "%~dp0audio-capture.cs" -o "%OUT%"
 if errorlevel 1 exit /b 1

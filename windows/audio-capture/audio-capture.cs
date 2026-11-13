@@ -13,6 +13,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -35,6 +36,8 @@ namespace AudioCapture {
 
     public static string SignalEventName(string signal) =>
       "Local\\audio-capture-" + signal;
+
+    public const string BusyEventName = "Local\\audio-capture-busy";
 
     [STAThread]
     static int Main(string[] args) {
@@ -72,12 +75,24 @@ namespace AudioCapture {
       if (!isFirst) {
         // A running instance owns the hotkey: pass the command along.
         string signal = cli.Command == "run" ? "toggle" : cli.Command;
+        if (cli.Command == "quit-if-idle") {
+          if (Commands.IsBusy()) {
+            Native.EnsureConsole();
+            Console.Error.WriteLine(
+              "audio-capture: recording or saving; not quitting");
+            return 3;
+          }
+          signal = "quit";
+        }
         if (!Commands.Signal(signal)) {
           return 1;
         }
         // --quit returns once the running instance has saved and exited,
         // so a build can replace the exe right after.
         return signal == "quit" ? Commands.WaitForExit(mutex) : 0;
+      }
+      if (cli.Command == "quit-if-idle") {
+        return 0; // not running: nothing to stop
       }
       if (cli.Command == "stop" || cli.Command == "quit") {
         Native.EnsureConsole();
@@ -123,6 +138,7 @@ commands:
   --start           start recording
   --stop            stop recording and save
   --quit            stop recording if needed, save, and exit
+  --quit-if-idle    exit if not recording or saving; else exit code 3
   --list-devices    print FFmpeg, DirectShow devices, and the resolved mic
   --recover <dir>   mix an unfinished session directory into an MP3
   --self-test       run the built-in unit tests
@@ -152,6 +168,7 @@ commands:
           case "--start": command = "start"; break;
           case "--stop": command = "stop"; break;
           case "--quit": command = "quit"; break;
+          case "--quit-if-idle": command = "quit-if-idle"; break;
           case "--list-devices": command = "list-devices"; break;
           case "--self-test": command = "self-test"; break;
           case "--version": command = "version"; break;
@@ -184,6 +201,16 @@ commands:
           return false;
         }
         Thread.Sleep(100);
+      }
+    }
+
+    public static bool IsBusy() {
+      if (!EventWaitHandle.TryOpenExisting(Program.BusyEventName,
+          out var busy)) {
+        return false;
+      }
+      using (busy) {
+        return busy.WaitOne(0);
       }
     }
 
@@ -242,11 +269,20 @@ commands:
       try {
         var cfg = ConfigLoader.Load(configPath).Config;
         string ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
+        if (SessionManifest.SavedPath(dir) is string saved) {
+          Console.Error.WriteLine(
+            $"audio-capture: {dir} was already saved as {saved}");
+          return 1;
+        }
         var manifest = SessionManifest.Read(Path.Combine(dir,
           SessionManifest.FileName));
         var segments = manifest.ToSegments(dir);
         string output = Paths.OutputFile(cfg, manifest.StartedLocal);
-        var result = Mixer.MixAndVerify(ffmpeg, segments, output, dir);
+        var result = Mixer.MixAndVerify(ffmpeg, segments, output, dir,
+          manifest.StopAt);
+        if (result.Ok) {
+          SessionManifest.MarkSaved(dir, result.OutputPath!);
+        }
         Console.WriteLine(result.Message);
         return result.Ok ? 0 : 1;
       } catch (Exception e) {
@@ -930,36 +966,69 @@ commands:
       [FieldOffset(8)] public IntPtr Pointer;
     }
 
+    [DllImport("ole32.dll")]
+    static extern int PropVariantClear(ref PropVariant value);
+
     static IMMDeviceEnumerator Enumerator() =>
       (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
 
-    public static Endpoint GetDefaultCapture() {
-      // eCapture = 1, eConsole = 0
-      Marshal.ThrowExceptionForHR(
-        Enumerator().GetDefaultAudioEndpoint(1, 0, out var device));
+    /// Releases COM objects now instead of at some later GC, since the
+    /// app polls these every second for hours.
+    static void Release(params object?[] objects) {
+      foreach (object? o in objects) {
+        if (o != null && Marshal.IsComObject(o)) {
+          Marshal.ReleaseComObject(o);
+        }
+      }
+    }
+
+    static Endpoint Describe(IMMDevice device) {
       Marshal.ThrowExceptionForHR(device.GetId(out string id));
       Marshal.ThrowExceptionForHR(device.GetState(out int state));
-      Marshal.ThrowExceptionForHR(device.OpenPropertyStore(0, out var store));
-      var key = new PropertyKey {
-        FormatId = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
-        PropertyId = 14,
-      };
-      Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
-      string name = value.Pointer == IntPtr.Zero
-        ? ""
-        : Marshal.PtrToStringUni(value.Pointer) ?? "";
-      return new Endpoint(id, name, state);
+      IPropertyStore? store = null;
+      try {
+        Marshal.ThrowExceptionForHR(device.OpenPropertyStore(0, out store));
+        var key = new PropertyKey {
+          FormatId = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
+          PropertyId = 14, // PKEY_Device_FriendlyName
+        };
+        Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
+        string name = value.Pointer == IntPtr.Zero
+          ? ""
+          : Marshal.PtrToStringUni(value.Pointer) ?? "";
+        PropVariantClear(ref value);
+        return new Endpoint(id, name, state);
+      } finally {
+        Release(store);
+      }
+    }
+
+    public static Endpoint GetDefaultCapture() {
+      var enumerator = Enumerator();
+      IMMDevice? device = null;
+      try {
+        // eCapture = 1, eConsole = 0
+        Marshal.ThrowExceptionForHR(
+          enumerator.GetDefaultAudioEndpoint(1, 0, out device));
+        return Describe(device);
+      } finally {
+        Release(device, enumerator);
+      }
     }
 
     /// The endpoint's DEVICE_STATE_* value, or -1 if Windows doesn't know it.
     public static int GetState(string id) {
+      var enumerator = Enumerator();
+      IMMDevice? device = null;
       try {
-        if (Enumerator().GetDevice(id, out var device) != 0) {
+        if (enumerator.GetDevice(id, out device) != 0) {
           return -1;
         }
         return device.GetState(out int state) == 0 ? state : -1;
       } catch (COMException) {
         return -1;
+      } finally {
+        Release(device, enumerator);
       }
     }
   }
@@ -1131,29 +1200,39 @@ commands:
     public double MediaSeconds => (double)Bytes / BytesPerSecond;
   }
 
-  /// One FFmpeg process reading one DirectShow device, piping raw 48 kHz
-  /// stereo s16le to stdout. The app writes that stream to the segment
-  /// file, so a killed process still leaves a usable segment.
-  sealed class PcmCapture {
+  /// One FFmpeg process reading one DirectShow device. FFmpeg writes raw
+  /// 48 kHz stereo s16le into a named pipe this app owns, and the app writes
+  /// it to the segment file, so a killed process still leaves a usable
+  /// segment. FFmpeg's stdout stays separate because virtual-audio-capturer
+  /// prints text there ("Received stop event after N passes").
+  sealed class PcmCapture : IDisposable {
     public const double StallSeconds = 1.5;
     public const double StartupSeconds = 8;
+    static int counter;
     static readonly Regex FatalStderr = new(
       "I/O error|Could not|device lost|Error during demuxing|" +
       "Error opening input|not find|Immediate exit",
+      RegexOptions.IgnoreCase);
+    static readonly Regex DropStderr = new(
+      "drop|real-time buffer|overrun|underrun|discontinuit",
       RegexOptions.IgnoreCase);
 
     public readonly string Kind;
     public readonly DeviceTarget Target;
     public readonly string FilePath;
     readonly long origin;
+    readonly string pipeName;
     readonly TimingEstimator timing = new();
     readonly object levelGate = new();
+    readonly CancellationTokenSource connectCancel = new();
+    NamedPipeServerStream? pipe;
     float pendingPeak;
     Process? process;
     Thread? reader;
     long bytes;
     long startedTicks;
     long lastArrivalTicks;
+    int dropWarnings;
     volatile string? fatalLine;
     volatile bool exited;
     volatile bool stopping;
@@ -1164,61 +1243,102 @@ commands:
       Target = target;
       FilePath = filePath;
       this.origin = origin;
+      pipeName = $"audio-capture-{Environment.ProcessId}-" +
+        Interlocked.Increment(ref counter);
     }
 
-    public int Pid => process?.Id ?? 0;
+    public int Pid { get; private set; }
     public long Bytes => Interlocked.Read(ref bytes);
+    public int DropWarnings => Volatile.Read(ref dropWarnings);
+    public string? FatalLine => fatalLine;
 
-    public static List<string> Args(string spec) => new() {
-      "-hide_banner", "-loglevel", "warning",
+    public static List<string> Args(string spec, string output) => new() {
+      "-hide_banner", "-loglevel", "warning", "-y",
       "-f", "dshow", "-thread_queue_size", "1024", "-rtbufsize", "256M",
       "-audio_buffer_size", "40", "-i", "audio=" + spec,
       "-vn", "-ac", SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
       "-ar", SegmentInfo.SampleRate.ToString(CultureInfo.InvariantCulture),
-      "-f", "s16le", "-flush_packets", "1", "pipe:1",
+      "-f", "s16le", "-flush_packets", "1", output,
     };
 
     public void Start(string ffmpeg) {
-      var p = Process.Start(Proc.Info(ffmpeg, Args(Target.Spec)))
+      pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1,
+        PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 1 << 20, 0);
+      var p = Process.Start(Proc.Info(ffmpeg,
+          Args(Target.Spec, @"\\.\pipe\" + pipeName)))
         ?? throw new InvalidOperationException("could not start ffmpeg");
       JobObject.Shared.Add(p);
       process = p;
+      Pid = p.Id;
       startedTicks = Stopwatch.GetTimestamp();
-      var errLog = new StreamWriter(FilePath + ".ffmpeg.log") {
+      var log = new StreamWriter(FilePath + ".ffmpeg.log") {
         AutoFlush = true,
       };
-      var errThread = new Thread(() => {
+      var logGate = new object();
+      void Drain(StreamReader source, string tag, bool watch) {
         try {
           string? line;
-          while ((line = p.StandardError.ReadLine()) != null) {
-            errLog.WriteLine(line);
+          while ((line = source.ReadLine()) != null) {
+            lock (logGate) {
+              log.WriteLine(tag + line);
+            }
+            if (!watch) {
+              continue;
+            }
+            if (DropStderr.IsMatch(line)) {
+              Interlocked.Increment(ref dropWarnings);
+            }
             if (fatalLine == null && FatalStderr.IsMatch(line)) {
               fatalLine = line;
+              Log.Write($"{Kind} ffmpeg pid {Pid}: {line.Trim()}");
             }
           }
-        } catch (Exception) {
-        } finally {
-          errLog.Dispose();
+        } catch (Exception e) when (e is IOException or
+            ObjectDisposedException or InvalidOperationException) {
         }
-      }) { IsBackground = true, Name = Kind + "-stderr" };
-      errThread.Start();
-      reader = new Thread(ReadLoop) {
+      }
+      var errThread = new Thread(() => Drain(p.StandardError, "", true)) {
+        IsBackground = true, Name = Kind + "-stderr",
+      };
+      var outThread = new Thread(() => Drain(p.StandardOutput, "stdout: ",
+          false)) {
         IsBackground = true, Name = Kind + "-stdout",
       };
+      errThread.Start();
+      outThread.Start();
+      reader = new Thread(() => {
+        ReadLoop();
+        errThread.Join(2000);
+        outThread.Join(2000);
+        lock (logGate) {
+          log.Dispose();
+        }
+      }) { IsBackground = true, Name = Kind + "-pcm" };
       reader.Start();
+      // If FFmpeg dies before it opens the pipe, stop waiting for it.
+      p.EnableRaisingEvents = true;
+      p.Exited += (_, _) => {
+        try {
+          connectCancel.Cancel();
+        } catch (ObjectDisposedException) {
+        }
+      };
+      if (p.HasExited) {
+        connectCancel.Cancel();
+      }
     }
 
     void ReadLoop() {
-      var p = process!;
       var buffer = new byte[16384];
       int carry = 0; // bytes of a split 4-byte frame
-      using var file = new FileStream(FilePath, FileMode.Create,
-        FileAccess.Write, FileShare.Read, 1 << 20);
-      var stream = p.StandardOutput.BaseStream;
       long lastFlush = Stopwatch.GetTimestamp();
       try {
+        using var file = new FileStream(FilePath, FileMode.Create,
+          FileAccess.Write, FileShare.Read, 1 << 20);
+        pipe!.WaitForConnectionAsync(connectCancel.Token).GetAwaiter()
+          .GetResult();
         while (true) {
-          int n = stream.Read(buffer, carry, buffer.Length - carry);
+          int n = pipe.Read(buffer, carry, buffer.Length - carry);
           if (n <= 0) {
             break;
           }
@@ -1249,8 +1369,10 @@ commands:
             lastFlush = now;
           }
         }
-      } catch (Exception e) when (e is IOException or ObjectDisposedException) {
-        // Pipe closed by a kill.
+      } catch (Exception e) when (e is IOException or
+          ObjectDisposedException or OperationCanceledException or
+          InvalidOperationException) {
+        // FFmpeg died, or Release() closed the pipe.
       } finally {
         exited = true;
       }
@@ -1280,51 +1402,35 @@ commands:
     }
 
     /// Asks FFmpeg to finish ("q"), then kills it after the timeout.
-    /// The segment ends at the moment of the request: virtual-audio-capturer
-    /// prints "Received stop event after N passes" to FFmpeg's stdout when
-    /// it stops, which would land in the PCM stream as a full-scale burst.
+    /// Blocks: call it off the UI thread.
     public void Stop(int timeoutMs) {
       stopping = true;
-      var p = process;
-      if (p == null) {
-        return;
-      }
-      long cut = Bytes;
       try {
-        p.StandardInput.Write("q\n");
-        p.StandardInput.Flush();
+        process?.StandardInput.Write("q\n");
+        process?.StandardInput.Flush();
       } catch (Exception e) when (e is IOException or
-          InvalidOperationException) {
+          InvalidOperationException or ObjectDisposedException) {
       }
       if (!(reader?.Join(timeoutMs) ?? true)) {
         Kill();
-        reader?.Join(2000);
-      }
-      Truncate(cut);
-    }
-
-    void Truncate(long length) {
-      try {
-        using (var f = new FileStream(FilePath, FileMode.Open,
-            FileAccess.Write, FileShare.ReadWrite)) {
-          if (f.Length > length) {
-            f.SetLength(length);
-          }
-        }
-        Interlocked.Exchange(ref bytes, Math.Min(Bytes, length));
-      } catch (IOException e) {
-        Log.Write($"truncate {FilePath} failed: {e.Message}");
       }
     }
 
+    /// Kills FFmpeg and waits for the reader. If the reader is still stuck,
+    /// closes the pipe under it. Blocks: call it off the UI thread.
     public void Kill() {
       stopping = true;
       try {
+        connectCancel.Cancel();
         process?.Kill();
       } catch (Exception e) when (e is InvalidOperationException or
-          System.ComponentModel.Win32Exception) {
+          System.ComponentModel.Win32Exception or ObjectDisposedException) {
       }
-      reader?.Join(3000);
+      if (!(reader?.Join(3000) ?? true)) {
+        Log.Write($"{Kind} reader stuck after kill; closing its pipe");
+        pipe?.Dispose();
+        reader?.Join(3000);
+      }
     }
 
     public SegmentInfo ToSegment() {
@@ -1334,12 +1440,29 @@ commands:
           timing.Slope(Mixer.MinDriftSpanSeconds));
       }
     }
+
+    public void Dispose() {
+      try {
+        process?.StandardInput.Dispose();
+      } catch (Exception e) when (e is IOException or
+          InvalidOperationException) {
+      }
+      process?.Dispose();
+      pipe?.Dispose();
+      connectCancel.Dispose();
+    }
   }
 
   static class Health {
+    /// A fatal-looking stderr line only counts once audio has also stopped
+    /// (0.5 s gap) or FFmpeg exited: dshow prints some scary warnings while
+    /// it keeps recording.
+    public const double FatalGapSeconds = 0.5;
+
     public static string? LossReason(double sinceStart, double? sinceLastByte,
         bool exited, string? fatalLine) {
-      if (fatalLine != null) {
+      if (fatalLine != null && (exited || sinceLastByte == null ||
+          sinceLastByte > FatalGapSeconds)) {
         return "ffmpeg: " + fatalLine.Trim();
       }
       if (exited) {
@@ -1371,14 +1494,30 @@ commands:
     /// Drift is corrected only on segments long enough to measure it.
     public const double MinDriftSpanSeconds = 60;
     public const double DriftThreshold = 100e-6;
+    /// Above this, the "drift" is more likely dropped audio than a clock:
+    /// correcting it would shift pitch for nothing.
+    public const double MaxDrift = 500e-6;
+
+    public static bool CorrectsDrift(double? slope) =>
+      slope is double v && Math.Abs(v) > DriftThreshold &&
+      Math.Abs(v) <= MaxDrift;
 
     static string Num(double v, string fmt) =>
       v.ToString(fmt, CultureInfo.InvariantCulture);
 
-    /// The -filter_complex graph: per segment, an optional drift fix,
-    /// then a trim or delay to its offset from the earliest segment; then
-    /// amix (no normalization, like ShareX's command) and a limiter.
-    public static string BuildFilter(IReadOnlyList<SegmentInfo> segments) {
+    /// Segments that hold audio before the stop time (null: no stop time).
+    public static List<SegmentInfo> Usable(IEnumerable<SegmentInfo> all,
+        double? stopAt) =>
+      all.Where(s => s.Bytes > 0 && (stopAt == null || s.Start < stopAt))
+        .ToList();
+
+    /// The -filter_complex graph: per segment, an optional drift fix, a
+    /// trim at the stop time, and a delay to its offset from the earliest
+    /// segment; then amix (no normalization, like ShareX's command) and a
+    /// limiter. FFmpeg keeps capturing for a moment after it gets "q", and
+    /// the trim drops that tail.
+    public static string BuildFilter(IReadOnlyList<SegmentInfo> segments,
+        double? stopAt = null) {
       if (segments.Count == 0) {
         throw new ArgumentException("no segments to mix");
       }
@@ -1388,12 +1527,16 @@ commands:
       for (int i = 0; i < segments.Count; i++) {
         var s = segments[i];
         var chain = new List<string>();
-        if (s.Slope is double slope && Math.Abs(slope) > DriftThreshold) {
+        if (CorrectsDrift(s.Slope)) {
+          double slope = s.Slope!.Value;
           // N samples really took (1 + slope) times longer: play them at
           // the rate they were captured, then resample back to 48 kHz.
           int rate = (int)Math.Round(SegmentInfo.SampleRate / (1 + slope));
           chain.Add($"asetrate={rate}");
           chain.Add($"aresample={SegmentInfo.SampleRate}");
+        }
+        if (stopAt is double stop && s.Start + WallSeconds(s) > stop) {
+          chain.Add($"atrim=end={Num(stop - s.Start, "0.000")}");
         }
         long delayMs = (long)Math.Round((s.Start - origin) * 1000);
         if (delayMs > 0) {
@@ -1430,40 +1573,47 @@ commands:
 
     /// Expected output length: from the earliest segment start to the
     /// latest segment end, in wall-clock seconds.
-    public static double ExpectedSeconds(IReadOnlyList<SegmentInfo> segments) {
+    public static double ExpectedSeconds(IReadOnlyList<SegmentInfo> segments,
+        double? stopAt = null) {
       double origin = segments.Min(s => s.Start);
-      return segments.Max(s => s.Start + WallSeconds(s)) - origin;
+      double end = segments.Max(s => s.Start + WallSeconds(s));
+      return (stopAt is double stop ? Math.Min(end, stop) : end) - origin;
     }
 
     public static double WallSeconds(SegmentInfo s) =>
-      s.Slope is double slope && Math.Abs(slope) > DriftThreshold
-        ? s.MediaSeconds * (1 + slope)
+      CorrectsDrift(s.Slope) ? s.MediaSeconds * (1 + s.Slope!.Value)
         : s.MediaSeconds;
 
-    public static double? ParseDuration(string ffmpegStderr) {
-      var m = Regex.Match(ffmpegStderr,
-        @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
-      if (!m.Success) {
+    /// The decoded length: the last "time=" in FFmpeg's progress output.
+    /// Unlike the container's "Duration:", it counts what actually decoded.
+    public static double? ParseDecodedTime(string ffmpegStderr) {
+      var all = Regex.Matches(ffmpegStderr,
+        @"time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
+      if (all.Count == 0) {
         return null;
       }
+      var m = all[^1];
       return int.Parse(m.Groups[1].Value) * 3600 +
         int.Parse(m.Groups[2].Value) * 60 +
         double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
     }
 
+    /// MP3 framing adds up to ~50 ms; allow 0.3 s plus 0.2% for timing
+    /// estimates on long recordings.
     public static bool DurationMatches(double actual, double expected) =>
-      Math.Abs(actual - expected) <= Math.Max(1.0, expected * 0.01);
+      Math.Abs(actual - expected) <= 0.3 + expected * 0.002;
 
     public static MixResult MixAndVerify(string ffmpeg,
-        IReadOnlyList<SegmentInfo> all, string outputPath, string sessionDir) {
-      var segments = all.Where(s => s.Bytes > 0).ToList();
+        IReadOnlyList<SegmentInfo> all, string outputPath, string sessionDir,
+        double? stopAt) {
+      var segments = Usable(all, stopAt);
       if (segments.Count == 0) {
         return new MixResult(false, "nothing was recorded", null);
       }
       Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
       string final = Paths.Unique(outputPath, File.Exists);
       string partial = final + ".partial";
-      string filter = BuildFilter(segments);
+      string filter = BuildFilter(segments, stopAt);
       var args = BuildArgs(segments, filter, partial);
       File.WriteAllText(Path.Combine(sessionDir, "mix-command.txt"),
         string.Join(" ", args.Select(Quote)) + Environment.NewLine);
@@ -1475,11 +1625,11 @@ commands:
           $"mix failed (exit {mix.ExitCode}); see {sessionDir}", null);
       }
       var check = Proc.Run(ffmpeg, new[] {
-        "-hide_banner", "-nostdin", "-v", "info", "-i", partial,
+        "-hide_banner", "-nostdin", "-v", "info", "-stats", "-i", partial,
         "-f", "null", "-",
       }, 30 * 60 * 1000);
-      double expected = ExpectedSeconds(segments);
-      double? actual = ParseDuration(check.Stderr);
+      double expected = ExpectedSeconds(segments, stopAt);
+      double? actual = ParseDecodedTime(check.Stderr);
       if (check.ExitCode != 0 || actual == null ||
           !DurationMatches(actual.Value, expected)) {
         return new MixResult(false,
@@ -1505,6 +1655,8 @@ commands:
   sealed class SessionManifest {
     public const string FileName = "session.json";
     public DateTime StartedLocal { get; set; }
+    /// Session seconds when the user pressed stop; null while recording.
+    public double? StopAt { get; set; }
     public List<ManifestSegment> Segments { get; set; } = new();
 
     public sealed class ManifestSegment {
@@ -1513,11 +1665,36 @@ commands:
       public string Device { get; set; } = "";
       public double Start { get; set; }
       public double? Slope { get; set; }
+      public long Bytes { get; set; }
     }
 
     static readonly JsonSerializerOptions Options = new() {
       WriteIndented = true,
     };
+
+    public const string SavedMarker = "saved.txt";
+
+    /// Records that a session became an MP3, so it isn't mixed twice.
+    public static void MarkSaved(string dir, string output) =>
+      File.WriteAllText(Path.Combine(dir, SavedMarker), output +
+        Environment.NewLine);
+
+    public static string? SavedPath(string dir) {
+      string marker = Path.Combine(dir, SavedMarker);
+      return File.Exists(marker) ? File.ReadAllText(marker).Trim() : null;
+    }
+
+    /// Session folders with a manifest that never got saved.
+    public static List<string> Unfinished(string sessionsDir) {
+      if (!Directory.Exists(sessionsDir)) {
+        return new List<string>();
+      }
+      return Directory.GetDirectories(sessionsDir)
+        .Where(d => File.Exists(Path.Combine(d, FileName)) &&
+          SavedPath(d) == null)
+        .OrderBy(d => d)
+        .ToList();
+    }
 
     public void Write(string path) {
       string tmp = path + ".tmp";
@@ -1553,6 +1730,8 @@ commands:
     public PcmCapture? Live;
     public readonly List<SegmentInfo> Finished = new();
     public bool Waiting;
+    /// Segments being closed off the UI thread; Stop waits for them.
+    public readonly List<Task> Closing = new();
     public int Failures;
     public int Count;
     public string? LastLoss;
@@ -1576,6 +1755,12 @@ commands:
     Source? mic;
     int sessionId;
     volatile int liveSession = -1; // read by polling threads
+    long lastManifestTicks;
+    double? stopAt;
+    readonly List<Action> afterSave = new();
+    /// Set while recording or saving, so `--quit-if-idle` can see it.
+    readonly EventWaitHandle busy = new(false, EventResetMode.ManualReset,
+      Program.BusyEventName);
 
     public RecorderState State { get; private set; } = RecorderState.Idle;
     public Pill? Pill { get; private set; }
@@ -1617,9 +1802,13 @@ commands:
       origin = Stopwatch.GetTimestamp();
       startedLocal = DateTime.Now;
       sessionDir = Path.Combine(Paths.SessionsDir,
-        startedLocal.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
+        startedLocal.ToString("yyyyMMdd-HHmmss-fff",
+          CultureInfo.InvariantCulture));
       Directory.CreateDirectory(sessionDir);
       State = RecorderState.Recording;
+      busy.Set();
+      lastManifestTicks = origin;
+      stopAt = null;
       liveSession = sessionId;
       Native.KeepAwake(true);
       CheckDiskSpace();
@@ -1750,31 +1939,52 @@ commands:
         src.LastLoss = reason;
         Log.Write($"{src.Kind} lost at {Elapsed:0.000} s: {reason} " +
           $"(pid {lost.Pid}, {lost.Bytes} bytes)");
-        lost.Kill();
-        FinishSegment(src, lost);
+        CloseSegment(src, lost);
         src.Failures++;
         if (src == mic) {
           Pill?.SetMicLost(true);
         }
         BeginWait(src, sessionId);
       }
+      // Keep session.json current so --recover has measured timing.
+      if (Clock.Seconds(now - lastManifestTicks) >= 10) {
+        lastManifestTicks = now;
+        WriteManifest();
+      }
     }
 
-    void FinishSegment(Source src, PcmCapture cap) {
-      var seg = cap.ToSegment();
-      if (seg.Bytes > 0) {
-        src.Finished.Add(seg);
-        Log.Write($"{src.Kind} segment done: start {seg.Start:0.000} s, " +
-          $"{seg.MediaSeconds:0.000} s of audio, slope " +
-          $"{(seg.Slope is double sl ? (sl * 1e6).ToString("0") + " ppm" : "n/a")}");
-      } else {
-        TryDelete(cap.FilePath);
-      }
-      WriteManifest();
+    /// Kills a lost capture and files its segment, off the UI thread: the
+    /// kill can block for seconds and the pill must keep drawing.
+    void CloseSegment(Source src, PcmCapture cap) {
+      var task = Task.Run(() => {
+        cap.Kill();
+        var seg = cap.ToSegment();
+        int drops = cap.DropWarnings;
+        cap.Dispose();
+        lock (src.Finished) {
+          if (seg.Bytes > 0) {
+            src.Finished.Add(seg);
+          }
+        }
+        if (seg.Bytes > 0) {
+          Log.Write($"{src.Kind} segment done: {DescribeSegment(seg)}" +
+            (drops > 0 ? $", {drops} dshow drop warnings" : ""));
+        } else {
+          TryDelete(cap.FilePath);
+        }
+        Post(WriteManifest);
+      });
+      src.Closing.Add(task);
     }
+
+    static string DescribeSegment(SegmentInfo s) =>
+      $"{Path.GetFileName(s.Path)} from {s.Device}, start {s.Start:0.000} s, " +
+      $"{s.MediaSeconds:0.000} s of audio, drift " +
+      (s.Slope is double sl ? $"{sl * 1e6:0} ppm" : "n/a");
 
     /// Polls about once a second until the source's device is back, then
-    /// starts a new segment.
+    /// starts a new segment. The per-second check is cheap (the endpoint
+    /// state); FFmpeg lists DirectShow devices only once before a restart.
     void BeginWait(Source src, int id) {
       if (src.Waiting) {
         return;
@@ -1786,33 +1996,30 @@ commands:
       int failures = src.Failures;
       Task.Run(async () => {
         // Back off when the device keeps failing right after a restart.
-        int delayMs = Math.Min(1000 * (1 << Math.Min(failures - 1, 3)), 5000);
-        bool sawActive = false;
+        int delayMs = Math.Clamp(1000 * (1 << Math.Max(failures - 1, 0)),
+          1000, 5000);
+        int polls = 0;
         while (true) {
-          await Task.Delay(Math.Max(delayMs, 1000));
+          await Task.Delay(delayMs);
+          polls++;
           if (liveSession != id) {
             return;
           }
           try {
             if (isMic && target.EndpointId != null) {
-              int state = CoreAudio.GetState(target.EndpointId);
-              if (state != CoreAudio.DeviceStateActive) {
-                sawActive = false;
+              if (CoreAudio.GetState(target.EndpointId) !=
+                  CoreAudio.DeviceStateActive) {
                 continue;
               }
-              if (!sawActive) {
-                // Let the driver settle before opening it.
-                sawActive = true;
-                await Task.Delay(1500);
-              }
+              await Task.Delay(1500); // let the driver settle
+            } else if (isMic && polls % 3 != 0) {
+              continue; // no endpoint to check: list devices every 3 s
             }
-            var devices = DirectShow.ListAudio(exe);
-            bool present = devices.Any(d =>
-              string.Equals(d.Name, target.Spec,
-                StringComparison.OrdinalIgnoreCase) ||
-              string.Equals(d.AlternativeName, target.Spec,
-                StringComparison.OrdinalIgnoreCase));
-            if (!present) {
+            if (isMic && !DirectShow.ListAudio(exe).Any(d =>
+                string.Equals(d.Name, target.Spec,
+                  StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d.AlternativeName, target.Spec,
+                  StringComparison.OrdinalIgnoreCase))) {
               continue;
             }
             Post(() => {
@@ -1829,19 +2036,26 @@ commands:
 
     void WriteManifest() {
       try {
-        var manifest = new SessionManifest { StartedLocal = startedLocal };
+        var manifest = new SessionManifest {
+          StartedLocal = startedLocal, StopAt = stopAt,
+        };
         foreach (var src in new[] { system, mic }) {
           if (src == null) {
             continue;
           }
-          var segs = src.Finished.ToList();
-          if (src.Live != null) {
-            segs.Add(src.Live.ToSegment());
+          List<SegmentInfo> segs;
+          lock (src.Finished) {
+            segs = src.Finished.ToList();
           }
-          foreach (var s in segs) {
+          var live = src.Live;
+          if (live != null) {
+            segs.Add(live.ToSegment());
+          }
+          foreach (var s in segs.OrderBy(x => x.Start)) {
             manifest.Segments.Add(new SessionManifest.ManifestSegment {
               Kind = s.Kind, File = Path.GetFileName(s.Path),
               Device = s.Device, Start = s.Start, Slope = s.Slope,
+              Bytes = s.Bytes,
             });
           }
         }
@@ -1851,20 +2065,32 @@ commands:
       }
     }
 
+    /// Stops and saves. `done` runs after the save finishes, including when
+    /// a save is already running; it runs at once only when idle.
     public void Stop(Action? done = null) {
-      if (State != RecorderState.Recording) {
+      if (State == RecorderState.Idle) {
         done?.Invoke();
+        return;
+      }
+      if (done != null) {
+        afterSave.Add(done);
+      }
+      if (State == RecorderState.Saving) {
         return;
       }
       State = RecorderState.Saving;
       sessionId++;
       liveSession = -1;
       Native.KeepAwake(false);
-      double elapsed = Elapsed;
-      Log.Write($"recording stop at {elapsed:0.000} s");
+      stopAt = Elapsed;
+      Log.Write($"recording stop at {stopAt:0.000} s");
       Pill?.ShowSaving();
       status("saving");
-      var sources = new[] { system, mic }.Where(s => s != null).ToList();
+      var sources = new[] { system, mic }.Where(s => s != null)
+        .Select(s => s!).ToList();
+      var live = sources.Where(s => s.Live != null)
+        .Select(s => (Source: s, Capture: s.Live!)).ToList();
+      var closing = sources.SelectMany(s => s.Closing).ToArray();
       string dir = sessionDir;
       string exe = ffmpeg;
       string output = Paths.OutputFile(cfg, startedLocal);
@@ -1872,26 +2098,31 @@ commands:
       Task.Run(() => {
         MixResult result;
         try {
-          var live = sources.Where(s => s!.Live != null)
-            .Select(s => (s!, s!.Live!)).ToList();
-          Parallel.ForEach(live, pair => pair.Item2.Stop(3000));
+          Parallel.ForEach(live, pair => pair.Capture.Stop(3000));
+          Task.WaitAll(closing, TimeSpan.FromSeconds(15));
           foreach (var (src, cap) in live) {
             var seg = cap.ToSegment();
-            if (seg.Bytes > 0) {
-              src.Finished.Add(seg);
+            cap.Dispose();
+            lock (src.Finished) {
+              if (seg.Bytes > 0) {
+                src.Finished.Add(seg);
+              }
             }
             src.Live = null;
           }
-          var segments = sources.SelectMany(s => s!.Finished).ToList();
+          var segments = sources.SelectMany(s => s.Finished)
+            .OrderBy(s => s.Start).ToList();
           WriteManifest();
           foreach (var s in segments) {
-            Log.Write($"segment {Path.GetFileName(s.Path)}: start " +
-              $"{s.Start:0.000} s, {s.MediaSeconds:0.000} s audio, slope " +
-              $"{(s.Slope is double sl ? (sl * 1e6).ToString("0") + " ppm" : "n/a")}");
+            Log.Write("segment " + DescribeSegment(s));
           }
-          result = Mixer.MixAndVerify(exe, segments, output, dir);
-          if (result.Ok && !keep) {
-            TryDeleteDir(dir);
+          result = Mixer.MixAndVerify(exe, segments, output, dir, stopAt);
+          if (result.Ok) {
+            if (keep) {
+              SessionManifest.MarkSaved(dir, result.OutputPath!);
+            } else {
+              TryDeleteDir(dir);
+            }
           }
         } catch (Exception e) {
           result = new MixResult(false, "save failed: " + e.Message, null);
@@ -1899,13 +2130,18 @@ commands:
         Log.Write(result.Message);
         Post(() => {
           State = RecorderState.Idle;
+          busy.Reset();
           status(result.Ok ? "saved" : "save failed");
           if (result.Ok) {
             Pill?.ShowSaved(Path.GetFileName(result.OutputPath!));
           } else {
             Pill?.ShowError("save failed, see log");
           }
-          done?.Invoke();
+          var callbacks = afterSave.ToList();
+          afterSave.Clear();
+          foreach (var callback in callbacks) {
+            callback();
+          }
         });
       });
     }
@@ -1960,6 +2196,16 @@ commands:
     int frame;
 
     readonly Color recordingDot;
+    static readonly StringFormat TextFormat = new() {
+      LineAlignment = StringAlignment.Center,
+      Trimming = StringTrimming.EllipsisCharacter,
+      FormatFlags = StringFormatFlags.NoWrap,
+    };
+    static readonly StringFormat TimeFormat = new() {
+      Alignment = StringAlignment.Near,
+      LineAlignment = StringAlignment.Center,
+      FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip,
+    };
 
     public Pill(Color recordingDot) {
       this.recordingDot = recordingDot;
@@ -2121,11 +2367,7 @@ commands:
       float barsRight = (BarsLeftDip + BarsWidthDip) * s;
       float timeLeft = barsRight + TimeGapDip * s;
       float contentRight = w - PadDip * s;
-      var textFormat = new StringFormat {
-        LineAlignment = StringAlignment.Center,
-        Trimming = StringTrimming.EllipsisCharacter,
-        FormatFlags = StringFormatFlags.NoWrap,
-      };
+      var textFormat = TextFormat;
       if (mode == Mode.Recording && micLost) {
         using var b = new SolidBrush(amber);
         g.DrawString("mic lost", font, b,
@@ -2154,11 +2396,7 @@ commands:
         return;
       }
       using var tb = new SolidBrush(text);
-      var timeFormat = new StringFormat {
-        Alignment = StringAlignment.Near,
-        LineAlignment = StringAlignment.Center,
-        FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip,
-      };
+      var timeFormat = TimeFormat;
       g.DrawString(PillLayout.FormatElapsed(elapsed), font, tb,
         new RectangleF(timeLeft, 0, contentRight - timeLeft, h), timeFormat);
     }
@@ -2231,12 +2469,15 @@ commands:
     readonly Recorder recorder;
     readonly string? configPath;
     AppConfig cfg;
-    bool quitting;
+    volatile bool quitting;
 
     public App(LoadedConfig loaded, string? configPath) {
       this.configPath = configPath;
       cfg = loaded.Config;
       Log.Write("config " + (loaded.Path ?? "(defaults)"));
+      foreach (string dir in SessionManifest.Unfinished(Paths.SessionsDir)) {
+        Log.Write($"unfinished session {dir}; mix it with --recover");
+      }
       foreach (string w in loaded.Warnings) {
         Log.Write("config warning: " + w);
       }
@@ -2904,8 +3145,12 @@ commands:
         Health.LossReason(10, 1.6, false, null)!.Contains("no audio"));
       Check("health exited",
         Health.LossReason(10, 0.1, true, null) == "ffmpeg exited");
-      Check("health fatal", Health.LossReason(10, 0.1, false,
+      Eq("health fatal while audio flows", null, Health.LossReason(10, 0.1,
+        false, "Could not set buffer size"));
+      Check("health fatal plus gap", Health.LossReason(10, 0.6, false,
         "Error during demuxing: I/O error")!.StartsWith("ffmpeg:"));
+      Check("health fatal plus exit", Health.LossReason(10, 0.1, true,
+        "Could not find audio only device")!.StartsWith("ffmpeg:"));
       Eq("health starting", null, Health.LossReason(3, null, false, null));
       Check("health never started",
         Health.LossReason(9, null, false, null) != null);
@@ -2954,14 +3199,30 @@ commands:
       double expected = Mixer.ExpectedSeconds(segs);
       Check("mix expected", Math.Abs(expected - (4.75 + 6 * 1.0003)) < 1e-6,
         expected.ToString(CultureInfo.InvariantCulture));
+      string trimmed = Mixer.BuildFilter(segs, 9.0);
+      Check("mix trims at stop", trimmed.Contains("[0:a]atrim=end=8.500[s0]") &&
+        trimmed.Contains("atrim=end=3.750") && !trimmed.Contains(
+          "[1:a]atrim"), trimmed);
+      Check("mix expected with stop",
+        Math.Abs(Mixer.ExpectedSeconds(segs, 9.0) - 8.5) < 1e-9);
+      Eq("usable drops late segments", 2, Mixer.Usable(segs, 5.0).Count);
       Throws<ArgumentException>("mix empty",
         () => Mixer.BuildFilter(new List<SegmentInfo>()));
-      Eq("parse duration", 3725.5, Mixer.ParseDuration(
-        "  Duration: 01:02:05.50, start: 0.000000, bitrate: 128 kb/s"));
-      Eq("parse duration none", null, Mixer.ParseDuration("nope"));
-      Check("duration ok", Mixer.DurationMatches(100.4, 100));
-      Check("duration long ok", Mixer.DurationMatches(3610, 3600));
-      Check("duration bad", !Mixer.DurationMatches(98, 100));
+      Eq("parse decoded time", 3725.5, Mixer.ParseDecodedTime(
+        "  Duration: 01:02:06.00, start: 0.000000\n" +
+        "size=N/A time=00:00:01.00 bitrate=N/A\r" +
+        "[out#0/null @ 1] video:0KiB audio:1KiB\n" +
+        "size=N/A time=01:02:05.50 bitrate=N/A speed= 300x\n"));
+      Eq("parse decoded time none", null, Mixer.ParseDecodedTime("nope"));
+      Check("duration ok", Mixer.DurationMatches(100.25, 100));
+      Check("duration long ok", Mixer.DurationMatches(3607, 3600));
+      Check("duration bad", !Mixer.DurationMatches(99.4, 100));
+      Check("duration long bad", !Mixer.DurationMatches(3610, 3600));
+      var dropped = new List<SegmentInfo> {
+        new("mic", "C:\\m.pcm", "yeti", 0, 192000 * 100, 800e-6),
+      };
+      Check("mix ignores implausible drift",
+        !Mixer.BuildFilter(dropped).Contains("asetrate"));
     }
 
     static void TestLayout() {
@@ -2983,6 +3244,8 @@ commands:
     static void TestCli() {
       Eq("cli default", "run", Cli.Parse(Array.Empty<string>()).Command);
       Eq("cli toggle", "toggle", Cli.Parse(new[] { "--toggle" }).Command);
+      Eq("cli quit-if-idle", "quit-if-idle",
+        Cli.Parse(new[] { "--quit-if-idle" }).Command);
       Eq("cli config", "x.toml",
         Cli.Parse(new[] { "--config", "x.toml", "--stop" }).ConfigPath);
       Eq("cli recover", "D:\\s",
