@@ -106,6 +106,16 @@ namespace AudioCapture {
       Log.Info("app.start", $"audio-capture {Version} started", new {
         version = Version, pid = Environment.ProcessId, command = cli.Command,
       });
+      try {
+        if (StateDir.MigrateConfig(StateDir.OldConfig, StateDir.Config) is
+            string migrated) {
+          Log.Info("config.migrated", migrated, new {
+            from = StateDir.OldConfig, to = StateDir.Config,
+          });
+        }
+      } catch (IOException e) {
+        Log.Warn("config.migrate_failed", e.Message);
+      }
       LoadedConfig loaded;
       try {
         loaded = ConfigLoader.Load(cli.ConfigPath);
@@ -342,10 +352,7 @@ commands:
         .UnsafeRelaxedJsonEscaping,
     };
 
-    public static string Dir => Path.Combine(Environment.GetFolderPath(
-      Environment.SpecialFolder.LocalApplicationData), "audio-capture");
-
-    public static string LogDir => Dir;
+    public static string LogDir => StateDir.Logs;
 
     public static string FilePath => Path.Combine(LogDir, "audio-capture.jsonl");
 
@@ -824,6 +831,42 @@ commands:
   sealed record LoadedConfig(AppConfig Config, string? Path,
     List<string> Warnings);
 
+  /// Where the app keeps its files: %USERPROFILE%\.audio-capture\, like a
+  /// dot directory on Linux. config.toml, logs\, sessions\, simulate\.
+  static class StateDir {
+    public static string Root => Path.Combine(Environment.GetFolderPath(
+      Environment.SpecialFolder.UserProfile), ".audio-capture");
+    public static string Config => Path.Combine(Root, "config.toml");
+    public static string Logs => Path.Combine(Root, "logs");
+    public static string Sessions => Path.Combine(Root, "sessions");
+    public static string Simulate => Path.Combine(Root, "simulate");
+
+    /// The config location before 2026-11-13.
+    public static string OldConfig => Path.Combine(Environment.GetFolderPath(
+      Environment.SpecialFolder.ApplicationData), "audio-capture",
+      "audio-capture.toml");
+
+    /// Copies a config from the old location if config.toml doesn't exist
+    /// yet. The old file stays in place. A v1 `mic = "default"` becomes
+    /// "communications", which is what "default" now means anyway.
+    /// Returns a message for the log, or null if nothing happened.
+    public static string? MigrateConfig(string oldPath, string newPath) {
+      if (File.Exists(newPath) || !File.Exists(oldPath)) {
+        return null;
+      }
+      string text = File.ReadAllText(oldPath);
+      string migrated = MigrateText(text);
+      Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+      File.WriteAllText(newPath, migrated);
+      return $"copied {oldPath} to {newPath}" + (migrated != text
+        ? "; mic = \"default\" became \"communications\"" : "");
+    }
+
+    public static string MigrateText(string text) => Regex.Replace(text,
+      @"^(\s*mic\s*=\s*)""default""", "$1\"communications\"",
+      RegexOptions.Multiline);
+  }
+
   static class ConfigLoader {
     public const string FileName = "audio-capture.toml";
 
@@ -832,8 +875,7 @@ commands:
         yield return explicitPath;
         yield break;
       }
-      yield return Path.Combine(Environment.GetFolderPath(
-        Environment.SpecialFolder.ApplicationData), "audio-capture", FileName);
+      yield return StateDir.Config;
       yield return Path.Combine(AppContext.BaseDirectory, FileName);
     }
 
@@ -881,7 +923,7 @@ commands:
       }
     }
 
-    public static string SessionsDir => Path.Combine(Log.Dir, "sessions");
+    public static string SessionsDir => StateDir.Sessions;
   }
 
   // ------------------------------------------------------------------
@@ -3824,7 +3866,7 @@ commands:
           string.Join(", ", Scenarios) + ", or all");
         return 2;
       }
-      string dir = Path.Combine(Log.Dir, "simulate");
+      string dir = StateDir.Simulate;
       Directory.CreateDirectory(dir);
       var fake = new FakeEndpointSource();
       fake.Add("yeti", Devices["yeti"].Name);
@@ -4099,6 +4141,7 @@ commands:
         ("tones", TestTones),
         ("manifest", TestManifest),
         ("log", TestLogFormat),
+        ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
         ("timing", TestTiming),
@@ -4506,6 +4549,30 @@ commands:
           Directory.Delete(dir, true);
         } catch (IOException) {
         }
+      }
+    }
+
+    static void TestStateDir() {
+      Check("state dir in home", StateDir.Root.EndsWith("\\.audio-capture"));
+      Eq("migrate mic default", "[audio]\nmic = \"communications\"\n",
+        StateDir.MigrateText("[audio]\nmic = \"default\"\n"));
+      Eq("migrate keeps others", "mic = \"Yeti\"",
+        StateDir.MigrateText("mic = \"Yeti\""));
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      try {
+        string old = Path.Combine(dir, "old.toml");
+        string next = Path.Combine(dir, "new", "config.toml");
+        Eq("migrate nothing", null, StateDir.MigrateConfig(old, next));
+        File.WriteAllText(old, "[audio]\nmic = \"default\"\n");
+        Check("migrate copies", StateDir.MigrateConfig(old, next) != null);
+        Check("migrated content", File.ReadAllText(next).Contains(
+          "communications"));
+        Check("old kept", File.Exists(old));
+        Eq("migrate once", null, StateDir.MigrateConfig(old, next));
+      } finally {
+        Directory.Delete(dir, true);
       }
     }
 
