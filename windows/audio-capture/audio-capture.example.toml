@@ -1,6 +1,6 @@
 # audio-capture config. The app reads the first file that exists:
 #   1. --config <path>
-#   2. %APPDATA%\audio-capture\audio-capture.toml
+#   2. %USERPROFILE%\.audio-capture\config.toml
 #   3. audio-capture.toml next to audio-capture.exe
 # Edits apply at the next recording start, except keys.toggle, which needs
 # a restart (audio-capture --quit, then launch it again).
@@ -47,6 +47,6 @@ mic = "communications"
 ffmpeg = ""
 
 [debug]
-# Keep the raw session folder in %LOCALAPPDATA%\audio-capture\sessions
+# Keep the raw session folder in %USERPROFILE%\.audio-capture\sessions
 # after a successful save.
 keep_session = false
