@@ -27,17 +27,46 @@ namespace AudioCapture {
   // Entry point and command line
   // ------------------------------------------------------------------
 
+  /// Which copy of the app this is. The installed exe
+  /// (%LOCALAPPDATA%\Programs\audio-capture) is the main instance. Any other
+  /// copy, such as a development build, gets its own mutex, signals, busy
+  /// flag, and state folder, so it can never quit or confuse the main one.
+  static class Instance {
+    public static string InstallDir => Path.Combine(Environment.GetFolderPath(
+      Environment.SpecialFolder.LocalApplicationData), "Programs",
+      "audio-capture");
+
+    public static readonly string Suffix = SuffixFor(AppContext.BaseDirectory,
+      InstallDir);
+
+    /// "" for the installed exe, else "-dev-" plus a hash of the exe folder.
+    public static string SuffixFor(string exeDir, string installDir) {
+      string Norm(string d) => Path.GetFullPath(d).TrimEnd('\\', '/')
+        .ToLowerInvariant();
+      if (Norm(exeDir) == Norm(installDir)) {
+        return "";
+      }
+      byte[] hash = System.Security.Cryptography.SHA256.HashData(
+        Encoding.UTF8.GetBytes(Norm(exeDir)));
+      return "-dev-" + Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+    }
+
+    public static bool IsMain => Suffix.Length == 0;
+  }
+
   static class Program {
     public const string Version = "0.1.0";
-    const string MutexName = "Local\\audio-capture-single-instance";
+    static string MutexName =>
+      $"Local\\audio-capture{Instance.Suffix}-single-instance";
 
     public static readonly string[] SignalNames =
       { "toggle", "start", "stop", "quit" };
 
     public static string SignalEventName(string signal) =>
-      "Local\\audio-capture-" + signal;
+      $"Local\\audio-capture{Instance.Suffix}-{signal}";
 
-    public const string BusyEventName = "Local\\audio-capture-busy";
+    public static string BusyEventName =>
+      $"Local\\audio-capture{Instance.Suffix}-busy";
 
     [STAThread]
     static int Main(string[] args) {
@@ -107,8 +136,8 @@ namespace AudioCapture {
         version = Version, pid = Environment.ProcessId, command = cli.Command,
       });
       try {
-        if (StateDir.MigrateConfig(StateDir.OldConfig, StateDir.Config) is
-            string migrated) {
+        if (Instance.IsMain && StateDir.MigrateConfig(StateDir.OldConfig,
+            StateDir.Config) is string migrated) {
           Log.Info("config.migrated", migrated, new {
             from = StateDir.OldConfig, to = StateDir.Config,
           });
@@ -834,8 +863,11 @@ commands:
   /// Where the app keeps its files: %USERPROFILE%\.audio-capture\, like a
   /// dot directory on Linux. config.toml, logs\, sessions\, simulate\.
   static class StateDir {
-    public static string Root => Path.Combine(Environment.GetFolderPath(
+    public static string MainRoot => Path.Combine(Environment.GetFolderPath(
       Environment.SpecialFolder.UserProfile), ".audio-capture");
+    /// A copy outside the install folder keeps its state in a subfolder.
+    public static string Root => Instance.IsMain ? MainRoot
+      : Path.Combine(MainRoot, Instance.Suffix.TrimStart('-'));
     public static string Config => Path.Combine(Root, "config.toml");
     public static string Logs => Path.Combine(Root, "logs");
     public static string Sessions => Path.Combine(Root, "sessions");
@@ -4637,7 +4669,17 @@ commands:
     }
 
     static void TestStateDir() {
-      Check("state dir in home", StateDir.Root.EndsWith("\\.audio-capture"));
+      Check("state dir in home",
+        StateDir.MainRoot.EndsWith("\\.audio-capture"));
+      Eq("instance installed", "", Instance.SuffixFor(
+        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture\\",
+        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture"));
+      string dev = Instance.SuffixFor("C:\\dev\\bin\\",
+        "C:\\Users\\u\\AppData\\Local\\Programs\\audio-capture");
+      Check("instance dev suffix", dev.StartsWith("-dev-") && dev.Length == 13,
+        dev);
+      Check("dev state is separate", Instance.IsMain ||
+        StateDir.Root != StateDir.MainRoot);
       Eq("migrate mic default", "[audio]\nmic = \"communications\"\n",
         StateDir.MigrateText("[audio]\nmic = \"default\"\n"));
       Eq("migrate keeps others", "mic = \"Yeti\"",
