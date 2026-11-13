@@ -1,0 +1,2921 @@
+#:property TargetFramework=net10.0-windows
+#:property UseWindowsForms=true
+#:property OutputType=WinExe
+#:property PublishAot=false
+#:property Nullable=enable
+#:property ApplicationHighDpiMode=PerMonitorV2
+
+// audio-capture: hotkey audio recorder (system audio + mic -> MP3) that
+// survives a mic unplug. See README.md next to this file.
+
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+namespace AudioCapture {
+
+  // ------------------------------------------------------------------
+  // Entry point and command line
+  // ------------------------------------------------------------------
+
+  static class Program {
+    public const string Version = "0.1.0";
+    const string MutexName = "Local\\audio-capture-single-instance";
+
+    public static readonly string[] SignalNames =
+      { "toggle", "start", "stop", "quit" };
+
+    public static string SignalEventName(string signal) =>
+      "Local\\audio-capture-" + signal;
+
+    [STAThread]
+    static int Main(string[] args) {
+      Cli cli;
+      try {
+        cli = Cli.Parse(args);
+      } catch (ArgumentException e) {
+        Native.EnsureConsole();
+        Console.Error.WriteLine("audio-capture: " + e.Message);
+        Console.Error.WriteLine(Cli.Usage);
+        return 2;
+      }
+
+      switch (cli.Command) {
+        case "help":
+          Native.EnsureConsole();
+          Console.WriteLine(Cli.Usage);
+          return 0;
+        case "version":
+          Native.EnsureConsole();
+          Console.WriteLine("audio-capture " + Version);
+          return 0;
+        case "self-test":
+          Native.EnsureConsole();
+          return SelfTests.Run();
+        case "list-devices":
+          Native.EnsureConsole();
+          return Commands.ListDevices(cli.ConfigPath);
+        case "recover":
+          Native.EnsureConsole();
+          return Commands.Recover(cli.ConfigPath, cli.Argument!);
+      }
+
+      using var mutex = new Mutex(true, MutexName, out bool isFirst);
+      if (!isFirst) {
+        // A running instance owns the hotkey: pass the command along.
+        string signal = cli.Command == "run" ? "toggle" : cli.Command;
+        return Commands.Signal(signal) ? 0 : 1;
+      }
+      if (cli.Command == "stop" || cli.Command == "quit") {
+        Native.EnsureConsole();
+        Console.Error.WriteLine("audio-capture: not running");
+        return 1;
+      }
+
+      Log.Write($"start v{Version} pid={Environment.ProcessId} " +
+        $"command={cli.Command}");
+      LoadedConfig loaded;
+      try {
+        loaded = ConfigLoader.Load(cli.ConfigPath);
+      } catch (Exception e) {
+        Log.Write("config error: " + e.Message);
+        MessageBox.Show(e.Message, "audio-capture: config error",
+          MessageBoxButtons.OK, MessageBoxIcon.Error);
+        return 1;
+      }
+
+      Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+      Application.EnableVisualStyles();
+      Application.SetCompatibleTextRenderingDefault(false);
+      using var app = new App(loaded, cli.ConfigPath);
+      bool startNow = cli.Command == "toggle" || cli.Command == "start";
+      app.Run(startNow);
+      Log.Write("exit");
+      return 0;
+    }
+  }
+
+  sealed record Cli(string Command, string? ConfigPath, string? Argument) {
+    public const string Usage =
+@"usage: audio-capture [command] [--config <path>]
+
+With no command, starts the resident app (hotkey + tray icon). If it is
+already running, toggles recording instead.
+
+commands:
+  --toggle          start or stop recording (starts the app if needed)
+  --start           start recording
+  --stop            stop recording and save
+  --quit            stop recording if needed, save, and exit
+  --list-devices    print FFmpeg, DirectShow devices, and the resolved mic
+  --recover <dir>   mix an unfinished session directory into an MP3
+  --self-test       run the built-in unit tests
+  --version, --help";
+
+    public static Cli Parse(string[] args) {
+      string command = "run";
+      string? config = null;
+      string? argument = null;
+      for (int i = 0; i < args.Length; i++) {
+        string a = args[i];
+        switch (a) {
+          case "--config":
+            if (i + 1 >= args.Length) {
+              throw new ArgumentException("--config needs a path");
+            }
+            config = args[++i];
+            break;
+          case "--recover":
+            if (i + 1 >= args.Length) {
+              throw new ArgumentException("--recover needs a directory");
+            }
+            command = "recover";
+            argument = args[++i];
+            break;
+          case "--toggle": command = "toggle"; break;
+          case "--start": command = "start"; break;
+          case "--stop": command = "stop"; break;
+          case "--quit": command = "quit"; break;
+          case "--list-devices": command = "list-devices"; break;
+          case "--self-test": command = "self-test"; break;
+          case "--version": command = "version"; break;
+          case "-h":
+          case "--help": command = "help"; break;
+          default:
+            throw new ArgumentException("unknown argument: " + a);
+        }
+      }
+      return new Cli(command, config, argument);
+    }
+  }
+
+  static class Commands {
+    public static bool Signal(string signal) {
+      // The first instance may still be creating its events.
+      var deadline = DateTime.UtcNow.AddSeconds(5);
+      while (true) {
+        if (EventWaitHandle.TryOpenExisting(
+            Program.SignalEventName(signal), out var handle)) {
+          using (handle) {
+            handle.Set();
+          }
+          return true;
+        }
+        if (DateTime.UtcNow > deadline) {
+          Native.EnsureConsole();
+          Console.Error.WriteLine(
+            "audio-capture: running instance did not answer");
+          return false;
+        }
+        Thread.Sleep(100);
+      }
+    }
+
+    public static int ListDevices(string? configPath) {
+      try {
+        var loaded = ConfigLoader.Load(configPath);
+        var cfg = loaded.Config;
+        Console.WriteLine("config: " + (loaded.Path ?? "(defaults)"));
+        foreach (string w in loaded.Warnings) {
+          Console.WriteLine("config warning: " + w);
+        }
+        string ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
+        Console.WriteLine("ffmpeg: " + ffmpeg);
+        var devices = DirectShow.ListAudio(ffmpeg);
+        Console.WriteLine("directshow audio devices:");
+        foreach (var d in devices) {
+          Console.WriteLine($"  {d.Name}  [{d.AlternativeName}]");
+        }
+        Endpoint? def = null;
+        try {
+          def = CoreAudio.GetDefaultCapture();
+          Console.WriteLine($"default recording device: {def.FriendlyName}" +
+            $" ({def.Id}, state {def.State})");
+        } catch (Exception e) {
+          Console.WriteLine("default recording device: error " + e.Message);
+        }
+        var mic = DeviceMatch.ResolveMic(cfg.Mic, def, devices, cfg.System);
+        Console.WriteLine("mic: " + (mic == null
+          ? "(none)"
+          : $"{mic.Display} via {mic.Method} -> {mic.Spec}"));
+        var sys = DeviceMatch.ResolveByName(cfg.System, devices);
+        Console.WriteLine("system: " + (sys?.Spec ?? "(not found)"));
+        Console.WriteLine("output: " + Paths.OutputFile(cfg, DateTime.Now));
+        return 0;
+      } catch (Exception e) {
+        Console.Error.WriteLine("audio-capture: " + e.Message);
+        return 1;
+      }
+    }
+
+    public static int Recover(string? configPath, string dir) {
+      try {
+        var cfg = ConfigLoader.Load(configPath).Config;
+        string ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
+        var manifest = SessionManifest.Read(Path.Combine(dir,
+          SessionManifest.FileName));
+        var segments = manifest.ToSegments(dir);
+        string output = Paths.OutputFile(cfg, manifest.StartedLocal);
+        var result = Mixer.MixAndVerify(ffmpeg, segments, output, dir);
+        Console.WriteLine(result.Message);
+        return result.Ok ? 0 : 1;
+      } catch (Exception e) {
+        Console.Error.WriteLine("audio-capture: " + e.Message);
+        return 1;
+      }
+    }
+  }
+
+  static class Log {
+    static readonly object Gate = new();
+
+    public static string Dir => Path.Combine(Environment.GetFolderPath(
+      Environment.SpecialFolder.LocalApplicationData), "audio-capture");
+
+    public static string FilePath => Path.Combine(Dir, "audio-capture.log");
+
+    public static void Write(string message) {
+      string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",
+        CultureInfo.InvariantCulture) + " " + message + Environment.NewLine;
+      lock (Gate) {
+        try {
+          Directory.CreateDirectory(Dir);
+          File.AppendAllText(FilePath, line);
+        } catch (IOException) {
+          // Logging must never break recording.
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Config: a TOML subset, herdr-style chords, and path templates
+  // ------------------------------------------------------------------
+
+  sealed class TomlException : Exception {
+    public TomlException(int line, string message)
+      : base($"line {line}: {message}") { }
+  }
+
+  /// Reads the TOML subset the config uses: [tables], key = value pairs,
+  /// basic and literal strings, integers, floats, booleans, and comments.
+  /// Keys come back as "table.key".
+  static class Toml {
+    public static Dictionary<string, object> Parse(string text) {
+      var result = new Dictionary<string, object>(StringComparer.Ordinal);
+      string table = "";
+      string[] lines = text.Replace("\r\n", "\n").Split('\n');
+      for (int n = 0; n < lines.Length; n++) {
+        int lineNo = n + 1;
+        string line = lines[n].Trim();
+        if (line.Length == 0 || line.StartsWith('#')) {
+          continue;
+        }
+        if (line.StartsWith('[')) {
+          if (line.StartsWith("[[")) {
+            throw new TomlException(lineNo, "arrays of tables unsupported");
+          }
+          int close = line.IndexOf(']');
+          if (close < 0) {
+            throw new TomlException(lineNo, "unclosed table header");
+          }
+          string rest = line[(close + 1)..].Trim();
+          if (rest.Length > 0 && !rest.StartsWith('#')) {
+            throw new TomlException(lineNo, "text after table header");
+          }
+          table = line[1..close].Trim();
+          if (!Regex.IsMatch(table, @"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$")) {
+            throw new TomlException(lineNo, $"bad table name '{table}'");
+          }
+          continue;
+        }
+        int eq = line.IndexOf('=');
+        if (eq <= 0) {
+          throw new TomlException(lineNo, "expected key = value");
+        }
+        string key = ParseKey(line[..eq].Trim(), lineNo);
+        int pos = eq + 1;
+        object value = ParseValue(line, ref pos, lineNo);
+        string tail = line[pos..].Trim();
+        if (tail.Length > 0 && !tail.StartsWith('#')) {
+          throw new TomlException(lineNo, "text after value");
+        }
+        string full = table.Length == 0 ? key : table + "." + key;
+        if (result.ContainsKey(full)) {
+          throw new TomlException(lineNo, $"duplicate key '{full}'");
+        }
+        result[full] = value;
+      }
+      return result;
+    }
+
+    static string ParseKey(string raw, int lineNo) {
+      if (raw.Length >= 2 && raw[0] == '"' && raw[^1] == '"') {
+        return raw[1..^1];
+      }
+      if (!Regex.IsMatch(raw, @"^[A-Za-z0-9_-]+$")) {
+        throw new TomlException(lineNo, $"bad key '{raw}'");
+      }
+      return raw;
+    }
+
+    static object ParseValue(string line, ref int pos, int lineNo) {
+      while (pos < line.Length && char.IsWhiteSpace(line[pos])) {
+        pos++;
+      }
+      if (pos >= line.Length) {
+        throw new TomlException(lineNo, "missing value");
+      }
+      char c = line[pos];
+      if (c == '"') {
+        return ParseBasicString(line, ref pos, lineNo);
+      }
+      if (c == '\'') {
+        int end = line.IndexOf('\'', pos + 1);
+        if (end < 0) {
+          throw new TomlException(lineNo, "unclosed string");
+        }
+        string s = line[(pos + 1)..end];
+        pos = end + 1;
+        return s;
+      }
+      if (c == '[' || c == '{') {
+        throw new TomlException(lineNo, "arrays and inline tables unsupported");
+      }
+      int start = pos;
+      while (pos < line.Length && line[pos] != '#' &&
+          !char.IsWhiteSpace(line[pos])) {
+        pos++;
+      }
+      string token = line[start..pos];
+      if (token == "true") {
+        return true;
+      }
+      if (token == "false") {
+        return false;
+      }
+      string digits = token.Replace("_", "");
+      if (long.TryParse(digits, NumberStyles.AllowLeadingSign,
+          CultureInfo.InvariantCulture, out long l)) {
+        return l;
+      }
+      if (double.TryParse(digits, NumberStyles.Float,
+          CultureInfo.InvariantCulture, out double d)) {
+        return d;
+      }
+      throw new TomlException(lineNo,
+        $"bad value '{token}' (strings need quotes)");
+    }
+
+    static string ParseBasicString(string line, ref int pos, int lineNo) {
+      var sb = new StringBuilder();
+      pos++;
+      while (pos < line.Length) {
+        char c = line[pos++];
+        if (c == '"') {
+          return sb.ToString();
+        }
+        if (c != '\\') {
+          sb.Append(c);
+          continue;
+        }
+        if (pos >= line.Length) {
+          break;
+        }
+        char e = line[pos++];
+        switch (e) {
+          case 'n': sb.Append('\n'); break;
+          case 't': sb.Append('\t'); break;
+          case 'r': sb.Append('\r'); break;
+          case '"': sb.Append('"'); break;
+          case '\\': sb.Append('\\'); break;
+          case 'u':
+            if (pos + 4 > line.Length) {
+              throw new TomlException(lineNo, "short \\u escape");
+            }
+            sb.Append((char)Convert.ToInt32(line.Substring(pos, 4), 16));
+            pos += 4;
+            break;
+          default:
+            throw new TomlException(lineNo, $"unknown escape \\{e}");
+        }
+      }
+      throw new TomlException(lineNo, "unclosed string");
+    }
+  }
+
+  /// A global hotkey in herdr's chord syntax, e.g. "ctrl+alt+f2".
+  sealed record Chord(uint Modifiers, uint VirtualKey, string Text) {
+    public const uint ModAlt = 0x1;
+    public const uint ModControl = 0x2;
+    public const uint ModShift = 0x4;
+    public const uint ModWin = 0x8;
+
+    static readonly Dictionary<string, uint> NamedKeys = new() {
+      ["space"] = 0x20, ["enter"] = 0x0D, ["return"] = 0x0D, ["tab"] = 0x09,
+      ["esc"] = 0x1B, ["escape"] = 0x1B, ["backspace"] = 0x08,
+      ["insert"] = 0x2D, ["delete"] = 0x2E, ["home"] = 0x24, ["end"] = 0x23,
+      ["pageup"] = 0x21, ["pagedown"] = 0x22, ["left"] = 0x25, ["up"] = 0x26,
+      ["right"] = 0x27, ["down"] = 0x28, ["pause"] = 0x13,
+      ["printscreen"] = 0x2C, ["minus"] = 0xBD, ["plus"] = 0xBB,
+      ["equal"] = 0xBB, ["comma"] = 0xBC, ["period"] = 0xBE,
+      ["slash"] = 0xBF, ["backtick"] = 0xC0, ["semicolon"] = 0xBA,
+      ["quote"] = 0xDE, ["leftbracket"] = 0xDB, ["backslash"] = 0xDC,
+      ["rightbracket"] = 0xDD,
+    };
+
+    public static Chord Parse(string text) {
+      string trimmed = text.Trim();
+      if (trimmed.Length == 0) {
+        throw new FormatException("empty key chord");
+      }
+      uint mods = 0;
+      uint? key = null;
+      foreach (string rawPart in trimmed.Split('+')) {
+        string part = rawPart.Trim();
+        string lower = part.ToLowerInvariant();
+        switch (lower) {
+          case "ctrl":
+          case "control": mods |= ModControl; continue;
+          case "alt":
+          case "option": mods |= ModAlt; continue;
+          case "shift": mods |= ModShift; continue;
+          case "win":
+          case "super":
+          case "cmd": mods |= ModWin; continue;
+          case "prefix":
+            throw new FormatException(
+              "'prefix' is a herdr mode; use a direct chord like ctrl+f2");
+          case "":
+            throw new FormatException(
+              $"empty key in '{text}' (write + as 'plus')");
+        }
+        if (key != null) {
+          throw new FormatException($"more than one key in '{text}'");
+        }
+        key = KeyCode(part, ref mods, text);
+      }
+      if (key == null) {
+        throw new FormatException($"no key in '{text}', only modifiers");
+      }
+      return new Chord(mods, key.Value, trimmed);
+    }
+
+    static uint KeyCode(string part, ref uint mods, string text) {
+      string lower = part.ToLowerInvariant();
+      if (part.Length == 1 && char.IsAsciiLetter(part[0])) {
+        // herdr reads "prefix+A" as shift+a.
+        if (char.IsUpper(part[0])) {
+          mods |= ModShift;
+        }
+        return (uint)char.ToUpperInvariant(part[0]);
+      }
+      if (part.Length == 1 && char.IsAsciiDigit(part[0])) {
+        return part[0];
+      }
+      var fkey = Regex.Match(lower, @"^f([1-9]|1[0-9]|2[0-4])$");
+      if (fkey.Success) {
+        return 0x70u + uint.Parse(fkey.Groups[1].Value) - 1;
+      }
+      if (NamedKeys.TryGetValue(lower, out uint vk)) {
+        return vk;
+      }
+      throw new FormatException($"unknown key '{part}' in '{text}'");
+    }
+  }
+
+  static class Templates {
+    static readonly Dictionary<string, Environment.SpecialFolder> Folders =
+      new() {
+        ["documents"] = Environment.SpecialFolder.MyDocuments,
+        ["music"] = Environment.SpecialFolder.MyMusic,
+        ["videos"] = Environment.SpecialFolder.MyVideos,
+        ["desktop"] = Environment.SpecialFolder.DesktopDirectory,
+        ["home"] = Environment.SpecialFolder.UserProfile,
+        ["appdata"] = Environment.SpecialFolder.ApplicationData,
+        ["localappdata"] = Environment.SpecialFolder.LocalApplicationData,
+      };
+
+    public static string FolderPath(string name) =>
+      Folders.TryGetValue(name, out var f)
+        ? Environment.GetFolderPath(f)
+        : throw new KeyNotFoundException(name);
+
+    /// Replaces {folder} names (documents, music, ...) and treats any other
+    /// {token} as a .NET date format, e.g. {yyyy-MM} or {HHmmss}.
+    public static string Expand(string template, DateTime now,
+        Func<string, string> folder) {
+      var sb = new StringBuilder();
+      int i = 0;
+      while (i < template.Length) {
+        char c = template[i];
+        if (c == '}') {
+          throw new FormatException($"stray '}}' in '{template}'");
+        }
+        if (c != '{') {
+          sb.Append(c);
+          i++;
+          continue;
+        }
+        int close = template.IndexOf('}', i + 1);
+        if (close < 0) {
+          throw new FormatException($"unclosed '{{' in '{template}'");
+        }
+        string token = template[(i + 1)..close];
+        if (token.Length == 0) {
+          throw new FormatException($"empty {{}} in '{template}'");
+        }
+        if (Folders.ContainsKey(token.ToLowerInvariant())) {
+          sb.Append(folder(token.ToLowerInvariant()));
+        } else {
+          if (!Regex.IsMatch(token, @"^[yMdHhmsf\-_.]+$")) {
+            throw new FormatException(
+              $"unknown token {{{token}}} in '{template}'");
+          }
+          sb.Append(now.ToString(token, CultureInfo.InvariantCulture));
+        }
+        i = close + 1;
+      }
+      return sb.ToString();
+    }
+  }
+
+  enum PillPosition {
+    BottomRight, BottomLeft, BottomCenter, TopRight, TopLeft, TopCenter
+  }
+
+  sealed record AppConfig {
+    public Chord Toggle { get; init; } = Chord.Parse("ctrl+alt+f2");
+    public PillPosition Position { get; init; } = PillPosition.BottomRight;
+    public string Monitor { get; init; } = "primary";
+    public string OutputDir { get; init; } =
+      "{documents}/ShareX/Screenshots/{yyyy-MM}";
+    public string OutputName { get; init; } = "{yy-MM-dd}__{HHmmss}-audio.mp3";
+    public string System { get; init; } = "virtual-audio-capturer";
+    public string Mic { get; init; } = "default";
+    public string Ffmpeg { get; init; } = "";
+    public bool KeepSession { get; init; }
+
+    static readonly string[] KnownKeys = {
+      "keys.toggle", "pill.position", "pill.monitor", "output.dir",
+      "output.name", "audio.system", "audio.mic", "audio.ffmpeg",
+      "debug.keep_session",
+    };
+
+    public static (AppConfig, List<string>) FromToml(string text) {
+      var values = Toml.Parse(text);
+      var warnings = new List<string>();
+      foreach (string k in values.Keys) {
+        if (!KnownKeys.Contains(k)) {
+          warnings.Add($"unknown key '{k}' ignored");
+        }
+      }
+      var cfg = new AppConfig();
+      string Str(string key, string fallback) {
+        if (!values.TryGetValue(key, out object? v)) {
+          return fallback;
+        }
+        return v as string ?? throw new FormatException(
+          $"{key} must be a quoted string");
+      }
+      try {
+        cfg = cfg with { Toggle = Chord.Parse(Str("keys.toggle",
+          cfg.Toggle.Text)) };
+      } catch (FormatException e) {
+        throw new FormatException("keys.toggle: " + e.Message);
+      }
+      string pos = Str("pill.position", "bottom-right");
+      cfg = cfg with {
+        Position = pos switch {
+          "bottom-right" => PillPosition.BottomRight,
+          "bottom-left" => PillPosition.BottomLeft,
+          "bottom-center" => PillPosition.BottomCenter,
+          "top-right" => PillPosition.TopRight,
+          "top-left" => PillPosition.TopLeft,
+          "top-center" => PillPosition.TopCenter,
+          _ => throw new FormatException(
+            $"pill.position '{pos}' must be bottom-right, bottom-left, " +
+            "bottom-center, top-right, top-left, or top-center"),
+        },
+      };
+      string monitor = Str("pill.monitor", cfg.Monitor);
+      if (monitor != "primary" && monitor != "cursor") {
+        throw new FormatException(
+          $"pill.monitor '{monitor}' must be primary or cursor");
+      }
+      cfg = cfg with {
+        Monitor = monitor,
+        OutputDir = Str("output.dir", cfg.OutputDir),
+        OutputName = Str("output.name", cfg.OutputName),
+        System = Str("audio.system", cfg.System),
+        Mic = Str("audio.mic", cfg.Mic),
+        Ffmpeg = Str("audio.ffmpeg", cfg.Ffmpeg),
+      };
+      if (values.TryGetValue("debug.keep_session", out object? keep)) {
+        cfg = cfg with {
+          KeepSession = keep as bool? ?? throw new FormatException(
+            "debug.keep_session must be true or false"),
+        };
+      }
+      // Fail at load time, not at the end of a recording.
+      Templates.Expand(cfg.OutputDir, DateTime.Now, _ => "x");
+      Templates.Expand(cfg.OutputName, DateTime.Now, _ => "x");
+      return (cfg, warnings);
+    }
+  }
+
+  sealed record LoadedConfig(AppConfig Config, string? Path,
+    List<string> Warnings);
+
+  static class ConfigLoader {
+    public const string FileName = "audio-capture.toml";
+
+    public static IEnumerable<string> Candidates(string? explicitPath) {
+      if (explicitPath != null) {
+        yield return explicitPath;
+        yield break;
+      }
+      yield return Path.Combine(Environment.GetFolderPath(
+        Environment.SpecialFolder.ApplicationData), "audio-capture", FileName);
+      yield return Path.Combine(AppContext.BaseDirectory, FileName);
+    }
+
+    public static LoadedConfig Load(string? explicitPath) {
+      foreach (string path in Candidates(explicitPath)) {
+        if (!File.Exists(path)) {
+          if (explicitPath != null) {
+            throw new FileNotFoundException("config not found: " + path);
+          }
+          continue;
+        }
+        try {
+          var (cfg, warnings) = AppConfig.FromToml(File.ReadAllText(path));
+          return new LoadedConfig(cfg, path, warnings);
+        } catch (Exception e) when (e is FormatException or TomlException) {
+          throw new FormatException($"{path}: {e.Message}");
+        }
+      }
+      return new LoadedConfig(new AppConfig(), null, new List<string>());
+    }
+  }
+
+  static class Paths {
+    public static string OutputFile(AppConfig cfg, DateTime when) {
+      string dir = Templates.Expand(cfg.OutputDir, when, Templates.FolderPath);
+      string name = Templates.Expand(cfg.OutputName, when,
+        Templates.FolderPath);
+      dir = Environment.ExpandEnvironmentVariables(dir);
+      return Path.GetFullPath(Path.Combine(dir, name));
+    }
+
+    /// Adds -2, -3, ... before the extension until the name is free.
+    public static string Unique(string path, Func<string, bool> exists) {
+      if (!exists(path)) {
+        return path;
+      }
+      string dir = Path.GetDirectoryName(path) ?? "";
+      string stem = Path.GetFileNameWithoutExtension(path);
+      string ext = Path.GetExtension(path);
+      for (int i = 2; ; i++) {
+        string candidate = Path.Combine(dir, $"{stem}-{i}{ext}");
+        if (!exists(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    public static string SessionsDir => Path.Combine(Log.Dir, "sessions");
+  }
+
+  // ------------------------------------------------------------------
+  // Devices: DirectShow names, the Windows default mic, and matching
+  // ------------------------------------------------------------------
+
+  sealed record DshowDevice(string Name, string? AlternativeName);
+
+  sealed record Endpoint(string Id, string FriendlyName, int State);
+
+  /// What FFmpeg opens: Spec goes after "audio=".
+  sealed record DeviceTarget(string Spec, string Display, string Method,
+    string? EndpointId);
+
+  static class DirectShow {
+    public static List<DshowDevice> Parse(string ffmpegOutput) {
+      var devices = new List<DshowDevice>();
+      string? pending = null;
+      foreach (string line in ffmpegOutput.Split('\n')) {
+        var audio = Regex.Match(line, "\"(?<name>[^\"]+)\"\\s+\\(audio\\)");
+        if (audio.Success) {
+          if (pending != null) {
+            devices.Add(new DshowDevice(pending, null));
+          }
+          pending = audio.Groups["name"].Value;
+          continue;
+        }
+        if (Regex.IsMatch(line, "\"[^\"]+\"\\s+\\((video|none)\\)")) {
+          if (pending != null) {
+            devices.Add(new DshowDevice(pending, null));
+          }
+          pending = null;
+          continue;
+        }
+        if (pending != null) {
+          var alt = Regex.Match(line,
+            "Alternative name\\s+\"(?<name>[^\"]+)\"");
+          if (alt.Success) {
+            devices.Add(new DshowDevice(pending, alt.Groups["name"].Value));
+            pending = null;
+          }
+        }
+      }
+      if (pending != null) {
+        devices.Add(new DshowDevice(pending, null));
+      }
+      return devices;
+    }
+
+    public static List<DshowDevice> ListAudio(string ffmpeg) {
+      var run = Proc.Run(ffmpeg, new[] {
+        "-hide_banner", "-nostdin", "-list_devices", "true", "-f", "dshow",
+        "-i", "dummy",
+      }, 15000);
+      return Parse(run.Stdout + "\n" + run.Stderr);
+    }
+  }
+
+  static class DeviceMatch {
+    static readonly Regex GuidPattern = new(
+      "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" +
+      "[0-9a-fA-F]{12}");
+
+    /// The last GUID in an endpoint ID ({0.0.1.00000000}.{guid}) or a
+    /// DirectShow alternative name (@device_cm_{category}\wave_{guid}).
+    public static string? LastGuid(string? s) {
+      if (string.IsNullOrEmpty(s)) {
+        return null;
+      }
+      var all = GuidPattern.Matches(s);
+      return all.Count == 0 ? null : all[^1].Value.ToLowerInvariant();
+    }
+
+    /// Lowercase alphanumerics, without a "2- " style prefix that Windows
+    /// adds when two devices share a name.
+    public static string NormalizeName(string s) {
+      string stripped = Regex.Replace(s.Trim(), @"^\d+-\s*", "");
+      return Regex.Replace(stripped.ToLowerInvariant(), "[^a-z0-9]", "");
+    }
+
+    static DeviceTarget Target(DshowDevice d, string method, string? id) =>
+      new(d.AlternativeName ?? d.Name, d.Name, method, id);
+
+    public static DeviceTarget? ResolveByName(string name,
+        IReadOnlyList<DshowDevice> devices) {
+      foreach (var d in devices) {
+        if (string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(d.AlternativeName, name,
+              StringComparison.OrdinalIgnoreCase)) {
+          // virtual-audio-capturer is a software filter: its name is stable.
+          return new DeviceTarget(d.Name, d.Name, "Name", null);
+        }
+      }
+      return null;
+    }
+
+    public static DeviceTarget? ResolveMic(string setting, Endpoint? def,
+        IReadOnlyList<DshowDevice> devices, string systemName) {
+      string s = setting.Trim();
+      if (s.Length == 0 || s.Equals("none", StringComparison.OrdinalIgnoreCase)) {
+        return null;
+      }
+      var eligible = devices.Where(d => !string.Equals(d.Name, systemName,
+        StringComparison.OrdinalIgnoreCase)).ToList();
+      if (!s.Equals("default", StringComparison.OrdinalIgnoreCase)) {
+        var exact = eligible.FirstOrDefault(d =>
+          string.Equals(d.Name, s, StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(d.AlternativeName, s,
+            StringComparison.OrdinalIgnoreCase));
+        if (exact != null) {
+          return Target(exact, "ConfigName", null);
+        }
+        var norm = eligible.Where(d =>
+          NormalizeName(d.Name) == NormalizeName(s)).ToList();
+        return norm.Count == 1 ? Target(norm[0], "ConfigNormalized", null)
+          : null;
+      }
+      if (def == null) {
+        return eligible.Count == 1
+          ? Target(eligible[0], "SingleDevice", null)
+          : null;
+      }
+      string? guid = LastGuid(def.Id);
+      if (guid != null) {
+        var byGuid = eligible.Where(d =>
+          LastGuid(d.AlternativeName) == guid).ToList();
+        if (byGuid.Count == 1) {
+          return Target(byGuid[0], "EndpointGuid", def.Id);
+        }
+      }
+      var byName = eligible.Where(d => string.Equals(d.Name,
+        def.FriendlyName, StringComparison.OrdinalIgnoreCase)).ToList();
+      if (byName.Count == 1) {
+        return Target(byName[0], "FriendlyName", def.Id);
+      }
+      var byNorm = eligible.Where(d => NormalizeName(d.Name) ==
+        NormalizeName(def.FriendlyName)).ToList();
+      if (byNorm.Count == 1) {
+        return Target(byNorm[0], "NormalizedName", def.Id);
+      }
+      return eligible.Count == 1
+        ? Target(eligible[0], "SingleDevice", def.Id)
+        : null;
+    }
+  }
+
+  static class CoreAudio {
+    public const int DeviceStateActive = 1;
+
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    class MMDeviceEnumeratorComObject { }
+
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator {
+      int EnumAudioEndpoints(int flow, int stateMask, out IntPtr devices);
+      int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device);
+      int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id,
+        out IMMDevice device);
+    }
+
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice {
+      int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
+        [MarshalAs(UnmanagedType.IUnknown)] out object result);
+      int OpenPropertyStore(int access, out IPropertyStore store);
+      int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+      int GetState(out int state);
+    }
+
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore {
+      int GetCount(out int count);
+      int GetAt(int index, out PropertyKey key);
+      int GetValue(ref PropertyKey key, out PropVariant value);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct PropertyKey {
+      public Guid FormatId;
+      public int PropertyId;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    struct PropVariant {
+      [FieldOffset(0)] public ushort VarType;
+      [FieldOffset(8)] public IntPtr Pointer;
+    }
+
+    static IMMDeviceEnumerator Enumerator() =>
+      (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+
+    public static Endpoint GetDefaultCapture() {
+      // eCapture = 1, eConsole = 0
+      Marshal.ThrowExceptionForHR(
+        Enumerator().GetDefaultAudioEndpoint(1, 0, out var device));
+      Marshal.ThrowExceptionForHR(device.GetId(out string id));
+      Marshal.ThrowExceptionForHR(device.GetState(out int state));
+      Marshal.ThrowExceptionForHR(device.OpenPropertyStore(0, out var store));
+      var key = new PropertyKey {
+        FormatId = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
+        PropertyId = 14,
+      };
+      Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
+      string name = value.Pointer == IntPtr.Zero
+        ? ""
+        : Marshal.PtrToStringUni(value.Pointer) ?? "";
+      return new Endpoint(id, name, state);
+    }
+
+    /// The endpoint's DEVICE_STATE_* value, or -1 if Windows doesn't know it.
+    public static int GetState(string id) {
+      try {
+        if (Enumerator().GetDevice(id, out var device) != 0) {
+          return -1;
+        }
+        return device.GetState(out int state) == 0 ? state : -1;
+      } catch (COMException) {
+        return -1;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // FFmpeg: discovery, child processes, and PCM capture
+  // ------------------------------------------------------------------
+
+  static class FfmpegLocator {
+    public static IEnumerable<string> Candidates(string configured,
+        string? pathVariable, string? programFiles, string? programFilesX86) {
+      if (!string.IsNullOrWhiteSpace(configured)) {
+        yield return Environment.ExpandEnvironmentVariables(configured);
+      }
+      foreach (string dir in (pathVariable ?? "").Split(';',
+          StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+        yield return Path.Combine(dir, "ffmpeg.exe");
+      }
+      if (!string.IsNullOrEmpty(programFiles)) {
+        yield return Path.Combine(programFiles, "ShareX", "ffmpeg.exe");
+      }
+      if (!string.IsNullOrEmpty(programFilesX86)) {
+        yield return Path.Combine(programFilesX86, "ShareX", "ffmpeg.exe");
+      }
+    }
+
+    public static string Find(string configured) {
+      if (!string.IsNullOrWhiteSpace(configured)) {
+        string p = Environment.ExpandEnvironmentVariables(configured);
+        return File.Exists(p) ? p
+          : throw new FileNotFoundException("audio.ffmpeg not found: " + p);
+      }
+      foreach (string c in Candidates("",
+          Environment.GetEnvironmentVariable("PATH"),
+          Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+          Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86))) {
+        if (File.Exists(c)) {
+          return c;
+        }
+      }
+      throw new FileNotFoundException(
+        "ffmpeg.exe not found in audio.ffmpeg, PATH, or ShareX's folder. " +
+        "Install it with: winget install Gyan.FFmpeg");
+    }
+  }
+
+  sealed record ProcResult(int ExitCode, string Stdout, string Stderr);
+
+  static class Proc {
+    public static ProcessStartInfo Info(string exe, IEnumerable<string> args) {
+      var info = new ProcessStartInfo(exe) {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        RedirectStandardInput = true,
+      };
+      foreach (string a in args) {
+        info.ArgumentList.Add(a);
+      }
+      return info;
+    }
+
+    public static ProcResult Run(string exe, IEnumerable<string> args,
+        int timeoutMs) {
+      using var p = Process.Start(Info(exe, args))
+        ?? throw new InvalidOperationException("could not start " + exe);
+      JobObject.Shared.Add(p);
+      p.StandardInput.Close();
+      var stdout = p.StandardOutput.ReadToEndAsync();
+      var stderr = p.StandardError.ReadToEndAsync();
+      if (!p.WaitForExit(timeoutMs)) {
+        try {
+          p.Kill(true);
+        } catch (InvalidOperationException) {
+        }
+        throw new TimeoutException($"{Path.GetFileName(exe)} timed out");
+      }
+      p.WaitForExit();
+      return new ProcResult(p.ExitCode, stdout.Result, stderr.Result);
+    }
+  }
+
+  /// Kills every FFmpeg child if this app dies, so no recorder is orphaned.
+  sealed class JobObject {
+    public static readonly JobObject Shared = new();
+    readonly IntPtr handle;
+
+    JobObject() {
+      handle = Native.CreateJobObject(IntPtr.Zero, null);
+      var info = new Native.JobExtendedLimitInformation();
+      info.BasicLimitInformation.LimitFlags = 0x2000; // KILL_ON_JOB_CLOSE
+      int size = Marshal.SizeOf<Native.JobExtendedLimitInformation>();
+      IntPtr ptr = Marshal.AllocHGlobal(size);
+      try {
+        Marshal.StructureToPtr(info, ptr, false);
+        if (!Native.SetInformationJobObject(handle, 9, ptr, (uint)size)) {
+          Log.Write("job object setup failed: " +
+            Marshal.GetLastWin32Error());
+        }
+      } finally {
+        Marshal.FreeHGlobal(ptr);
+      }
+    }
+
+    public void Add(Process p) {
+      try {
+        if (!Native.AssignProcessToJobObject(handle, p.Handle)) {
+          Log.Write("job assign failed: " + Marshal.GetLastWin32Error());
+        }
+      } catch (InvalidOperationException) {
+        // The process already exited.
+      }
+    }
+  }
+
+  /// Startline and drift estimates from (arrival time, total bytes) pairs.
+  /// arrival = start + duration(bytes) + latency, latency >= 0, so the
+  /// smallest (arrival - duration) seen is the best start estimate. Its
+  /// slope over time measures clock drift against the PC clock.
+  sealed class TimingEstimator {
+    public const double WindowSeconds = 5;
+    double windowStart = double.NaN;
+    double windowMin = double.PositiveInfinity;
+    double windowMinAt;
+    (double At, double Min)? first;
+    (double At, double Min)? last;
+
+    public void Add(double arrival, double mediaSeconds) {
+      double est = arrival - mediaSeconds;
+      if (double.IsNaN(windowStart)) {
+        windowStart = arrival;
+      }
+      if (est < windowMin) {
+        windowMin = est;
+        windowMinAt = arrival;
+      }
+      if (arrival - windowStart >= WindowSeconds) {
+        var w = (windowMinAt, windowMin);
+        first ??= w;
+        last = w;
+        windowStart = arrival;
+        windowMin = double.PositiveInfinity;
+      }
+    }
+
+    public double? Start =>
+      first?.Min ?? (double.IsInfinity(windowMin) ? null : windowMin);
+
+    /// Seconds of wall time per second of media, minus 1. Positive means
+    /// the device delivered fewer samples than the clock says it should.
+    public double? Slope(double minSpanSeconds) {
+      if (first == null || last == null) {
+        return null;
+      }
+      double span = last.Value.At - first.Value.At;
+      if (span < minSpanSeconds) {
+        return null;
+      }
+      return (last.Value.Min - first.Value.Min) / span;
+    }
+  }
+
+  sealed record SegmentInfo(string Kind, string Path, string Device,
+    double Start, long Bytes, double? Slope) {
+    public const int SampleRate = 48000;
+    public const int Channels = 2;
+    public const int BytesPerSecond = SampleRate * Channels * 2;
+    public double MediaSeconds => (double)Bytes / BytesPerSecond;
+  }
+
+  /// One FFmpeg process reading one DirectShow device, piping raw 48 kHz
+  /// stereo s16le to stdout. The app writes that stream to the segment
+  /// file, so a killed process still leaves a usable segment.
+  sealed class PcmCapture {
+    public const double StallSeconds = 1.5;
+    public const double StartupSeconds = 8;
+    static readonly Regex FatalStderr = new(
+      "I/O error|Could not|device lost|Error during demuxing|" +
+      "Error opening input|not find|Immediate exit",
+      RegexOptions.IgnoreCase);
+
+    public readonly string Kind;
+    public readonly DeviceTarget Target;
+    public readonly string FilePath;
+    readonly long origin;
+    readonly TimingEstimator timing = new();
+    readonly object levelGate = new();
+    float pendingPeak;
+    Process? process;
+    Thread? reader;
+    long bytes;
+    long startedTicks;
+    long lastArrivalTicks;
+    volatile string? fatalLine;
+    volatile bool exited;
+    volatile bool stopping;
+
+    public PcmCapture(string kind, DeviceTarget target, string filePath,
+        long origin) {
+      Kind = kind;
+      Target = target;
+      FilePath = filePath;
+      this.origin = origin;
+    }
+
+    public int Pid => process?.Id ?? 0;
+    public long Bytes => Interlocked.Read(ref bytes);
+
+    public static List<string> Args(string spec) => new() {
+      "-hide_banner", "-loglevel", "warning",
+      "-f", "dshow", "-thread_queue_size", "1024", "-rtbufsize", "256M",
+      "-audio_buffer_size", "40", "-i", "audio=" + spec,
+      "-vn", "-ac", SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
+      "-ar", SegmentInfo.SampleRate.ToString(CultureInfo.InvariantCulture),
+      "-f", "s16le", "-flush_packets", "1", "pipe:1",
+    };
+
+    public void Start(string ffmpeg) {
+      var p = Process.Start(Proc.Info(ffmpeg, Args(Target.Spec)))
+        ?? throw new InvalidOperationException("could not start ffmpeg");
+      JobObject.Shared.Add(p);
+      process = p;
+      startedTicks = Stopwatch.GetTimestamp();
+      var errLog = new StreamWriter(FilePath + ".ffmpeg.log") {
+        AutoFlush = true,
+      };
+      var errThread = new Thread(() => {
+        try {
+          string? line;
+          while ((line = p.StandardError.ReadLine()) != null) {
+            errLog.WriteLine(line);
+            if (fatalLine == null && FatalStderr.IsMatch(line)) {
+              fatalLine = line;
+            }
+          }
+        } catch (Exception) {
+        } finally {
+          errLog.Dispose();
+        }
+      }) { IsBackground = true, Name = Kind + "-stderr" };
+      errThread.Start();
+      reader = new Thread(ReadLoop) {
+        IsBackground = true, Name = Kind + "-stdout",
+      };
+      reader.Start();
+    }
+
+    void ReadLoop() {
+      var p = process!;
+      var buffer = new byte[16384];
+      int carry = 0; // bytes of a split 4-byte frame
+      using var file = new FileStream(FilePath, FileMode.Create,
+        FileAccess.Write, FileShare.Read, 1 << 20);
+      var stream = p.StandardOutput.BaseStream;
+      long lastFlush = Stopwatch.GetTimestamp();
+      try {
+        while (true) {
+          int n = stream.Read(buffer, carry, buffer.Length - carry);
+          if (n <= 0) {
+            break;
+          }
+          long now = Stopwatch.GetTimestamp();
+          int total = carry + n;
+          int whole = total - total % 4;
+          file.Write(buffer, 0, whole);
+          long newBytes = Interlocked.Add(ref bytes, whole);
+          Interlocked.Exchange(ref lastArrivalTicks, now);
+          float peak = 0;
+          for (int i = 0; i + 1 < whole; i += 2) {
+            int s = Math.Abs((int)BitConverter.ToInt16(buffer, i));
+            if (s > peak) {
+              peak = s;
+            }
+          }
+          lock (levelGate) {
+            pendingPeak = Math.Max(pendingPeak, peak / 32768f);
+            timing.Add(Clock.Seconds(now - origin),
+              (double)newBytes / SegmentInfo.BytesPerSecond);
+          }
+          carry = total - whole;
+          if (carry > 0) {
+            Buffer.BlockCopy(buffer, whole, buffer, 0, carry);
+          }
+          if (Clock.Seconds(now - lastFlush) > 2) {
+            file.Flush();
+            lastFlush = now;
+          }
+        }
+      } catch (Exception e) when (e is IOException or ObjectDisposedException) {
+        // Pipe closed by a kill.
+      } finally {
+        exited = true;
+      }
+    }
+
+    /// Peak level since the last call, 0..1.
+    public float TakePeak() {
+      lock (levelGate) {
+        float p = pendingPeak;
+        pendingPeak = 0;
+        return p;
+      }
+    }
+
+    /// Why this capture counts as lost right now, or null if it is healthy.
+    public string? LossReason(long nowTicks) {
+      if (stopping) {
+        return null;
+      }
+      return Health.LossReason(
+        Clock.Seconds(nowTicks - startedTicks),
+        Bytes > 0
+          ? Clock.Seconds(nowTicks - Interlocked.Read(ref lastArrivalTicks))
+          : null,
+        exited || (process?.HasExited ?? false),
+        fatalLine);
+    }
+
+    /// Asks FFmpeg to finish ("q"), then kills it after the timeout.
+    /// The segment ends at the moment of the request: virtual-audio-capturer
+    /// prints "Received stop event after N passes" to FFmpeg's stdout when
+    /// it stops, which would land in the PCM stream as a full-scale burst.
+    public void Stop(int timeoutMs) {
+      stopping = true;
+      var p = process;
+      if (p == null) {
+        return;
+      }
+      long cut = Bytes;
+      try {
+        p.StandardInput.Write("q\n");
+        p.StandardInput.Flush();
+      } catch (Exception e) when (e is IOException or
+          InvalidOperationException) {
+      }
+      if (!(reader?.Join(timeoutMs) ?? true)) {
+        Kill();
+        reader?.Join(2000);
+      }
+      Truncate(cut);
+    }
+
+    void Truncate(long length) {
+      try {
+        using (var f = new FileStream(FilePath, FileMode.Open,
+            FileAccess.Write, FileShare.ReadWrite)) {
+          if (f.Length > length) {
+            f.SetLength(length);
+          }
+        }
+        Interlocked.Exchange(ref bytes, Math.Min(Bytes, length));
+      } catch (IOException e) {
+        Log.Write($"truncate {FilePath} failed: {e.Message}");
+      }
+    }
+
+    public void Kill() {
+      stopping = true;
+      try {
+        process?.Kill();
+      } catch (Exception e) when (e is InvalidOperationException or
+          System.ComponentModel.Win32Exception) {
+      }
+      reader?.Join(3000);
+    }
+
+    public SegmentInfo ToSegment() {
+      lock (levelGate) {
+        double start = timing.Start ?? Clock.Seconds(startedTicks - origin);
+        return new SegmentInfo(Kind, FilePath, Target.Display, start, Bytes,
+          timing.Slope(Mixer.MinDriftSpanSeconds));
+      }
+    }
+  }
+
+  static class Health {
+    public static string? LossReason(double sinceStart, double? sinceLastByte,
+        bool exited, string? fatalLine) {
+      if (fatalLine != null) {
+        return "ffmpeg: " + fatalLine.Trim();
+      }
+      if (exited) {
+        return "ffmpeg exited";
+      }
+      if (sinceLastByte == null) {
+        return sinceStart > PcmCapture.StartupSeconds
+          ? $"no audio {PcmCapture.StartupSeconds:0} s after start"
+          : null;
+      }
+      return sinceLastByte > PcmCapture.StallSeconds
+        ? $"no audio for {sinceLastByte:0.0} s"
+        : null;
+    }
+  }
+
+  static class Clock {
+    public static double Seconds(long ticks) =>
+      (double)ticks / Stopwatch.Frequency;
+  }
+
+  // ------------------------------------------------------------------
+  // Mixing: place each segment at its time offset, mix, encode, verify
+  // ------------------------------------------------------------------
+
+  sealed record MixResult(bool Ok, string Message, string? OutputPath);
+
+  static class Mixer {
+    /// Drift is corrected only on segments long enough to measure it.
+    public const double MinDriftSpanSeconds = 60;
+    public const double DriftThreshold = 100e-6;
+
+    static string Num(double v, string fmt) =>
+      v.ToString(fmt, CultureInfo.InvariantCulture);
+
+    /// The -filter_complex graph: per segment, an optional drift fix,
+    /// then a trim or delay to its offset from the earliest segment; then
+    /// amix (no normalization, like ShareX's command) and a limiter.
+    public static string BuildFilter(IReadOnlyList<SegmentInfo> segments) {
+      if (segments.Count == 0) {
+        throw new ArgumentException("no segments to mix");
+      }
+      double origin = segments.Min(s => s.Start);
+      var parts = new List<string>();
+      var labels = new StringBuilder();
+      for (int i = 0; i < segments.Count; i++) {
+        var s = segments[i];
+        var chain = new List<string>();
+        if (s.Slope is double slope && Math.Abs(slope) > DriftThreshold) {
+          // N samples really took (1 + slope) times longer: play them at
+          // the rate they were captured, then resample back to 48 kHz.
+          int rate = (int)Math.Round(SegmentInfo.SampleRate / (1 + slope));
+          chain.Add($"asetrate={rate}");
+          chain.Add($"aresample={SegmentInfo.SampleRate}");
+        }
+        long delayMs = (long)Math.Round((s.Start - origin) * 1000);
+        if (delayMs > 0) {
+          chain.Add($"adelay=delays={delayMs}:all=1");
+        }
+        if (chain.Count == 0) {
+          chain.Add("anull");
+        }
+        parts.Add($"[{i}:a]{string.Join(",", chain)}[s{i}]");
+        labels.Append($"[s{i}]");
+      }
+      parts.Add($"{labels}amix=inputs={segments.Count}:duration=longest:" +
+        "dropout_transition=0:normalize=0,alimiter=limit=0.95[mixed]");
+      return string.Join(";", parts);
+    }
+
+    public static List<string> BuildArgs(IReadOnlyList<SegmentInfo> segments,
+        string filter, string outputPath) {
+      var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
+      foreach (var s in segments) {
+        args.AddRange(new[] {
+          "-f", "s16le", "-ar", SegmentInfo.SampleRate.ToString(
+            CultureInfo.InvariantCulture),
+          "-ac", SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
+          "-i", s.Path,
+        });
+      }
+      args.AddRange(new[] {
+        "-filter_complex", filter, "-map", "[mixed]",
+        "-c:a", "libmp3lame", "-qscale:a", "4", "-f", "mp3", outputPath,
+      });
+      return args;
+    }
+
+    /// Expected output length: from the earliest segment start to the
+    /// latest segment end, in wall-clock seconds.
+    public static double ExpectedSeconds(IReadOnlyList<SegmentInfo> segments) {
+      double origin = segments.Min(s => s.Start);
+      return segments.Max(s => s.Start + WallSeconds(s)) - origin;
+    }
+
+    public static double WallSeconds(SegmentInfo s) =>
+      s.Slope is double slope && Math.Abs(slope) > DriftThreshold
+        ? s.MediaSeconds * (1 + slope)
+        : s.MediaSeconds;
+
+    public static double? ParseDuration(string ffmpegStderr) {
+      var m = Regex.Match(ffmpegStderr,
+        @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
+      if (!m.Success) {
+        return null;
+      }
+      return int.Parse(m.Groups[1].Value) * 3600 +
+        int.Parse(m.Groups[2].Value) * 60 +
+        double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+    }
+
+    public static bool DurationMatches(double actual, double expected) =>
+      Math.Abs(actual - expected) <= Math.Max(1.0, expected * 0.01);
+
+    public static MixResult MixAndVerify(string ffmpeg,
+        IReadOnlyList<SegmentInfo> all, string outputPath, string sessionDir) {
+      var segments = all.Where(s => s.Bytes > 0).ToList();
+      if (segments.Count == 0) {
+        return new MixResult(false, "nothing was recorded", null);
+      }
+      Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+      string final = Paths.Unique(outputPath, File.Exists);
+      string partial = final + ".partial";
+      string filter = BuildFilter(segments);
+      var args = BuildArgs(segments, filter, partial);
+      File.WriteAllText(Path.Combine(sessionDir, "mix-command.txt"),
+        string.Join(" ", args.Select(Quote)) + Environment.NewLine);
+      var sw = Stopwatch.StartNew();
+      var mix = Proc.Run(ffmpeg, args, 60 * 60 * 1000);
+      File.WriteAllText(Path.Combine(sessionDir, "mix.log"), mix.Stderr);
+      if (mix.ExitCode != 0) {
+        return new MixResult(false,
+          $"mix failed (exit {mix.ExitCode}); see {sessionDir}", null);
+      }
+      var check = Proc.Run(ffmpeg, new[] {
+        "-hide_banner", "-nostdin", "-v", "info", "-i", partial,
+        "-f", "null", "-",
+      }, 30 * 60 * 1000);
+      double expected = ExpectedSeconds(segments);
+      double? actual = ParseDuration(check.Stderr);
+      if (check.ExitCode != 0 || actual == null ||
+          !DurationMatches(actual.Value, expected)) {
+        return new MixResult(false,
+          $"verify failed: duration {actual?.ToString("0.00") ?? "?"} s, " +
+          $"expected {expected:0.00} s; kept {partial} and {sessionDir}",
+          null);
+      }
+      File.Move(partial, final);
+      return new MixResult(true,
+        $"saved {final} ({actual:0.0} s, expected {expected:0.0} s, " +
+        $"{segments.Count} segments, mixed in {sw.Elapsed.TotalSeconds:0.0} s)",
+        final);
+    }
+
+    static string Quote(string a) =>
+      a.Length > 0 && !a.Any(c => char.IsWhiteSpace(c) || c == '"' ||
+        c == ';' || c == '[')
+        ? a
+        : "\"" + a.Replace("\"", "\\\"") + "\"";
+  }
+
+  /// session.json: enough to mix a session again with --recover.
+  sealed class SessionManifest {
+    public const string FileName = "session.json";
+    public DateTime StartedLocal { get; set; }
+    public List<ManifestSegment> Segments { get; set; } = new();
+
+    public sealed class ManifestSegment {
+      public string Kind { get; set; } = "";
+      public string File { get; set; } = "";
+      public string Device { get; set; } = "";
+      public double Start { get; set; }
+      public double? Slope { get; set; }
+    }
+
+    static readonly JsonSerializerOptions Options = new() {
+      WriteIndented = true,
+    };
+
+    public void Write(string path) {
+      string tmp = path + ".tmp";
+      File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
+      File.Move(tmp, path, true);
+    }
+
+    public static SessionManifest Read(string path) =>
+      JsonSerializer.Deserialize<SessionManifest>(File.ReadAllText(path))
+        ?? throw new InvalidDataException("empty manifest: " + path);
+
+    /// Byte counts come from file sizes, since the app may have died before
+    /// a segment ended.
+    public List<SegmentInfo> ToSegments(string dir) =>
+      Segments.Select(m => {
+        string path = Path.Combine(dir, m.File);
+        long size = File.Exists(path) ? new FileInfo(path).Length : 0;
+        return new SegmentInfo(m.Kind, path, m.Device, m.Start,
+          size - size % 4, m.Slope);
+      }).ToList();
+  }
+
+  // ------------------------------------------------------------------
+  // Recording session
+  // ------------------------------------------------------------------
+
+  /// One input (system audio or mic) over a session: its live capture,
+  /// the segments it has finished, and whether it is waiting for its
+  /// device to come back.
+  sealed class Source {
+    public readonly string Kind;
+    public DeviceTarget? Target;
+    public PcmCapture? Live;
+    public readonly List<SegmentInfo> Finished = new();
+    public bool Waiting;
+    public int Failures;
+    public int Count;
+    public string? LastLoss;
+
+    public Source(string kind) {
+      Kind = kind;
+    }
+  }
+
+  enum RecorderState { Idle, Recording, Saving }
+
+  sealed class Recorder {
+    readonly Control ui;
+    readonly Action<string> status;
+    AppConfig cfg;
+    string ffmpeg = "";
+    string sessionDir = "";
+    long origin;
+    DateTime startedLocal;
+    Source? system;
+    Source? mic;
+    int sessionId;
+    volatile int liveSession = -1; // read by polling threads
+
+    public RecorderState State { get; private set; } = RecorderState.Idle;
+    public Pill? Pill { get; private set; }
+
+    public Recorder(Control ui, AppConfig cfg, Action<string> status) {
+      this.ui = ui;
+      this.cfg = cfg;
+      this.status = status;
+    }
+
+    public void UpdateConfig(AppConfig next) {
+      cfg = next;
+    }
+
+    public double Elapsed => Clock.Seconds(Stopwatch.GetTimestamp() - origin);
+
+    public void Toggle() {
+      if (State == RecorderState.Idle) {
+        Start();
+      } else if (State == RecorderState.Recording) {
+        Stop();
+      } else {
+        Log.Write("toggle ignored while saving");
+      }
+    }
+
+    public void Start() {
+      if (State != RecorderState.Idle) {
+        return;
+      }
+      try {
+        ffmpeg = FfmpegLocator.Find(cfg.Ffmpeg);
+      } catch (FileNotFoundException e) {
+        Log.Write(e.Message);
+        ShowPill().ShowError("ffmpeg not found");
+        return;
+      }
+      sessionId++;
+      origin = Stopwatch.GetTimestamp();
+      startedLocal = DateTime.Now;
+      sessionDir = Path.Combine(Paths.SessionsDir,
+        startedLocal.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
+      Directory.CreateDirectory(sessionDir);
+      State = RecorderState.Recording;
+      liveSession = sessionId;
+      Native.KeepAwake(true);
+      CheckDiskSpace();
+      Log.Write($"recording start session={sessionDir}");
+      ShowPill().ShowRecording();
+      status("recording");
+
+      system = new Source("system");
+      mic = new Source("mic");
+      // virtual-audio-capturer is a fixed software name: start it now.
+      system.Target = new DeviceTarget(cfg.System, cfg.System, "Config", null);
+      StartSegment(system, system.Target, sessionId);
+
+      int id = sessionId;
+      string micSetting = cfg.Mic;
+      string systemName = cfg.System;
+      string exe = ffmpeg;
+      Task.Run(() => {
+        try {
+          Endpoint? def = null;
+          try {
+            def = CoreAudio.GetDefaultCapture();
+          } catch (Exception e) {
+            Log.Write("default mic lookup failed: " + e.Message);
+          }
+          var devices = DirectShow.ListAudio(exe);
+          var target = DeviceMatch.ResolveMic(micSetting, def, devices,
+            systemName);
+          Post(() => {
+            if (id != sessionId || State != RecorderState.Recording) {
+              return;
+            }
+            if (target == null) {
+              Log.Write($"no mic resolved for '{micSetting}'; " +
+                "recording system audio only");
+              mic = null;
+              Pill?.SetMicMissing();
+              return;
+            }
+            Log.Write($"mic {target.Display} via {target.Method} " +
+              $"spec={target.Spec}");
+            mic!.Target = target;
+            StartSegment(mic, target, id);
+          });
+        } catch (Exception e) {
+          Log.Write("mic resolve failed: " + e.Message);
+          Post(() => {
+            if (id == sessionId && mic != null && mic.Target == null) {
+              mic = null;
+              Pill?.SetMicMissing();
+            }
+          });
+        }
+      });
+    }
+
+    void CheckDiskSpace() {
+      try {
+        var drive = new DriveInfo(Path.GetPathRoot(sessionDir)!);
+        long free = drive.AvailableFreeSpace;
+        if (free < 3L * 1024 * 1024 * 1024) {
+          Log.Write($"warning: only {free / (1024 * 1024)} MB free for temp " +
+            "audio (about 1.4 GB per hour)");
+        }
+      } catch (Exception e) {
+        Log.Write("disk check failed: " + e.Message);
+      }
+    }
+
+    void Post(Action action) {
+      try {
+        ui.BeginInvoke(action);
+      } catch (InvalidOperationException) {
+        // UI is gone: the app is exiting.
+      }
+    }
+
+    void StartSegment(Source src, DeviceTarget target, int id) {
+      if (id != sessionId || State != RecorderState.Recording ||
+          src.Live != null) {
+        return;
+      }
+      src.Count++;
+      string file = Path.Combine(sessionDir,
+        $"{src.Kind}-{src.Count:00}.pcm");
+      var cap = new PcmCapture(src.Kind, target, file, origin);
+      try {
+        cap.Start(ffmpeg);
+      } catch (Exception e) {
+        Log.Write($"{src.Kind} start failed: {e.Message}");
+        src.Failures++;
+        BeginWait(src, id);
+        return;
+      }
+      src.Live = cap;
+      src.Waiting = false;
+      Log.Write($"{src.Kind} segment {src.Count} started pid={cap.Pid} " +
+        $"at {Elapsed:0.000} s");
+      if (src == mic) {
+        Pill?.SetMicLost(false);
+      }
+      WriteManifest();
+    }
+
+    /// Called every UI tick: feeds the pill and catches lost devices.
+    public void Tick() {
+      if (State != RecorderState.Recording) {
+        return;
+      }
+      long now = Stopwatch.GetTimestamp();
+      float micPeak = mic?.Live?.TakePeak() ?? 0;
+      float sysPeak = system?.Live?.TakePeak() ?? 0;
+      Pill?.Push(mic != null ? micPeak : sysPeak, Elapsed);
+      foreach (var src in new[] { system, mic }) {
+        if (src?.Live == null) {
+          continue;
+        }
+        string? reason = src.Live.LossReason(now);
+        if (reason == null) {
+          if (src.Failures > 0 && src.Live.Bytes >
+              10L * SegmentInfo.BytesPerSecond) {
+            src.Failures = 0;
+          }
+          continue;
+        }
+        var lost = src.Live;
+        src.Live = null;
+        src.LastLoss = reason;
+        Log.Write($"{src.Kind} lost at {Elapsed:0.000} s: {reason} " +
+          $"(pid {lost.Pid}, {lost.Bytes} bytes)");
+        lost.Kill();
+        FinishSegment(src, lost);
+        src.Failures++;
+        if (src == mic) {
+          Pill?.SetMicLost(true);
+        }
+        BeginWait(src, sessionId);
+      }
+    }
+
+    void FinishSegment(Source src, PcmCapture cap) {
+      var seg = cap.ToSegment();
+      if (seg.Bytes > 0) {
+        src.Finished.Add(seg);
+        Log.Write($"{src.Kind} segment done: start {seg.Start:0.000} s, " +
+          $"{seg.MediaSeconds:0.000} s of audio, slope " +
+          $"{(seg.Slope is double sl ? (sl * 1e6).ToString("0") + " ppm" : "n/a")}");
+      } else {
+        TryDelete(cap.FilePath);
+      }
+      WriteManifest();
+    }
+
+    /// Polls about once a second until the source's device is back, then
+    /// starts a new segment.
+    void BeginWait(Source src, int id) {
+      if (src.Waiting) {
+        return;
+      }
+      src.Waiting = true;
+      var target = src.Target!;
+      bool isMic = src == mic;
+      string exe = ffmpeg;
+      int failures = src.Failures;
+      Task.Run(async () => {
+        // Back off when the device keeps failing right after a restart.
+        int delayMs = Math.Min(1000 * (1 << Math.Min(failures - 1, 3)), 5000);
+        bool sawActive = false;
+        while (true) {
+          await Task.Delay(Math.Max(delayMs, 1000));
+          if (liveSession != id) {
+            return;
+          }
+          try {
+            if (isMic && target.EndpointId != null) {
+              int state = CoreAudio.GetState(target.EndpointId);
+              if (state != CoreAudio.DeviceStateActive) {
+                sawActive = false;
+                continue;
+              }
+              if (!sawActive) {
+                // Let the driver settle before opening it.
+                sawActive = true;
+                await Task.Delay(1500);
+              }
+            }
+            var devices = DirectShow.ListAudio(exe);
+            bool present = devices.Any(d =>
+              string.Equals(d.Name, target.Spec,
+                StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(d.AlternativeName, target.Spec,
+                StringComparison.OrdinalIgnoreCase));
+            if (!present) {
+              continue;
+            }
+            Post(() => {
+              src.Waiting = false;
+              StartSegment(src, target, id);
+            });
+            return;
+          } catch (Exception e) {
+            Log.Write($"{src.Kind} poll error: {e.Message}");
+          }
+        }
+      });
+    }
+
+    void WriteManifest() {
+      try {
+        var manifest = new SessionManifest { StartedLocal = startedLocal };
+        foreach (var src in new[] { system, mic }) {
+          if (src == null) {
+            continue;
+          }
+          var segs = src.Finished.ToList();
+          if (src.Live != null) {
+            segs.Add(src.Live.ToSegment());
+          }
+          foreach (var s in segs) {
+            manifest.Segments.Add(new SessionManifest.ManifestSegment {
+              Kind = s.Kind, File = Path.GetFileName(s.Path),
+              Device = s.Device, Start = s.Start, Slope = s.Slope,
+            });
+          }
+        }
+        manifest.Write(Path.Combine(sessionDir, SessionManifest.FileName));
+      } catch (Exception e) {
+        Log.Write("manifest write failed: " + e.Message);
+      }
+    }
+
+    public void Stop(Action? done = null) {
+      if (State != RecorderState.Recording) {
+        done?.Invoke();
+        return;
+      }
+      State = RecorderState.Saving;
+      sessionId++;
+      liveSession = -1;
+      Native.KeepAwake(false);
+      double elapsed = Elapsed;
+      Log.Write($"recording stop at {elapsed:0.000} s");
+      Pill?.ShowSaving();
+      status("saving");
+      var sources = new[] { system, mic }.Where(s => s != null).ToList();
+      string dir = sessionDir;
+      string exe = ffmpeg;
+      string output = Paths.OutputFile(cfg, startedLocal);
+      bool keep = cfg.KeepSession;
+      Task.Run(() => {
+        MixResult result;
+        try {
+          var live = sources.Where(s => s!.Live != null)
+            .Select(s => (s!, s!.Live!)).ToList();
+          Parallel.ForEach(live, pair => pair.Item2.Stop(3000));
+          foreach (var (src, cap) in live) {
+            var seg = cap.ToSegment();
+            if (seg.Bytes > 0) {
+              src.Finished.Add(seg);
+            }
+            src.Live = null;
+          }
+          var segments = sources.SelectMany(s => s!.Finished).ToList();
+          WriteManifest();
+          foreach (var s in segments) {
+            Log.Write($"segment {Path.GetFileName(s.Path)}: start " +
+              $"{s.Start:0.000} s, {s.MediaSeconds:0.000} s audio, slope " +
+              $"{(s.Slope is double sl ? (sl * 1e6).ToString("0") + " ppm" : "n/a")}");
+          }
+          result = Mixer.MixAndVerify(exe, segments, output, dir);
+          if (result.Ok && !keep) {
+            TryDeleteDir(dir);
+          }
+        } catch (Exception e) {
+          result = new MixResult(false, "save failed: " + e.Message, null);
+        }
+        Log.Write(result.Message);
+        Post(() => {
+          State = RecorderState.Idle;
+          status(result.Ok ? "saved" : "save failed");
+          if (result.Ok) {
+            Pill?.ShowSaved(Path.GetFileName(result.OutputPath!));
+          } else {
+            Pill?.ShowError("save failed, see log");
+          }
+          done?.Invoke();
+        });
+      });
+    }
+
+    Pill ShowPill() {
+      Pill ??= new Pill();
+      Pill.Place(cfg.Position, cfg.Monitor);
+      return Pill;
+    }
+
+    static void TryDelete(string path) {
+      try {
+        File.Delete(path);
+        File.Delete(path + ".ffmpeg.log");
+      } catch (IOException) {
+      }
+    }
+
+    static void TryDeleteDir(string dir) {
+      try {
+        Directory.Delete(dir, true);
+      } catch (Exception e) {
+        Log.Write($"could not delete {dir}: {e.Message}");
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // The pill: a layered, click-through window that never takes focus
+  // ------------------------------------------------------------------
+
+  sealed class Pill : Form {
+    // Layout in DIPs (scaled by the monitor's DPI).
+    const int WidthDip = 132;
+    const int HeightDip = 28;
+    const int BarCount = 16;
+    const float PadDip = 10;      // left and right inner padding
+    const float DotRadiusDip = 3.5f;
+    const float BarsLeftDip = 22; // after the dot
+    const float BarsWidthDip = 58;
+    const float TimeGapDip = 5;   // waveform to elapsed time
+    enum Mode { Recording, Saving, Saved, Error }
+
+    readonly float[] bars = new float[BarCount];
+    readonly System.Windows.Forms.Timer hideTimer = new();
+    Mode mode = Mode.Recording;
+    bool micLost;
+    bool micMissing;
+    double elapsed;
+    string message = "";
+    float scale = 1;
+    int frame;
+
+    public Pill() {
+      FormBorderStyle = FormBorderStyle.None;
+      ShowInTaskbar = false;
+      StartPosition = FormStartPosition.Manual;
+      Text = "audio-capture";
+      hideTimer.Tick += (_, _) => {
+        hideTimer.Stop();
+        Hide();
+      };
+    }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams {
+      get {
+        var cp = base.CreateParams;
+        cp.ExStyle |= Native.WsExLayered | Native.WsExNoActivate |
+          Native.WsExToolWindow | Native.WsExTopmost | Native.WsExTransparent;
+        return cp;
+      }
+    }
+
+    protected override void WndProc(ref Message m) {
+      if (m.Msg == Native.WmMouseActivate) {
+        m.Result = (IntPtr)Native.MaNoActivate;
+        return;
+      }
+      base.WndProc(ref m);
+    }
+
+    public void Place(PillPosition position, string monitor) {
+      var screen = monitor == "cursor"
+        ? Screen.FromPoint(Cursor.Position)
+        : Screen.PrimaryScreen ?? Screen.AllScreens[0];
+      scale = Native.ScaleFor(screen);
+      var area = screen.WorkingArea;
+      var size = new Size((int)(WidthDip * scale), (int)(HeightDip * scale));
+      var loc = PillLayout.Location(position, area, size,
+        (int)(16 * scale));
+      Bounds = new Rectangle(loc, size);
+    }
+
+    public void ShowRecording() {
+      hideTimer.Stop();
+      Array.Clear(bars);
+      mode = Mode.Recording;
+      micLost = false;
+      micMissing = false;
+      elapsed = 0;
+      Appear();
+    }
+
+    public void SetMicLost(bool lost) {
+      micLost = lost;
+      Render();
+    }
+
+    public void SetMicMissing() {
+      micMissing = true;
+      Render();
+    }
+
+    public void ShowSaving() {
+      mode = Mode.Saving;
+      Render();
+    }
+
+    public void ShowSaved(string name) {
+      mode = Mode.Saved;
+      message = "saved";
+      Render();
+      HideAfter(1500);
+    }
+
+    public void ShowError(string text) {
+      mode = Mode.Error;
+      message = text;
+      Appear();
+      HideAfter(6000);
+    }
+
+    void Appear() {
+      if (!Visible) {
+        Show();
+      }
+      Native.SetTopmost(Handle);
+      Render();
+    }
+
+    void HideAfter(int ms) {
+      hideTimer.Stop();
+      hideTimer.Interval = ms;
+      hideTimer.Start();
+    }
+
+    public void Push(float peak, double elapsedSeconds) {
+      Array.Copy(bars, 1, bars, 0, BarCount - 1);
+      bars[BarCount - 1] = PillLayout.BarLevel(peak);
+      elapsed = elapsedSeconds;
+      if (++frame % 40 == 0) {
+        Native.SetTopmost(Handle); // stay above windows raised since
+      }
+      Render();
+    }
+
+    void Render() {
+      if (!IsHandleCreated || !Visible) {
+        return;
+      }
+      int w = Width, h = Height;
+      using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+      using (var g = Graphics.FromImage(bmp)) {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint =
+          System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        g.Clear(Color.Transparent);
+        float r = h / 2f;
+        using (var path = Rounded(new RectangleF(0.5f, 0.5f, w - 1, h - 1),
+            r)) {
+          using var fill = new SolidBrush(Color.FromArgb(240, 22, 22, 26));
+          g.FillPath(fill, path);
+          using var edge = new Pen(Color.FromArgb(70, 255, 255, 255), 1);
+          g.DrawPath(edge, path);
+        }
+        DrawBody(g, w, h);
+      }
+      Native.PushLayered(Handle, bmp, Location);
+    }
+
+    void DrawBody(Graphics g, int w, int h) {
+      float s = scale;
+      Color red = Color.FromArgb(255, 255, 69, 58);
+      Color amber = Color.FromArgb(255, 255, 179, 64);
+      Color green = Color.FromArgb(255, 48, 209, 88);
+      Color text = Color.FromArgb(235, 255, 255, 255);
+      using var font = new Font("Segoe UI Semibold", 10.5f * s,
+        FontStyle.Regular, GraphicsUnit.Pixel);
+      float cy = h / 2f;
+
+      Color dot = mode switch {
+        Mode.Saving => text,
+        Mode.Saved => green,
+        Mode.Error => red,
+        _ => micLost ? amber : red,
+      };
+      // Recording dot pulses gently.
+      int alpha = mode == Mode.Recording
+        ? 160 + (int)(95 * (0.5 + 0.5 * Math.Sin(elapsed * 4)))
+        : 255;
+      using (var b = new SolidBrush(Color.FromArgb(alpha, dot))) {
+        float rr = DotRadiusDip * s;
+        float cx = (PadDip + DotRadiusDip) * s;
+        g.FillEllipse(b, cx - rr, cy - rr, 2 * rr, 2 * rr);
+      }
+
+      float left = BarsLeftDip * s;
+      float barsRight = (BarsLeftDip + BarsWidthDip) * s;
+      float timeLeft = barsRight + TimeGapDip * s;
+      float contentRight = w - PadDip * s;
+      var textFormat = new StringFormat {
+        LineAlignment = StringAlignment.Center,
+        Trimming = StringTrimming.EllipsisCharacter,
+        FormatFlags = StringFormatFlags.NoWrap,
+      };
+      if (mode == Mode.Recording && micLost) {
+        using var b = new SolidBrush(amber);
+        g.DrawString("mic lost", font, b,
+          new RectangleF(left, 0, timeLeft - left, h), textFormat);
+      } else if (mode == Mode.Recording) {
+        float step = (barsRight - left) / BarCount;
+        float bw = Math.Max(1.5f * s, step * 0.55f);
+        float maxH = h - 12 * s;
+        using var b = new SolidBrush(micMissing
+          ? Color.FromArgb(150, 255, 255, 255)
+          : text);
+        for (int i = 0; i < BarCount; i++) {
+          float bh = Math.Max(2 * s, bars[i] * maxH);
+          float x = left + i * step;
+          using var bar = Rounded(new RectangleF(x, cy - bh / 2, bw, bh),
+            bw / 2);
+          g.FillPath(b, bar);
+        }
+      } else {
+        string label = mode == Mode.Saving ? "saving" +
+          new string('.', 1 + (int)(Environment.TickCount64 / 400 % 3))
+          : message;
+        using var b = new SolidBrush(mode == Mode.Error ? red : text);
+        g.DrawString(label, font, b,
+          new RectangleF(left, 0, contentRight - left, h), textFormat);
+        return;
+      }
+      using var tb = new SolidBrush(text);
+      var timeFormat = new StringFormat {
+        Alignment = StringAlignment.Far,
+        LineAlignment = StringAlignment.Center,
+        FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip,
+      };
+      g.DrawString(PillLayout.FormatElapsed(elapsed), font, tb,
+        new RectangleF(timeLeft, 0, contentRight - timeLeft, h), timeFormat);
+    }
+
+    static GraphicsPath Rounded(RectangleF r, float radius) {
+      var p = new GraphicsPath();
+      float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+      if (d <= 0) {
+        p.AddRectangle(r);
+        return p;
+      }
+      p.AddArc(r.X, r.Y, d, d, 180, 90);
+      p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+      p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+      p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+      p.CloseFigure();
+      return p;
+    }
+
+    public void RefreshSaving() {
+      if (mode == Mode.Saving) {
+        Render();
+      }
+    }
+  }
+
+  static class PillLayout {
+    public static Point Location(PillPosition pos, Rectangle area, Size size,
+        int margin) {
+      int x = pos switch {
+        PillPosition.BottomLeft or PillPosition.TopLeft => area.Left + margin,
+        PillPosition.BottomCenter or PillPosition.TopCenter =>
+          area.Left + (area.Width - size.Width) / 2,
+        _ => area.Right - margin - size.Width,
+      };
+      int y = pos is PillPosition.TopLeft or PillPosition.TopRight or
+          PillPosition.TopCenter
+        ? area.Top + margin
+        : area.Bottom - margin - size.Height;
+      return new Point(x, y);
+    }
+
+    /// Maps a 0..1 peak onto 0..1 bar height over a -50..0 dB range.
+    public static float BarLevel(float peak) {
+      if (peak <= 0) {
+        return 0;
+      }
+      double db = 20 * Math.Log10(peak);
+      return (float)Math.Clamp((db + 50) / 50, 0, 1);
+    }
+
+    public static string FormatElapsed(double seconds) {
+      var t = TimeSpan.FromSeconds(Math.Max(0, Math.Floor(seconds)));
+      return t.TotalHours >= 1
+        ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+        : $"{t.Minutes}:{t.Seconds:00}";
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // App shell: hotkey, tray icon, and signals from other instances
+  // ------------------------------------------------------------------
+
+  sealed class App : IDisposable {
+    readonly Control invoker = new();
+    readonly HotkeyWindow hotkeys = new();
+    readonly NotifyIcon tray = new();
+    readonly System.Windows.Forms.Timer timer = new() { Interval = 50 };
+    readonly List<EventWaitHandle> signals = new();
+    readonly Recorder recorder;
+    readonly string? configPath;
+    AppConfig cfg;
+    bool quitting;
+
+    public App(LoadedConfig loaded, string? configPath) {
+      this.configPath = configPath;
+      cfg = loaded.Config;
+      Log.Write("config " + (loaded.Path ?? "(defaults)"));
+      foreach (string w in loaded.Warnings) {
+        Log.Write("config warning: " + w);
+      }
+      invoker.CreateControl();
+      _ = invoker.Handle;
+      recorder = new Recorder(invoker, cfg, SetStatus);
+      foreach (string name in Program.SignalNames) {
+        signals.Add(new EventWaitHandle(false, EventResetMode.AutoReset,
+          Program.SignalEventName(name)));
+      }
+    }
+
+    public void Run(bool startNow) {
+      hotkeys.Pressed += () => OnCommand("toggle");
+      RegisterHotkey();
+      SetupTray();
+      timer.Tick += (_, _) => {
+        recorder.Tick();
+        if (recorder.State == RecorderState.Saving) {
+          recorder.Pill?.RefreshSaving();
+        }
+      };
+      timer.Start();
+      SystemEvents.PowerModeChanged += (_, e) => {
+        if (e.Mode == PowerModes.Suspend &&
+            recorder.State == RecorderState.Recording) {
+          Log.Write("suspend: stopping and saving");
+          recorder.Stop();
+        }
+      };
+      var waiter = new Thread(WaitForSignals) {
+        IsBackground = true, Name = "signals",
+      };
+      waiter.Start();
+      if (startNow) {
+        OnCommand("start");
+      }
+      Application.Run();
+    }
+
+    void RegisterHotkey() {
+      string? error = hotkeys.Register(cfg.Toggle);
+      if (error != null) {
+        Log.Write($"hotkey {cfg.Toggle.Text} not registered: {error}");
+        tray.Text = Clip($"audio-capture: {cfg.Toggle.Text} unavailable");
+        tray.ShowBalloonTip(5000, "audio-capture",
+          $"Could not register {cfg.Toggle.Text}: {error}",
+          ToolTipIcon.Warning);
+      } else {
+        Log.Write($"hotkey {cfg.Toggle.Text} registered");
+      }
+    }
+
+    void SetupTray() {
+      tray.Icon = TrayIcon.Make();
+      tray.Text = Clip($"audio-capture: idle ({cfg.Toggle.Text})");
+      var menu = new ContextMenuStrip();
+      menu.Items.Add("Start / stop recording", null,
+        (_, _) => OnCommand("toggle"));
+      menu.Items.Add("Open recordings folder", null, (_, _) => {
+        string dir = Path.GetDirectoryName(Paths.OutputFile(cfg,
+          DateTime.Now))!;
+        Directory.CreateDirectory(dir);
+        Process.Start(new ProcessStartInfo("explorer.exe", dir) {
+          UseShellExecute = true,
+        });
+      });
+      menu.Items.Add("Open log", null, (_, _) =>
+        Process.Start(new ProcessStartInfo(Log.FilePath) {
+          UseShellExecute = true,
+        }));
+      menu.Items.Add("Quit", null, (_, _) => OnCommand("quit"));
+      tray.ContextMenuStrip = menu;
+      tray.Visible = true;
+    }
+
+    static string Clip(string s) => s.Length > 63 ? s[..63] : s;
+
+    void SetStatus(string status) {
+      tray.Text = Clip($"audio-capture: {status} ({cfg.Toggle.Text})");
+    }
+
+    void WaitForSignals() {
+      var handles = signals.Cast<WaitHandle>().ToArray();
+      while (!quitting) {
+        int i = WaitHandle.WaitAny(handles);
+        string name = Program.SignalNames[i];
+        try {
+          invoker.BeginInvoke(() => OnCommand(name));
+        } catch (InvalidOperationException) {
+          return;
+        }
+        if (name == "quit") {
+          return;
+        }
+      }
+    }
+
+    void OnCommand(string name) {
+      Log.Write("command " + name);
+      switch (name) {
+        case "toggle":
+          if (recorder.State == RecorderState.Idle) {
+            ReloadConfig();
+          }
+          recorder.Toggle();
+          break;
+        case "start":
+          if (recorder.State == RecorderState.Idle) {
+            ReloadConfig();
+            recorder.Start();
+          }
+          break;
+        case "stop":
+          recorder.Stop();
+          break;
+        case "quit":
+          quitting = true;
+          recorder.Stop(() => {
+            tray.Visible = false;
+            Application.ExitThread();
+          });
+          break;
+      }
+    }
+
+    /// Picks up config edits at each recording start. The hotkey only
+    /// changes on restart.
+    void ReloadConfig() {
+      try {
+        var loaded = ConfigLoader.Load(configPath);
+        foreach (string w in loaded.Warnings) {
+          Log.Write("config warning: " + w);
+        }
+        if (loaded.Config.Toggle != cfg.Toggle) {
+          Log.Write("keys.toggle changed; restart audio-capture to apply");
+        }
+        cfg = loaded.Config with { Toggle = cfg.Toggle };
+        recorder.UpdateConfig(cfg);
+      } catch (Exception e) {
+        Log.Write("config reload failed, keeping previous: " + e.Message);
+      }
+    }
+
+    public void Dispose() {
+      timer.Dispose();
+      hotkeys.Dispose();
+      tray.Dispose();
+      foreach (var s in signals) {
+        s.Dispose();
+      }
+      invoker.Dispose();
+    }
+  }
+
+  sealed class HotkeyWindow : NativeWindow, IDisposable {
+    const int Id = 1;
+    bool registered;
+    public event Action? Pressed;
+
+    public HotkeyWindow() {
+      // A message-only window: it receives WM_HOTKEY and nothing else.
+      CreateHandle(new CreateParams { Parent = new IntPtr(-3) });
+    }
+
+    /// Returns null on success, else a reason.
+    public string? Register(Chord chord) {
+      if (Native.RegisterHotKey(Handle, Id,
+          chord.Modifiers | Native.ModNoRepeat, chord.VirtualKey)) {
+        registered = true;
+        return null;
+      }
+      int err = Marshal.GetLastWin32Error();
+      return err == 1409
+        ? "another program already uses it"
+        : $"Windows error {err}";
+    }
+
+    protected override void WndProc(ref Message m) {
+      if (m.Msg == Native.WmHotkey && (int)m.WParam == Id) {
+        Pressed?.Invoke();
+        return;
+      }
+      base.WndProc(ref m);
+    }
+
+    public void Dispose() {
+      if (registered) {
+        Native.UnregisterHotKey(Handle, Id);
+      }
+      DestroyHandle();
+    }
+  }
+
+  static class TrayIcon {
+    public static Icon Make() {
+      using var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
+      using (var g = Graphics.FromImage(bmp)) {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+        using var dark = new SolidBrush(Color.FromArgb(255, 22, 22, 26));
+        g.FillEllipse(dark, 1, 1, 30, 30);
+        using var red = new SolidBrush(Color.FromArgb(255, 255, 69, 58));
+        g.FillEllipse(red, 9, 9, 14, 14);
+      }
+      return Icon.FromHandle(bmp.GetHicon());
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Win32
+  // ------------------------------------------------------------------
+
+  static class Native {
+    public const int WsExLayered = 0x00080000;
+    public const int WsExNoActivate = 0x08000000;
+    public const int WsExToolWindow = 0x00000080;
+    public const int WsExTopmost = 0x00000008;
+    public const int WsExTransparent = 0x00000020;
+    public const int WmMouseActivate = 0x0021;
+    public const int MaNoActivate = 3;
+    public const int WmHotkey = 0x0312;
+    public const uint ModNoRepeat = 0x4000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id,
+      uint modifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y,
+      int cx, int cy, uint flags);
+
+    public static void SetTopmost(IntPtr hwnd) {
+      // HWND_TOPMOST; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+      SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
+    }
+
+    [DllImport("kernel32.dll")]
+    static extern bool AttachConsole(int processId);
+
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetStdHandle(int handle);
+
+    /// A WinExe has no console. Attach to the parent's when stdout isn't
+    /// already redirected (a pipe from WSL or a file).
+    public static void EnsureConsole() {
+      IntPtr h = GetStdHandle(-11);
+      if (h == IntPtr.Zero || h == new IntPtr(-1)) {
+        AttachConsole(-1);
+      }
+    }
+
+    [DllImport("kernel32.dll")]
+    static extern uint SetThreadExecutionState(uint flags);
+
+    public static void KeepAwake(bool on) {
+      // ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+      SetThreadExecutionState(on ? 0x80000001u : 0x80000000u);
+    }
+
+    [DllImport("shcore.dll")]
+    static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x,
+      out uint y);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr MonitorFromPoint(Point pt, uint flags);
+
+    public static float ScaleFor(Screen screen) {
+      try {
+        var center = new Point(
+          screen.Bounds.Left + screen.Bounds.Width / 2,
+          screen.Bounds.Top + screen.Bounds.Height / 2);
+        IntPtr mon = MonitorFromPoint(center, 2);
+        if (GetDpiForMonitor(mon, 0, out uint dpi, out _) == 0) {
+          return dpi / 96f;
+        }
+      } catch (DllNotFoundException) {
+      }
+      return 1;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativePoint {
+      public int X, Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativeSize {
+      public int Cx, Cy;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    struct BlendFunction {
+      public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst,
+      ref NativePoint dst, ref NativeSize size, IntPtr hdcSrc,
+      ref NativePoint src, int key, ref BlendFunction blend, int flags);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetDC(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+
+    [DllImport("gdi32.dll")]
+    static extern IntPtr CreateCompatibleDC(IntPtr dc);
+
+    [DllImport("gdi32.dll")]
+    static extern bool DeleteDC(IntPtr dc);
+
+    [DllImport("gdi32.dll")]
+    static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+
+    [DllImport("gdi32.dll")]
+    static extern bool DeleteObject(IntPtr obj);
+
+    /// Draws a per-pixel-alpha bitmap as the window's whole surface.
+    public static void PushLayered(IntPtr hwnd, Bitmap bmp, Point location) {
+      IntPtr screen = GetDC(IntPtr.Zero);
+      IntPtr mem = CreateCompatibleDC(screen);
+      IntPtr hbmp = bmp.GetHbitmap(Color.FromArgb(0));
+      IntPtr old = SelectObject(mem, hbmp);
+      try {
+        var size = new NativeSize { Cx = bmp.Width, Cy = bmp.Height };
+        var src = new NativePoint();
+        var dst = new NativePoint { X = location.X, Y = location.Y };
+        var blend = new BlendFunction {
+          BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1,
+        };
+        UpdateLayeredWindow(hwnd, screen, ref dst, ref size, mem, ref src, 0,
+          ref blend, 2);
+      } finally {
+        SelectObject(mem, old);
+        DeleteObject(hbmp);
+        DeleteDC(mem);
+        ReleaseDC(IntPtr.Zero, screen);
+      }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateJobObject(IntPtr attributes,
+      string? name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetInformationJobObject(IntPtr job, int infoClass,
+      IntPtr info, uint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr job,
+      IntPtr process);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JobBasicLimitInformation {
+      public long PerProcessUserTimeLimit;
+      public long PerJobUserTimeLimit;
+      public uint LimitFlags;
+      public UIntPtr MinimumWorkingSetSize;
+      public UIntPtr MaximumWorkingSetSize;
+      public uint ActiveProcessLimit;
+      public UIntPtr Affinity;
+      public uint PriorityClass;
+      public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IoCounters {
+      public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+      public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JobExtendedLimitInformation {
+      public JobBasicLimitInformation BasicLimitInformation;
+      public IoCounters IoInfo;
+      public UIntPtr ProcessMemoryLimit;
+      public UIntPtr JobMemoryLimit;
+      public UIntPtr PeakProcessMemoryUsed;
+      public UIntPtr PeakJobMemoryUsed;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Self-tests for the pure parts: audio-capture --self-test
+  // ------------------------------------------------------------------
+
+  static class SelfTests {
+    static int passed;
+    static readonly List<string> Failures = new();
+
+    static void Check(string name, bool ok, string detail = "") {
+      if (ok) {
+        passed++;
+      } else {
+        Failures.Add(name + (detail.Length > 0 ? ": " + detail : ""));
+      }
+    }
+
+    static void Eq<T>(string name, T expected, T actual) =>
+      Check(name, EqualityComparer<T>.Default.Equals(expected, actual),
+        $"expected <{expected}>, got <{actual}>");
+
+    static void Throws<TException>(string name, Action action)
+        where TException : Exception {
+      try {
+        action();
+        Check(name, false, "no exception");
+      } catch (TException) {
+        Check(name, true);
+      } catch (Exception e) {
+        Check(name, false, "wrong exception " + e.GetType().Name);
+      }
+    }
+
+    public static int Run() {
+      var tests = new (string, Action)[] {
+        ("toml", TestToml),
+        ("chord", TestChord),
+        ("config", TestConfig),
+        ("templates", TestTemplates),
+        ("dshow", TestDirectShow),
+        ("match", TestMatch),
+        ("health", TestHealth),
+        ("timing", TestTiming),
+        ("mix", TestMix),
+        ("layout", TestLayout),
+        ("cli", TestCli),
+      };
+      foreach (var (name, test) in tests) {
+        try {
+          test();
+        } catch (Exception e) {
+          Failures.Add($"{name}: threw {e.GetType().Name}: {e.Message}");
+        }
+      }
+      foreach (string f in Failures) {
+        Console.WriteLine("FAIL " + f);
+      }
+      Console.WriteLine($"{passed} passed, {Failures.Count} failed");
+      return Failures.Count == 0 ? 0 : 1;
+    }
+
+    static void TestToml() {
+      var v = Toml.Parse(
+        "# comment\n" +
+        "top = 1\n" +
+        "[keys]\n" +
+        "toggle = \"ctrl+alt+f2\"  # trailing\n" +
+        "[audio]\r\n" +
+        "mic = 'C:\\raw\\path'\n" +
+        "esc = \"a\\\"b\\\\c\\u0041\"\n" +
+        "flag = true\n" +
+        "rate = 1.5\n" +
+        "big = 1_000\n" +
+        "hash = \"has # inside\"\n" +
+        "[pill.inner]\n" +
+        "\"quoted key\" = false\n");
+      Eq("toml top", (object)1L, v["top"]);
+      Eq("toml string", (object)"ctrl+alt+f2", v["keys.toggle"]);
+      Eq("toml literal", (object)"C:\\raw\\path", v["audio.mic"]);
+      Eq("toml escapes", (object)"a\"b\\cA", v["audio.esc"]);
+      Eq("toml bool", (object)true, v["audio.flag"]);
+      Eq("toml float", (object)1.5, v["audio.rate"]);
+      Eq("toml underscore", (object)1000L, v["audio.big"]);
+      Eq("toml hash in string", (object)"has # inside", v["audio.hash"]);
+      Eq("toml dotted table", (object)false, v["pill.inner.quoted key"]);
+      Throws<TomlException>("toml bare word", () => Toml.Parse("a = b"));
+      Throws<TomlException>("toml unclosed", () => Toml.Parse("a = \"b"));
+      Throws<TomlException>("toml dup", () => Toml.Parse("a = 1\na = 2"));
+      Throws<TomlException>("toml array", () => Toml.Parse("a = [1]"));
+      Throws<TomlException>("toml no eq", () => Toml.Parse("[x]\nfoo"));
+      Throws<TomlException>("toml tail", () => Toml.Parse("a = 1 2"));
+      try {
+        Toml.Parse("a = 1\n\nb = nope");
+      } catch (TomlException e) {
+        Check("toml line number", e.Message.StartsWith("line 3:"), e.Message);
+      }
+    }
+
+    static void TestChord() {
+      var c = Chord.Parse("ctrl+alt+f2");
+      Eq("chord mods", Chord.ModControl | Chord.ModAlt, c.Modifiers);
+      Eq("chord f2", 0x71u, c.VirtualKey);
+      Eq("chord f24", 0x87u, Chord.Parse("f24").VirtualKey);
+      Eq("chord letter", (uint)'R', Chord.Parse("ctrl+r").VirtualKey);
+      Eq("chord upper adds shift", Chord.ModControl | Chord.ModShift,
+        Chord.Parse("ctrl+R").Modifiers);
+      Eq("chord case", Chord.ModControl | Chord.ModShift,
+        Chord.Parse("Ctrl+Shift+F9").Modifiers);
+      Eq("chord digit", (uint)'5', Chord.Parse("alt+5").VirtualKey);
+      Eq("chord named", 0xBDu, Chord.Parse("ctrl+minus").VirtualKey);
+      Eq("chord win", Chord.ModWin, Chord.Parse("super+space").Modifiers);
+      Eq("chord spaces", 0x71u, Chord.Parse(" ctrl + f2 ").VirtualKey);
+      Throws<FormatException>("chord prefix", () => Chord.Parse("prefix+d"));
+      Throws<FormatException>("chord only mods", () => Chord.Parse("ctrl+alt"));
+      Throws<FormatException>("chord two keys", () => Chord.Parse("a+b"));
+      Throws<FormatException>("chord unknown", () => Chord.Parse("ctrl+foo"));
+      Throws<FormatException>("chord f25", () => Chord.Parse("f25"));
+      Throws<FormatException>("chord plus", () => Chord.Parse("ctrl++"));
+      Throws<FormatException>("chord empty", () => Chord.Parse(" "));
+    }
+
+    static void TestConfig() {
+      var (d, w0) = AppConfig.FromToml("");
+      Eq("config default toggle", "ctrl+alt+f2", d.Toggle.Text);
+      Eq("config default mic", "default", d.Mic);
+      Eq("config no warnings", 0, w0.Count);
+      var (c, w) = AppConfig.FromToml(
+        "[keys]\ntoggle = \"ctrl+f2\"\n" +
+        "[pill]\nposition = \"bottom-center\"\nmonitor = \"cursor\"\n" +
+        "[output]\ndir = \"D:/rec/{yyyy}\"\n" +
+        "[audio]\nmic = \"none\"\ntypo = \"x\"\n");
+      Eq("config toggle", 0x71u, c.Toggle.VirtualKey);
+      Eq("config position", PillPosition.BottomCenter, c.Position);
+      Eq("config monitor", "cursor", c.Monitor);
+      Eq("config dir", "D:/rec/{yyyy}", c.OutputDir);
+      Eq("config mic", "none", c.Mic);
+      Eq("config unknown warns", 1, w.Count);
+      Throws<FormatException>("config bad position",
+        () => AppConfig.FromToml("[pill]\nposition = \"middle\"\n"));
+      Throws<FormatException>("config bad chord",
+        () => AppConfig.FromToml("[keys]\ntoggle = \"prefix+x\"\n"));
+      Throws<FormatException>("config non-string",
+        () => AppConfig.FromToml("[audio]\nmic = 3\n"));
+      Throws<FormatException>("config bad template",
+        () => AppConfig.FromToml("[output]\nname = \"{nope}.mp3\"\n"));
+    }
+
+    static void TestTemplates() {
+      var when = new DateTime(2026, 11, 3, 9, 5, 7);
+      string F(string n) => n == "documents" ? "C:\\Users\\u\\Documents" : "?";
+      Eq("template default dir",
+        "C:\\Users\\u\\Documents/ShareX/Screenshots/2026-11",
+        Templates.Expand("{documents}/ShareX/Screenshots/{yyyy-MM}", when, F));
+      Eq("template default name", "26-11-03__090507-audio.mp3",
+        Templates.Expand("{yy-MM-dd}__{HHmmss}-audio.mp3", when, F));
+      Eq("template folder case", "C:\\Users\\u\\Documents",
+        Templates.Expand("{Documents}", when, F));
+      Throws<FormatException>("template unclosed",
+        () => Templates.Expand("{yyyy", when, F));
+      Throws<FormatException>("template stray",
+        () => Templates.Expand("a}b", when, F));
+      Throws<FormatException>("template unknown",
+        () => Templates.Expand("{user}", when, F));
+      Eq("unique free", "C:\\a\\x.mp3",
+        Paths.Unique("C:\\a\\x.mp3", _ => false));
+      var taken = new HashSet<string> { "C:\\a\\x.mp3", "C:\\a\\x-2.mp3" };
+      Eq("unique taken", "C:\\a\\x-3.mp3",
+        Paths.Unique("C:\\a\\x.mp3", taken.Contains));
+      var cands = FfmpegLocator.Candidates("", "C:\\bin; ;D:\\tools",
+        "C:\\Program Files", null).ToList();
+      Eq("ffmpeg candidates", 3, cands.Count);
+      Eq("ffmpeg path first", "C:\\bin\\ffmpeg.exe", cands[0]);
+      Eq("ffmpeg sharex last", "C:\\Program Files\\ShareX\\ffmpeg.exe",
+        cands[2]);
+    }
+
+    const string ListOutput =
+      "[in#0 @ 01] \"Surface Camera Front\" (video)\r\n" +
+      "[in#0 @ 01]   Alternative name \"@device_pnp_\\\\?\\display#x\"\r\n" +
+      "[in#0 @ 01] \"Yeti Microphone - Main (Yeti Stereo Microphone)\" " +
+      "(audio)\r\n" +
+      "[in#0 @ 01]   Alternative name \"@device_cm_{33D9A762-90C8-11D0-BD43-" +
+      "00A0C911CE86}\\wave_{AF25D041-8695-4E1C-8672-B28919582119}\"\r\n" +
+      "[in#0 @ 01] \"virtual-audio-capturer\" (audio)\r\n" +
+      "[in#0 @ 01]   Alternative name \"@device_sw_{33D9A762-90C8-11D0-BD43-" +
+      "00A0C911CE86}\\{8E146464-DB61-4309-AFA1-3578E927E935}\"\r\n" +
+      "Error opening input file dummy.\r\n";
+
+    static void TestDirectShow() {
+      var d = DirectShow.Parse(ListOutput);
+      Eq("dshow count", 2, d.Count);
+      Eq("dshow name", "Yeti Microphone - Main (Yeti Stereo Microphone)",
+        d[0].Name);
+      Check("dshow alt", d[0].AlternativeName!.EndsWith(
+        "wave_{AF25D041-8695-4E1C-8672-B28919582119}"));
+      Eq("dshow system", "virtual-audio-capturer", d[1].Name);
+      Eq("dshow empty", 0, DirectShow.Parse("nothing here").Count);
+    }
+
+    static void TestMatch() {
+      var devices = DirectShow.Parse(ListOutput);
+      var def = new Endpoint(
+        "{0.0.1.00000000}.{af25d041-8695-4e1c-8672-b28919582119}",
+        "Something Else", 1);
+      var m = DeviceMatch.ResolveMic("default", def, devices,
+        "virtual-audio-capturer");
+      Eq("match guid method", "EndpointGuid", m?.Method);
+      Check("match spec is alt name", m!.Spec.StartsWith("@device_cm_"));
+      Eq("match keeps endpoint", def.Id, m.EndpointId);
+      var byName = DeviceMatch.ResolveMic("default",
+        new Endpoint("{x}", "Yeti Microphone - Main (Yeti Stereo Microphone)",
+          1),
+        new[] {
+          new DshowDevice("Yeti Microphone - Main (Yeti Stereo Microphone)",
+            null),
+          new DshowDevice("Other", null),
+        }, "virtual-audio-capturer");
+      Eq("match friendly name", "FriendlyName", byName?.Method);
+      Eq("match no alt spec", "Yeti Microphone - Main (Yeti Stereo Microphone)",
+        byName?.Spec);
+      var norm = DeviceMatch.ResolveMic("default",
+        new Endpoint("{x}", "Mic (USB Audio)", 1),
+        new[] {
+          new DshowDevice("2- Mic (USB Audio)", null),
+          new DshowDevice("Other", null),
+        }, "vac");
+      Eq("match normalized prefix", "NormalizedName", norm?.Method);
+      Eq("match none", null, DeviceMatch.ResolveMic("none", def, devices,
+        "virtual-audio-capturer"));
+      Eq("match explicit", "ConfigName", DeviceMatch.ResolveMic(
+        "yeti microphone - main (yeti stereo microphone)", null, devices,
+        "virtual-audio-capturer")?.Method);
+      Eq("match explicit missing", null, DeviceMatch.ResolveMic("Nope", null,
+        devices, "virtual-audio-capturer"));
+      Eq("match excludes system", null, DeviceMatch.ResolveMic(
+        "virtual-audio-capturer", null, devices, "virtual-audio-capturer"));
+      Eq("match single fallback", "SingleDevice", DeviceMatch.ResolveMic(
+        "default", new Endpoint("{y}", "Gone", 1), devices,
+        "virtual-audio-capturer")?.Method);
+      Eq("match ambiguous", null, DeviceMatch.ResolveMic("default",
+        new Endpoint("{y}", "Gone", 1),
+        new[] { new DshowDevice("A", null), new DshowDevice("B", null) },
+        "vac"));
+      Eq("system by name", "virtual-audio-capturer",
+        DeviceMatch.ResolveByName("virtual-audio-capturer", devices)?.Spec);
+      Eq("last guid", "af25d041-8695-4e1c-8672-b28919582119",
+        DeviceMatch.LastGuid(devices[0].AlternativeName));
+    }
+
+    static void TestHealth() {
+      Eq("health ok", null, Health.LossReason(10, 0.2, false, null));
+      Check("health stalled",
+        Health.LossReason(10, 1.6, false, null)!.Contains("no audio"));
+      Check("health exited",
+        Health.LossReason(10, 0.1, true, null) == "ffmpeg exited");
+      Check("health fatal", Health.LossReason(10, 0.1, false,
+        "Error during demuxing: I/O error")!.StartsWith("ffmpeg:"));
+      Eq("health starting", null, Health.LossReason(3, null, false, null));
+      Check("health never started",
+        Health.LossReason(9, null, false, null) != null);
+    }
+
+    static void TestTiming() {
+      // Device starts at t=2.0, delivers 40 ms chunks, latency 10..30 ms,
+      // and runs 200 ppm slow against the PC clock.
+      var t = new TimingEstimator();
+      var rng = new Random(1);
+      double slope = 200e-6;
+      for (int i = 1; i <= 120 * 25; i++) {
+        double media = i * 0.04;
+        double arrival = 2.0 + media * (1 + slope) + 0.01 +
+          rng.NextDouble() * 0.02;
+        t.Add(arrival, media);
+      }
+      Check("timing start", Math.Abs(t.Start!.Value - 2.0) < 0.015,
+        t.Start.ToString()!);
+      double? s = t.Slope(60);
+      Check("timing slope", s != null && Math.Abs(s.Value - slope) < 50e-6,
+        s?.ToString() ?? "null");
+      Eq("timing slope needs span", null, t.Slope(1000));
+      var empty = new TimingEstimator();
+      Eq("timing empty", null, empty.Start);
+    }
+
+    static void TestMix() {
+      var segs = new List<SegmentInfo> {
+        new("system", "C:\\s\\system-01.pcm", "vac", 0.50, 192000 * 10, null),
+        new("mic", "C:\\s\\mic-01.pcm", "yeti", 0.80, 192000 * 3, 10e-6),
+        new("mic", "C:\\s\\mic-02.pcm", "yeti", 5.25, 192000 * 6, 300e-6),
+      };
+      string f = Mixer.BuildFilter(segs);
+      Eq("mix filter",
+        "[0:a]anull[s0];" +
+        "[1:a]adelay=delays=300:all=1[s1];" +
+        "[2:a]asetrate=47986,aresample=48000,adelay=delays=4750:all=1[s2];" +
+        "[s0][s1][s2]amix=inputs=3:duration=longest:dropout_transition=0:" +
+        "normalize=0,alimiter=limit=0.95[mixed]", f);
+      var args = Mixer.BuildArgs(segs, f, "C:\\out.mp3.partial");
+      Eq("mix arg count", 3 + 3 * 8 + 11, args.Count);
+      Eq("mix first input", "C:\\s\\system-01.pcm", args[10]);
+      Eq("mix output", "C:\\out.mp3.partial", args[^1]);
+      Check("mix codec", args.Contains("libmp3lame"));
+      double expected = Mixer.ExpectedSeconds(segs);
+      Check("mix expected", Math.Abs(expected - (4.75 + 6 * 1.0003)) < 1e-6,
+        expected.ToString(CultureInfo.InvariantCulture));
+      Throws<ArgumentException>("mix empty",
+        () => Mixer.BuildFilter(new List<SegmentInfo>()));
+      Eq("parse duration", 3725.5, Mixer.ParseDuration(
+        "  Duration: 01:02:05.50, start: 0.000000, bitrate: 128 kb/s"));
+      Eq("parse duration none", null, Mixer.ParseDuration("nope"));
+      Check("duration ok", Mixer.DurationMatches(100.4, 100));
+      Check("duration long ok", Mixer.DurationMatches(3610, 3600));
+      Check("duration bad", !Mixer.DurationMatches(98, 100));
+    }
+
+    static void TestLayout() {
+      var area = new Rectangle(0, 0, 1920, 1040);
+      var size = new Size(216, 40);
+      Eq("layout bottom-right", new Point(1684, 980),
+        PillLayout.Location(PillPosition.BottomRight, area, size, 20));
+      Eq("layout bottom-center", new Point(852, 980),
+        PillLayout.Location(PillPosition.BottomCenter, area, size, 20));
+      Eq("layout top-left", new Point(20, 20),
+        PillLayout.Location(PillPosition.TopLeft, area, size, 20));
+      Eq("bar silent", 0f, PillLayout.BarLevel(0));
+      Eq("bar full", 1f, PillLayout.BarLevel(1));
+      Check("bar mid", Math.Abs(PillLayout.BarLevel(0.1f) - 0.6f) < 0.001);
+      Eq("elapsed", "1:05", PillLayout.FormatElapsed(65.9));
+      Eq("elapsed hours", "1:00:01", PillLayout.FormatElapsed(3601));
+    }
+
+    static void TestCli() {
+      Eq("cli default", "run", Cli.Parse(Array.Empty<string>()).Command);
+      Eq("cli toggle", "toggle", Cli.Parse(new[] { "--toggle" }).Command);
+      Eq("cli config", "x.toml",
+        Cli.Parse(new[] { "--config", "x.toml", "--stop" }).ConfigPath);
+      Eq("cli recover", "D:\\s",
+        Cli.Parse(new[] { "--recover", "D:\\s" }).Argument);
+      Throws<ArgumentException>("cli unknown",
+        () => Cli.Parse(new[] { "--bogus" }));
+      Throws<ArgumentException>("cli config missing",
+        () => Cli.Parse(new[] { "--config" }));
+    }
+  }
+}
