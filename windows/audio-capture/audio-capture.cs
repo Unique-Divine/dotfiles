@@ -68,6 +68,19 @@ namespace AudioCapture {
     public static string BusyEventName =>
       $"Local\\audio-capture{Instance.Suffix}-busy";
 
+    static void MigrateConfig() {
+      try {
+        if (Instance.IsMain && StateDir.MigrateConfig(StateDir.OldConfig,
+            StateDir.Config) is string migrated) {
+          Log.Info("config.migrated", migrated, new {
+            from = StateDir.OldConfig, to = StateDir.Config,
+          });
+        }
+      } catch (IOException e) {
+        Log.Warn("config.migrate_failed", e.Message);
+      }
+    }
+
     [STAThread]
     static int Main(string[] args) {
       Cli cli;
@@ -78,6 +91,13 @@ namespace AudioCapture {
         Console.Error.WriteLine("audio-capture: " + e.Message);
         Console.Error.WriteLine(Cli.Usage);
         return 2;
+      }
+
+      // Before any config load, so --list-devices and --recover see the
+      // same config as the resident app after an upgrade.
+      if (cli.Command is not ("help" or "version" or "self-test" or
+          "simulate")) {
+        MigrateConfig();
       }
 
       switch (cli.Command) {
@@ -135,16 +155,6 @@ namespace AudioCapture {
       Log.Info("app.start", $"audio-capture {Version} started", new {
         version = Version, pid = Environment.ProcessId, command = cli.Command,
       });
-      try {
-        if (Instance.IsMain && StateDir.MigrateConfig(StateDir.OldConfig,
-            StateDir.Config) is string migrated) {
-          Log.Info("config.migrated", migrated, new {
-            from = StateDir.OldConfig, to = StateDir.Config,
-          });
-        }
-      } catch (IOException e) {
-        Log.Warn("config.migrate_failed", e.Message);
-      }
       LoadedConfig loaded;
       try {
         loaded = ConfigLoader.Load(cli.ConfigPath);
@@ -964,6 +974,11 @@ commands:
     public static string Logs => Path.Combine(Root, "logs");
     public static string Sessions => Path.Combine(Root, "sessions");
     public static string Simulate => Path.Combine(Root, "simulate");
+
+    /// The sessions folder before 2026-11-13.
+    public static string OldSessions => Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+      "audio-capture", "sessions");
 
     /// The config location before 2026-11-13.
     public static string OldConfig => Path.Combine(Environment.GetFolderPath(
@@ -3617,9 +3632,16 @@ commands:
       cfg = loaded.Config;
       Log.Info("config.loaded", "config " + (loaded.Path ?? "(defaults)"),
         new { path = loaded.Path });
-      foreach (string dir in SessionManifest.Unfinished(Paths.SessionsDir)) {
-        Log.Warn("session.unfinished", "unfinished session; mix it with " +
-          "--recover", new { dir });
+      // Sessions from before 2026-11-13 live in the old folder.
+      var folders = new List<string> { Paths.SessionsDir };
+      if (Instance.IsMain) {
+        folders.Add(StateDir.OldSessions);
+      }
+      foreach (string folder in folders) {
+        foreach (string dir in SessionManifest.Unfinished(folder)) {
+          Log.Warn("session.unfinished", "unfinished session; mix it with " +
+            "--recover", new { dir });
+        }
       }
       foreach (string w in loaded.Warnings) {
         Log.Warn("config.warning", w);
