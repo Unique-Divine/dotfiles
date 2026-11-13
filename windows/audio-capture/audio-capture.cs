@@ -2338,6 +2338,8 @@ commands:
     public Source? System;
     public Source? Mic;
     public double? StopAt;
+    /// Session seconds of system audio's first sample: the file's 0:00.
+    public double? TimeZero;
 
     /// The folder name, e.g. 20261113-191849-432: the session's id in logs.
     public string Name => Path.GetFileName(Dir);
@@ -2688,7 +2690,20 @@ commands:
       long now = Stopwatch.GetTimestamp();
       float micPeak = ses.Mic?.Live?.TakePeak() ?? 0;
       float sysPeak = ses.System?.Live?.TakePeak() ?? 0;
-      Pill?.Push(ses.Mic != null ? micPeak : sysPeak, ses.Elapsed);
+      // The pill says "starting" until audio flows, and its timer counts
+      // from system audio's first sample, which is where the file starts.
+      if (ses.TimeZero == null &&
+          ses.System?.Live?.StartEstimate is double zero) {
+        ses.TimeZero = zero;
+        Log.Info("recording.live", "system audio flowing", new {
+          session = ses.Name, time_zero = Math.Round(zero, 3),
+        });
+      }
+      bool micSettled = ses.Mic == null || ses.Mic.Live?.Bytes > 0 ||
+        ses.Mic.WaitingLogged || ses.Elapsed > PillLayout.StartingMaxSeconds;
+      bool starting = ses.TimeZero == null || !micSettled;
+      Pill?.Push(ses.Mic != null ? micPeak : sysPeak,
+        ses.TimeZero is double z ? ses.Elapsed - z : 0, starting);
       if (ses.Mic?.Pending is PcmCapture pending) {
         TickPending(ses, ses.Mic, pending, now);
       }
@@ -3021,6 +3036,7 @@ commands:
     Mode mode = Mode.Recording;
     bool micLost;
     bool micMissing;
+    bool starting;
     double elapsed;
     string message = "";
     float scale = 1;
@@ -3085,6 +3101,7 @@ commands:
       hideTimer.Stop();
       Array.Clear(bars);
       mode = Mode.Recording;
+      starting = true;
       micLost = false;
       micMissing = false;
       elapsed = 0;
@@ -3144,10 +3161,11 @@ commands:
       hideTimer.Start();
     }
 
-    public void Push(float peak, double elapsedSeconds) {
+    public void Push(float peak, double elapsedSeconds, bool isStarting) {
       Array.Copy(bars, 1, bars, 0, BarCount - 1);
-      bars[BarCount - 1] = PillLayout.BarLevel(peak);
+      bars[BarCount - 1] = isStarting ? 0 : PillLayout.BarLevel(peak);
       elapsed = elapsedSeconds;
+      starting = isStarting;
       if (++frame % 40 == 0) {
         Native.SetTopmost(Handle); // stay above windows raised since
       }
@@ -3204,10 +3222,11 @@ commands:
         Mode.Error => red,
         _ => micLost ? amber : recordingDot,
       };
-      // Recording dot pulses gently.
-      int alpha = mode == Mode.Recording
-        ? 160 + (int)(95 * (0.5 + 0.5 * Math.Sin(elapsed * 4)))
-        : 255;
+      // Recording dot pulses gently; while starting it is dim.
+      int alpha = mode != Mode.Recording ? 255
+        : starting ? 80 + (int)(40 * (0.5 + 0.5 *
+          Math.Sin(Environment.TickCount64 / 150.0)))
+        : 160 + (int)(95 * (0.5 + 0.5 * Math.Sin(elapsed * 4)));
       using (var b = new SolidBrush(Color.FromArgb(alpha, dot))) {
         float rr = DotRadiusDip * s;
         float cx = (PadDip + DotRadiusDip) * s;
@@ -3232,8 +3251,8 @@ commands:
         float step = (barsRight - left) / BarCount;
         float bw = Math.Max(1.5f * s, step * 0.55f);
         float maxH = h - 12 * s;
-        using var b = new SolidBrush(micMissing
-          ? Color.FromArgb(150, 255, 255, 255)
+        using var b = new SolidBrush(micMissing || starting
+          ? Color.FromArgb(starting ? 90 : 150, 255, 255, 255)
           : text);
         for (int i = 0; i < BarCount; i++) {
           float bh = Math.Max(2 * s, bars[i] * maxH);
@@ -3250,6 +3269,9 @@ commands:
         g.DrawString(label, font, b,
           new RectangleF(left, 0, contentRight - left, h), textFormat);
         return;
+      }
+      if (starting) {
+        return; // no timer until the file's 0:00 is known
       }
       using var tb = new SolidBrush(text);
       var timeFormat = TimeFormat;
@@ -3280,6 +3302,9 @@ commands:
   }
 
   static class PillLayout {
+    /// Longest the pill waits for the mic before leaving "starting".
+    public const double StartingMaxSeconds = 5;
+
     public static Point Location(PillPosition pos, Rectangle area, Size size,
         int margin) {
       int x = pos switch {
