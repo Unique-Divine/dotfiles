@@ -2276,6 +2276,7 @@ commands:
 
     public Pill? Pill { get; private set; }
     public MixResult? LastResult { get; private set; }
+    public List<MixResult> Results { get; } = new();
     public List<SegmentInfo> LastSegments { get; private set; } = new();
     public int? MicPid => current?.Mic?.Live?.Pid;
     /// Set when the app is quitting: no new recordings.
@@ -2776,6 +2777,7 @@ commands:
 
     void FinishSave(MixResult result) {
       LastResult = result;
+      Results.Add(result);
       savesRunning--;
       bool recording = current != null;
       if (!recording && savesRunning == 0) {
@@ -3654,7 +3656,7 @@ commands:
 
   static class Simulator {
     public static readonly string[] Scenarios = {
-      "replug", "bump", "airpods", "console-change",
+      "replug", "bump", "airpods", "console-change", "back-to-back",
     };
 
     const int SystemHz = 150;
@@ -3707,6 +3709,7 @@ commands:
       ticker.Start();
       int exit = 1;
       var events = new List<string>();
+      var backToBack = new List<bool>();
       void Note(string what) {
         string line = $"{recorder.Elapsed,7:0.000} s  {what}";
         events.Add(line);
@@ -3759,10 +3762,27 @@ commands:
             Note("console default -> surface (communications unchanged)");
             await Task.Delay(3000);
             break;
+          case "back-to-back":
+            // Stop, then start the next recording while the first saves.
+            await Task.Delay(2000);
+            recorder.Stop();
+            Note("stop 1 (saving in the background)");
+            recorder.Start();
+            backToBack.Add(recorder.State == RecorderState.Recording &&
+              Commands.IsBusy());
+            Note($"start 2 while saving: state {recorder.State}, busy " +
+              Commands.IsBusy());
+            await Task.Delay(2500);
+            break;
         }
         Note("stop");
         recorder.Stop(() => {
           try {
+            if (scenario == "back-to-back") {
+              exit = CheckBackToBack(recorder, backToBack[0]) ? 0 : 1;
+              Application.ExitThread();
+              return;
+            }
             exit = Check(scenario, recorder, cfg) ? 0 : 1;
           } catch (Exception e) {
             Console.WriteLine("   check failed: " + e.Message);
@@ -3782,6 +3802,26 @@ commands:
       recorder.Pill?.Dispose();
       Log.Write($"simulate {scenario} " + (exit == 0 ? "passed" : "failed"));
       return exit;
+    }
+
+    /// Both sessions saved, the second started while the first was still
+    /// saving, and the busy flag clears only after both.
+    static bool CheckBackToBack(Recorder recorder, bool startedWhileSaving) {
+      bool ok = true;
+      void Expect(string what, bool pass) {
+        Console.WriteLine($"   {(pass ? "ok  " : "FAIL")} {what}");
+        ok &= pass;
+      }
+      foreach (var r in recorder.Results) {
+        Console.WriteLine("   " + r.Message);
+      }
+      Expect("second recording started while the first saved",
+        startedWhileSaving);
+      Expect($"two sessions saved ({recorder.Results.Count(r => r.Ok)})",
+        recorder.Results.Count(r => r.Ok) == 2);
+      Expect("busy flag clear after both saves", !Commands.IsBusy());
+      Expect("state idle", recorder.State == RecorderState.Idle);
+      return ok;
     }
 
     static bool Check(string scenario, Recorder recorder, AppConfig cfg) {
@@ -3914,6 +3954,8 @@ commands:
         ("match", TestMatch),
         ("policy", TestMicPolicy),
         ("tones", TestTones),
+        ("manifest", TestManifest),
+        ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
         ("timing", TestTiming),
         ("mix", TestMix),
@@ -4199,6 +4241,128 @@ commands:
       Eq("tone merge", 2, merged.Count);
       Check("lavfi args", PcmCapture.Args("lavfi:sine=f=1", "o").Contains("lavfi"));
       Check("dshow args", PcmCapture.Args("Mic", "o").Contains("audio=Mic"));
+    }
+
+    static void TestManifest() {
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      try {
+        File.WriteAllBytes(Path.Combine(dir, "mic-01.pcm"), new byte[4003]);
+        var m = new SessionManifest {
+          StartedLocal = new DateTime(2026, 11, 13, 9, 0, 0), StopAt = 12.5,
+        };
+        m.Segments.Add(new SessionManifest.ManifestSegment {
+          Kind = "mic", File = "mic-01.pcm", Device = "Yeti", Start = 0.75,
+          Slope = 2e-4, Bytes = 1, End = 9.5, EndpointId = "{e}",
+        });
+        m.Write(Path.Combine(dir, SessionManifest.FileName));
+        var back = SessionManifest.Read(Path.Combine(dir,
+          SessionManifest.FileName));
+        Eq("manifest stop", (double?)12.5, back.StopAt);
+        var segs = back.ToSegments(dir);
+        Eq("manifest segments", 1, segs.Count);
+        Eq("manifest bytes from file, whole frames", 4000L, segs[0].Bytes);
+        Eq("manifest end", (double?)9.5, segs[0].End);
+        Eq("manifest endpoint", "{e}", segs[0].EndpointId);
+        Eq("manifest path", Path.Combine(dir, "mic-01.pcm"), segs[0].Path);
+        Eq("no tmp files left", 0, Directory.GetFiles(dir, "*.tmp").Length);
+        string parent = Path.GetDirectoryName(dir)!;
+        Check("unfinished lists it",
+          SessionManifest.Unfinished(parent).Contains(dir));
+        SessionManifest.MarkSaved(dir, "C:\\out.mp3");
+        Eq("saved path", "C:\\out.mp3", SessionManifest.SavedPath(dir));
+        Check("saved is not unfinished",
+          !SessionManifest.Unfinished(parent).Contains(dir));
+      } finally {
+        Directory.Delete(dir, true);
+      }
+    }
+
+    /// Runs real FFmpeg captures of a generated tone: stop with "q", kill,
+    /// a frozen process caught as a stall, and a missing device. Skipped
+    /// without FFmpeg.
+    static void TestCaptureLifecycle() {
+      string ffmpeg;
+      try {
+        ffmpeg = FfmpegLocator.Find("");
+      } catch (FileNotFoundException) {
+        Console.WriteLine("skip capture: no ffmpeg");
+        return;
+      }
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      var target = new DeviceTarget("lavfi:sine=frequency=440:sample_rate=48000",
+        "tone", "Fake", null);
+      long origin = Stopwatch.GetTimestamp();
+      bool WaitFor(Func<bool> cond, int ms) {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < ms) {
+          if (cond()) {
+            return true;
+          }
+          Thread.Sleep(20);
+        }
+        return cond();
+      }
+      try {
+        using (var cap = new PcmCapture("mic", target,
+            Path.Combine(dir, "a.pcm"), origin)) {
+          cap.Start(ffmpeg);
+          Check("capture gets audio", WaitFor(() => cap.Bytes > 96000, 5000));
+          Eq("capture healthy", null,
+            cap.LossReason(Stopwatch.GetTimestamp()));
+          var sw = Stopwatch.StartNew();
+          cap.Stop(3000);
+          Check("capture stops on q", sw.ElapsedMilliseconds < 2500,
+            sw.ElapsedMilliseconds + " ms");
+          var seg = cap.ToSegment();
+          Eq("capture file matches bytes", seg.Bytes,
+            new FileInfo(seg.Path).Length);
+          // lavfi with -re paces from FFmpeg's own start, so it catches up
+          // on its startup time and can look up to ~0.5 s early; a real
+          // device can't deliver audio from before it opened.
+          Check("capture start measured", seg.Start > -1 && seg.Start < 2,
+            seg.Start.ToString());
+          Check("capture log written", File.Exists(seg.Path + ".ffmpeg.log"));
+        }
+        using (var cap = new PcmCapture("mic", target,
+            Path.Combine(dir, "b.pcm"), origin)) {
+          cap.Start(ffmpeg);
+          WaitFor(() => cap.Bytes > 0, 5000);
+          cap.Kill();
+          Check("capture killed keeps audio", cap.Bytes > 0);
+        }
+        using (var cap = new PcmCapture("mic", target,
+            Path.Combine(dir, "c.pcm"), origin)) {
+          cap.Start(ffmpeg);
+          WaitFor(() => cap.Bytes > 0, 5000);
+          Native.SuspendProcess(cap.Pid);
+          string? reason = null;
+          WaitFor(() => (reason = cap.LossReason(Stopwatch.GetTimestamp()))
+            != null, 4000);
+          Check("capture stall detected", reason?.StartsWith("no audio") ==
+            true, reason ?? "null");
+          cap.Kill();
+        }
+        var bad = new DeviceTarget("No Such Device 12345", "none", "Fake",
+          null);
+        using (var cap = new PcmCapture("mic", bad,
+            Path.Combine(dir, "d.pcm"), origin)) {
+          cap.Start(ffmpeg);
+          string? reason = null;
+          WaitFor(() => (reason = cap.LossReason(Stopwatch.GetTimestamp()))
+            != null, 9000);
+          Check("capture missing device lost", reason != null, "no reason");
+          cap.Kill();
+        }
+      } finally {
+        try {
+          Directory.Delete(dir, true);
+        } catch (IOException) {
+        }
+      }
     }
 
     static void TestHealth() {
