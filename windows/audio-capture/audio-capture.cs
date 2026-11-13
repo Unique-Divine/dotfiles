@@ -2584,6 +2584,30 @@ commands:
     }
   }
 
+  enum MicAction { None, Wait, StartLive, StartPending, CancelPending }
+
+  static class MicDecision {
+    /// What to do when the mic should be on `target`, given the live and
+    /// pending captures' DirectShow specs.
+    public static MicAction Decide(string? live, string? pending,
+        string? target) {
+      if (target == null) {
+        return MicAction.Wait;
+      }
+      if (target == live) {
+        // A->B->A before B's audio arrived: drop B, keep A.
+        return pending != null ? MicAction.CancelPending : MicAction.None;
+      }
+      if (target == pending) {
+        return MicAction.None; // already switching there
+      }
+      if (live == null && pending == null) {
+        return MicAction.StartLive;
+      }
+      return MicAction.StartPending; // replaces any stale pending
+    }
+  }
+
   enum RecorderState { Idle, Recording, Saving }
 
   /// One recording: its folder, clock origin, inputs, and stop time. A
@@ -2908,8 +2932,18 @@ commands:
           session = ses.Name, reason,
         });
       }
-      var active = mic.Pending ?? mic.Live;
-      if (target == null) {
+      var action = MicDecision.Decide(mic.Live?.Target.Spec,
+        mic.Pending?.Target.Spec, target?.Spec);
+      if (action == MicAction.CancelPending) {
+        var stale = mic.Pending!;
+        mic.Pending = null;
+        Log.Info("mic.switch_cancelled", "default moved back to the live " +
+          "device before the switch finished", new {
+            session = ses.Name, live = mic.Live?.Target.Display,
+            cancelled = stale.Target.Display, reason,
+          });
+        CloseSegment(ses, mic, stale, graceful: false, endAt: null);
+      } else if (target == null) {
         if (mic.Live == null && !mic.WaitingLogged) {
           mic.WaitingLogged = true;
           Log.Warn("mic.waiting", "no device for the mic policy; waiting", new {
@@ -2918,9 +2952,9 @@ commands:
           });
           Pill?.SetMicLost(true);
         }
-      } else if (active == null) {
+      } else if (action == MicAction.StartLive) {
         StartLive(ses, mic, target, reason);
-      } else if (active.Target.Spec != target.Spec) {
+      } else if (action == MicAction.StartPending) {
         // The default moved while the current mic still works: start the
         // new device, and hand over once its audio flows.
         if (mic.Pending != null) {
@@ -4476,6 +4510,7 @@ commands:
         ("manifest", TestManifest),
         ("log", TestLogFormat),
         ("limiter", TestLineLimiter),
+        ("decide", TestMicDecision),
         ("rotation", TestLogRotation),
         ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
@@ -4951,6 +4986,23 @@ commands:
         .GetString());
       Check("log no data", Log.Format(ts, "info", "x", "y", null)
         .EndsWith("\"msg\":\"y\"}"));
+    }
+
+    static void TestMicDecision() {
+      Eq("decide wait", MicAction.Wait, MicDecision.Decide("A", null, null));
+      Eq("decide start", MicAction.StartLive,
+        MicDecision.Decide(null, null, "A"));
+      Eq("decide steady", MicAction.None, MicDecision.Decide("A", null, "A"));
+      Eq("decide switch", MicAction.StartPending,
+        MicDecision.Decide("A", null, "B"));
+      Eq("decide already switching", MicAction.None,
+        MicDecision.Decide("A", "B", "B"));
+      Eq("decide flip back cancels", MicAction.CancelPending,
+        MicDecision.Decide("A", "B", "A"));
+      Eq("decide third device", MicAction.StartPending,
+        MicDecision.Decide("A", "B", "C"));
+      Eq("decide lost while switching", MicAction.None,
+        MicDecision.Decide(null, "B", "B"));
     }
 
     static void TestLineLimiter() {
