@@ -240,7 +240,11 @@ sync:
   if is_wsl >/dev/null; then
     runlog_step clipboard-install just clipboard-install
     runlog_step win-sync just win-sync
-    runlog_step sharex-sync just sharex-sync
+    if command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
+      runlog_step sharex-sync just sharex-sync
+    else
+      runlog_event step name=sharex-sync msg=skipped
+    fi
   else
     runlog_event step name=clipboard-install msg=skipped
   fi

@@ -111,9 +111,9 @@ changing the configuration.
 `managed-hotkeys.ts` defines Ctrl+Home for region screenshots, Shift+Home
 for video, Ctrl+Shift+Home for GIF, and Ctrl+F2 for playback plus microphone
 audio. The sync preserves unrelated settings and shortcuts. It refuses
-conflicting bindings, duplicate managed jobs, or missing audio devices. When
-changes are needed it backs up the live file and restarts ShareX if running;
-this interrupts an active recording. The microphone is selected at sync time.
+conflicting bindings and defers changes when audio devices are missing. When
+changes are needed, quit ShareX from its tray icon and rerun sync. The script
+backs up the live file before writing. The microphone is selected at sync time.
 
 Edit `managed-hotkeys.ts` and run `just sharex-generate` to update the checked-in
 `ManagedHotkeys.json`. WSL sync also regenerates it before copying Windows
