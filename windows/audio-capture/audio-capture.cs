@@ -1453,8 +1453,12 @@ commands:
     }
 
     public static ProcResult Run(string exe, IEnumerable<string> args,
-        int timeoutMs) {
-      using var p = Process.Start(Info(exe, args))
+        int timeoutMs, string? workingDir = null) {
+      var info = Info(exe, args);
+      if (workingDir != null) {
+        info.WorkingDirectory = workingDir;
+      }
+      using var p = Process.Start(info)
         ?? throw new InvalidOperationException("could not start " + exe);
       JobObject.Shared.Add(p);
       p.StandardInput.Close();
@@ -1975,19 +1979,25 @@ commands:
       return string.Join(";", parts);
     }
 
+    public const string FilterFile = "mix-filter.txt";
+
+    /// FFmpeg runs in the session folder: inputs are bare file names and
+    /// the graph comes from a file, so the command line stays far below
+    /// Windows' 32,767-character limit even with hundreds of segments.
+    /// `-/filter_complex <file>` needs FFmpeg 7 or newer.
     public static List<string> BuildArgs(IReadOnlyList<SegmentInfo> segments,
-        string filter, string outputPath) {
+        string outputPath) {
       var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
       foreach (var s in segments) {
         args.AddRange(new[] {
           "-f", "s16le", "-ar", SegmentInfo.SampleRate.ToString(
             CultureInfo.InvariantCulture),
           "-ac", SegmentInfo.Channels.ToString(CultureInfo.InvariantCulture),
-          "-i", s.Path,
+          "-i", Path.GetFileName(s.Path),
         });
       }
       args.AddRange(new[] {
-        "-filter_complex", filter, "-map", "[mixed]",
+        "-/filter_complex", FilterFile, "-map", "[mixed]",
         "-c:a", "libmp3lame", "-qscale:a", "4", "-f", "mp3", outputPath,
       });
       return args;
@@ -2034,12 +2044,19 @@ commands:
       Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
       string final = Paths.Unique(outputPath, File.Exists);
       string partial = final + ".partial";
-      string filter = BuildFilter(segments, stopAt);
-      var args = BuildArgs(segments, filter, partial);
+      if (segments.Any(s => !string.Equals(Path.GetDirectoryName(s.Path),
+          Path.GetFullPath(sessionDir).TrimEnd('\\'),
+          StringComparison.OrdinalIgnoreCase))) {
+        return new MixResult(false, "segments outside " + sessionDir, null);
+      }
+      File.WriteAllText(Path.Combine(sessionDir, FilterFile),
+        BuildFilter(segments, stopAt));
+      var args = BuildArgs(segments, partial);
       File.WriteAllText(Path.Combine(sessionDir, "mix-command.txt"),
-        string.Join(" ", args.Select(Quote)) + Environment.NewLine);
+        "cd " + Quote(sessionDir) + Environment.NewLine +
+        "ffmpeg " + string.Join(" ", args.Select(Quote)) + Environment.NewLine);
       var sw = Stopwatch.StartNew();
-      var mix = Proc.Run(ffmpeg, args, 60 * 60 * 1000);
+      var mix = Proc.Run(ffmpeg, args, 60 * 60 * 1000, sessionDir);
       File.WriteAllText(Path.Combine(sessionDir, "mix.log"), mix.Stderr);
       if (mix.ExitCode != 0) {
         return new MixResult(false,
@@ -4151,9 +4168,11 @@ commands:
         "[2:a]asetrate=47986,aresample=48000,adelay=delays=4750:all=1[s2];" +
         "[s0][s1][s2]amix=inputs=3:duration=longest:dropout_transition=0:" +
         "normalize=0,alimiter=limit=0.95[mixed]", f);
-      var args = Mixer.BuildArgs(segs, f, "C:\\out.mp3.partial");
+      var args = Mixer.BuildArgs(segs, "C:\\out.mp3.partial");
       Eq("mix arg count", 3 + 3 * 8 + 11, args.Count);
-      Eq("mix first input", "C:\\s\\system-01.pcm", args[10]);
+      Eq("mix first input", "system-01.pcm", args[10]);
+      Check("mix filter from file", args.Contains("-/filter_complex") &&
+        args.Contains(Mixer.FilterFile));
       Eq("mix output", "C:\\out.mp3.partial", args[^1]);
       Check("mix codec", args.Contains("libmp3lame"));
       double expected = Mixer.ExpectedSeconds(segs);
