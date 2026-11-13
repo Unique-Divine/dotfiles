@@ -1,8 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { managedHotkeys, renderManagedHotkeys } from "./managed-hotkeys.ts"
 
 const sharexDir = import.meta.dir
+
+describe("managed ShareX hotkey generation", () => {
+  test("keeps Windows JSON in sync with the documented source", async () => {
+    const generated = await Bun.file(join(sharexDir, "ManagedHotkeys.json")).text()
+    expect(generated).toBe(renderManagedHotkeys())
+    expect(managedHotkeys.Hotkeys.map((item) => item.HotkeyInfo.Hotkey)).toEqual([
+      "Home, Control",
+      "Home, Shift",
+      "Home, Shift, Control",
+      "F2, Control",
+    ])
+  })
+})
 const powershellTestPath = join(
   sharexDir,
   "tests",
@@ -92,6 +106,13 @@ const expectSuccessfulPowerShellJson = (path: string) => {
 }
 
 sharexDescribe("ShareX audio scripts", () => {
+  test("reconciles managed shortcuts without losing other settings", () => {
+    const result = runPowerShellFile(join(sharexDir, "tests", "Run-ShareXSyncTests.ps1"))
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr.toString()).toBe("")
+    expect(result.stdout.toString()).toContain("PASS: ShareX sync tests")
+  })
+
   test("passes the PowerShell unit suite", () => {
     const result = runPowerShellFile(powershellTestPath)
 

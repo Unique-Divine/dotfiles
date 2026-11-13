@@ -1,0 +1,59 @@
+{
+  "Hotkeys": [
+    {
+      "HotkeyInfo": {
+        "Hotkey": "Home, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Job": "RectangleRegion",
+        "UseDefaultCaptureSettings": true
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "Home, Shift",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Job": "ScreenRecorder",
+        "UseDefaultCaptureSettings": false,
+        "CaptureSettings": {
+          "ScreenRecordUseNative": true,
+          "ScreenRecordSystemAudio": true,
+          "ScreenRecordMicrophone": false,
+          "ScreenRecordFPS": 30
+        }
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "Home, Shift, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Job": "ScreenRecorderGIF",
+        "UseDefaultCaptureSettings": true
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "F2, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Description": "Audio Virtual Record",
+        "Job": "ScreenRecorderActiveWindow",
+        "UseDefaultCaptureSettings": false,
+        "CaptureSettings": {
+          "FFmpegOptions": {
+            "AudioSource": "virtual-audio-capturer",
+            "AudioCodec": "libmp3lame",
+            "UseCustomCommands": true,
+            "CustomCommands": ""
+          }
+        }
+      }
+    }
+  ]
+}

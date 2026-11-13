@@ -240,6 +240,11 @@ sync:
   if is_wsl >/dev/null; then
     runlog_step clipboard-install just clipboard-install
     runlog_step win-sync just win-sync
+    if command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
+      runlog_step sharex-sync just sharex-sync
+    else
+      runlog_event step name=sharex-sync msg=skipped
+    fi
   else
     runlog_event step name=clipboard-install msg=skipped
   fi
@@ -291,6 +296,7 @@ email-sync:
 win-sync:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  bun run windows/sharex/managed-hotkeys.ts --write
   for tool in cmd.exe wslpath rsync; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "win-sync: $tool is unavailable; skipping" >&2
@@ -306,6 +312,14 @@ win-sync:
   mkdir -p "$dest"
   rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
+
+# Generate the ShareX hotkey JSON used by Windows.
+sharex-generate:
+  bun run windows/sharex/managed-hotkeys.ts --write
+
+# Reconcile managed ShareX hotkeys on the Windows host.
+sharex-sync *ARGS: sharex-generate
+  powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w windows/sharex/Sync-ShareX.ps1)" {{ARGS}}
 
 # Read the Boku run log (same as `ud boku runs`). For commands:
 # `just runs --help`. Arguments pass through quoted, never re-parsed.
