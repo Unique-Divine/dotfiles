@@ -513,15 +513,20 @@ commands:
         object? data = null) {
       string line = Format(DateTimeOffset.Now, level, evt, msg, data);
       EnsureWriter();
-      if (!Queue.TryAdd(line)) {
+      if (Queue.TryAdd(line)) {
+        Interlocked.Increment(ref enqueued);
+      } else {
         Interlocked.Increment(ref dropped);
       }
     }
 
-    /// Waits until queued lines are on disk (at exit, or in tests).
+    /// Waits until every line queued so far has been written or dropped
+    /// (at exit, or in tests). Counting lines, not checking the queue,
+    /// covers a line the writer has taken but not yet written.
     public static void Flush(int timeoutMs = 3000) {
+      long target = Interlocked.Read(ref enqueued);
       var sw = Stopwatch.StartNew();
-      while ((Queue.Count > 0 || Volatile.Read(ref writing) != 0) &&
+      while (Interlocked.Read(ref completed) < target &&
           sw.ElapsedMilliseconds < timeoutMs) {
         Thread.Sleep(10);
       }
@@ -533,7 +538,8 @@ commands:
       Queue = new(20000);
     static Thread? writer;
     static int dropped;
-    static int writing;
+    static long enqueued;
+    static long completed;
 
     static void EnsureWriter() {
       if (writer != null) {
@@ -553,8 +559,8 @@ commands:
       StreamWriter? w = null;
       string? openPath = null;
       long nextRotateTry = 0;
+      int failures = 0;
       foreach (string line in Queue.GetConsumingEnumerable()) {
-        Interlocked.Exchange(ref writing, 1);
         try {
           string path = FilePath;
           if (w == null || openPath != path) {
@@ -565,7 +571,8 @@ commands:
           int lost = Interlocked.Exchange(ref dropped, 0);
           if (lost > 0) {
             w.WriteLine(Format(DateTimeOffset.Now, "warn", "log.dropped",
-              $"{lost} log lines dropped (queue full)", new { lost }));
+              $"{lost} log lines dropped (queue full or write errors)",
+              new { lost }));
           }
           w.WriteLine(line);
           if (Queue.Count == 0) {
@@ -581,11 +588,21 @@ commands:
               nextRotateTry = now + 60000;
             }
           }
-        } catch (IOException) {
-          w?.Dispose();
+          failures = 0;
+        } catch (Exception) {
+          // Any failure here (I/O, access denied, a full disk) would end
+          // the process from a background thread, and the job object would
+          // take the recording with it. Drop the line, back off, retry.
+          Interlocked.Increment(ref dropped);
+          try {
+            w?.Dispose();
+          } catch (Exception) {
+          }
           w = null;
+          failures++;
+          Thread.Sleep(Math.Min(50 * failures, 1000));
         } finally {
-          Interlocked.Exchange(ref writing, 0);
+          Interlocked.Increment(ref completed);
         }
       }
     }
@@ -4755,6 +4772,7 @@ commands:
         ("decide", TestMicDecision),
         ("bursts", TestBursts),
         ("rotation", TestLogRotation),
+        ("unwritable", TestLogUnwritable),
         ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
@@ -5293,6 +5311,42 @@ commands:
       Eq("limiter streams separate", ("stdout", "Received stop event", 0),
         out_[^2]);
       Eq("limiter final summary", ("stderr", "line 26", 1), out_[^1]);
+    }
+
+    /// A log path that can't be opened must not throw or hang Flush.
+    static void TestLogUnwritable() {
+      string? saved = Log.Redirected;
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      try {
+        // A directory where the file should be: opening it fails.
+        string path = Path.Combine(dir, "blocked.jsonl");
+        Directory.CreateDirectory(path);
+        Log.Redirect(path);
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < 5; i++) {
+          Log.Info("test.unwritable", "line " + i);
+        }
+        Log.Flush(5000);
+        Check("log survives unwritable path", sw.ElapsedMilliseconds < 5000,
+          sw.ElapsedMilliseconds + " ms");
+        string ok = Path.Combine(dir, "ok.jsonl");
+        Log.Redirect(ok);
+        Log.Info("test.recovered", "back");
+        Log.Flush();
+        using var read = new StreamReader(new FileStream(ok, FileMode.Open,
+          FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+        string text = read.ReadToEnd();
+        Check("log recovers and reports drops", text.Contains("test.recovered")
+          && text.Contains("log.dropped"), text);
+      } finally {
+        Log.Redirect(saved);
+        try {
+          Directory.Delete(dir, true);
+        } catch (IOException) {
+        }
+      }
     }
 
     /// Rotation must not stop logging when a viewer holds the file.
