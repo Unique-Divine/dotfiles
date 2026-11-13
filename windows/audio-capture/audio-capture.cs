@@ -273,8 +273,8 @@ commands:
       }
     }
 
-    public static bool IsBusy() {
-      if (!EventWaitHandle.TryOpenExisting(Program.BusyEventName,
+    public static bool IsBusy(string? eventName = null) {
+      if (!EventWaitHandle.TryOpenExisting(eventName ?? Program.BusyEventName,
           out var busy)) {
         return false;
       }
@@ -381,9 +381,19 @@ commands:
         .UnsafeRelaxedJsonEscaping,
     };
 
-    public static string LogDir => StateDir.Logs;
+    static string? redirect;
 
-    public static string FilePath => Path.Combine(LogDir, "audio-capture.jsonl");
+    public static string FilePath => redirect ??
+      Path.Combine(StateDir.Logs, "audio-capture.jsonl");
+
+    static string LogDir => Path.GetDirectoryName(FilePath)!;
+
+    /// Sends the log to another file, e.g. for --simulate.
+    public static void Redirect(string path) {
+      lock (Gate) {
+        redirect = path;
+      }
+    }
 
     public static void Info(string evt, string msg, object? data = null) =>
       Write("info", evt, msg, data);
@@ -445,7 +455,8 @@ commands:
       if (!info.Exists || info.Length < MaxBytes) {
         return;
       }
-      string Old(int i) => Path.Combine(LogDir, $"audio-capture.{i}.jsonl");
+      string stem = Path.GetFileNameWithoutExtension(FilePath);
+      string Old(int i) => Path.Combine(LogDir, $"{stem}.{i}.jsonl");
       File.Delete(Old(Keep));
       for (int i = Keep - 1; i >= 1; i--) {
         if (File.Exists(Old(i))) {
@@ -2466,8 +2477,8 @@ commands:
     readonly List<string> reconcileReasons = new();
     readonly List<Action> afterSaves = new();
     /// Set while recording or saving, so `--quit-if-idle` can see it.
-    readonly EventWaitHandle busy = new(false, EventResetMode.ManualReset,
-      Program.BusyEventName);
+    readonly EventWaitHandle busy;
+    readonly string sessionsDir;
     AppConfig cfg;
     string ffmpeg = "";
     Session? current;
@@ -2488,9 +2499,15 @@ commands:
     public RecorderState State => current != null ? RecorderState.Recording
       : savesRunning > 0 ? RecorderState.Saving : RecorderState.Idle;
 
+    /// `busyEventName` and `sessionsDir` default to the app's own; tests and
+    /// --simulate pass private ones so they never touch the real app's.
     public Recorder(Control ui, AppConfig cfg, IEndpointSource endpoints,
         Action<string> status,
-        Func<string, AppConfig, IDeviceResolver>? resolverFor = null) {
+        Func<string, AppConfig, IDeviceResolver>? resolverFor = null,
+        string? busyEventName = null, string? sessionsDir = null) {
+      busy = new EventWaitHandle(false, EventResetMode.ManualReset,
+        busyEventName ?? Program.BusyEventName);
+      this.sessionsDir = sessionsDir ?? Paths.SessionsDir;
       this.resolverFor = resolverFor ?? ((exe, c) =>
         new DshowCache(() => DirectShow.ListAudio(exe), c.System));
       this.ui = ui;
@@ -2535,7 +2552,7 @@ commands:
       }
       long origin = Stopwatch.GetTimestamp();
       var startedLocal = DateTime.Now;
-      string dir = Path.Combine(Paths.SessionsDir,
+      string dir = Path.Combine(sessionsDir,
         startedLocal.ToString("yyyyMMdd-HHmmss-fff",
           CultureInfo.InvariantCulture));
       Directory.CreateDirectory(dir);
@@ -3982,8 +3999,13 @@ commands:
           string.Join(", ", Scenarios) + ", or all");
         return 2;
       }
+      // Own log, sessions, and busy flag: a simulation must not touch the
+      // real app's, which may be recording right now.
       string dir = StateDir.Simulate;
       Directory.CreateDirectory(dir);
+      Log.Redirect(Path.Combine(dir, "simulate.jsonl"));
+      string busyName = Program.BusyEventName + "-sim-" +
+        Environment.ProcessId;
       var fake = new FakeEndpointSource();
       fake.Add("yeti", Devices["yeti"].Name);
       fake.Add("surface", Devices["surface"].Name);
@@ -4004,7 +4026,7 @@ commands:
       using var invoker = new Control();
       invoker.CreateControl();
       var recorder = new Recorder(invoker, cfg, fake, _ => { },
-        (_, _) => resolver);
+        (_, _) => resolver, busyName, Path.Combine(dir, "sessions"));
       using var ticker = new System.Windows.Forms.Timer { Interval = 50 };
       ticker.Tick += (_, _) => recorder.Tick();
       ticker.Start();
@@ -4070,9 +4092,10 @@ commands:
             Note("stop 1 (saving in the background)");
             recorder.Start();
             backToBack.Add(recorder.State == RecorderState.Recording &&
-              Commands.IsBusy());
+              Commands.IsBusy(busyName));
             Note($"start 2 while saving: state {recorder.State}, busy " +
-              Commands.IsBusy());
+              Commands.IsBusy(busyName) + ", app's busy flag untouched: " +
+              !Commands.IsBusy());
             await Task.Delay(2500);
             break;
         }
@@ -4080,7 +4103,8 @@ commands:
         recorder.Stop(() => {
           try {
             if (scenario == "back-to-back") {
-              exit = CheckBackToBack(recorder, backToBack[0]) ? 0 : 1;
+              exit = CheckBackToBack(recorder, backToBack[0], busyName) ? 0
+                : 1;
               Application.ExitThread();
               return;
             }
@@ -4107,7 +4131,8 @@ commands:
 
     /// Both sessions saved, the second started while the first was still
     /// saving, and the busy flag clears only after both.
-    static bool CheckBackToBack(Recorder recorder, bool startedWhileSaving) {
+    static bool CheckBackToBack(Recorder recorder, bool startedWhileSaving,
+        string busyName) {
       bool ok = true;
       void Expect(string what, bool pass) {
         Console.WriteLine($"   {(pass ? "ok  " : "FAIL")} {what}");
@@ -4120,7 +4145,7 @@ commands:
         startedWhileSaving);
       Expect($"two sessions saved ({recorder.Results.Count(r => r.Ok)})",
         recorder.Results.Count(r => r.Ok) == 2);
-      Expect("busy flag clear after both saves", !Commands.IsBusy());
+      Expect("busy flag clear after both saves", !Commands.IsBusy(busyName));
       Expect("state idle", recorder.State == RecorderState.Idle);
       return ok;
     }
