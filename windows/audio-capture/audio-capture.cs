@@ -450,6 +450,8 @@ commands:
 
     static volatile string? redirect;
 
+    public static string? Redirected => redirect;
+
     public static string FilePath => redirect ??
       Path.Combine(StateDir.Logs, "audio-capture.jsonl");
 
@@ -4724,6 +4726,9 @@ commands:
     }
 
     public static int Run() {
+      // Tests run real captures; keep their events out of the app's log.
+      Log.Redirect(Path.Combine(Path.GetTempPath(),
+        "audio-capture-self-test.jsonl"));
       var tests = new (string, Action)[] {
         ("toml", TestToml),
         ("chord", TestChord),
@@ -5287,6 +5292,7 @@ commands:
       Directory.CreateDirectory(dir);
       string path = Path.Combine(dir, "t.jsonl");
       long saved = Log.RotateAt;
+      string? savedRedirect = Log.Redirected;
       try {
         Log.Redirect(path);
         Log.RotateAt = 2000;
@@ -5308,7 +5314,7 @@ commands:
         Check("log has every line", read.ReadToEnd().Contains("line 39"));
       } finally {
         Log.RotateAt = saved;
-        Log.Redirect(null);
+        Log.Redirect(savedRedirect);
         try {
           Directory.Delete(dir, true);
         } catch (IOException) {
