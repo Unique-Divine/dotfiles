@@ -9,9 +9,9 @@
  * its mise shim.
  */
 import { lstatSync, readlinkSync } from "node:fs"
-import { readdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { activeCommandNames } from "./commands"
 
 const repair = "repair: just mise-install"
 
@@ -90,7 +90,7 @@ async function check(): Promise<number> {
 
   const miseData = join(homedir(), ".local", "share", "mise")
   const shimDir = join(miseData, "shims")
-  const shims = await readdir(shimDir).catch(() => [] as string[])
+  const shims = activeCommandNames(mise)
   problems.push(
     ...shadowProblems(shimDir, join(miseData, "installs"), shims, (command) => {
       // A ~/.local/bin link to the shim (mise/links.ts) counts as the shim;
@@ -120,5 +120,10 @@ if (import.meta.main) {
     console.error("Usage: bun mise/health.ts --check")
     process.exit(2)
   }
-  process.exit(await check())
+  try {
+    process.exit(await check())
+  } catch (error) {
+    console.error(`mise: ${error} (${repair})`)
+    process.exit(1)
+  }
 }
