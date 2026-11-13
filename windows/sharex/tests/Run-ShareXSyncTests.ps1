@@ -47,6 +47,12 @@ $unavailable = Get-ShareXSyncAudio -Discover {
   [pscustomobject]@{ Microphone = 'mic'; DirectShowDevices = @() }
 }
 Assert ($null -eq $unavailable) 'A missing playback source must defer sync.'
+$unavailable = Get-ShareXSyncAudio -Discover {
+  $deviceError = New-Object System.InvalidOperationException('No DirectShow devices')
+  $deviceError.Data['ShareXAudioUnavailable'] = $true
+  throw $deviceError
+}
+Assert ($null -eq $unavailable) 'No DirectShow devices must defer sync.'
 $threw = $false
 try { Get-ShareXSyncAudio -Discover { throw 'Unexpected failure' } } catch { $threw = $true }
 Assert $threw 'Unexpected discovery failures must remain errors.'

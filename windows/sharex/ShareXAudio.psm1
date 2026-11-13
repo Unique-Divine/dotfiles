@@ -369,7 +369,10 @@ function Get-DirectShowAudioData {
   }
 
   if ($devices.Count -eq 0) {
-    throw "FFmpeg returned no DirectShow audio devices. Exit code: $($run.ExitCode)"
+    $deviceError = New-Object System.InvalidOperationException(
+      "FFmpeg returned no DirectShow audio devices. Exit code: $($run.ExitCode)")
+    $deviceError.Data['ShareXAudioUnavailable'] = $true
+    throw $deviceError
   }
 
   return [pscustomobject]@{

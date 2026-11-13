@@ -61,7 +61,8 @@ function Get-ShareXSyncAudio {
   } catch {
     $exception = $_.Exception
     while ($null -ne $exception) {
-      if ($exception.HResult -eq -2147023728) { return $null }
+      if ($exception.HResult -eq -2147023728 -or
+          $exception.Data['ShareXAudioUnavailable'] -eq $true) { return $null }
       $exception = $exception.InnerException
     }
     throw
