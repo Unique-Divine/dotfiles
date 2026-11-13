@@ -2525,14 +2525,42 @@ commands:
       if (segments.Count == 0) {
         return new MixResult(false, "nothing was recorded", null);
       }
-      Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-      string final = Paths.Reserve(outputPath);
-      string partial = final + ".partial";
+      // Checks that need no output name come before reserving one.
       if (segments.Any(s => !string.Equals(Path.GetDirectoryName(s.Path),
           Path.GetFullPath(sessionDir).TrimEnd('\\'),
           StringComparison.OrdinalIgnoreCase))) {
         return new MixResult(false, "segments outside " + sessionDir, null);
       }
+      Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+      string final = Paths.Reserve(outputPath);
+      string partial = final + ".partial";
+      try {
+        var result = MixReserved(ffmpeg, segments, final, partial, sessionDir,
+          stopAt);
+        if (!result.Ok) {
+          DropEmpty(partial);
+        }
+        return result;
+      } catch {
+        DropEmpty(partial);
+        throw;
+      }
+    }
+
+    /// Removes a reservation that never got audio, so a failed save or
+    /// --recover doesn't leave 0-byte files that block the name.
+    static void DropEmpty(string partial) {
+      try {
+        var info = new FileInfo(partial);
+        if (info.Exists && info.Length == 0) {
+          info.Delete();
+        }
+      } catch (IOException) {
+      }
+    }
+
+    static MixResult MixReserved(string ffmpeg, List<SegmentInfo> segments,
+        string final, string partial, string sessionDir, double? stopAt) {
       File.WriteAllText(Path.Combine(sessionDir, FilterFile),
         BuildFilter(segments, stopAt));
       var args = BuildArgs(segments, partial,
@@ -4773,6 +4801,7 @@ commands:
         ("bursts", TestBursts),
         ("rotation", TestLogRotation),
         ("unwritable", TestLogUnwritable),
+        ("mixcleanup", TestMixFailureCleanup),
         ("state", TestStateDir),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
@@ -5383,6 +5412,42 @@ commands:
           Directory.Delete(dir, true);
         } catch (IOException) {
         }
+      }
+    }
+
+    /// A save that fails before FFmpeg writes leaves no 0-byte .partial.
+    static void TestMixFailureCleanup() {
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      string session = Path.Combine(dir, "session");
+      Directory.CreateDirectory(session);
+      try {
+        string output = Path.Combine(dir, "out", "x.mp3");
+        var outside = new List<SegmentInfo> {
+          new("mic", Path.Combine(dir, "elsewhere.pcm"), "m", 0, 1920, null),
+        };
+        var r1 = Mixer.MixAndVerify("ffmpeg-missing.exe", outside, output,
+          session, null);
+        Check("mix outside fails", !r1.Ok);
+        Check("mix outside reserves nothing",
+          !Directory.Exists(Path.GetDirectoryName(output)) ||
+          Directory.GetFiles(Path.GetDirectoryName(output)!).Length == 0);
+        File.WriteAllBytes(Path.Combine(session, "mic-01.pcm"),
+          new byte[1920]);
+        var inside = new List<SegmentInfo> {
+          new("mic", Path.Combine(session, "mic-01.pcm"), "m", 0, 1920, null),
+        };
+        try {
+          Mixer.MixAndVerify(Path.Combine(dir, "no-such-ffmpeg.exe"), inside,
+            output, session, null);
+        } catch (Exception) {
+          // FFmpeg can't start: the save fails.
+        }
+        Eq("mix failure leaves no partial", 0,
+          Directory.GetFiles(Path.GetDirectoryName(output)!, "*.partial")
+            .Length);
+      } finally {
+        Directory.Delete(dir, true);
       }
     }
 
