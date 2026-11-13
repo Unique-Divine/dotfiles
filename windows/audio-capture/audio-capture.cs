@@ -118,6 +118,16 @@ namespace AudioCapture {
       // Release the caller's stdout/stderr pipes: a resident app holding
       // them would keep a WSL or `just` caller waiting forever.
       Native.DetachStdHandles();
+      // Never show WinForms' exception dialog: it would take focus, and
+      // its Quit button would end the recording. Log and carry on.
+      Application.SetUnhandledExceptionMode(
+        UnhandledExceptionMode.CatchException);
+      Application.ThreadException += (_, e) =>
+        Log.Write("ui exception: " + e.Exception);
+      AppDomain.CurrentDomain.UnhandledException += (_, e) => {
+        Log.Write("fatal exception: " + e.ExceptionObject);
+        App.Current?.WriteManifestNow();
+      };
       Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
       Application.EnableVisualStyles();
       Application.SetCompatibleTextRenderingDefault(false);
@@ -2137,7 +2147,7 @@ commands:
     }
 
     public void Write(string path) {
-      string tmp = path + ".tmp";
+      string tmp = $"{path}.{Guid.NewGuid():N}.tmp";
       File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
       File.Move(tmp, path, true);
     }
@@ -2186,38 +2196,93 @@ commands:
 
   enum RecorderState { Idle, Recording, Saving }
 
+  /// One recording: its folder, clock origin, inputs, and stop time. A
+  /// session keeps saving in the background after the next one starts.
+  sealed class Session {
+    public readonly int Id;
+    public readonly string Dir;
+    public readonly long Origin;
+    public readonly DateTime StartedLocal;
+    public readonly MicPolicy Policy;
+    public readonly IDeviceResolver Resolver;
+    public readonly object Gate = new(); // Finished, Live, and session.json
+    public Source? System;
+    public Source? Mic;
+    public double? StopAt;
+
+    public Session(int id, string dir, long origin, DateTime startedLocal,
+        MicPolicy policy, IDeviceResolver resolver) {
+      Id = id;
+      Dir = dir;
+      Origin = origin;
+      StartedLocal = startedLocal;
+      Policy = policy;
+      Resolver = resolver;
+    }
+
+    public double Elapsed => Clock.Seconds(Stopwatch.GetTimestamp() - Origin);
+
+    public IEnumerable<Source> Sources =>
+      new[] { System, Mic }.Where(x => x != null).Select(x => x!);
+
+    /// Writes session.json from finished and live segments, under the lock
+    /// so a segment moving from live to finished is never listed twice.
+    public void WriteManifest() {
+      try {
+        lock (Gate) {
+          var manifest = new SessionManifest {
+            StartedLocal = StartedLocal, StopAt = StopAt,
+          };
+          foreach (var src in Sources) {
+            var segs = src.Finished.ToList();
+            if (src.Live != null) {
+              segs.Add(src.Live.ToSegment());
+            }
+            foreach (var x in segs.OrderBy(x => x.Start)) {
+              manifest.Segments.Add(new SessionManifest.ManifestSegment {
+                Kind = x.Kind, File = Path.GetFileName(x.Path),
+                Device = x.Device, Start = x.Start, Slope = x.Slope,
+                Bytes = x.Bytes, End = x.End, EndpointId = x.EndpointId,
+              });
+            }
+          }
+          manifest.Write(Path.Combine(Dir, SessionManifest.FileName));
+        }
+      } catch (Exception e) {
+        Log.Write("manifest write failed: " + e.Message);
+      }
+    }
+  }
+
   sealed class Recorder {
     readonly Control ui;
     readonly Action<string> status;
     readonly IEndpointSource endpoints;
+    readonly Func<string, AppConfig, IDeviceResolver> resolverFor;
     readonly System.Windows.Forms.Timer reconcileTimer = new();
     readonly List<string> reconcileReasons = new();
-    AppConfig cfg;
-    MicPolicy micPolicy = new(MicMode.Communications, "");
-    readonly Func<string, AppConfig, IDeviceResolver> resolverFor;
-    IDeviceResolver? dshow;
-    string ffmpeg = "";
-    string sessionDir = "";
-    long origin;
-    DateTime startedLocal;
-    Source? system;
-    Source? mic;
-    int sessionId;
-    volatile int liveSession = -1; // read by background tasks
-    long lastManifestTicks;
-    double? stopAt;
-    bool reconcileBusy;
-    bool reconcileAgain;
-    readonly List<Action> afterSave = new();
+    readonly List<Action> afterSaves = new();
     /// Set while recording or saving, so `--quit-if-idle` can see it.
     readonly EventWaitHandle busy = new(false, EventResetMode.ManualReset,
       Program.BusyEventName);
+    AppConfig cfg;
+    string ffmpeg = "";
+    Session? current;
+    int sessionCounter;
+    int savesRunning;
+    long lastManifestTicks;
+    bool reconcileBusy;
+    bool reconcileAgain;
 
-    public RecorderState State { get; private set; } = RecorderState.Idle;
     public Pill? Pill { get; private set; }
     public MixResult? LastResult { get; private set; }
     public List<SegmentInfo> LastSegments { get; private set; } = new();
-    public int? MicPid => mic?.Live?.Pid;
+    public int? MicPid => current?.Mic?.Live?.Pid;
+    /// Set when the app is quitting: no new recordings.
+    public bool Closing { get; set; }
+
+    public RecorderState State => current != null ? RecorderState.Recording
+      : savesRunning > 0 ? RecorderState.Saving : RecorderState.Idle;
 
     public Recorder(Control ui, AppConfig cfg, IEndpointSource endpoints,
         Action<string> status,
@@ -2241,20 +2306,20 @@ commands:
       cfg = next;
     }
 
-    public double Elapsed => Clock.Seconds(Stopwatch.GetTimestamp() - origin);
+    public double Elapsed => current?.Elapsed ?? 0;
 
+    /// Starts a recording, or stops the current one. A previous session
+    /// still saving doesn't block a new recording.
     public void Toggle() {
-      if (State == RecorderState.Idle) {
-        Start();
-      } else if (State == RecorderState.Recording) {
+      if (current != null) {
         Stop();
       } else {
-        Log.Write("toggle ignored while saving");
+        Start();
       }
     }
 
     public void Start() {
-      if (State != RecorderState.Idle) {
+      if (current != null || Closing) {
         return;
       }
       try {
@@ -2264,45 +2329,44 @@ commands:
         ShowPill().ShowError("ffmpeg not found");
         return;
       }
-      sessionId++;
-      origin = Stopwatch.GetTimestamp();
-      startedLocal = DateTime.Now;
-      sessionDir = Path.Combine(Paths.SessionsDir,
+      long origin = Stopwatch.GetTimestamp();
+      var startedLocal = DateTime.Now;
+      string dir = Path.Combine(Paths.SessionsDir,
         startedLocal.ToString("yyyyMMdd-HHmmss-fff",
           CultureInfo.InvariantCulture));
-      Directory.CreateDirectory(sessionDir);
-      State = RecorderState.Recording;
+      Directory.CreateDirectory(dir);
+      var ses = new Session(++sessionCounter, dir, origin, startedLocal,
+        MicPolicy.Parse(cfg.Mic, new List<string>()),
+        resolverFor(ffmpeg, cfg));
+      current = ses;
       busy.Set();
-      liveSession = sessionId;
       lastManifestTicks = origin;
-      stopAt = null;
       reconcileBusy = false;
       reconcileAgain = false;
       Native.KeepAwake(true);
-      CheckDiskSpace();
-      micPolicy = MicPolicy.Parse(cfg.Mic, new List<string>());
-      dshow = resolverFor(ffmpeg, cfg);
-      Log.Write($"recording start session={sessionDir} mic={micPolicy}");
+      CheckDiskSpace(dir);
+      Log.Write($"recording start session={dir} mic={ses.Policy}" +
+        (savesRunning > 0 ? $" ({savesRunning} earlier save still running)"
+          : ""));
       ShowPill().ShowRecording();
       status("recording");
 
-      system = new Source("system") {
+      ses.System = new Source("system") {
         // virtual-audio-capturer is a fixed software name: start it now.
         Target = new DeviceTarget(cfg.System, cfg.System, "Config", null),
       };
-      StartLive(system, system.Target, "start");
-      if (micPolicy.Mode == MicMode.None) {
-        mic = null;
+      StartLive(ses, ses.System, ses.System.Target, "start");
+      if (ses.Policy.Mode == MicMode.None) {
         Pill?.SetMicMissing();
       } else {
-        mic = new Source("mic");
+        ses.Mic = new Source("mic");
         Reconcile("start");
       }
     }
 
-    void CheckDiskSpace() {
+    static void CheckDiskSpace(string dir) {
       try {
-        var drive = new DriveInfo(Path.GetPathRoot(sessionDir)!);
+        var drive = new DriveInfo(Path.GetPathRoot(dir)!);
         long free = drive.AvailableFreeSpace;
         if (free < 3L * 1024 * 1024 * 1024) {
           Log.Write($"warning: only {free / (1024 * 1024)} MB free for temp " +
@@ -2321,11 +2385,10 @@ commands:
       }
     }
 
-    PcmCapture? StartCapture(Source src, DeviceTarget target) {
+    PcmCapture? StartCapture(Session ses, Source src, DeviceTarget target) {
       src.Count++;
-      string file = Path.Combine(sessionDir,
-        $"{src.Kind}-{src.Count:00}.pcm");
-      var cap = new PcmCapture(src.Kind, target, file, origin);
+      string file = Path.Combine(ses.Dir, $"{src.Kind}-{src.Count:00}.pcm");
+      var cap = new PcmCapture(src.Kind, target, file, ses.Origin);
       try {
         cap.Start(ffmpeg);
       } catch (Exception e) {
@@ -2336,31 +2399,34 @@ commands:
         return null;
       }
       Log.Write($"{src.Kind} segment {src.Count} started pid={cap.Pid} on " +
-        $"{target.Display} ({target.Spec}) at {Elapsed:0.000} s");
+        $"{target.Display} ({target.Spec}) at {ses.Elapsed:0.000} s");
       return cap;
     }
 
-    void StartLive(Source src, DeviceTarget target, string reason) {
-      var cap = StartCapture(src, target);
+    void StartLive(Session ses, Source src, DeviceTarget target,
+        string reason) {
+      var cap = StartCapture(ses, src, target);
       if (cap == null) {
         return;
       }
-      src.Live = cap;
+      lock (ses.Gate) {
+        src.Live = cap;
+      }
       src.Target = target;
       src.WaitingLogged = false;
-      if (src == mic) {
+      if (src == ses.Mic) {
         Pill?.SetMicLost(false);
         if (src.LastDevice != null && src.LastDevice != target.Display) {
           Log.Write($"mic now {target.Display} (was {src.LastDevice}), " +
-            $"{micPolicy}, reason: {reason}");
+            $"{ses.Policy}, reason: {reason}");
           Pill?.Flash(DeviceMatch.ShortName(target.Display));
         }
         src.LastDevice = target.Display;
       }
-      WriteManifest();
+      ses.WriteManifest();
     }
 
-    void SetRetry(Source src) {
+    static void SetRetry(Source src) {
       int delayMs = Math.Clamp(1000 * (1 << Math.Max(src.Failures - 1, 0)),
         1000, 5000);
       src.NextRetryTicks = Stopwatch.GetTimestamp() +
@@ -2370,7 +2436,7 @@ commands:
     /// A Windows device event: re-check the mic after things settle
     /// (Bluetooth and USB fire bursts of events).
     void OnDeviceEvent(string description) {
-      if (State != RecorderState.Recording || mic == null) {
+      if (current?.Mic == null) {
         return;
       }
       Log.Write("device event: " + description);
@@ -2387,7 +2453,8 @@ commands:
     /// Works out which device the mic should be on (off the UI thread),
     /// then starts it, or switches to it, or waits.
     void Reconcile(string reason) {
-      if (State != RecorderState.Recording || mic == null || dshow == null) {
+      var ses = current;
+      if (ses?.Mic == null) {
         return;
       }
       if (reconcileBusy) {
@@ -2395,62 +2462,60 @@ commands:
         return;
       }
       reconcileBusy = true;
-      int id = sessionId;
-      var policy = micPolicy;
-      var cache = dshow;
       Task.Run(() => {
         Endpoint? desired = null;
         DeviceTarget? target = null;
         string? error = null;
         try {
-          desired = policy.Desired(endpoints);
+          desired = ses.Policy.Desired(endpoints);
           if (desired != null) {
-            target = cache.ForEndpoint(desired);
+            target = ses.Resolver.ForEndpoint(desired);
             if (target == null) {
               error = $"no DirectShow device for {desired.FriendlyName}";
             }
-          } else if (policy.Mode == MicMode.Pinned) {
-            target = cache.ByName(policy.Name);
+          } else if (ses.Policy.Mode == MicMode.Pinned) {
+            target = ses.Resolver.ByName(ses.Policy.Name);
           }
         } catch (Exception e) {
           error = e.Message;
         }
-        Post(() => ApplyReconcile(id, reason, desired, target, error));
+        Post(() => ApplyReconcile(ses, reason, target, error));
       });
     }
 
-    void ApplyReconcile(int id, string reason, Endpoint? desired,
-        DeviceTarget? target, string? error) {
+    void ApplyReconcile(Session ses, string reason, DeviceTarget? target,
+        string? error) {
       reconcileBusy = false;
-      if (id != sessionId || State != RecorderState.Recording || mic == null) {
+      var mic = ses.Mic;
+      if (ses != current || mic == null) {
         return;
       }
       if (error != null) {
         Log.Write($"mic check ({reason}): {error}");
       }
-      var current = mic.Pending ?? mic.Live;
+      var active = mic.Pending ?? mic.Live;
       if (target == null) {
         if (mic.Live == null && !mic.WaitingLogged) {
           mic.WaitingLogged = true;
-          Log.Write($"mic waiting: no device for {micPolicy} ({reason})");
+          Log.Write($"mic waiting: no device for {ses.Policy} ({reason})");
           Pill?.SetMicLost(true);
         }
-      } else if (current == null) {
-        StartLive(mic, target, reason);
-      } else if (current.Target.Spec != target.Spec) {
+      } else if (active == null) {
+        StartLive(ses, mic, target, reason);
+      } else if (active.Target.Spec != target.Spec) {
         // The default moved while the current mic still works: start the
         // new device, and hand over once its audio flows.
         if (mic.Pending != null) {
           var stale = mic.Pending;
           mic.Pending = null;
-          CloseSegment(mic, stale, graceful: false, endAt: null);
+          CloseSegment(ses, mic, stale, graceful: false, endAt: null);
         }
-        var cap = StartCapture(mic, target);
+        var cap = StartCapture(ses, mic, target);
         if (cap != null) {
           mic.Pending = cap;
           mic.PendingReason = reason;
           Log.Write($"mic switching {mic.Live?.Target.Display ?? "(none)"} " +
-            $"-> {target.Display}, {micPolicy}, reason: {reason}");
+            $"-> {target.Display}, {ses.Policy}, reason: {reason}");
         }
       }
       if (reconcileAgain) {
@@ -2462,29 +2527,27 @@ commands:
     /// Called every UI tick: feeds the pill, hands over mic switches, and
     /// catches lost inputs.
     public void Tick() {
-      if (State != RecorderState.Recording) {
+      var ses = current;
+      if (ses == null) {
         return;
       }
       long now = Stopwatch.GetTimestamp();
-      float micPeak = mic?.Live?.TakePeak() ?? 0;
-      float sysPeak = system?.Live?.TakePeak() ?? 0;
-      Pill?.Push(mic != null ? micPeak : sysPeak, Elapsed);
-      if (mic?.Pending is PcmCapture pending) {
-        TickPending(mic, pending, now);
+      float micPeak = ses.Mic?.Live?.TakePeak() ?? 0;
+      float sysPeak = ses.System?.Live?.TakePeak() ?? 0;
+      Pill?.Push(ses.Mic != null ? micPeak : sysPeak, ses.Elapsed);
+      if (ses.Mic?.Pending is PcmCapture pending) {
+        TickPending(ses, ses.Mic, pending, now);
       }
-      foreach (var src in new[] { system, mic }) {
-        if (src == null) {
-          continue;
-        }
+      foreach (var src in ses.Sources) {
         if (src.Live == null) {
           if (src.Pending == null && now >= src.NextRetryTicks) {
             SetRetry(src);
-            if (src == mic) {
+            if (src == ses.Mic) {
               if (!reconcileBusy) {
                 Reconcile("retry");
               }
             } else if (src.Target != null) {
-              StartLive(src, src.Target, "retry");
+              StartLive(ses, src, src.Target, "retry");
             }
           }
           continue;
@@ -2498,15 +2561,17 @@ commands:
           continue;
         }
         var lost = src.Live;
-        src.Live = null;
-        Log.Write($"{src.Kind} lost at {Elapsed:0.000} s on " +
+        lock (ses.Gate) {
+          src.Live = null;
+        }
+        Log.Write($"{src.Kind} lost at {ses.Elapsed:0.000} s on " +
           $"{lost.Target.Display}: {reason} (pid {lost.Pid}, " +
           $"{lost.Bytes} bytes)");
-        CloseSegment(src, lost, graceful: false, endAt: null);
+        CloseSegment(ses, src, lost, graceful: false, endAt: null);
         src.Failures++;
         SetRetry(src);
-        if (src == mic) {
-          if (mic.Pending == null) {
+        if (src == ses.Mic) {
+          if (src.Pending == null) {
             Pill?.SetMicLost(true);
           }
           ScheduleReconcile("mic lost", 500);
@@ -2515,20 +2580,20 @@ commands:
       // Keep session.json current so --recover has measured timing.
       if (Clock.Seconds(now - lastManifestTicks) >= 10) {
         lastManifestTicks = now;
-        WriteManifest();
+        ses.WriteManifest();
       }
     }
 
-    void TickPending(Source src, PcmCapture pending, long now) {
+    void TickPending(Session ses, Source src, PcmCapture pending, long now) {
       if (pending.Bytes > 0 && pending.StartEstimate is double start) {
-        Handoff(src, pending, start);
+        Handoff(ses, src, pending, start);
         return;
       }
       string? reason = pending.LossReason(now);
       if (reason != null) {
         Log.Write($"mic switch to {pending.Target.Display} failed: {reason}");
         src.Pending = null;
-        CloseSegment(src, pending, graceful: false, endAt: null);
+        CloseSegment(ses, src, pending, graceful: false, endAt: null);
         src.Failures++;
         SetRetry(src);
       }
@@ -2536,38 +2601,46 @@ commands:
 
     /// The pending capture has audio: it becomes live, and the old segment
     /// ends where the new one starts, so the switch leaves no gap.
-    void Handoff(Source src, PcmCapture next, double start) {
-      var old = src.Live;
-      src.Live = next;
+    void Handoff(Session ses, Source src, PcmCapture next, double start) {
+      PcmCapture? old;
+      lock (ses.Gate) {
+        old = src.Live;
+        src.Live = next;
+      }
       src.Pending = null;
       src.Target = next.Target;
       src.WaitingLogged = false;
       if (old != null) {
-        CloseSegment(src, old, graceful: true, endAt: start);
+        CloseSegment(ses, src, old, graceful: true, endAt: start);
       }
       Log.Write($"mic switched {old?.Target.Display ?? "(none)"} -> " +
-        $"{next.Target.Display} at {start:0.000} s, {micPolicy}, reason: " +
+        $"{next.Target.Display} at {start:0.000} s, {ses.Policy}, reason: " +
         src.PendingReason);
       Pill?.SetMicLost(false);
       Pill?.Flash(DeviceMatch.ShortName(next.Target.Display));
       src.LastDevice = next.Target.Display;
-      WriteManifest();
+      ses.WriteManifest();
     }
 
     /// Stops or kills a capture and files its segment, off the UI thread:
-    /// it can block for seconds and the pill must keep drawing.
-    void CloseSegment(Source src, PcmCapture cap, bool graceful,
+    /// it can block for seconds and the pill must keep drawing. The task
+    /// never faults; the save waits for it.
+    void CloseSegment(Session ses, Source src, PcmCapture cap, bool graceful,
         double? endAt) {
       var task = Task.Run(() => {
-        if (graceful) {
-          cap.Stop(3000);
-        } else {
-          cap.Kill();
+        try {
+          if (graceful) {
+            cap.Stop(3000);
+          } else {
+            cap.Kill();
+          }
+        } catch (Exception e) {
+          Log.Write($"{src.Kind} close error: {e.Message}");
         }
         var seg = cap.ToSegment(endAt);
         int drops = cap.DropWarnings;
         cap.Dispose();
-        lock (src.Finished) {
+        lock (ses.Gate) {
           if (seg.Bytes > 0) {
             src.Finished.Add(seg);
           }
@@ -2578,9 +2651,11 @@ commands:
         } else {
           TryDelete(cap.FilePath);
         }
-        Post(WriteManifest);
+        ses.WriteManifest();
       });
-      src.Closing.Add(task);
+      lock (ses.Gate) {
+        src.Closing.Add(task);
+      }
     }
 
     static string DescribeSegment(SegmentInfo s) =>
@@ -2589,134 +2664,135 @@ commands:
       (s.End is double end ? $", cut at {end:0.000} s" : "") + ", drift " +
       (s.Slope is double sl ? $"{sl * 1e6:0} ppm" : "n/a");
 
-    void WriteManifest() {
-      if (sessionDir.Length == 0) {
+    /// For a crash handler: record what the current session has so far.
+    public void WriteManifestNow() => current?.WriteManifest();
+
+    /// Stops the current recording and saves it in the background. `done`
+    /// runs once nothing is recording or saving.
+    public void Stop(Action? done = null) {
+      var ses = current;
+      if (ses != null) {
+        StopSession(ses);
+      }
+      if (done != null) {
+        afterSaves.Add(done);
+      }
+      RunAfterSavesIfIdle();
+    }
+
+    void RunAfterSavesIfIdle() {
+      if (current != null || savesRunning > 0) {
         return;
       }
-      try {
-        var manifest = new SessionManifest {
-          StartedLocal = startedLocal, StopAt = stopAt,
-        };
-        foreach (var src in new[] { system, mic }) {
-          if (src == null) {
-            continue;
-          }
-          List<SegmentInfo> segs;
-          lock (src.Finished) {
-            segs = src.Finished.ToList();
-          }
-          var live = src.Live;
-          if (live != null) {
-            segs.Add(live.ToSegment());
-          }
-          foreach (var s in segs.OrderBy(x => x.Start)) {
-            manifest.Segments.Add(new SessionManifest.ManifestSegment {
-              Kind = s.Kind, File = Path.GetFileName(s.Path),
-              Device = s.Device, Start = s.Start, Slope = s.Slope,
-              Bytes = s.Bytes, End = s.End, EndpointId = s.EndpointId,
-            });
-          }
-        }
-        manifest.Write(Path.Combine(sessionDir, SessionManifest.FileName));
-      } catch (Exception e) {
-        Log.Write("manifest write failed: " + e.Message);
+      var callbacks = afterSaves.ToList();
+      afterSaves.Clear();
+      foreach (var callback in callbacks) {
+        callback();
       }
     }
 
-    /// Stops and saves. `done` runs after the save finishes, including when
-    /// a save is already running; it runs at once only when idle.
-    public void Stop(Action? done = null) {
-      if (State == RecorderState.Idle) {
-        done?.Invoke();
-        return;
-      }
-      if (done != null) {
-        afterSave.Add(done);
-      }
-      if (State == RecorderState.Saving) {
-        return;
-      }
-      State = RecorderState.Saving;
-      sessionId++;
-      liveSession = -1;
+    void StopSession(Session ses) {
+      current = null;
+      savesRunning++;
       reconcileTimer.Stop();
       reconcileReasons.Clear();
       Native.KeepAwake(false);
-      stopAt = Elapsed;
-      Log.Write($"recording stop at {stopAt:0.000} s");
+      ses.StopAt = ses.Elapsed;
+      Log.Write($"recording stop at {ses.StopAt:0.000} s");
       Pill?.ShowSaving();
       status("saving");
       // A switch caught mid-handoff: finish it if the new mic has audio,
       // else drop it.
-      if (mic?.Pending is PcmCapture pending) {
+      if (ses.Mic?.Pending is PcmCapture pending) {
         if (pending.Bytes > 0 && pending.StartEstimate is double start) {
-          Handoff(mic, pending, start);
+          Handoff(ses, ses.Mic, pending, start);
         } else {
-          mic.Pending = null;
-          CloseSegment(mic, pending, graceful: false, endAt: null);
+          ses.Mic.Pending = null;
+          CloseSegment(ses, ses.Mic, pending, graceful: false, endAt: null);
         }
       }
-      var sources = new[] { system, mic }.Where(s => s != null)
-        .Select(s => s!).ToList();
-      var live = sources.Where(s => s.Live != null)
-        .Select(s => (Source: s, Capture: s.Live!)).ToList();
-      var closing = sources.SelectMany(s => s.Closing).ToArray();
-      string dir = sessionDir;
       string exe = ffmpeg;
-      string output = Paths.OutputFile(cfg, startedLocal);
+      string output = Paths.OutputFile(cfg, ses.StartedLocal);
       bool keep = cfg.KeepSession;
-      double? stop = stopAt;
       Task.Run(() => {
-        MixResult result;
-        try {
-          Parallel.ForEach(live, pair => pair.Capture.Stop(3000));
-          Task.WaitAll(closing, TimeSpan.FromSeconds(15));
-          foreach (var (src, cap) in live) {
-            var seg = cap.ToSegment();
-            cap.Dispose();
-            lock (src.Finished) {
-              if (seg.Bytes > 0) {
-                src.Finished.Add(seg);
-              }
+        var result = Save(ses, exe, output, keep);
+        Log.Write(result.Message);
+        Post(() => FinishSave(result));
+      });
+    }
+
+    MixResult Save(Session ses, string exe, string output, bool keep) {
+      try {
+        var live = ses.Sources.Where(s => s.Live != null)
+          .Select(s => (Source: s, Capture: s.Live!)).ToList();
+        Parallel.ForEach(live, pair => pair.Capture.Stop(3000));
+        foreach (var (src, cap) in live) {
+          var seg = cap.ToSegment();
+          cap.Dispose();
+          lock (ses.Gate) {
+            if (seg.Bytes > 0) {
+              src.Finished.Add(seg);
             }
             src.Live = null;
           }
-          var segments = sources.SelectMany(s => s.Finished)
-            .OrderBy(s => s.Start).ToList();
-          LastSegments = segments;
-          WriteManifest();
-          foreach (var s in segments) {
-            Log.Write("segment " + DescribeSegment(s));
-          }
-          result = Mixer.MixAndVerify(exe, segments, output, dir, stop);
-          if (result.Ok) {
-            if (keep) {
-              SessionManifest.MarkSaved(dir, result.OutputPath!);
-            } else {
-              TryDeleteDir(dir);
-            }
-          }
-        } catch (Exception e) {
-          result = new MixResult(false, "save failed: " + e.Message, null);
         }
-        Log.Write(result.Message);
-        LastResult = result;
-        Post(() => {
-          State = RecorderState.Idle;
-          busy.Reset();
-          status(result.Ok ? "saved" : "save failed");
-          if (result.Ok) {
-            Pill?.ShowSaved(Path.GetFileName(result.OutputPath!));
-          } else {
-            Pill?.ShowError("save failed, see log");
+        Task[] closing;
+        lock (ses.Gate) {
+          closing = ses.Sources.SelectMany(s => s.Closing).ToArray();
+        }
+        // Each close is bounded (stop, kill, then close the pipe), so this
+        // only times out if something is badly stuck. Then keep the
+        // session for --recover rather than mix without a segment.
+        if (!Task.WaitAll(closing, TimeSpan.FromSeconds(60))) {
+          ses.WriteManifest();
+          return new MixResult(false, "a segment is still closing; kept " +
+            ses.Dir + " for --recover", null);
+        }
+        List<SegmentInfo> segments;
+        lock (ses.Gate) {
+          segments = ses.Sources.SelectMany(s => s.Finished)
+            .OrderBy(s => s.Start).ToList();
+        }
+        LastSegments = segments;
+        ses.WriteManifest();
+        foreach (var s in segments) {
+          Log.Write("segment " + DescribeSegment(s));
+        }
+        var result = Mixer.MixAndVerify(exe, segments, output, ses.Dir,
+          ses.StopAt);
+        if (result.Ok) {
+          // Mark first: a half-deleted folder must not look unfinished.
+          SessionManifest.MarkSaved(ses.Dir, result.OutputPath!);
+          if (!keep) {
+            TryDeleteDir(ses.Dir);
           }
-          var callbacks = afterSave.ToList();
-          afterSave.Clear();
-          foreach (var callback in callbacks) {
-            callback();
-          }
-        });
-      });
+        }
+        return result;
+      } catch (Exception e) {
+        ses.WriteManifest();
+        return new MixResult(false, "save failed: " + e.Message, null);
+      }
+    }
+
+    void FinishSave(MixResult result) {
+      LastResult = result;
+      savesRunning--;
+      bool recording = current != null;
+      if (!recording && savesRunning == 0) {
+        busy.Reset();
+      }
+      if (recording) {
+        // A new recording is on: say so without leaving its pill.
+        Pill?.Flash(result.Ok ? "saved" : "save failed");
+      } else if (savesRunning == 0) {
+        status(result.Ok ? "saved" : "save failed");
+        if (result.Ok) {
+          Pill?.ShowSaved(Path.GetFileName(result.OutputPath!));
+        } else {
+          Pill?.ShowError("save failed, see log");
+        }
+      }
+      RunAfterSavesIfIdle();
     }
 
     Pill ShowPill() {
@@ -2896,7 +2972,17 @@ commands:
       Render();
     }
 
+    /// Never lets a drawing error escape into the recorder's tick.
     void Render() {
+      try {
+        RenderCore();
+      } catch (Exception e) when (e is ExternalException or
+          ArgumentException or InvalidOperationException) {
+        Log.Write("pill render failed: " + e.Message);
+      }
+    }
+
+    void RenderCore() {
       if (!IsHandleCreated || !Visible) {
         return;
       }
@@ -3059,6 +3145,9 @@ commands:
     readonly string? configPath;
     AppConfig cfg;
     volatile bool quitting;
+    public static App? Current { get; private set; }
+
+    public void WriteManifestNow() => recorder.WriteManifestNow();
 
     public App(LoadedConfig loaded, string? configPath) {
       this.configPath = configPath;
@@ -3076,6 +3165,7 @@ commands:
       Log.Write("device changes via " + (endpoints.UsesNotifications
         ? "MMDevice notifications" : "polling"));
       recorder = new Recorder(invoker, cfg, endpoints, SetStatus);
+      Current = this;
       foreach (string name in Program.SignalNames) {
         signals.Add(new EventWaitHandle(false, EventResetMode.AutoReset,
           Program.SignalEventName(name)));
@@ -3172,13 +3262,13 @@ commands:
       Log.Write("command " + name);
       switch (name) {
         case "toggle":
-          if (recorder.State == RecorderState.Idle) {
+          if (recorder.State != RecorderState.Recording) {
             ReloadConfig();
           }
           recorder.Toggle();
           break;
         case "start":
-          if (recorder.State == RecorderState.Idle) {
+          if (recorder.State != RecorderState.Recording) {
             ReloadConfig();
             recorder.Start();
           }
@@ -3188,6 +3278,7 @@ commands:
           break;
         case "quit":
           quitting = true;
+          recorder.Closing = true;
           recorder.Stop(() => {
             tray.Visible = false;
             Application.ExitThread();
