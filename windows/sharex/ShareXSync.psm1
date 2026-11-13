@@ -34,12 +34,13 @@ function Merge-ShareXManagedHotkeys {
   foreach ($desired in $Managed.Hotkeys) {
     $job = $desired.TaskSettings.Job
     $key = $desired.HotkeyInfo.Hotkey
-    $matches = @($Config.Hotkeys | Where-Object { $_.TaskSettings.Job -eq $job })
-    if ($matches.Count -gt 1) { throw "Multiple ShareX hotkeys use job '$job'." }
-    $conflicts = @($Config.Hotkeys | Where-Object {
-      $_.HotkeyInfo.Hotkey -eq $key -and $_.TaskSettings.Job -ne $job
+    $matches = @($Config.Hotkeys | Where-Object {
+      $_.HotkeyInfo.Hotkey -eq $key -and $_.HotkeyInfo.Win -eq $desired.HotkeyInfo.Win
     })
-    if ($conflicts.Count -gt 0) { throw "ShareX hotkey '$key' is already in use." }
+    if ($matches.Count -gt 1 -or
+        ($matches.Count -eq 1 -and $matches[0].TaskSettings.Job -ne $job)) {
+      throw "ShareX hotkey '$key' is already in use."
+    }
     if ($job -eq 'ScreenRecorderActiveWindow') {
       $desired.TaskSettings.CaptureSettings.FFmpegOptions.CustomCommands = $AudioCommand
     }
@@ -53,4 +54,24 @@ function Merge-ShareXManagedHotkeys {
   return [pscustomobject]@{ Config = $Config; Changed = ($before -cne $after) }
 }
 
-Export-ModuleMember -Function Merge-ShareXManagedHotkeys
+function Get-ShareXSyncAudio {
+  param([Parameter(Mandatory = $true)][scriptblock]$Discover)
+  try {
+    $audio = & $Discover
+  } catch {
+    $exception = $_.Exception
+    while ($null -ne $exception) {
+      if ($exception.HResult -eq -2147023728 -or
+          $exception.Data['ShareXAudioUnavailable'] -eq $true) { return $null }
+      $exception = $exception.InnerException
+    }
+    throw
+  }
+  if ($null -eq $audio.Microphone -or
+      @($audio.DirectShowDevices | Where-Object { $_.Name -eq 'virtual-audio-capturer' }).Count -eq 0) {
+    return $null
+  }
+  return $audio
+}
+
+Export-ModuleMember -Function Merge-ShareXManagedHotkeys, Get-ShareXSyncAudio

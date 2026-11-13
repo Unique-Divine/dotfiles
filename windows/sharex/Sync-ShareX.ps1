@@ -21,10 +21,13 @@ try {
   if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     throw "ShareX config is missing: $configPath. Start ShareX once before syncing."
   }
-  $audio = New-ShareXAudioCommandData -FFmpegPath (Join-Path (Split-Path $executable) 'ffmpeg.exe')
-  if ($null -eq $audio.Microphone -or
-      -not @($audio.DirectShowDevices | Where-Object { $_.Name -eq 'virtual-audio-capturer' }).Count) {
-    throw 'Two-way audio requires virtual-audio-capturer and a detected microphone.'
+  $audio = Get-ShareXSyncAudio -Discover {
+    New-ShareXAudioCommandData -FFmpegPath (Join-Path (Split-Path $executable) 'ffmpeg.exe')
+  }
+  if ($null -eq $audio) {
+    [Console]::Error.WriteLine('ShareX sync deferred: playback audio and a default microphone are required.')
+    if ($Check) { exit 1 }
+    exit 0
   }
   $managedPath = Join-Path $PSScriptRoot 'ManagedHotkeys.json'
   function Get-Plan {
@@ -42,23 +45,14 @@ try {
     exit 1
   }
   $running = @(Get-Process ShareX -ErrorAction SilentlyContinue)
-  $wasRunning = $running.Count -gt 0
-  try {
-    if ($wasRunning) {
-      $running | Stop-Process -Force -ErrorAction Stop
-      $running | Wait-Process -ErrorAction SilentlyContinue
-      # ShareX may have written settings before it stopped.
-      $plan = Get-Plan
-    }
-    if ($plan.Changed) {
-      $backup = Backup-ShareXConfig -ConfigPath $configPath
-      Write-ShareXConfigAtomic -Path $configPath `
-        -Content (ConvertTo-ShareXJson -Value $plan.Config -Pretty)
-      Write-Output "Updated ShareX hotkeys. Backup: $backup"
-    }
-  } finally {
-    if ($wasRunning) { Start-Process -FilePath $executable }
+  if ($running.Count -gt 0) {
+    [Console]::Error.WriteLine('ShareX sync deferred: quit ShareX from its tray icon and run just sharex-sync again.')
+    exit 0
   }
+  $backup = Backup-ShareXConfig -ConfigPath $configPath
+  Write-ShareXConfigAtomic -Path $configPath `
+    -Content (ConvertTo-ShareXJson -Value $plan.Config -Pretty)
+  Write-Output "Updated ShareX hotkeys. Backup: $backup"
 } catch {
   [Console]::Error.WriteLine("ShareX sync: $($_.Exception.Message)")
   exit 1
