@@ -80,6 +80,14 @@ describe("aggregate and findings", () => {
     expect(msgs).toContain("1 app process(es) run more than one mcp-discord: claude 4122 x2")
   })
 
+  test("does not count an mcp-launch.ts wrapper named mcp-discord as a server", () => {
+    const claude = proc({ pid: 4122, comm: "claude", args: "claude --resume abc" })
+    const launcher = proc({ pid: 70, ppid: 4122, args: "bun /d/claude/mcp-launch.ts --source cfg mcp-discord" })
+    expect(classify(launcher)).toBe("MCP launchers (mcp-launch.ts)")
+    const msgs = findings([claude, launcher, discord(71, 70)], { totalMb: 32000, availableMb: 20000, swapTotalMb: 0, swapUsedMb: 0 })
+    expect(msgs).toEqual([])
+  })
+
   test("reports nothing for a quiet machine", () => {
     expect(findings([codexA], { totalMb: 32000, availableMb: 20000, swapTotalMb: 0, swapUsedMb: 0 })).toEqual([])
   })

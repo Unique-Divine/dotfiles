@@ -97,6 +97,10 @@ export const RULES: Rule[] = [
     group: "Other language servers",
     test: (p) => /language-server|-ls\b|lua-language|rust-analyzer|gopls|pyright/.test(p.args),
   },
+  // Launchers first: claude/mcp-launch.ts takes the server name as an
+  // argument, so a launcher for a server named mcp-discord would otherwise
+  // count as a second Discord server beside its own child.
+  { group: "MCP launchers (mcp-launch.ts)", test: (p) => /mcp-launch\.ts\b/.test(p.args) },
   { group: "Discord MCP (mcp-discord)", test: (p) => /mcp-discord\b/.test(p.args) },
   { group: "Playwright MCP", test: (p) => /playwright-mcp/.test(p.args) },
   { group: "Other MCP servers", test: (p) => /\bmcp[-_]|[-_]mcp\b|mcp-launch/.test(p.args) },
