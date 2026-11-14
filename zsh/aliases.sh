@@ -46,7 +46,6 @@ alias start="cmd.exe /C start"
 # alias txout="jq -rcs '.[0].txhash' | { read txhash; sleep 3; nibiru q tx \$txhash | jq '{txhash, height, code, logs, gas_used, gas_wanted, tx}' >> txout.json}"
 
 alias ft="focustime" # 2026-03-04
-alias npx="bunx"
 # The shared Codex daemon keeps the environment of its first pane. Use a local
 # process inside Herdr so SessionStart hooks report to the launching pane.
 unalias codex 2>/dev/null || true

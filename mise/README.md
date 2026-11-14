@@ -15,6 +15,21 @@ they started with, so `bun mise/links.ts --run` also links each shim into
 file there. `just health` fails when a pinned tool is missing, at the wrong
 version, or shadowed by another copy on PATH.
 
+## Bun only, no Node
+
+These dotfiles install no Node.js or npm. Bun runs JavaScript, installs
+packages, and owns the global JavaScript tools in `bun/global/package.json`,
+including Neovim's JavaScript language servers. `bin/node` runs Bun, `bin/npx`
+runs `bunx`, and `bin/npm` exits 1 with the Bun equivalent of the command.
+Registry commands that need real npm run it through Bun:
+`bunx npm@12.2.0 publish`.
+
+Do not install Node with mise. mise creates `npm`, `npx`, and `corepack`
+shims for an installed Node even when it is inactive, and those shims fail
+because nothing later on PATH provides them. `bun mise/dead-shims.ts --check`,
+part of `just health`, reports such shims. Fix one with
+`mise uninstall <tool>@<version> && mise reshim`.
+
 ## Add or bump a tool
 
 ```bash

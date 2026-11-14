@@ -190,6 +190,14 @@ file `mason.lock` stores one `package@version` entry per installed package. It
 is a snapshot of the tools used by this Neovim configuration, not a list of
 LSP servers configured in `lua/core/lsp.lua`.
 
+Mason installs native binaries only, such as marksman, gopls, and
+lua-language-server. JavaScript language servers and prettier come from
+`bun/global/package.json`, because these dotfiles install no npm for Mason to
+use. `lua/core/bun-lsp.lua` enables those servers. To add one, pin it in
+`bun/global/package.json`, run `just bun-lock` and `just bun-sync`, and add its
+nvim-lspconfig name to `bun-lsp.lua`. `just health` fails if a Mason package
+needs an installer that cannot run.
+
 Use the `:MasonLock` command after installing, upgrading, or removing a Mason
 package:
 

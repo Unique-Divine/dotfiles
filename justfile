@@ -16,7 +16,7 @@ fs-test:
   cargo test --package ud --bin ud fs::
   cargo test --package ud --test ud_cli fs_
 
-test: test-rust test-bun
+test: test-rust test-bun test-nvim
 
 test-rust:
   cargo test --workspace --locked
@@ -25,6 +25,10 @@ test-bun:
   bun test \
     --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts" \
     --path-ignore-patterns "**/bun/sources/**"
+
+# Neovim Lua unit tests; no plugins load.
+test-nvim:
+  nvim --headless -u NONE -l nvim/tests/lsp_tooling_test.lua
 
 alias t := test
 
