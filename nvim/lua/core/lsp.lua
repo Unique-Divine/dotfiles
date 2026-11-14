@@ -80,12 +80,12 @@ vim.g.rustaceanvim = {
   },
 }
 
--- Servers mason-lspconfig should install. See:
+-- Native servers mason-lspconfig should install. JavaScript servers come from
+-- bun/global/package.json instead; see core/bun-lsp.lua. See:
 -- https://github.com/mason-org/mason-lspconfig.nvim#available-lsp-servers
 local lsp_servers_mason = {
   -- clangd = {},
   gopls = {},
-  astro = {},
   -- pyright = {},
   -- rust_analyzer = {}, -- do not manage rust-analyzer with mason.
 
@@ -184,6 +184,8 @@ local function plugin_config()
     },
   }
 
+  require('core/bun-lsp').setup()
+
   require('core/mason-lock').setup()
 
   require('core/mdtoc').setup()
@@ -196,11 +198,7 @@ local plugin_spec = {
   'neovim/nvim-lspconfig',
   lazy = false,
   dependencies = {
-    {
-      'mason-org/mason.nvim',
-      config = true,
-      opts = { ensure_installed = { "prettier" } },
-    },
+    { 'mason-org/mason.nvim', config = true },
     'mason-org/mason-lspconfig.nvim',
     { 'j-hui/fidget.nvim', tag = "legacy", opts = {} },
     {
@@ -218,12 +216,6 @@ local plugin_spec = {
       config = function()
         require('outline').setup({})
       end,
-    },
-  },
-  -- Shared machines get these servers without opening Mason.
-  opts = {
-    servers = {
-      tailwindcss = {},
     },
   },
   config = plugin_config,

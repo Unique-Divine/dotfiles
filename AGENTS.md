@@ -11,6 +11,11 @@
 ## Maintainer Prefs
 - Prefer writing the dotfiles dir as the commit prefix. For example, write
 "codex: Commit body" rather than "chore(codex): Commit body". I hate "chore".
+- Put anything that acts like a command in a small program under `bin/`,
+listed in `zsh/managed-links.txt`, not in a zsh function or alias. PATH reaches
+bash, agents, and subprocesses that Go, Python, or Bun start; zsh startup
+files do not. Write it in zero-dependency Bun TypeScript or Python, or Bash for
+a few lines of glue. `bin/node`, `bin/npm`, and `bin/npx` are examples.
 
 ## Code Style
 ### TypeScript
