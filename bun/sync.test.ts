@@ -518,10 +518,44 @@ describe("Jiyuu Discord MCP link", () => {
     await lockDiscord(dir, { "fixture-helper": `file:${
       join(config.root, "sources", "fixture-helper")}` })
     const drift = (await discordProblems(config)).join("\n")
-    expect(drift).toContain("installed fixture-parent is not in bun.lock")
+    expect(drift).toContain("Jiyuu mcp/discord dependencies: fixture-helper")
     await synchronize(config)
     expect(await discordProblems(config)).toEqual([])
     expect(await lstat(join(dir, "node_modules", "fixture-parent"))
+      .catch(() => undefined)).toBeUndefined()
+  })
+
+  test("refuses to remove a node_modules symlink that leaves Jiyuu", async () => {
+    const config = await fixture()
+    const dir = config.discordDir!
+    await parentFixture(config)
+    const outside = join(config.root, "outside-modules")
+    await mkdir(join(outside, "keep"), { recursive: true })
+    await writeFile(join(outside, "keep", "file"), "keep")
+    await symlink(outside, join(dir, "node_modules"))
+    await expect(synchronize(config)).rejects.toThrow(
+      "not a plain directory inside Jiyuu's mcp/discord")
+    expect(await readFile(join(outside, "keep", "file"), "utf8")).toBe("keep")
+    expect((await lstat(join(dir, "node_modules"))).isSymbolicLink()).toBe(true)
+  })
+
+  test("repair removes symlinks inside node_modules without following them", async () => {
+    const config = await fixture()
+    const dir = config.discordDir!
+    await parentFixture(config)
+    await synchronize(config)
+    const outside = join(config.root, "outside-package")
+    await mkdir(outside, { recursive: true })
+    await writeFile(join(outside, "file"), "keep")
+    await mkdir(join(dir, "node_modules", "@scope"), { recursive: true })
+    await symlink(outside, join(dir, "node_modules", "@scope", "linked"))
+    await symlink(outside, join(dir, "node_modules", "linked"))
+    await rm(join(dir, "node_modules", "fixture-parent"), { recursive: true })
+    expect((await discordProblems(config)).length).toBeGreaterThan(0)
+    await synchronize(config)
+    expect(await discordProblems(config)).toEqual([])
+    expect(await readFile(join(outside, "file"), "utf8")).toBe("keep")
+    expect(await lstat(join(dir, "node_modules", "linked"))
       .catch(() => undefined)).toBeUndefined()
   })
 

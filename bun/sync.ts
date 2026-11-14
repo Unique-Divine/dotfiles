@@ -413,65 +413,35 @@ export function lockReferenceProblems(
   return problems
 }
 
-/** Lock keys of every package installed under `dir/node_modules`. */
-async function installedKeys(dir: string, prefix = ""): Promise<string[]> {
-  const keys: string[] = []
-  const modules = join(dir, "node_modules")
-  for (const entry of await readdir(modules, { withFileTypes: true })
-    .catch(() => [])) {
-    if (entry.name.startsWith(".") || !entry.isDirectory()) continue
-    const names = entry.name.startsWith("@")
-      ? (await readdir(join(modules, entry.name)).catch(() => []))
-        .map((child) => `${entry.name}/${child}`)
-      : [entry.name]
-    for (const name of names) {
-      const path = join(modules, name)
-      if (!await exists(join(path, "package.json"))) continue
-      const key = prefix ? `${prefix}/${name}` : name
-      keys.push(key, ...await installedKeys(path, key))
-    }
-  }
-  return keys
-}
-
-/** Outermost installed packages that the lock has no record for. */
-async function extraneousKeys(
-  dir: string, packages: Record<string, unknown[]> | undefined,
-): Promise<string[]> {
-  const extra: string[] = []
-  for (const key of await installedKeys(dir)) {
-    if (typeof packages?.[key]?.[0] === "string") continue
-    if (extra.some((outer) => key.startsWith(`${outer}/`))) continue
-    extra.push(key)
-  }
-  return extra
-}
-
-/** Directory of an installed package from its lock key. */
-function installedPath(dir: string, key: string): string {
-  return join(dir, ...keyNames(key).flatMap((name) => ["node_modules", name]))
-}
-
 /**
  * Drift of Jiyuu's installed mcp/discord tree from its lock: missing or
- * mismatched packages, and installed packages the lock no longer records.
- * The frozen install repairs these.
+ * mismatched packages, or installed ones without a lock record. Sync repairs
+ * it with a clean frozen install.
  */
 async function discordDependencyProblems(dir: string): Promise<string[]> {
   const inspection = await inspectPackages({
     root: dir, globalDir: dir, runtimeDir: dir, binDir: dir, pluginDir: dir,
     env: {},
   }, true)
-  const problems = [...inspection.problems]
-  const lock = await readFile(join(dir, "bun.lock"), "utf8")
-    .then((text) => Bun.JSON5.parse(text) as {
-      packages?: Record<string, unknown[]>
-    }).catch(() => undefined)
-  for (const key of await extraneousKeys(dir, lock?.packages)) {
-    problems.push(`installed ${key} is not in bun.lock`)
-  }
-  return [...new Set(problems)].map((problem) =>
+  return inspection.problems.map((problem) =>
     `Jiyuu mcp/discord dependencies: ${problem}`)
+}
+
+/**
+ * Remove Jiyuu's mcp/discord/node_modules, refusing anything but a real
+ * directory at that exact path. `rm` removes symlinks inside it without
+ * following them.
+ */
+async function removeDiscordModules(dir: string): Promise<void> {
+  const modules = join(dir, "node_modules")
+  const info = await lstat(modules).catch(() => undefined)
+  if (!info) return
+  if (!info.isDirectory() ||
+      await realpath(modules) !== join(await realpath(dir), "node_modules")) {
+    throw new Error(`Refusing to remove ${modules}: not a plain directory ` +
+      "inside Jiyuu's mcp/discord")
+  }
+  await rm(modules, { recursive: true })
 }
 
 /**
@@ -536,15 +506,10 @@ export async function prepareDiscord(config: Config): Promise<string> {
   const dir = config.discordDir!
   const lock = await discordLockProblems(dir)
   if (lock.length) throw new Error(lock.join("\n"))
-  // The lock is complete, so the frozen install can repair any drift. Bun's
-  // install does not prune packages the lock dropped, so remove those first.
+  // The lock is complete, so a clean frozen install repairs any drift,
+  // including packages the lock dropped, which Bun's install leaves behind.
   if ((await discordDependencyProblems(dir)).length) {
-    const lock = Bun.JSON5.parse(await readFile(join(dir, "bun.lock"), "utf8")) as {
-      packages?: Record<string, unknown[]>
-    }
-    for (const key of await extraneousKeys(dir, lock.packages)) {
-      await rm(installedPath(dir, key), { recursive: true, force: true })
-    }
+    await removeDiscordModules(dir)
     await command([process.execPath, "install", "--frozen-lockfile",
       "--ignore-scripts"], dir)
     const remaining = await discordDependencyProblems(dir)
