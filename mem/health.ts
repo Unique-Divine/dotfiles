@@ -126,13 +126,20 @@ const OWNER_COMMS = ["claude", "codex", "nvim", "herdr", "code", "cursor"]
  * if PID reuse ever forms a cycle in this snapshot.
  */
 export function ownerOf(p: Proc, byPid: Map<number, Proc>): string {
+  return ownerProc(p, byPid)?.name ?? "-"
+}
+
+/** The ancestor app process that `ownerOf` names, with its PID. */
+export function ownerProc(
+  p: Proc, byPid: Map<number, Proc>,
+): { name: string; proc: Proc } | undefined {
   let cur = byPid.get(p.ppid)
   for (let hops = 0; cur && hops < 32; hops++) {
     const name = OWNER_COMMS.find((c) => cur!.comm === c || cur!.args.startsWith(`${c} `))
-    if (name) return name
+    if (name) return { name, proc: cur }
     cur = byPid.get(cur.ppid)
   }
-  return "-"
+  return undefined
 }
 
 /** Group processes by (group, owner) and sort by resident memory. */
@@ -161,7 +168,7 @@ export function aggregate(procs: Proc[]): GroupRow[] {
  * 2 GiB line for one process's RAM plus swap sits far above a healthy MCP
  * server (60 to 80 MB) or Codex session (0.1 to 0.4 GB) and well below the
  * 7 GB tsserver incident. Each client should run one mcp-discord, so more than
- * one under the same parent is the duplicate-server leak from
+ * one under the same app process is the duplicate-server leak from
  * https://github.com/Unique-Divine/jiyuu/issues/106.
  */
 export function findings(procs: Proc[], mem: MemInfo): Finding[] {
@@ -177,13 +184,22 @@ export function findings(procs: Proc[], mem: MemInfo): Finding[] {
   }
   const dev = procs.filter((p) => classify(p) === "Dev servers")
   if (dev.length) out.push({ level: "info", message: `${dev.length} dev server process(es): ${dev.map((p) => p.pid).join(", ")}` })
-  const perParent = new Map<number, number>()
-  for (const p of procs) if (classify(p) === "Discord MCP (mcp-discord)") perParent.set(p.ppid, (perParent.get(p.ppid) ?? 0) + 1)
-  const dupes = [...perParent.entries()].filter(([, n]) => n > 1)
+  // Count per owning app process, not per parent: Claude starts each MCP
+  // server through its own mcp-launch.ts wrapper, so duplicates under one
+  // Claude session have different parents. Without an owner, fall back to
+  // the parent.
+  const perOwner = new Map<string, number>()
+  for (const p of procs) {
+    if (classify(p) !== "Discord MCP (mcp-discord)") continue
+    const owner = ownerProc(p, byPid)
+    const key = owner ? `${owner.name} ${owner.proc.pid}` : `parent ${p.ppid}`
+    perOwner.set(key, (perOwner.get(key) ?? 0) + 1)
+  }
+  const dupes = [...perOwner.entries()].filter(([, n]) => n > 1)
   if (dupes.length) {
     out.push({
       level: "warn",
-      message: `${dupes.length} parent(s) run more than one mcp-discord: ${dupes.map(([pid, n]) => `${pid}x${n}`).join(", ")}`,
+      message: `${dupes.length} app process(es) run more than one mcp-discord: ${dupes.map(([key, n]) => `${key} x${n}`).join(", ")}`,
     })
   }
   if (mem.totalMb && mem.availableMb / mem.totalMb < 0.15) {
