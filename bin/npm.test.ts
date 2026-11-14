@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
 
-import { advice } from "./npm"
-
-const script = join(import.meta.dir, "npm")
+const npmScript = join(import.meta.dir, "npm")
 const npxScript = join(import.meta.dir, "npx")
 
 function run(path: string, args: string[]) {
@@ -15,30 +13,35 @@ function run(path: string, args: string[]) {
   }
 }
 
+/** Runs bin/npm, which must fail without writing to stdout. */
+function npm(args: string[]): string {
+  const result = run(npmScript, args)
+  expect(result.code).toBe(1)
+  expect(result.stdout).toBe("")
+  return result.stderr
+}
+
 describe("bin/npm", () => {
   test("install without args points to bun install", () => {
-    expect(advice(["install"])).toContain("bun install")
+    expect(npm(["install"])).toContain("bun install")
   })
 
   test("install with a package points to bun add", () => {
-    expect(advice(["install", "zod"])).toContain("bun add zod")
+    expect(npm(["install", "zod"])).toContain("bun add zod")
+  })
+
+  test("ci points to a frozen bun install", () => {
+    expect(npm(["ci"])).toContain("bun install --frozen-lockfile")
   })
 
   test("registry commands use real npm through bunx", () => {
-    expect(advice(["publish", "--access", "public"])).toContain(
+    expect(npm(["publish", "--access", "public"])).toContain(
       "bunx npm@12.2.0 publish --access public",
     )
   })
 
   test("no args lists common equivalents", () => {
-    expect(advice([])).toContain("bun add <pkg>")
-  })
-
-  test("the program exits 1 and writes advice to stderr", () => {
-    const result = run(script, ["ci"])
-    expect(result.code).toBe(1)
-    expect(result.stdout).toBe("")
-    expect(result.stderr).toContain("bun install --frozen-lockfile")
+    expect(npm([])).toContain("bun add <pkg>")
   })
 })
 

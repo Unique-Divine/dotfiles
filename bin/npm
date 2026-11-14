@@ -41,8 +41,8 @@ const registry = new Set([
   "whoami", "dist-tag", "deprecate", "owner", "access", "token",
 ])
 
-/** Returns the message `npm <argv>` prints. */
-export function advice(argv: string[]): string {
+/** Returns the message `npm <argv>` prints. Tested through bin/npm.test.ts. */
+function advice(argv: string[]): string {
   const [command, ...rest] = argv
   const args = rest.join(" ")
   const lines = ["npm is not installed here; this machine uses Bun."]
