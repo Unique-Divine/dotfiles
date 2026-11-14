@@ -413,10 +413,11 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
-# Copy MCP servers only Claude (default) or Cursor has into Codex, then export
-# them to every tool. Preview with: bun run mcp/ingest.ts --from claude --dry-run
+# Copy MCP servers only Claude (default) or Cursor has into Codex, then export.
 mcp-ingest FROM="claude" *ARGS="":
   #!/usr/bin/env bash
+  # Exports to every tool. Preview with:
+  # bun run mcp/ingest.ts --from claude --dry-run
   set -Eeuo pipefail
   bun run mcp/ingest.ts --from "{{FROM}}" --run {{ARGS}}
   bun run cursor/mcp.ts --run
