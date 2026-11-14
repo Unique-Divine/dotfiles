@@ -330,6 +330,29 @@ export async function inspectPackages(
   return { problems, packages, bins }
 }
 
+/**
+ * PATH shadowing only: `name` resolves to a file outside `binDir`, or to
+ * nothing while the managed link exists. A wrong or missing link in `binDir`
+ * is reported separately; comparing PATH with the link's target instead made
+ * health print "PATH resolves X to <bin>, expected <bin>" when only the link
+ * was wrong.
+ */
+export async function pathShadowProblem(
+  name: string, binDir: string, env: Environment,
+): Promise<string | undefined> {
+  const bin = join(binDir, name)
+  const resolved = Bun.which(name, { PATH: env.PATH ?? "" })
+  if (resolved) {
+    if (await canonicalPath(dirname(resolved)) === await canonicalPath(binDir)) {
+      return undefined
+    }
+  } else if (!await exists(bin)) {
+    return undefined
+  }
+  return `PATH resolves ${name} to ${resolved ?? "nothing"}, expected ${bin}; ` +
+    `put ${binDir} before competing tools on PATH`
+}
+
 function discordEntryPath(config: Config): string | undefined {
   return config.discordDir ? join(config.discordDir, discordEntry) : undefined
 }
@@ -491,11 +514,8 @@ export async function discordProblems(config: Config): Promise<string[]> {
     problems.push(`Executable link is missing or does not reach Jiyuu: ${
       bin} should link to ${entry}`)
   }
-  const resolved = Bun.which(discordBin, { PATH: config.env.PATH ?? "" })
-  if (!resolved || !await sameTarget(resolved, entry)) {
-    problems.push(`PATH resolves ${discordBin} to ${resolved ?? "nothing"}, ` +
-      `expected ${bin}; put ${config.binDir} before competing tools on PATH`)
-  }
+  const shadow = await pathShadowProblem(discordBin, config.binDir, config.env)
+  if (shadow) problems.push(shadow)
   return problems
 }
 
@@ -591,11 +611,8 @@ export async function check(config: Config): Promise<string[]> {
     if (!await sameTarget(bin, target)) {
       problems.push(`Executable link is missing or incorrect: ${bin}`)
     }
-    const resolved = Bun.which(name, { PATH: config.env.PATH ?? "" })
-    if (!resolved || !await sameTarget(resolved, target)) {
-      problems.push(`PATH resolves ${name} to ${resolved ?? "nothing"}, ` +
-        `expected ${bin}; put ${config.binDir} before competing tools on PATH`)
-    }
+    const shadow = await pathShadowProblem(name, config.binDir, config.env)
+    if (shadow) problems.push(shadow)
   }
   if (inspection.bins["ud-mdtoc"] && !await sameTarget(
     join(config.pluginDir, "ud-mdtoc"), inspection.bins["ud-mdtoc"]!)) {
