@@ -341,6 +341,11 @@ health:
 domain-health *ARGS:
   bun run domain/health.ts {{ARGS}}
 
+# Show where RAM goes: language servers, agent sessions, MCP and dev servers,
+# grouped by the app that started them. Read-only. Add --json or --min-mb N.
+mem-health *ARGS:
+  bun run mem/health.ts {{ARGS}}
+
 # Restore the locked global Bun packages and their command and plugin links.
 bun-sync:
   bun --no-install bun/sync.ts --run
