@@ -164,6 +164,7 @@ local function plugin_config()
   vim.lsp.config('*', {
     capabilities = capabilities,
     on_attach = on_attach,
+    on_exit = require('core/lsp-restart').on_exit,
   })
 
   vim.lsp.config('gopls', {
