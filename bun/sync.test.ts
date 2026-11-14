@@ -196,6 +196,23 @@ describe("managed Bun installation", () => {
     expect(await lstat(config.runtimeDir).catch(() => undefined)).toBeUndefined()
   })
 
+  test("accepts owned bin links that reach the install through a symlinked path", async () => {
+    // A checkout moved behind a symlink (~/ki/boku -> ~/boku) leaves links
+    // whose text names the old path but whose files are the same.
+    const config = await fixture()
+    await synchronize(config)
+    const bin = join(config.binDir, "ud-mdtoc")
+    const realTarget = await realpath(bin)
+    const alias = join(config.root, "..", "alias-root")
+    await symlink(join(config.root, ".."), alias)
+    const viaAlias = realTarget.replace(join(config.root, ".."), alias)
+    expect(viaAlias).not.toBe(realTarget)
+    await rm(bin)
+    await symlink(viaAlias, bin)
+    await synchronize(config)
+    expect(await realpath(bin)).toBe(realTarget)
+  })
+
   test("rejects foreign plugin links before changing runtime paths", async () => {
     const config = await fixture()
     const foreign = join(config.root, "foreign-plugin")
