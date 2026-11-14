@@ -8,7 +8,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   check, configuration, discordBin, discordComponentDir, discordProblems,
-  inspectPackages, lockReferenceProblems, installRoot, lockProblems, refreshLock,
+  inspectPackages, lockReferenceProblems, pathShadowProblem, installRoot, lockProblems, refreshLock,
   runCheckoutProblem, synchronize, type Config,
 } from "./sync"
 
@@ -291,6 +291,32 @@ describe("managed Bun installation", () => {
     config.env.PATH = `${shadow}:${config.env.PATH}`
     expect((await check(config)).join("\n"))
       .toContain(`PATH resolves ud-mdtoc to ${join(shadow, "ud-mdtoc")}`)
+  })
+
+  test("reports a wrong link once, without a PATH message", async () => {
+    const config = await fixture()
+    await synchronize(config)
+    const bin = join(config.binDir, discordBin)
+    const elsewhere = join(config.root, "elsewhere")
+    await writeFile(elsewhere, "#!/bin/sh\n")
+    await chmod(elsewhere, 0o755)
+    await rm(bin)
+    await symlink(elsewhere, bin)
+    const problems = (await check(config)).join("\n")
+    expect(problems).toContain("does not reach Jiyuu")
+    expect(problems).not.toContain("PATH resolves")
+    expect(await pathShadowProblem(discordBin, config.binDir, config.env))
+      .toBeUndefined()
+  })
+
+  test("reports a managed bin directory missing from PATH", async () => {
+    const config = await fixture()
+    await synchronize(config)
+    expect(await pathShadowProblem("ud-mdtoc", config.binDir,
+      { PATH: "/usr/bin:/bin" }))
+      .toContain("PATH resolves ud-mdtoc to nothing")
+    expect(await pathShadowProblem("not-managed", config.binDir, config.env))
+      .toBeUndefined()
   })
 
   test("removes only previously owned bins when a package is removed", async () => {

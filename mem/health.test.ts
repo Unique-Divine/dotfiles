@@ -67,8 +67,25 @@ describe("aggregate and findings", () => {
   test("flags big processes, duplicate Discord servers, and low RAM", () => {
     const msgs = findings(procs, { totalMb: 32000, availableMb: 2000, swapTotalMb: 0, swapUsedMb: 0 }).map((f) => f.message)
     expect(msgs.some((m) => m.startsWith("PID 30 (TypeScript server (tsserver), started by codex)"))).toBe(true)
-    expect(msgs).toContain("1 parent(s) run more than one mcp-discord: 10x2")
+    expect(msgs).toContain("1 app process(es) run more than one mcp-discord: codex 10 x2")
     expect(msgs).toContain("Only 2000 MiB of 32000 MiB RAM available")
+  })
+
+  test("counts mcp-discord duplicates per owning app across launcher wrappers", () => {
+    const claude = proc({ pid: 4122, comm: "claude", args: "claude --resume abc" })
+    const launcher = (pid: number) =>
+      proc({ pid, ppid: 4122, args: "bun claude/mcp-launch.ts --source cfg discord-mcp" })
+    const procs = [claude, launcher(50), launcher(60), discord(51, 50), discord(61, 60)]
+    const msgs = findings(procs, { totalMb: 32000, availableMb: 20000, swapTotalMb: 0, swapUsedMb: 0 }).map((f) => f.message)
+    expect(msgs).toContain("1 app process(es) run more than one mcp-discord: claude 4122 x2")
+  })
+
+  test("does not count an mcp-launch.ts wrapper named mcp-discord as a server", () => {
+    const claude = proc({ pid: 4122, comm: "claude", args: "claude --resume abc" })
+    const launcher = proc({ pid: 70, ppid: 4122, args: "bun /d/claude/mcp-launch.ts --source cfg mcp-discord" })
+    expect(classify(launcher)).toBe("MCP launchers (mcp-launch.ts)")
+    const msgs = findings([claude, launcher, discord(71, 70)], { totalMb: 32000, availableMb: 20000, swapTotalMb: 0, swapUsedMb: 0 })
+    expect(msgs).toEqual([])
   })
 
   test("reports nothing for a quiet machine", () => {
