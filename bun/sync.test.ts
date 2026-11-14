@@ -77,14 +77,40 @@ if (process.argv.includes("--plugin-info")) {
   return config
 }
 
+/** Jiyuu's marker: mcp/upstreams.json listing the mcp/discord component. */
+async function jiyuuMarker(jiyuuRoot: string): Promise<void> {
+  await mkdir(join(jiyuuRoot, "mcp"), { recursive: true })
+  await writeFile(join(jiyuuRoot, "mcp", "upstreams.json"), JSON.stringify({
+    targetRepository: "Unique-Divine/jiyuu",
+    components: [{ path: "mcp/discord" }],
+  }))
+}
+
+/** Write a Discord stand-in's manifest and lock it with Bun. */
+async function lockDiscord(
+  dir: string, dependencies: Record<string, string>,
+): Promise<void> {
+  await writeFile(join(dir, "package.json"), JSON.stringify({
+    name: "mcp-discord", private: true, bin: { "mcp-discord": "src/index.ts" },
+    dependencies,
+  }))
+  if (!Object.keys(dependencies).length) {
+    // Bun deletes a lockfile without packages, so write the empty one.
+    await writeFile(join(dir, "bun.lock"), JSON.stringify({ lockfileVersion: 1,
+      workspaces: { "": { name: "mcp-discord" } }, packages: {} }))
+    return
+  }
+  const locked = await bash(`cd '${dir}' && '${process.execPath}' install ` +
+    "--lockfile-only --ignore-scripts")
+  if (locked.exitCode) throw new Error(locked.stderr)
+}
+
 /** A Jiyuu mcp/discord stand-in: an executable entry and no dependencies. */
 async function jiyuuDiscord(config: Config): Promise<string> {
   const dir = config.discordDir!
   await mkdir(join(dir, "src"), { recursive: true })
-  await writeFile(join(dir, "package.json"), JSON.stringify({
-    name: "mcp-discord", private: true, bin: { "mcp-discord": "src/index.ts" },
-    dependencies: {},
-  }))
+  await jiyuuMarker(join(dir, "..", ".."))
+  await lockDiscord(dir, {})
   const entry = join(dir, "src", "index.ts")
   await writeFile(entry, '#!/usr/bin/env bun\nconsole.log("fixture discord")\n')
   await chmod(entry, 0o755)
@@ -374,14 +400,8 @@ describe("Jiyuu Discord MCP link", () => {
   test("installs missing Jiyuu dependencies from its lock", async () => {
     const config = await fixture()
     const dir = config.discordDir!
-    await writeFile(join(dir, "package.json"), JSON.stringify({
-      name: "mcp-discord", private: true,
-      dependencies: { "fixture-helper": `file:${
-        join(config.root, "sources", "fixture-helper")}` },
-    }))
-    const locked = await bash(`cd '${dir}' && '${process.execPath}' install ` +
-      "--lockfile-only --ignore-scripts")
-    expect(locked.exitCode).toBe(0)
+    await lockDiscord(dir, { "fixture-helper": `file:${
+      join(config.root, "sources", "fixture-helper")}` })
     expect((await discordProblems(config)).join("\n"))
       .toContain("Jiyuu mcp/discord dependencies: fixture-helper")
     await synchronize(config)
@@ -405,11 +425,52 @@ describe("Jiyuu Discord MCP link", () => {
     const other = join(config.root, "old-boku", "jiyuu", "mcp", "discord",
       "src", "index.ts")
     await mkdir(dirname(other), { recursive: true })
+    await jiyuuMarker(join(config.root, "old-boku", "jiyuu"))
     await writeFile(other, "#!/usr/bin/env bun\n")
     await rm(bin)
     await symlink(other, bin)
     await synchronize(config)
     expect(await readlink(bin)).toBe(entry)
+  })
+
+  test("refuses another project's mcp/discord/src/index.ts", async () => {
+    const config = await fixture()
+    const bin = join(config.binDir, discordBin)
+    const foreign = join(config.root, "other-project", "mcp", "discord", "src",
+      "index.ts")
+    await mkdir(dirname(foreign), { recursive: true })
+    await writeFile(foreign, "#!/bin/sh\necho other\n")
+    await chmod(foreign, 0o755)
+    await symlink(foreign, bin)
+    await expect(synchronize(config)).rejects.toThrow(
+      "Refusing unrelated executable symlink")
+    expect(await readlink(bin)).toBe(foreign)
+  })
+
+  test("requires a readable Jiyuu lock that records every dependency", async () => {
+    const config = await fixture()
+    const dir = config.discordDir!
+    await lockDiscord(dir, { "fixture-helper": `file:${
+      join(config.root, "sources", "fixture-helper")}` })
+    await synchronize(config)
+    expect(await discordProblems(config)).toEqual([])
+    const lock = await readFile(join(dir, "bun.lock"), "utf8")
+
+    await rm(join(dir, "bun.lock"))
+    expect((await discordProblems(config)).join("\n"))
+      .toContain("Jiyuu mcp/discord lock: bun.lock or package.json is unavailable")
+    await expect(synchronize(config)).rejects.toThrow("Jiyuu mcp/discord lock")
+
+    await writeFile(join(dir, "bun.lock"), "{ not a lock")
+    expect((await discordProblems(config)).join("\n"))
+      .toContain("unavailable or invalid")
+
+    const parsed = Bun.JSON5.parse(lock) as { packages: Record<string, unknown> }
+    delete parsed.packages["fixture-helper"]
+    await writeFile(join(dir, "bun.lock"), JSON.stringify(parsed))
+    expect(await discordProblems(config)).toEqual([
+      "Jiyuu mcp/discord lock: bun.lock has no record for fixture-helper; " +
+      "update Jiyuu"])
   })
 
   test("refuses an unrelated mcp-discord command", async () => {

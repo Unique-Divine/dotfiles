@@ -324,6 +324,41 @@ function discordEntryPath(config: Config): string | undefined {
   return config.discordDir ? join(config.discordDir, discordEntry) : undefined
 }
 
+/**
+ * Jiyuu's mcp/discord bun.lock must be readable, agree with its manifest, and
+ * record every dependency. Without it, the package check below would accept
+ * any installed version within the manifest ranges. Install cannot repair
+ * these problems; they come from the Jiyuu checkout.
+ */
+async function discordLockProblems(dir: string): Promise<string[]> {
+  const prefix = "Jiyuu mcp/discord lock: "
+  try {
+    const desired = (await json<Package>(join(dir, "package.json")))
+      .dependencies ?? {}
+    const lock = Bun.JSON5.parse(await readFile(join(dir, "bun.lock"), "utf8")) as {
+      workspaces?: Record<string, { dependencies?: Record<string, string> }>
+      packages?: Record<string, unknown[]>
+    }
+    const workspace = lock.workspaces?.[""]
+    if (!workspace || !lock.packages) {
+      throw new Error("missing root workspace or packages")
+    }
+    const locked = workspace.dependencies ?? {}
+    const normalize = (value: Record<string, string>): string =>
+      JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+    if (normalize(desired) !== normalize(locked)) {
+      return [`${prefix}bun.lock differs from package.json; update Jiyuu`]
+    }
+    const unrecorded = Object.keys(desired).filter((name) =>
+      typeof lock.packages?.[name]?.[0] !== "string")
+    return unrecorded.map((name) =>
+      `${prefix}bun.lock has no record for ${name}; update Jiyuu`)
+  } catch (error) {
+    return [`${prefix}bun.lock or package.json is unavailable or invalid: ${
+      error}; update Jiyuu`]
+  }
+}
+
 /** Jiyuu's mcp/discord packages, checked against its own bun.lock. */
 async function discordDependencyProblems(dir: string): Promise<string[]> {
   const inspection = await inspectPackages({
@@ -332,6 +367,22 @@ async function discordDependencyProblems(dir: string): Promise<string[]> {
   })
   return inspection.problems.map((problem) =>
     `Jiyuu mcp/discord dependencies: ${problem}`)
+}
+
+/**
+ * True when `entry` is mcp/discord/src/index.ts inside a Jiyuu checkout,
+ * recognized by its mcp/upstreams.json listing the mcp/discord component.
+ */
+export async function isJiyuuDiscordEntry(entry: string): Promise<boolean> {
+  const suffix = "/mcp/discord/src/index.ts"
+  if (!entry.endsWith(suffix)) return false
+  try {
+    const upstreams = await json<{
+      targetRepository?: string; components?: { path?: string }[]
+    }>(join(entry.slice(0, -suffix.length), "mcp", "upstreams.json"))
+    return upstreams.targetRepository === "Unique-Divine/jiyuu" &&
+      (upstreams.components ?? []).some((c) => c.path === "mcp/discord")
+  } catch { return false }
 }
 
 /** Problems with the Jiyuu checkout that sync cannot repair. */
@@ -357,7 +408,9 @@ export async function discordProblems(config: Config): Promise<string[]> {
   const source = await discordSourceProblems(config)
   if (source.length) return source
   const entry = discordEntryPath(config)!
-  const problems = await discordDependencyProblems(config.discordDir!)
+  const lock = await discordLockProblems(config.discordDir!)
+  const problems = lock.length ? lock
+    : await discordDependencyProblems(config.discordDir!)
   const bin = join(config.binDir, discordBin)
   if (!await sameTarget(bin, entry)) {
     problems.push(`Executable link is missing or does not reach Jiyuu: ${
@@ -376,6 +429,8 @@ export async function prepareDiscord(config: Config): Promise<string> {
   const source = await discordSourceProblems(config)
   if (source.length) throw new Error(source.join("\n"))
   const dir = config.discordDir!
+  const lock = await discordLockProblems(dir)
+  if (lock.length) throw new Error(lock.join("\n"))
   if ((await discordDependencyProblems(dir)).length) {
     await command([process.execPath, "install", "--frozen-lockfile",
       "--ignore-scripts"], dir)
@@ -387,8 +442,9 @@ export async function prepareDiscord(config: Config): Promise<string> {
 
 /**
  * An existing mcp-discord link that sync may replace: one reaching the entry,
- * the previously recorded entry, a Jiyuu checkout at another path, or the
- * package build that the managed global directory used to provide.
+ * the previously recorded entry, the entry of a Jiyuu checkout at another
+ * path, or the package build that the managed global directory used to
+ * provide.
  */
 async function ownedDiscordLink(
   path: string, entry: string, config: Config,
@@ -398,7 +454,7 @@ async function ownedDiscordLink(
   const target = resolve(dirname(path), await readlink(path))
   if (target === previous?.discord) return true
   const real = await canonicalPath(target)
-  if (real.endsWith("/mcp/discord/src/index.ts")) return true
+  if (await isJiyuuDiscordEntry(real)) return true
   const packageDirs = await Promise.all([config.runtimeDir, config.globalDir]
     .flatMap((dir) => [dir, canonicalPath(dir)]))
   return packageDirs.some((dir) =>
