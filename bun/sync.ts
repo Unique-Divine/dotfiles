@@ -107,6 +107,15 @@ async function executable(path: string): Promise<boolean> {
   } catch { return false }
 }
 
+/**
+ * Real path of `path`, or its resolved text when it does not exist. Links made
+ * through a symlinked checkout path (~/ki/boku -> ~/boku) name the same files
+ * as links made through the real path, so ownership checks compare these.
+ */
+async function canonicalPath(path: string): Promise<string> {
+  return realpath(path).catch(() => resolve(path))
+}
+
 async function sameTarget(a: string, b: string): Promise<boolean> {
   try { return await realpath(a) === await realpath(b) } catch { return false }
 }
@@ -511,6 +520,10 @@ export async function synchronize(config: Config): Promise<void> {
     throw new Error([...installed.problems, ...behavior].join("\n"))
   }
   // Check command collisions before moving the existing installation.
+  const ownedModules = [
+    (await canonicalPath(config.runtimeDir)) + "/node_modules/",
+    (await canonicalPath(config.globalDir)) + "/node_modules/",
+  ]
   for (const name of Object.keys(installed.bins)) {
     const path = join(config.binDir, name)
     if (await exists(path) && !(await lstat(path)).isSymbolicLink()) {
@@ -518,9 +531,11 @@ export async function synchronize(config: Config): Promise<void> {
     }
     if (await exists(path)) {
       const target = resolve(dirname(path), await readlink(path))
-      if (!target.startsWith(config.runtimeDir + "/node_modules/") &&
-          !target.startsWith(config.globalDir + "/node_modules/") &&
-          target !== previous?.bins[name]) {
+      const realTarget = await canonicalPath(target)
+      const previousBin = previous?.bins[name]
+      if (!ownedModules.some((dir) => realTarget.startsWith(dir)) &&
+          target !== previousBin &&
+          !(previousBin && realTarget === await canonicalPath(previousBin))) {
         throw new Error(`Refusing unrelated executable symlink: ${path} -> ${target}`)
       }
     }
@@ -530,10 +545,14 @@ export async function synchronize(config: Config): Promise<void> {
     if (!(await lstat(pluginPath)).isSymbolicLink()) {
       throw new Error(`Refusing non-symlink plugin: ${pluginPath}`)
     }
-    const target = resolve(dirname(pluginPath), await readlink(pluginPath))
-    if (target !== installed.bins["ud-mdtoc"] &&
-        target !== join(config.binDir, "ud-mdtoc") &&
-        target !== previous?.plugin) {
+    const target = await canonicalPath(
+      resolve(dirname(pluginPath), await readlink(pluginPath)))
+    const owned = [
+      installed.bins["ud-mdtoc"], join(config.binDir, "ud-mdtoc"),
+      previous?.plugin,
+    ].filter((path): path is string => Boolean(path))
+    const ownedReal = await Promise.all(owned.map(canonicalPath))
+    if (!owned.includes(target) && !ownedReal.includes(target)) {
       throw new Error(`Refusing unrelated plugin symlink: ${pluginPath}`)
     }
   }

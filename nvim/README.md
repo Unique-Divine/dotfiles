@@ -37,8 +37,7 @@ nvim/
 ├── init.lua              # Main entry point
 ├── mason-health.lua      # Read-only Mason lock health check
 ├── mason.lock            # Pinned Mason package versions
-├── markdown/
-│   └── marksman.toml     # Global marksman config, linked to ~/.config/marksman
+├── marksman.toml         # Global marksman config, linked to ~/.config/marksman
 ├── lua/
 │   └── core/            # Core configuration modules
 │       ├── debug-dap.lua        # DAP plugin spec and setup
@@ -188,7 +187,7 @@ local lazyPlugins = {
 
 ### Markdown language server
 
-Mason installs marksman, and `markdown/marksman.toml` links to
+Mason installs marksman, and `marksman.toml` in this directory links to
 `~/.config/marksman/config.toml`. It turns on `incremental_references`,
 because full reference rebuilds on large repos like boku take seconds and
 crash marksman when a completion request arrives mid-rebuild. It also raises

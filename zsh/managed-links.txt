@@ -2,7 +2,7 @@
 zsh/zshenv .zshenv
 zsh/zshrc.zsh .zshrc
 rustfmt.toml rustfmt.toml
-nvim/markdown/marksman.toml .config/marksman/config.toml
+nvim/marksman.toml .config/marksman/config.toml
 zsh/cargo-config.toml .cargo/config.toml
 tmux/tmux.conf .tmux.conf
 nvim .config/nvim
