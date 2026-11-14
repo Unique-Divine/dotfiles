@@ -1,17 +1,16 @@
 import { bash } from "@uniquedivine/bash"
 import { constants } from "node:fs"
 import {
-  access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm,
+  access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm,
   stat, symlink, writeFile,
 } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { parse as parseToml } from "smol-toml"
 
-export const discordCommit =
-  "5c67e9d714971490aaedf8fab21753d7704bd4fa"
-const discordRepository = "https://github.com/barryyip0625/mcp-discord.git"
-const discordArchive = "mcp-discord-1.3.8.tgz"
+/** Global command for the Discord MCP server maintained in Jiyuu. */
+export const discordBin = "mcp-discord"
+const discordEntry = join("src", "index.ts")
 const mdtocPackage = "@uniquedivine/ud-mdtoc"
 const repair = "repair: just bun-sync"
 
@@ -26,6 +25,8 @@ interface Package {
 interface InstalledState {
   bins: Record<string, string>
   plugin?: string
+  /** Jiyuu Discord entrypoint that the mcp-discord link targeted. */
+  discord?: string
   manifest: string
   lock: string
 }
@@ -35,7 +36,8 @@ export interface Config {
   runtimeDir: string
   binDir: string
   pluginDir: string
-  sourceDir: string
+  /** Jiyuu's mcp/discord, or undefined when REPO is unset. */
+  discordDir?: string
   env: Environment
 }
 interface Inspection {
@@ -81,21 +83,6 @@ async function command(
   } finally { await rm(logs, { recursive: true, force: true }) }
 }
 
-async function buildHash(root: string): Promise<string> {
-  const hasher = new Bun.CryptoHasher("sha256")
-  async function visit(path: string): Promise<void> {
-    for (const entry of (await readdir(path, { withFileTypes: true }))
-      .sort((a, b) => a.name.localeCompare(b.name))) {
-      const child = join(path, entry.name)
-      hasher.update(relative(root, child))
-      if (entry.isDirectory()) await visit(child)
-      else hasher.update(await readFile(child))
-    }
-  }
-  await visit(root)
-  return hasher.digest("hex")
-}
-
 async function exists(path: string): Promise<boolean> {
   try { await lstat(path); return true } catch { return false }
 }
@@ -133,11 +120,6 @@ async function lockHash(config: Config): Promise<string> {
     join(config.globalDir, "bun.lock"))).digest("hex")
 }
 
-async function fileHash(path: string): Promise<string> {
-  return new Bun.CryptoHasher("sha256").update(await readFile(path))
-    .digest("hex")
-}
-
 /** Match Bun's Unix global settings, with environment overrides first. */
 export async function configuration(
   root = dirname(import.meta.path), env: Environment = process.env,
@@ -168,12 +150,21 @@ export async function configuration(
   return {
     root: canonicalRoot,
     globalDir: join(canonicalRoot, "global"),
-    sourceDir: join(canonicalRoot, "sources", "mcp-discord"),
+    discordDir: discordComponentDir(env),
     runtimeDir, binDir,
     pluginDir: join(env.XDG_DATA_HOME ?? join(home, ".local", "share"),
       "ud", "plugins"),
     env,
   }
+}
+
+/**
+ * Jiyuu's Discord MCP component, located the way `just sync` finds Jiyuu:
+ * `$REPO/boku/jiyuu`.
+ */
+export function discordComponentDir(env: Environment): string | undefined {
+  return env.REPO ? resolve(env.REPO, "boku", "jiyuu", "mcp", "discord")
+    : undefined
 }
 
 /**
@@ -329,90 +320,90 @@ export async function inspectPackages(config: Config): Promise<Inspection> {
   return { problems, packages, bins }
 }
 
-async function sourceDependencyProblems(config: Config): Promise<string[]> {
-  const sourceConfig = { ...config, globalDir: config.sourceDir }
-  // Keep the pinned checkout ready for rebuilding the runtime archive.
-  const inspection = await inspectPackages(sourceConfig)
-  return inspection.problems.map((problem) => `Discord source: ${problem}`)
+function discordEntryPath(config: Config): string | undefined {
+  return config.discordDir ? join(config.discordDir, discordEntry) : undefined
 }
 
-async function sourceProblems(config: Config): Promise<string[]> {
-  const desired = (await manifest(config)).dependencies ?? {}
-  if (!desired["mcp-discord"]?.startsWith("file:")) return []
-  try {
-    const installed = await json<{
-      commit: string; buildHash: string; archiveHash: string
-    }>(
-      join(config.sourceDir, ".dotfiles-build.json"))
-    if (installed.commit !== discordCommit ||
-        !await executable(join(config.sourceDir, "build", "index.js"))) {
-      throw new Error("source revision or build is stale")
-    }
-    const actual = await command(["git", "rev-parse", "HEAD"],
-      config.sourceDir)
-    if (actual !== discordCommit) throw new Error("source revision differs")
-    if (await command(["git", "--no-optional-locks", "status", "--porcelain",
-      "--untracked-files=no"], config.sourceDir)) {
-      throw new Error("source checkout has local changes")
-    }
-    if (installed.buildHash !== await buildHash(join(config.sourceDir, "build"))) {
-      throw new Error("built files differ from the recorded build")
-    }
-    if (installed.archiveHash !== await fileHash(
-      join(config.sourceDir, discordArchive))) {
-      throw new Error("packed archive differs from the recorded build")
-    }
-    const dependencies = await sourceDependencyProblems(config)
-    if (dependencies.length) return dependencies
-    return []
-  } catch (error) {
-    return [`mcp-discord source build is unavailable: ${error}`]
-  }
+/** Jiyuu's mcp/discord packages, checked against its own bun.lock. */
+async function discordDependencyProblems(dir: string): Promise<string[]> {
+  const inspection = await inspectPackages({
+    root: dir, globalDir: dir, runtimeDir: dir, binDir: dir, pluginDir: dir,
+    env: {},
+  })
+  return inspection.problems.map((problem) =>
+    `Jiyuu mcp/discord dependencies: ${problem}`)
 }
 
-/** Build only the explicitly selected Discord source revision. */
-export async function ensureDiscord(config: Config): Promise<void> {
-  const desired = (await manifest(config)).dependencies ?? {}
-  if (!desired["mcp-discord"]?.startsWith("file:")) return
-  if (!(await sourceProblems(config)).length) return
-  await checkoutPinnedSource(config.sourceDir, discordRepository,
-    discordCommit, config.root)
-  await command([process.execPath, "install", "--frozen-lockfile",
-    "--ignore-scripts"], config.sourceDir)
-  await command([process.execPath, "run", "build"], config.sourceDir)
-  await chmod(join(config.sourceDir, "build", "index.js"), 0o755)
-  // A folder dependency exposes source-file symlinks and mixes its development
-  // dependencies with the global tree. Install the packed runtime instead.
-  await command([process.execPath, "pm", "pack", "--ignore-scripts",
-    "--filename", join(config.sourceDir, discordArchive)], config.sourceDir)
-  await writeFile(join(config.sourceDir, ".dotfiles-build.json"),
-    JSON.stringify({ commit: discordCommit,
-      buildHash: await buildHash(join(config.sourceDir, "build")),
-      archiveHash: await fileHash(join(config.sourceDir, discordArchive)),
-    }) + "\n")
+/** Problems with the Jiyuu checkout that sync cannot repair. */
+async function discordSourceProblems(config: Config): Promise<string[]> {
+  const entry = discordEntryPath(config)
+  if (!entry) return ["REPO is unset, so Jiyuu's mcp/discord cannot be found"]
+  if (!await exists(entry)) {
+    return [`Jiyuu Discord MCP entrypoint is missing: ${entry}; ` +
+      "update Jiyuu with just i-jiyuu"]
+  }
+  if (!await executable(entry)) {
+    return [`Jiyuu Discord MCP entrypoint is not executable: ${entry}; ` +
+      "update Jiyuu with just i-jiyuu"]
+  }
+  return []
 }
 
-/** Restore a pinned manager-owned checkout without overwriting local edits. */
-export async function checkoutPinnedSource(
-  path: string, repository: string, commit: string, cwd: string,
-): Promise<void> {
-  let created = false
-  if (!await exists(path)) {
-    await mkdir(dirname(path), { recursive: true })
-    await command(["git", "clone", "--no-checkout", repository, path], cwd)
-    created = true
+/**
+ * Read-only check that the global mcp-discord command runs Jiyuu's
+ * mcp/discord source with its locked dependencies installed.
+ */
+export async function discordProblems(config: Config): Promise<string[]> {
+  const source = await discordSourceProblems(config)
+  if (source.length) return source
+  const entry = discordEntryPath(config)!
+  const problems = await discordDependencyProblems(config.discordDir!)
+  const bin = join(config.binDir, discordBin)
+  if (!await sameTarget(bin, entry)) {
+    problems.push(`Executable link is missing or does not reach Jiyuu: ${
+      bin} should link to ${entry}`)
   }
-  const origin = await command(["git", "remote", "get-url", "origin"],
-    path)
-  if (origin !== repository) {
-    throw new Error(`Refusing unexpected source checkout: ${path}`)
+  const resolved = Bun.which(discordBin, { PATH: config.env.PATH ?? "" })
+  if (!resolved || !await sameTarget(resolved, entry)) {
+    problems.push(`PATH resolves ${discordBin} to ${resolved ?? "nothing"}, ` +
+      `expected ${bin}; put ${config.binDir} before competing tools on PATH`)
   }
-  const dirty = created ? "" : await command(["git", "status", "--porcelain",
-    "--untracked-files=no"], path)
-  if (dirty) throw new Error(`Source checkout has local changes: ${path}`)
-  try { await command(["git", "cat-file", "-e", `${commit}^{commit}`], path) }
-  catch { await command(["git", "fetch", "origin", commit], path) }
-  await command(["git", "checkout", "--detach", commit], path)
+  return problems
+}
+
+/** Install Jiyuu's locked Discord dependencies when they are incomplete. */
+export async function prepareDiscord(config: Config): Promise<string> {
+  const source = await discordSourceProblems(config)
+  if (source.length) throw new Error(source.join("\n"))
+  const dir = config.discordDir!
+  if ((await discordDependencyProblems(dir)).length) {
+    await command([process.execPath, "install", "--frozen-lockfile",
+      "--ignore-scripts"], dir)
+    const remaining = await discordDependencyProblems(dir)
+    if (remaining.length) throw new Error(remaining.join("\n"))
+  }
+  return discordEntryPath(config)!
+}
+
+/**
+ * An existing mcp-discord link that sync may replace: one reaching the entry,
+ * the previously recorded entry, a Jiyuu checkout at another path, or the
+ * package build that the managed global directory used to provide.
+ */
+async function ownedDiscordLink(
+  path: string, entry: string, config: Config,
+  previous: InstalledState | undefined,
+): Promise<boolean> {
+  if (await sameTarget(path, entry)) return true
+  const target = resolve(dirname(path), await readlink(path))
+  if (target === previous?.discord) return true
+  const real = await canonicalPath(target)
+  if (real.endsWith("/mcp/discord/src/index.ts")) return true
+  const packageDirs = await Promise.all([config.runtimeDir, config.globalDir]
+    .flatMap((dir) => [dir, canonicalPath(dir)]))
+  return packageDirs.some((dir) =>
+    target.startsWith(`${dir}/node_modules/${discordBin}/`) ||
+    real.startsWith(`${dir}/node_modules/${discordBin}/`))
 }
 
 async function readState(config: Config): Promise<InstalledState | undefined> {
@@ -451,7 +442,7 @@ async function checkMdtoc(
 export async function check(config: Config): Promise<string[]> {
   const problems = await lockProblems(config)
   const inspection = await inspectPackages(config)
-  problems.push(...inspection.problems, ...await sourceProblems(config))
+  problems.push(...inspection.problems, ...await discordProblems(config))
   if (!await sameTarget(config.runtimeDir, config.globalDir)) {
     problems.push(`Bun global directory does not point to ${config.globalDir}`)
   }
@@ -503,7 +494,7 @@ async function removeOwnedLink(path: string, target: string): Promise<void> {
 export async function synchronize(config: Config): Promise<void> {
   const mismatch = await lockProblems(config)
   if (mismatch.length) throw new Error(mismatch.join("\n"))
-  await ensureDiscord(config)
+  const discordTarget = await prepareDiscord(config)
   const before = await inspectPackages(config)
   const previous = await readState(config)
   if (before.problems.length ||
@@ -538,6 +529,20 @@ export async function synchronize(config: Config): Promise<void> {
           !(previousBin && realTarget === await canonicalPath(previousBin))) {
         throw new Error(`Refusing unrelated executable symlink: ${path} -> ${target}`)
       }
+    }
+  }
+  if (discordBin in installed.bins) {
+    throw new Error(`A global package provides ${discordBin}, which sync ` +
+      "links to Jiyuu's mcp/discord; remove it from bun/global/package.json")
+  }
+  const discordPath = join(config.binDir, discordBin)
+  if (await exists(discordPath)) {
+    if (!(await lstat(discordPath)).isSymbolicLink()) {
+      throw new Error(`Refusing to replace non-symlink executable: ${discordPath}`)
+    }
+    if (!await ownedDiscordLink(discordPath, discordTarget, config, previous)) {
+      throw new Error(`Refusing unrelated executable symlink: ${discordPath} -> ${
+        await readlink(discordPath)}`)
     }
   }
   const pluginPath = join(config.pluginDir, "ud-mdtoc")
@@ -576,7 +581,7 @@ export async function synchronize(config: Config): Promise<void> {
   if (needsLink) {
     for (const name of await readdir(config.binDir).catch(() => [])) {
       if (name in installed.bins || name in (previous?.bins ?? {}) ||
-          name === "claude") continue
+          name === "claude" || name === discordBin) continue
       const path = join(config.binDir, name)
       if (!(await lstat(path)).isSymbolicLink()) continue
       const target = await realpath(path).catch(() => undefined)
@@ -622,6 +627,14 @@ export async function synchronize(config: Config): Promise<void> {
         await removeOwnedLink(path, target)
       }
     }
+    // After removing old package links, so a retired mcp-discord package
+    // link cannot remove the Jiyuu link.
+    if (!await sameTarget(discordPath, discordTarget)) {
+      await saveLink(discordPath)
+      await rm(discordPath, { force: true })
+      await mkdir(dirname(discordPath), { recursive: true })
+      await symlink(discordTarget, discordPath)
+    }
     const plugin = join(config.pluginDir, "ud-mdtoc")
     if (installed.bins["ud-mdtoc"]) {
       await saveLink(plugin)
@@ -643,6 +656,7 @@ export async function synchronize(config: Config): Promise<void> {
     await writeFile(join(config.globalDir, ".installed.json"),
       JSON.stringify({ bins: installed.bins,
         plugin: installed.bins["ud-mdtoc"],
+        discord: discordTarget,
         manifest: await readFile(join(config.globalDir, "package.json"), "utf8"),
         lock: await lockHash(config),
       } satisfies InstalledState, null, 2) + "\n")
@@ -662,7 +676,6 @@ export async function synchronize(config: Config): Promise<void> {
 
 /** Update the committed lock only after an intentional manifest edit. */
 export async function refreshLock(config: Config): Promise<void> {
-  await ensureDiscord(config)
   await command([process.execPath, "install", "--cwd", config.globalDir,
     "--lockfile-only", "--ignore-scripts"], config.root)
 }

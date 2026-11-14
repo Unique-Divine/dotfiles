@@ -3,8 +3,7 @@
 The global package manifest and lockfile live in `global/`. Command
 `just bun-sync` installs the locked packages, exposes their executables, and
 links Bun's global package directory to this directory. Command `just sync`
-runs the same operation. Generated `node_modules` and source checkouts stay
-out of Git.
+runs the same operation. Generated `node_modules` stays out of Git.
 
 Sync and `just bun-health` act on `$DOTFILES/bun`, the checkout that
 `symlinks.sh` also links from, whichever checkout runs them. From another
@@ -45,8 +44,7 @@ just bun-sync
 
 Review both tracked files before committing. Registry package names are
 portable; adding an absolute tarball or local folder records a machine-specific
-path. The Discord source package described below is an intentional exception
-with an automated, pinned build.
+path.
 
 ## Install and Repair
 
@@ -73,24 +71,20 @@ The manager follows `BUN_INSTALL`, `BUN_INSTALL_GLOBAL_DIR`, and
 `XDG_DATA_HOME` for `ud` plugin registration. Bun's global configuration rules
 are documented in [Bun's configuration reference](https://bun.sh/docs/runtime/bunfig).
 
-## Discord Source Build
+## Discord MCP From Jiyuu
 
-The installed Discord MCP came from a local checkout of version `1.3.8`.
-That version is not published on npm. Setup reproduces it from upstream
-commit `5c67e9d714971490aaedf8fab21753d7704bd4fa` in the ignored directory
-`sources/mcp-discord`.
+The `mcp-discord` command runs Jiyuu's
+[`mcp/discord`](https://github.com/Unique-Divine/jiyuu/tree/main/mcp/discord),
+so it isn't in the global manifest. Sync finds Jiyuu at `$REPO/boku/jiyuu`, the
+same place `just sync` updates it. It installs that component's locked
+dependencies with lifecycle scripts disabled when they're incomplete, then
+links `mcp-discord` in Bun's binary directory to `mcp/discord/src/index.ts`.
+Client configurations keep the command name `mcp-discord`.
 
-The manager installs the source's committed lock with dependency lifecycle
-scripts disabled, runs its explicit TypeScript build, then packs a runtime
-archive. The global manifest references the archive through a relative path.
-This keeps the installed CLI and its runtime dependencies in the managed
-global installation. It does not depend on the original `~/ki/mcp-discord`
-checkout or that checkout's `node_modules`.
-
-Health checks the pinned source revision, tracked changes, source dependencies,
-built-file hashes, and archive hash. Sync rebuilds missing or changed artifacts,
-but refuses to overwrite tracked source edits. Source provisioning runs before
-lock refresh and global installation.
+Health reports a missing or non-executable entrypoint, missing or mismatched
+dependencies, and a link that is missing or points elsewhere. Sync replaces
+the retired package link and a link to a Jiyuu checkout at another path. It
+refuses other `mcp-discord` commands.
 
 ## Update `ud-mdtoc` After Publication
 
@@ -134,16 +128,12 @@ Keep that backup until those tools have been deliberately adopted or removed.
 
 ```sh
 bun test ./bun/sync.test.ts
-BUN_DISCORD_INTEGRATION=1 bun test ./bun/sync.test.ts \
-  --test-name-pattern 'builds pinned Discord'
 bun test ./claude/native.test.ts ./tests/mdtoc.test.ts
 ```
 
-The default tests use real local packages, tarballs, Git repositories, and
-temporary global installations. The opt-in test fetches the pinned Discord
-source, builds it, deletes source dependencies, and verifies repair and stable
-archive content. Neither test path changes the workstation's live global
-installation.
+The tests use real local packages, tarballs, a stand-in Jiyuu `mcp/discord`,
+and temporary global installations. They don't change the workstation's live
+global installation or the Jiyuu checkout.
 
 The Neovim test runs when `nvim` and `ud-mdtoc` are installed. To test an
 isolated package installation instead, set `MDTOC_TEST_COMMAND` to its
