@@ -221,10 +221,11 @@ sync:
   source symlinks.sh
   runlog_event step name=symlinks msg=done
   runlog_step mise-install just mise-install
+  # Jiyuu first: bun-sync links mcp-discord to Jiyuu's mcp/discord.
+  runlog_step i-jiyuu just i-jiyuu
   runlog_step bun-sync just bun-sync
   runlog_step claude-install just claude-install
   runlog_step grok-install just grok-install
-  runlog_step i-jiyuu just i-jiyuu
   runlog_step ud-install just ud-install
   if ! command -v herdr >/dev/null 2>&1; then
     runlog_step herdr-install just herdr-install
