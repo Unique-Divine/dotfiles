@@ -26,6 +26,9 @@ Open File Explorer, go to `%USERPROFILE%\.files\windows`, and double-click the
   `-IncludeDocker`, `-Distro <name>`, `-SkipTrim`, `-Yes`.
 - `explorer.ps1`: Explorer preferences (classic context menu). Run from WSL
   with `windows/cfg.sh`.
+- `audio-capture/`: hotkey recorder for system audio plus the mic, saved as
+  MP3, that survives a mic unplug. Build with `just audio-capture-build`. See
+  its README.
 - `sharex/`: ShareX dual audio capture setup. See its README.
 
 ## Conventions for agents
