@@ -188,9 +188,30 @@ const skillNames = async (dir: string): Promise<Set<string>> => {
   return names
 }
 
+/**
+ * Real path of `path`. When `path` itself is missing, such as a dangling
+ * link's target, resolve its nearest existing parent instead.
+ */
+const canonicalPath = async (path: string): Promise<string> => {
+  try {
+    return await realpath(path)
+  } catch (error) {
+    if (!isMissing(error)) throw error
+    const parent = dirname(path)
+    if (parent === path) return resolve(path)
+    return join(await canonicalPath(parent), basename(path))
+  }
+}
+
+/**
+ * Whether the link at `path` points at `expected`. Compares real paths, so a
+ * link made through a symlinked repository path (~/ki/boku -> ~/boku) counts.
+ */
 const resolvesTo = async (path: string, expected: string): Promise<boolean> => {
   try {
-    return resolve(dirname(path), await readlink(path)) === resolve(expected)
+    const target = resolve(dirname(path), await readlink(path))
+    if (target === resolve(expected)) return true
+    return (await canonicalPath(target)) === (await canonicalPath(expected))
   } catch (error) {
     if (isMissing(error)) return false
     throw error
@@ -792,7 +813,15 @@ const syncRuntimeEntryLinks = async (
     if (!entry.isSymbolicLink() || expectedNames.has(entry.name)) continue
     const linkPath = join(runtimeDir, entry.name)
     const target = resolve(runtimeDir, await readlink(linkPath))
-    if (!isWithin(target, cfg.unionSkillsDir)) continue
+    if (
+      !isWithin(target, cfg.unionSkillsDir) &&
+      !isWithin(
+        await canonicalPath(target),
+        await canonicalPath(cfg.unionSkillsDir),
+      )
+    ) {
+      continue
+    }
 
     healthy = false
     console.log(`Stale runtime skill link: ${linkPath}`)

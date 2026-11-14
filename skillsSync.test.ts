@@ -409,6 +409,31 @@ describe("skills-sync", () => {
     expect((await lstat(foreignPath)).isSymbolicLink()).toBe(true)
   })
 
+  test("accepts links that reach skills through a symlinked repository path", async () => {
+    // Moving ~/ki/boku to ~/boku left a ~/ki/boku symlink, so existing links
+    // name the old path but still reach the same skills.
+    await run(homeDir, repoDir, ["--run"])
+    const oldRepo = join(root, "old-repo")
+    await symlink(repoDir, oldRepo)
+    const oldPrivate = join(oldRepo, "boku", "priv-skills")
+    await rm(cursorDir)
+    await symlink(oldPrivate, cursorDir)
+    const claudeSkill = join(claudeDir, "private-skill")
+    await rm(claudeSkill)
+    await symlink(join(oldPrivate, "private-skill"), claudeSkill)
+    const stalePath = join(claudeDir, "old-skill")
+    await symlink(join(oldPrivate, "old-skill"), stalePath)
+
+    expect(await run(homeDir, repoDir, ["--run"])).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    })
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" })
+    expect(await run(homeDir, repoDir, ["--health"])).toMatchObject({
+      exitCode: 0,
+    })
+  })
+
   test("refuses a real Claude Code skill named like a union skill", async () => {
     await makeSkill(claudeDir, "private-skill")
 
