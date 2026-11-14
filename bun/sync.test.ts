@@ -8,7 +8,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   check, configuration, discordBin, discordComponentDir, discordProblems,
-  inspectPackages, installRoot, lockProblems, refreshLock,
+  inspectPackages, lockReferenceProblems, installRoot, lockProblems, refreshLock,
   runCheckoutProblem, synchronize, type Config,
 } from "./sync"
 
@@ -473,9 +473,8 @@ describe("Jiyuu Discord MCP link", () => {
       "update Jiyuu"])
   })
 
-  test("requires lock records for transitive Jiyuu dependencies", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
+  /** Jiyuu stand-in depending on fixture-parent, which needs fixture-helper. */
+  async function parentFixture(config: Config): Promise<string> {
     const parent = join(config.root, "sources", "fixture-parent")
     await mkdir(parent, { recursive: true })
     await writeFile(join(parent, "package.json"), JSON.stringify({
@@ -483,10 +482,16 @@ describe("Jiyuu Discord MCP link", () => {
       dependencies: { "fixture-helper": `file:${
         join(config.root, "sources", "fixture-helper")}` },
     }))
-    await lockDiscord(dir, { "fixture-parent": `file:${parent}` })
+    await lockDiscord(config.discordDir!, { "fixture-parent": `file:${parent}` })
+    return parent
+  }
+
+  test("refuses a lock missing a record its own packages reference", async () => {
+    const config = await fixture()
+    await parentFixture(config)
     await synchronize(config)
     expect(await discordProblems(config)).toEqual([])
-    const lockPath = join(dir, "bun.lock")
+    const lockPath = join(config.discordDir!, "bun.lock")
     const parsed = Bun.JSON5.parse(await readFile(lockPath, "utf8")) as {
       packages: Record<string, unknown>
     }
@@ -497,11 +502,42 @@ describe("Jiyuu Discord MCP link", () => {
     expect(transitive[0]!.endsWith("fixture-helper")).toBe(true)
     delete parsed.packages[transitive[0]!]
     await writeFile(lockPath, JSON.stringify(parsed))
-    expect(await discordProblems(config)).toEqual([
-      "Jiyuu mcp/discord dependencies: fixture-helper: bun.lock has no " +
-      `record for ${transitive[0]}`])
-    await expect(synchronize(config)).rejects.toThrow(
-      `bun.lock has no record for ${transitive[0]}`)
+    const message = "Jiyuu mcp/discord lock: bun.lock has no record for " +
+      "fixture-helper, required by fixture-parent; update Jiyuu"
+    expect(await discordProblems(config)).toEqual([message])
+    await expect(synchronize(config)).rejects.toThrow(message)
+  })
+
+  test("repairs installed packages that a lock update dropped", async () => {
+    const config = await fixture()
+    const dir = config.discordDir!
+    await parentFixture(config)
+    await synchronize(config)
+    // Jiyuu drops fixture-parent and depends on fixture-helper directly; the
+    // old fixture-parent tree is still installed.
+    await lockDiscord(dir, { "fixture-helper": `file:${
+      join(config.root, "sources", "fixture-helper")}` })
+    const drift = (await discordProblems(config)).join("\n")
+    expect(drift).toContain("installed fixture-parent is not in bun.lock")
+    await synchronize(config)
+    expect(await discordProblems(config)).toEqual([])
+    expect(await lstat(join(dir, "node_modules", "fixture-parent"))
+      .catch(() => undefined)).toBeUndefined()
+  })
+
+  test("lockReferenceProblems resolves nested and scoped records", () => {
+    const packages = {
+      "@s/a": ["@s/a@1.0.0", "", { dependencies: { b: "^1", c: "^1" } }],
+      "@s/a/b": ["b@1.0.0", "", {}],
+      c: ["c@1.0.0", "", { dependencies: { d: "^1" },
+        optionalDependencies: { d: "^1" } }],
+    }
+    expect(lockReferenceProblems(packages, { "@s/a": "^1" })).toEqual([])
+    expect(lockReferenceProblems(packages, { "@s/a": "^1", e: "^1" }))
+      .toEqual(["bun.lock has no record for e"])
+    const { "@s/a/b": _, ...withoutB } = packages
+    expect(lockReferenceProblems(withoutB, { "@s/a": "^1" }))
+      .toEqual(["bun.lock has no record for b, required by @s/a"])
   })
 
   test("refuses an unrelated mcp-discord command", async () => {

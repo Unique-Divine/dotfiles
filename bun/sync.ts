@@ -359,23 +359,118 @@ async function discordLockProblems(dir: string): Promise<string[]> {
     if (normalize(desired) !== normalize(locked)) {
       return [`${prefix}bun.lock differs from package.json; update Jiyuu`]
     }
-    const unrecorded = Object.keys(desired).filter((name) =>
-      typeof lock.packages?.[name]?.[0] !== "string")
-    return unrecorded.map((name) =>
-      `${prefix}bun.lock has no record for ${name}; update Jiyuu`)
+    return lockReferenceProblems(lock.packages, {
+      ...workspace.dependencies, ...(workspace as Package & {
+        devDependencies?: Record<string, string>
+      }).devDependencies,
+    }).map((problem) => `${prefix}${problem}; update Jiyuu`)
   } catch (error) {
     return [`${prefix}bun.lock or package.json is unavailable or invalid: ${
       error}; update Jiyuu`]
   }
 }
 
-/** Jiyuu's mcp/discord packages, checked against its own bun.lock. */
+/** Package names in a lock key such as `a/@scope/b/c`. */
+function keyNames(key: string): string[] {
+  const parts = key.split("/")
+  const names: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    names.push(parts[i]!.startsWith("@") ? `${parts[i]}/${parts[++i]}` : parts[i]!)
+  }
+  return names
+}
+
+/**
+ * Lock completeness, judged from the lock alone: each root dependency and
+ * each dependency of a locked package resolves to a record, searching from
+ * the dependent's own nesting outward as Bun does. Optional and peer
+ * dependencies may be absent.
+ */
+export function lockReferenceProblems(
+  packages: Record<string, unknown[]>, root: Record<string, string>,
+): string[] {
+  const problems: string[] = []
+  const resolves = (from: string[], name: string): boolean => {
+    for (let depth = from.length; depth >= 0; depth--) {
+      const key = [...from.slice(0, depth), name].join("/")
+      if (typeof packages[key]?.[0] === "string") return true
+    }
+    return false
+  }
+  for (const name of Object.keys(root)) {
+    if (!resolves([], name)) problems.push(`bun.lock has no record for ${name}`)
+  }
+  for (const [key, entry] of Object.entries(packages)) {
+    const info = entry.find((part): part is Package =>
+      typeof part === "object" && part !== null && !Array.isArray(part))
+    for (const name of Object.keys(info?.dependencies ?? {})) {
+      if (name in (info?.optionalDependencies ?? {})) continue
+      if (!resolves(keyNames(key), name)) {
+        problems.push(`bun.lock has no record for ${name}, required by ${key}`)
+      }
+    }
+  }
+  return problems
+}
+
+/** Lock keys of every package installed under `dir/node_modules`. */
+async function installedKeys(dir: string, prefix = ""): Promise<string[]> {
+  const keys: string[] = []
+  const modules = join(dir, "node_modules")
+  for (const entry of await readdir(modules, { withFileTypes: true })
+    .catch(() => [])) {
+    if (entry.name.startsWith(".") || !entry.isDirectory()) continue
+    const names = entry.name.startsWith("@")
+      ? (await readdir(join(modules, entry.name)).catch(() => []))
+        .map((child) => `${entry.name}/${child}`)
+      : [entry.name]
+    for (const name of names) {
+      const path = join(modules, name)
+      if (!await exists(join(path, "package.json"))) continue
+      const key = prefix ? `${prefix}/${name}` : name
+      keys.push(key, ...await installedKeys(path, key))
+    }
+  }
+  return keys
+}
+
+/** Outermost installed packages that the lock has no record for. */
+async function extraneousKeys(
+  dir: string, packages: Record<string, unknown[]> | undefined,
+): Promise<string[]> {
+  const extra: string[] = []
+  for (const key of await installedKeys(dir)) {
+    if (typeof packages?.[key]?.[0] === "string") continue
+    if (extra.some((outer) => key.startsWith(`${outer}/`))) continue
+    extra.push(key)
+  }
+  return extra
+}
+
+/** Directory of an installed package from its lock key. */
+function installedPath(dir: string, key: string): string {
+  return join(dir, ...keyNames(key).flatMap((name) => ["node_modules", name]))
+}
+
+/**
+ * Drift of Jiyuu's installed mcp/discord tree from its lock: missing or
+ * mismatched packages, and installed packages the lock no longer records.
+ * The frozen install repairs these.
+ */
 async function discordDependencyProblems(dir: string): Promise<string[]> {
   const inspection = await inspectPackages({
     root: dir, globalDir: dir, runtimeDir: dir, binDir: dir, pluginDir: dir,
     env: {},
   }, true)
-  return inspection.problems.map((problem) =>
+  const problems = [...inspection.problems]
+  const lock = await readFile(join(dir, "bun.lock"), "utf8")
+    .then((text) => Bun.JSON5.parse(text) as {
+      packages?: Record<string, unknown[]>
+    }).catch(() => undefined)
+  for (const key of await extraneousKeys(dir, lock?.packages)) {
+    problems.push(`installed ${key} is not in bun.lock`)
+  }
+  return [...new Set(problems)].map((problem) =>
     `Jiyuu mcp/discord dependencies: ${problem}`)
 }
 
@@ -441,12 +536,15 @@ export async function prepareDiscord(config: Config): Promise<string> {
   const dir = config.discordDir!
   const lock = await discordLockProblems(dir)
   if (lock.length) throw new Error(lock.join("\n"))
-  const dependencies = await discordDependencyProblems(dir)
-  // Installing from a lock that lacks a record cannot help; report it instead.
-  const unrecorded = dependencies.filter((problem) =>
-    problem.includes("bun.lock has no record"))
-  if (unrecorded.length) throw new Error(unrecorded.join("\n"))
-  if (dependencies.length) {
+  // The lock is complete, so the frozen install can repair any drift. Bun's
+  // install does not prune packages the lock dropped, so remove those first.
+  if ((await discordDependencyProblems(dir)).length) {
+    const lock = Bun.JSON5.parse(await readFile(join(dir, "bun.lock"), "utf8")) as {
+      packages?: Record<string, unknown[]>
+    }
+    for (const key of await extraneousKeys(dir, lock.packages)) {
+      await rm(installedPath(dir, key), { recursive: true, force: true })
+    }
     await command([process.execPath, "install", "--frozen-lockfile",
       "--ignore-scripts"], dir)
     const remaining = await discordDependencyProblems(dir)
