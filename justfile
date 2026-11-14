@@ -2,6 +2,9 @@
 # (1) installing just with mise (see mise/README.md for a fresh machine)
 # (2) running the "just" command.
 
+# Keep doc comments inside linewise recipes out of the shell and the output.
+set ignore-comments
+
 # Displays available recipes when running `just` or `just list`.
 [private]
 list:
@@ -16,11 +19,14 @@ fs-test:
   cargo test --package ud --bin ud fs::
   cargo test --package ud --test ud_cli fs_
 
+# Run the Rust, Bun, and Neovim test suites.
 test: test-rust test-bun test-nvim
 
+# Run the Rust workspace tests with the locked dependencies.
 test-rust:
   cargo test --workspace --locked
 
+# Run the Bun test suites.
 test-bun:
   bun test \
     --path-ignore-patterns "**/herdr/scripts/release-workflows.test.ts" \
@@ -171,10 +177,11 @@ clipboard-rust-bench *ARGS:
   WSL_CLIPBOARD_BIN="$PWD/target/debug/wsl-clipboard" \
     bun run zsh/clipboard.bench.ts {{ARGS}}
 
-# Apply shell bootstrap, global Cargo config, portable Codex, Cursor CLI,
-# Claude Code, and Grok config, and managed AI skills.
+# Apply shell, Cargo, agent CLI configs, and managed AI skills.
 sync:
   #!/usr/bin/env bash
+  # Covers the shell bootstrap, global Cargo config, portable Codex, Cursor
+  # CLI, Claude Code, and Grok config, and the managed AI skills.
   set -Eeuo pipefail
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
@@ -269,10 +276,11 @@ sync:
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
 
-# Install a pinned mise if missing, then the CLI tools pinned in
-# mise/mise.lock (gh, ripgrep, just, nvim, gmailctl, ...). See mise/README.md.
+# Install a pinned mise if missing, then the CLI tools in mise/mise.lock.
 mise-install:
   #!/usr/bin/env bash
+  # The lock pins gh, ripgrep, just, nvim, gmailctl, and others; see
+  # mise/README.md.
   set -Eeuo pipefail
   mise_bin="$HOME/.local/bin/mise"
   if [[ ! -x "$mise_bin" ]]; then
@@ -282,10 +290,10 @@ mise-install:
   # Link shims into ~/.local/bin for bash, sh, and agents with an older PATH.
   bun mise/links.ts --run
 
-# Render private gmailctl configs from boku TypeScript into ~/.config;
-# skip missing ones.
+# Render private gmailctl configs from Boku TypeScript into ~/.config.
 email-sync:
   #!/usr/bin/env bash
+  # Configs missing from the private Boku checkout are skipped, not errors.
   set -Eeuo pipefail
   email_private="${BOKU:-$HOME/ki/boku}/priv-skills/ud/email"
   email_build() {
@@ -296,10 +304,10 @@ email-sync:
   email_build gmailctl-nibi.ts gmailctl
   email_build gmailctl-ud.ts gmailctl-ud
 
-# Copy windows/ to %USERPROFILE%\.files\windows so the Windows tools work
-# while WSL is down. WSL only.
+# Copy windows/ to %USERPROFILE%\.files\windows (WSL only).
 win-sync:
   #!/usr/bin/env bash
+  # The copy keeps the Windows tools working while WSL is down.
   set -Eeuo pipefail
   bun run windows/sharex/managed-hotkeys.ts --write
   for tool in cmd.exe wslpath rsync; do
@@ -326,24 +334,26 @@ sharex-generate:
 sharex-sync *ARGS: sharex-generate
   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w windows/sharex/Sync-ShareX.ps1)" {{ARGS}}
 
-# Read the Boku run log (same as `ud boku runs`). For commands:
-# `just runs --help`. Arguments pass through quoted, never re-parsed.
+# Read the Boku run log (same as `ud boku runs`; see `just runs --help`).
 [positional-arguments]
 runs *ARGS:
+  # Arguments pass through quoted, never re-parsed.
   bun run runlog/cli.ts "$@"
 
 # Check required tools and drift without changing dotfile-managed state.
 health:
   bash zsh/health.sh
 
-# Check domain registration (RDAP) and DNS; exits 1 on any FAIL finding.
-# Default: uniquedivine.com dsn-braids.com. Add --json for machine output.
+# Check domain registration (RDAP) and DNS; exit 1 on any FAIL finding.
 domain-health *ARGS:
+  # Default domains: uniquedivine.com dsn-braids.com. Add --json for machine
+  # output.
   bun run domain/health.ts {{ARGS}}
 
-# Show where RAM goes: language servers, agent sessions, MCP and dev servers,
-# grouped by the app that started them. Read-only. Add --json or --min-mb N.
+# Show where RAM goes, grouped by process kind and the app that started it.
 mem-health *ARGS:
+  # Read-only. Groups cover language servers, agent sessions, and MCP and dev
+  # servers. Add --json or --min-mb N.
   bun run mem/health.ts {{ARGS}}
 
 # Restore the locked global Bun packages and their command and plugin links.
@@ -468,9 +478,9 @@ i-bash:
 i-bash-ci:
   sudo apt install -y build-essential ripgrep gh zsh
 
-# Repair or check the repository-backed Cursor, Codex, and Claude Code skill
-# links.
+# Repair or check the Cursor, Codex, and Claude Code skill links.
 skills-sync *ARGS:
+  # The links point at the skill directories tracked in the repositories.
   @bun run skillsSync.ts {{ARGS}}
 
 # Check TypeScript scripts
