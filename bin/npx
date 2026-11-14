@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Run `npx` through Bun's bunx. These dotfiles install no Node.js or npm.
+# On PATH, unlike a zsh alias, so bash, agents, and subprocesses use it too.
+
+set -Eeuo pipefail
+
+bun_path="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
+if [[ ! -x "$bun_path" ]]; then
+  bun_path="$(command -v bun || true)"
+fi
+
+if [[ -z "$bun_path" || ! -x "$bun_path" ]]; then
+  echo "ERROR: npx shim could not find an executable Bun runtime." >&2
+  exit 127
+fi
+
+exec "$bun_path" x "$@"

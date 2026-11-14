@@ -1,0 +1,68 @@
+#!/usr/bin/env bun
+/**
+ * `npm` on this machine refuses and points to Bun.
+ *
+ * These dotfiles use Bun for every JavaScript install and script. No Node.js
+ * or npm is installed. This program sits on PATH so bash, agents, and
+ * subprocesses get the same answer as zsh. It exits 1 so no caller mistakes
+ * it for a working npm.
+ *
+ * Real npm, for registry commands only: `bunx npm@<version> <command>`.
+ * https://github.com/Unique-Divine/dotfiles/issues/128
+ */
+
+const realNpm = "bunx npm@12.2.0"
+
+/** Bun equivalent per npm subcommand; `$ARGS` stands for the rest of argv. */
+const equivalents: Record<string, string> = {
+  install: "bun install (no args) or bun add $ARGS",
+  i: "bun install (no args) or bun add $ARGS",
+  add: "bun add $ARGS",
+  ci: "bun install --frozen-lockfile",
+  uninstall: "bun remove $ARGS",
+  remove: "bun remove $ARGS",
+  rm: "bun remove $ARGS",
+  update: "bun update $ARGS",
+  run: "bun run $ARGS",
+  test: "bun test $ARGS",
+  start: "bun run start",
+  exec: "bunx $ARGS",
+  x: "bunx $ARGS",
+  init: "bun init",
+  link: "bun link $ARGS",
+  outdated: "bun outdated",
+  pack: "bun pm pack",
+  audit: "bun audit",
+}
+
+/** Registry commands that need real npm. Bun runs it on demand. */
+const registry = new Set([
+  "login", "logout", "publish", "unpublish", "view", "info", "show",
+  "whoami", "dist-tag", "deprecate", "owner", "access", "token",
+])
+
+/** Returns the message `npm <argv>` prints. Tested through bin/npm.test.ts. */
+function advice(argv: string[]): string {
+  const [command, ...rest] = argv
+  const args = rest.join(" ")
+  const lines = ["npm is not installed here; this machine uses Bun."]
+
+  if (command && registry.has(command)) {
+    lines.push(`Run real npm through Bun: ${realNpm} ${argv.join(" ")}`)
+  } else if (command && equivalents[command]) {
+    const hint = equivalents[command].replaceAll("$ARGS", args).trimEnd()
+    lines.push(`Instead of \`npm ${argv.join(" ")}\`, run: ${hint}`)
+  } else {
+    lines.push(
+      "Common equivalents: bun install, bun add <pkg>, bun remove <pkg>,",
+      "bun run <script>, bunx <pkg>.",
+    )
+  }
+  lines.push(`Registry commands (login, publish, view): ${realNpm} <command>`)
+  return lines.join("\n")
+}
+
+if (import.meta.main) {
+  console.error(advice(process.argv.slice(2)))
+  process.exit(1)
+}
