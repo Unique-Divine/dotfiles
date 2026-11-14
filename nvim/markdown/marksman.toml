@@ -1,0 +1,17 @@
+# Global marksman settings. zsh/managed-links.txt links this file to
+# ~/.config/marksman/config.toml.
+# A repo's .marksman.toml overrides these per workspace.
+# https://github.com/Unique-Divine/dotfiles/issues/131
+
+[core]
+# Update the reference graph per edit instead of rebuilding it. On boku
+# (2,483 Markdown files, 42,400 links and headings) a full rebuild takes
+# about 4.5 s on every link edit, and a completion request that arrives
+# during it times out and crashes marksman. Incremental updates take 0-11 ms.
+incremental_references = true
+
+[completion]
+# Send up to 500 link suggestions instead of 50. With 50, short prefixes like
+# `pr` filled the list with weaker matches and `priv-skills/...` never
+# reached cmp, which filters what marksman sends.
+candidates = 500

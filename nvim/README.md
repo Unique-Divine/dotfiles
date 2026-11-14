@@ -22,6 +22,7 @@ lazy.nvim and provides a modern, modular setup for software development.
 - [Configuration](#configuration)
   - [Adding Plugins](#adding-plugins)
   - [Customizing Settings](#customizing-settings)
+  - [Markdown language server](#markdown-language-server)
   - [Mason packages](#mason-packages)
 - [Learning Resources](#learning-resources)
 - [Notes](#notes)
@@ -36,6 +37,8 @@ nvim/
 ├── init.lua              # Main entry point
 ├── mason-health.lua      # Read-only Mason lock health check
 ├── mason.lock            # Pinned Mason package versions
+├── markdown/
+│   └── marksman.toml     # Global marksman config, linked to ~/.config/marksman
 ├── lua/
 │   └── core/            # Core configuration modules
 │       ├── debug-dap.lua        # DAP plugin spec and setup
@@ -182,6 +185,16 @@ local lazyPlugins = {
 - **LSP settings:** Edit `lua/core/lsp.lua`
 - **Keymaps:** Distributed across relevant config files
 - **Theme colors:** Edit theme config in `init.lua` (lines 184-245)
+
+### Markdown language server
+
+Mason installs marksman, and `markdown/marksman.toml` links to
+`~/.config/marksman/config.toml`. It turns on `incremental_references`,
+because full reference rebuilds on large repos like boku take seconds and
+crash marksman when a completion request arrives mid-rebuild. It also raises
+completion candidates from 50 to 500. cmp skips its `path` source in Markdown
+buffers, so `/` completes repo-root links instead of filesystem paths. See
+[#131](https://github.com/Unique-Divine/dotfiles/issues/131).
 
 ### Mason packages
 

@@ -66,6 +66,16 @@ local function plugin_config()
       { name = 'path' },
     },
   }
+
+  -- In Markdown, `/` starts a repo-root link that marksman completes. The
+  -- path source would list the machine's root (/bin, /dev) instead.
+  -- https://github.com/Unique-Divine/dotfiles/issues/131
+  cmp.setup.filetype({ 'markdown' }, {
+    sources = {
+      { name = 'nvim_lsp' },
+      { name = 'luasnip' },
+    },
+  })
 end
 
 --- @type LazyPluginSpec
