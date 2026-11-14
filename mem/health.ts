@@ -82,7 +82,15 @@ interface Rule {
   test: (p: Proc) => boolean
 }
 
-/** First matching rule wins; order from most to least specific. */
+/**
+ * First matching rule wins, so order matters. Specific rows precede the broad
+ * ones whose patterns also match them: tsserver before "Other language
+ * servers", and mcp-discord and Playwright before "Other MCP servers", whose
+ * `mcp-` pattern matches both. tsserver and mcp-discord get their own rows
+ * because they caused the two memory incidents this tool was written for: a
+ * multi-GB tsserver started by Claude Code, and dozens of duplicate
+ * mcp-discord servers (https://github.com/Unique-Divine/jiyuu/issues/106).
+ */
 export const RULES: Rule[] = [
   { group: "TypeScript server (tsserver)", test: (p) => /tsserver\.js/.test(p.args) },
   {
@@ -110,7 +118,13 @@ export function classify(p: Proc): string {
 
 const OWNER_COMMS = ["claude", "codex", "nvim", "herdr", "code", "cursor"]
 
-/** Name the nearest ancestor app (Claude, Codex, Neovim...) that started p. */
+/**
+ * Name the nearest ancestor app (Claude, Codex, Neovim...) that started p.
+ * The walk starts at the parent, so a session is never its own owner. Owner
+ * matters because the same server costs differently per client: the tsserver
+ * incident came from Claude Code, not Neovim. The hop limit bounds the walk
+ * if PID reuse ever forms a cycle in this snapshot.
+ */
 export function ownerOf(p: Proc, byPid: Map<number, Proc>): string {
   let cur = byPid.get(p.ppid)
   for (let hops = 0; cur && hops < 32; hops++) {
@@ -128,6 +142,7 @@ export function aggregate(procs: Proc[]): GroupRow[] {
   for (const p of procs) {
     const group = classify(p)
     if (group === "Other") continue
+    // Sessions are owners themselves; their parent is a shell or terminal.
     const owner = /sessions$/.test(group) ? "-" : ownerOf(p, byPid)
     const key = `${group}\u0000${owner}`
     const row = rows.get(key) ?? { group, owner, count: 0, rssMb: 0, swapMb: 0, maxAgeHours: 0, pids: [] }
@@ -141,7 +156,14 @@ export function aggregate(procs: Proc[]): GroupRow[] {
   return [...rows.values()].sort((a, b) => b.rssMb - a.rssMb)
 }
 
-/** Flag the patterns that have wasted memory on this machine before. */
+/**
+ * Flag the patterns that have wasted memory on this machine before. The
+ * 2 GiB line for one process's RAM plus swap sits far above a healthy MCP
+ * server (60 to 80 MB) or Codex session (0.1 to 0.4 GB) and well below the
+ * 7 GB tsserver incident. Each client should run one mcp-discord, so more than
+ * one under the same parent is the duplicate-server leak from
+ * https://github.com/Unique-Divine/jiyuu/issues/106.
+ */
 export function findings(procs: Proc[], mem: MemInfo): Finding[] {
   const out: Finding[] = []
   const byPid = new Map(procs.map((p) => [p.pid, p]))
