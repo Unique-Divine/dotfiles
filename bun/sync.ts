@@ -254,8 +254,15 @@ async function dependencyDir(
   return undefined
 }
 
-/** Inspect the dependency tree without invoking package code or the registry. */
-export async function inspectPackages(config: Config): Promise<Inspection> {
+/**
+ * Inspect the dependency tree without invoking package code or the registry.
+ * With `requireLockRecords`, every installed package, transitive ones
+ * included, must have a bun.lock record; otherwise one without a record is
+ * accepted at any version within its parent's range.
+ */
+export async function inspectPackages(
+  config: Config, requireLockRecords = false,
+): Promise<Inspection> {
   const problems: string[] = []
   const packages: Record<string, Package> = {}
   const bins: Record<string, string> = {}
@@ -271,6 +278,9 @@ export async function inspectPackages(config: Config): Promise<Inspection> {
     const key = relative(join(config.globalDir, "node_modules"), path)
       .replaceAll("/node_modules/", "/")
     const record = lock?.packages?.[key]?.[0]
+    if (requireLockRecords && typeof record !== "string") {
+      problems.push(`${pkg.name ?? key}: bun.lock has no record for ${key}`)
+    }
     const pinned = typeof record === "string" ? record.match(/@([^@]+)$/)?.[1]
       : undefined
     if (pinned && /^\d+\.\d+\.\d+/.test(pinned) && pkg.version !== pinned) {
@@ -364,7 +374,7 @@ async function discordDependencyProblems(dir: string): Promise<string[]> {
   const inspection = await inspectPackages({
     root: dir, globalDir: dir, runtimeDir: dir, binDir: dir, pluginDir: dir,
     env: {},
-  })
+  }, true)
   return inspection.problems.map((problem) =>
     `Jiyuu mcp/discord dependencies: ${problem}`)
 }
@@ -431,7 +441,12 @@ export async function prepareDiscord(config: Config): Promise<string> {
   const dir = config.discordDir!
   const lock = await discordLockProblems(dir)
   if (lock.length) throw new Error(lock.join("\n"))
-  if ((await discordDependencyProblems(dir)).length) {
+  const dependencies = await discordDependencyProblems(dir)
+  // Installing from a lock that lacks a record cannot help; report it instead.
+  const unrecorded = dependencies.filter((problem) =>
+    problem.includes("bun.lock has no record"))
+  if (unrecorded.length) throw new Error(unrecorded.join("\n"))
+  if (dependencies.length) {
     await command([process.execPath, "install", "--frozen-lockfile",
       "--ignore-scripts"], dir)
     const remaining = await discordDependencyProblems(dir)

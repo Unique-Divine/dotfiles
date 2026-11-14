@@ -473,6 +473,37 @@ describe("Jiyuu Discord MCP link", () => {
       "update Jiyuu"])
   })
 
+  test("requires lock records for transitive Jiyuu dependencies", async () => {
+    const config = await fixture()
+    const dir = config.discordDir!
+    const parent = join(config.root, "sources", "fixture-parent")
+    await mkdir(parent, { recursive: true })
+    await writeFile(join(parent, "package.json"), JSON.stringify({
+      name: "fixture-parent", version: "1.0.0",
+      dependencies: { "fixture-helper": `file:${
+        join(config.root, "sources", "fixture-helper")}` },
+    }))
+    await lockDiscord(dir, { "fixture-parent": `file:${parent}` })
+    await synchronize(config)
+    expect(await discordProblems(config)).toEqual([])
+    const lockPath = join(dir, "bun.lock")
+    const parsed = Bun.JSON5.parse(await readFile(lockPath, "utf8")) as {
+      packages: Record<string, unknown>
+    }
+    // Bun may nest the transitive record under its parent.
+    const transitive = Object.keys(parsed.packages)
+      .filter((key) => key !== "fixture-parent")
+    expect(transitive.length).toBe(1)
+    expect(transitive[0]!.endsWith("fixture-helper")).toBe(true)
+    delete parsed.packages[transitive[0]!]
+    await writeFile(lockPath, JSON.stringify(parsed))
+    expect(await discordProblems(config)).toEqual([
+      "Jiyuu mcp/discord dependencies: fixture-helper: bun.lock has no " +
+      `record for ${transitive[0]}`])
+    await expect(synchronize(config)).rejects.toThrow(
+      `bun.lock has no record for ${transitive[0]}`)
+  })
+
   test("refuses an unrelated mcp-discord command", async () => {
     const config = await fixture()
     const bin = join(config.binDir, discordBin)
