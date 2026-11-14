@@ -8,7 +8,12 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { parse as parseToml } from "smol-toml"
 
-/** Global command for the Discord MCP server maintained in Jiyuu. */
+/**
+ * Global command for the Discord MCP server maintained in Jiyuu. Codex and
+ * Claude configs launch this name, so keep it when the target changes. It is
+ * a direct link to Jiyuu's source, not a global package: `bun link` would add
+ * a package to the global node_modules, which sync reinstalls with --force.
+ */
 export const discordBin = "mcp-discord"
 const discordEntry = join("src", "index.ts")
 const mdtocPackage = "@uniquedivine/ud-mdtoc"
@@ -159,8 +164,9 @@ export async function configuration(
 }
 
 /**
- * Jiyuu's Discord MCP component, located the way `just sync` finds Jiyuu:
- * `$REPO/boku/jiyuu`.
+ * Jiyuu's Discord MCP component, at `$REPO/boku/jiyuu` like
+ * `zsh/sync-jiyuu.sh` and `skillsSync.ts`. Keep these in step: `just sync`
+ * runs `i-jiyuu` before `bun-sync` so this path is current when sync links it.
  */
 export function discordComponentDir(env: Environment): string | undefined {
   return env.REPO ? resolve(env.REPO, "boku", "jiyuu", "mcp", "discord")
@@ -256,9 +262,11 @@ async function dependencyDir(
 
 /**
  * Inspect the dependency tree without invoking package code or the registry.
- * With `requireLockRecords`, every installed package, transitive ones
- * included, must have a bun.lock record; otherwise one without a record is
- * accepted at any version within its parent's range.
+ * With `requireLockRecords`, every visited package must have a bun.lock
+ * record. Without it, a package with no record passes at any version within
+ * its parent's range (round 2 of the review of
+ * https://github.com/Unique-Divine/dotfiles/pull/137). Only the Jiyuu Discord check sets it;
+ * the global manifest keeps its existing behavior.
  */
 export async function inspectPackages(
   config: Config, requireLockRecords = false,
@@ -330,15 +338,41 @@ export async function inspectPackages(
   return { problems, packages, bins }
 }
 
+/**
+ * PATH shadowing only: `name` resolves to a file outside `binDir`, or to
+ * nothing while the managed link exists. A wrong or missing link in `binDir`
+ * is reported separately; comparing PATH with the link's target instead made
+ * health print "PATH resolves X to <bin>, expected <bin>" when only the link
+ * was wrong.
+ */
+export async function pathShadowProblem(
+  name: string, binDir: string, env: Environment,
+): Promise<string | undefined> {
+  const bin = join(binDir, name)
+  const resolved = Bun.which(name, { PATH: env.PATH ?? "" })
+  if (resolved) {
+    if (await canonicalPath(dirname(resolved)) === await canonicalPath(binDir)) {
+      return undefined
+    }
+  } else if (!await exists(bin)) {
+    return undefined
+  }
+  return `PATH resolves ${name} to ${resolved ?? "nothing"}, expected ${bin}; ` +
+    `put ${binDir} before competing tools on PATH`
+}
+
 function discordEntryPath(config: Config): string | undefined {
   return config.discordDir ? join(config.discordDir, discordEntry) : undefined
 }
 
 /**
- * Jiyuu's mcp/discord bun.lock must be readable, agree with its manifest, and
- * record every dependency. Without it, the package check below would accept
- * any installed version within the manifest ranges. Install cannot repair
- * these problems; they come from the Jiyuu checkout.
+ * Problems in Jiyuu's mcp/discord lock itself: unreadable, out of step with
+ * package.json, or missing a record that a dependency needs. These refuse
+ * sync, because an install cannot fix a lock that Jiyuu committed. Problems
+ * in the installed tree are drift, which sync repairs; see
+ * `discordDependencyProblems`. Merging the two made a Jiyuu dependency update
+ * block its own install (round 3 of the review of
+ * https://github.com/Unique-Divine/dotfiles/pull/137).
  */
 async function discordLockProblems(dir: string): Promise<string[]> {
   const prefix = "Jiyuu mcp/discord lock: "
@@ -370,7 +404,7 @@ async function discordLockProblems(dir: string): Promise<string[]> {
   }
 }
 
-/** Package names in a lock key such as `a/@scope/b/c`. */
+/** Package names in a lock key such as `a/@scope/b/c`; scopes join two parts. */
 function keyNames(key: string): string[] {
   const parts = key.split("/")
   const names: string[] = []
@@ -381,10 +415,11 @@ function keyNames(key: string): string[] {
 }
 
 /**
- * Lock completeness, judged from the lock alone: each root dependency and
- * each dependency of a locked package resolves to a record, searching from
- * the dependent's own nesting outward as Bun does. Optional and peer
- * dependencies may be absent.
+ * Lock completeness, judged from the lock alone and never from what is
+ * installed: each root dependency and each dependency of a locked package
+ * resolves to a record, searching from the dependent's nesting outward as
+ * Bun does. Optional dependencies may be absent. Checking only direct
+ * dependencies let a missing transitive record pass.
  */
 export function lockReferenceProblems(
   packages: Record<string, unknown[]>, root: Record<string, string>,
@@ -414,9 +449,11 @@ export function lockReferenceProblems(
 }
 
 /**
- * Drift of Jiyuu's installed mcp/discord tree from its lock: missing or
- * mismatched packages, or installed ones without a lock record. Sync repairs
- * it with a clean frozen install.
+ * Drift of Jiyuu's installed mcp/discord tree from its complete lock: missing
+ * or mismatched packages, or visited ones without a lock record. Health
+ * reports it and sync repairs it with a clean frozen install, so a stale tree
+ * after a Jiyuu update is never a reason to refuse sync. Packages nothing
+ * references are not walked; the next clean install drops them.
  */
 async function discordDependencyProblems(dir: string): Promise<string[]> {
   const inspection = await inspectPackages({
@@ -428,9 +465,14 @@ async function discordDependencyProblems(dir: string): Promise<string[]> {
 }
 
 /**
- * Remove Jiyuu's mcp/discord/node_modules, refusing anything but a real
- * directory at that exact path. `rm` removes symlinks inside it without
- * following them.
+ * Remove Jiyuu's mcp/discord/node_modules before a clean install. Bun's
+ * frozen install leaves packages the lock dropped, and pruning them one by
+ * one followed a symlinked package directory and deleted a directory outside
+ * Jiyuu (round 4 of the review of https://github.com/Unique-Divine/dotfiles/pull/137).
+ * Don't bring per-package pruning back. Refuse unless node_modules is a real
+ * directory whose real path is inside this component, so a symlinked
+ * node_modules is never emptied. `rm` unlinks symlinks inside without
+ * following them; a test covers both cases.
  */
 async function removeDiscordModules(dir: string): Promise<void> {
   const modules = join(dir, "node_modules")
@@ -447,6 +489,10 @@ async function removeDiscordModules(dir: string): Promise<void> {
 /**
  * True when `entry` is mcp/discord/src/index.ts inside a Jiyuu checkout,
  * recognized by its mcp/upstreams.json listing the mcp/discord component.
+ * The path suffix alone matched other projects with the same layout, so sync
+ * replaced their links (round 1 of the review of
+ * https://github.com/Unique-Divine/dotfiles/pull/137). The marker can be spoofed, but only by
+ * someone who can already write the files the link would run.
  */
 export async function isJiyuuDiscordEntry(entry: string): Promise<boolean> {
   const suffix = "/mcp/discord/src/index.ts"
@@ -460,7 +506,12 @@ export async function isJiyuuDiscordEntry(entry: string): Promise<boolean> {
   } catch { return false }
 }
 
-/** Problems with the Jiyuu checkout that sync cannot repair. */
+/**
+ * Problems with the Jiyuu checkout that sync cannot repair. The executable
+ * bit matters because the link runs src/index.ts through its shebang; Jiyuu
+ * tracks it as mode 100755. A chmod from here would dirty Jiyuu and stop
+ * `just sync` from merging it.
+ */
 async function discordSourceProblems(config: Config): Promise<string[]> {
   const entry = discordEntryPath(config)
   if (!entry) return ["REPO is unset, so Jiyuu's mcp/discord cannot be found"]
@@ -477,7 +528,8 @@ async function discordSourceProblems(config: Config): Promise<string[]> {
 
 /**
  * Read-only check that the global mcp-discord command runs Jiyuu's
- * mcp/discord source with its locked dependencies installed.
+ * mcp/discord source with its locked dependencies installed. Lock problems
+ * hide drift results, since drift is measured against that lock.
  */
 export async function discordProblems(config: Config): Promise<string[]> {
   const source = await discordSourceProblems(config)
@@ -491,23 +543,21 @@ export async function discordProblems(config: Config): Promise<string[]> {
     problems.push(`Executable link is missing or does not reach Jiyuu: ${
       bin} should link to ${entry}`)
   }
-  const resolved = Bun.which(discordBin, { PATH: config.env.PATH ?? "" })
-  if (!resolved || !await sameTarget(resolved, entry)) {
-    problems.push(`PATH resolves ${discordBin} to ${resolved ?? "nothing"}, ` +
-      `expected ${bin}; put ${config.binDir} before competing tools on PATH`)
-  }
+  const shadow = await pathShadowProblem(discordBin, config.binDir, config.env)
+  if (shadow) problems.push(shadow)
   return problems
 }
 
-/** Install Jiyuu's locked Discord dependencies when they are incomplete. */
+/**
+ * Refuse a broken checkout or lock, then repair drift with a clean,
+ * scripts-ignored frozen install and check again. Returns the link target.
+ */
 export async function prepareDiscord(config: Config): Promise<string> {
   const source = await discordSourceProblems(config)
   if (source.length) throw new Error(source.join("\n"))
   const dir = config.discordDir!
   const lock = await discordLockProblems(dir)
   if (lock.length) throw new Error(lock.join("\n"))
-  // The lock is complete, so a clean frozen install repairs any drift,
-  // including packages the lock dropped, which Bun's install leaves behind.
   if ((await discordDependencyProblems(dir)).length) {
     await removeDiscordModules(dir)
     await command([process.execPath, "install", "--frozen-lockfile",
@@ -520,9 +570,10 @@ export async function prepareDiscord(config: Config): Promise<string> {
 
 /**
  * An existing mcp-discord link that sync may replace: one reaching the entry,
- * the previously recorded entry, the entry of a Jiyuu checkout at another
- * path, or the package build that the managed global directory used to
- * provide.
+ * the entry recorded in .installed.json, the entry of a verified Jiyuu
+ * checkout at another path (such as ~/ki/boku before ~/boku), or the retired
+ * package build in the managed global node_modules. Anything else belongs to
+ * someone else and stops sync before it switches anything.
  */
 async function ownedDiscordLink(
   path: string, entry: string, config: Config,
@@ -591,11 +642,8 @@ export async function check(config: Config): Promise<string[]> {
     if (!await sameTarget(bin, target)) {
       problems.push(`Executable link is missing or incorrect: ${bin}`)
     }
-    const resolved = Bun.which(name, { PATH: config.env.PATH ?? "" })
-    if (!resolved || !await sameTarget(resolved, target)) {
-      problems.push(`PATH resolves ${name} to ${resolved ?? "nothing"}, ` +
-        `expected ${bin}; put ${config.binDir} before competing tools on PATH`)
-    }
+    const shadow = await pathShadowProblem(name, config.binDir, config.env)
+    if (shadow) problems.push(shadow)
   }
   if (inspection.bins["ud-mdtoc"] && !await sameTarget(
     join(config.pluginDir, "ud-mdtoc"), inspection.bins["ud-mdtoc"]!)) {
@@ -665,6 +713,7 @@ export async function synchronize(config: Config): Promise<void> {
       }
     }
   }
+  // A package bin would fight the Jiyuu link on every sync.
   if (discordBin in installed.bins) {
     throw new Error(`A global package provides ${discordBin}, which sync ` +
       "links to Jiyuu's mcp/discord; remove it from bun/global/package.json")
@@ -761,8 +810,8 @@ export async function synchronize(config: Config): Promise<void> {
         await removeOwnedLink(path, target)
       }
     }
-    // After removing old package links, so a retired mcp-discord package
-    // link cannot remove the Jiyuu link.
+    // After removing old package links, so the retired mcp-discord package
+    // link cannot remove the Jiyuu link. saveLink keeps it in the rollback.
     if (!await sameTarget(discordPath, discordTarget)) {
       await saveLink(discordPath)
       await rm(discordPath, { force: true })
