@@ -580,7 +580,7 @@ sub_target_ref() {
 if (( recurse_submodules )); then
   for flag in "${merge_flags[@]}"; do
     case "$flag" in
-      --squash|--no-commit)
+      --squash|--no-commit|--ff-only)
         say "--subs can't use $flag: submodule heads must move for their pointers to be recorded"
         exit 1
         ;;
