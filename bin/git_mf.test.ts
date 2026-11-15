@@ -697,6 +697,13 @@ describe("git_mf --subs", () => {
     expect(await ok(r.homebox, "git rev-parse HEAD")).toBe(before)
   })
 
+  test("--subs refuses --squash, which would not move submodule heads", async () => {
+    const { homebox } = await machinePair()
+    const res = await sh(homebox, `${gitMf} ud/main --subs --squash`)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("--subs can't use --squash")
+  })
+
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()
     await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")

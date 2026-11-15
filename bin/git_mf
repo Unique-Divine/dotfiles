@@ -566,7 +566,26 @@ submodule_paths() {
   done < <(git config -z --file .gitmodules --get-regexp '^submodule\..*\.path$')
 }
 
+# The ref a submodule's own git_mf run merges: origin/TARGET, else the local
+# TARGET, as the planner resolves it.
+sub_target_ref() {
+  local -r sub="$1"
+  if git -C "$sub" rev-parse -q --verify "origin/$target^{commit}" >/dev/null; then
+    echo "origin/$target"
+  elif git -C "$sub" rev-parse -q --verify "refs/heads/$target" >/dev/null; then
+    echo "$target"
+  fi
+}
+
 if (( recurse_submodules )); then
+  for flag in "${merge_flags[@]}"; do
+    case "$flag" in
+      --squash|--no-commit)
+        say "--subs can't use $flag: submodule heads must move for their pointers to be recorded"
+        exit 1
+        ;;
+    esac
+  done
   cd "$repo"
   mapfile -d '' -t subs < <(submodule_paths)
   # --subs merges another branch into this one. On TARGET itself or detached,
@@ -775,11 +794,12 @@ if (( recurse_submodules )); then
   for sub in "${subs[@]}"; do
     theirs="$(git ls-tree "$upstream" -- "$sub" | awk '$1 == "160000" {print $3}')"
     [[ -z "$theirs" ]] && continue
-    if ! git -C "$sub" merge-base --is-ancestor "$theirs" "origin/$target" \
-      2>/dev/null; then
+    sub_ref="$(sub_target_ref "$sub")"
+    if [[ -z "$sub_ref" ]] || ! git -C "$sub" merge-base --is-ancestor \
+      "$theirs" "$sub_ref" 2>/dev/null; then
       say "plan: submodule-pointer: $sub"
       log_plan submodule-pointer "$sub"
-      needs_judgment "$upstream records $sub at ${theirs:0:12}, which $sub's origin/$target doesn't contain"
+      needs_judgment "$upstream records $sub at ${theirs:0:12}, which $sub's ${sub_ref:-$target} doesn't contain"
     fi
   done
 fi
@@ -823,8 +843,9 @@ else
           for sub in "${subs[@]}"; do
             [[ "$path" == "$sub" ]] || continue
             theirs="$(git ls-tree "$upstream" -- "$sub" | awk '$1 == "160000" {print $3}')"
-            if [[ -n "$theirs" ]] && git -C "$sub" merge-base --is-ancestor \
-              "$theirs" "origin/$target" 2>/dev/null; then
+            sub_ref="$(sub_target_ref "$sub")"
+            if [[ -n "$theirs" && -n "$sub_ref" ]] && git -C "$sub" \
+              merge-base --is-ancestor "$theirs" "$sub_ref" 2>/dev/null; then
               is_ff=1
             fi
           done
