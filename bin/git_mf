@@ -587,7 +587,27 @@ if (( recurse_submodules )); then
     esac
   done
   cd "$repo"
-  mapfile -d '' -t subs < <(submodule_paths)
+  mapfile -d '' -t all_subs < <(submodule_paths)
+  # Submodules without TARGET, such as a repository that has no machine
+  # branches, are skipped: there is nothing to merge, and their pointers
+  # merge as usual. A failure other than "branch missing" stops the run.
+  subs=()
+  for sub in "${all_subs[@]}"; do
+    if git -C "$sub" show-ref --verify --quiet "refs/heads/$target"; then
+      subs+=("$sub"); continue
+    fi
+    ls_rc=0
+    git -C "$sub" ls-remote --exit-code --heads origin "$target" >/dev/null 2>&1 \
+      || ls_rc=$?
+    case "$ls_rc" in
+      0) subs+=("$sub") ;;
+      2) say "submodule $sub has no $target; skipping" ;;
+      *)
+        say "can't reach origin for submodule $sub (git ls-remote exit $ls_rc)"
+        exit 1
+        ;;
+    esac
+  done
   # --subs merges another branch into this one. On TARGET itself or detached,
   # committing the submodule pointers would make the branch diverge.
   current_branch="$(git branch --show-current)"

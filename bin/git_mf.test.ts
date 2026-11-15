@@ -704,6 +704,23 @@ describe("git_mf --subs", () => {
     expect(res.stderr).toContain("--subs can't use --squash")
   })
 
+  test("a submodule without TARGET is skipped", async () => {
+    const { laptop, homebox } = await machinePair()
+    // A second submodule, recorded identically on both machines, with no ud/main.
+    const g = "git -c protocol.file.allow=always"
+    const root = join(laptop, "..")
+    await ok(root, "git init -q --bare --initial-branch=master other.git && git clone -q other.git other-seed")
+    await ok(join(root, "other-seed"), "git switch -q -c master && printf 'o\\n' > o.txt && git add . && git commit -qm o && git push -q -u origin master")
+    await ok(laptop, `${g} submodule add -q ${join(root, "other.git")} other && git commit -qm other && git push -q`)
+    await ok(homebox, `git fetch -q origin && ${g} merge -q --no-edit origin/ud/main~0 2>/dev/null || true`)
+    await ok(homebox, `git merge --abort 2>/dev/null; git reset -q --hard HEAD`)
+    await ok(homebox, `${g} submodule add -q ${join(root, "other.git")} other 2>/dev/null || ${g} submodule update -q --init other`)
+    await ok(homebox, "git commit -qam 'other' || true")
+    const res = await sh(homebox, `${gitMf} ud/main --subs --dry-run`)
+    expect(res.stderr).toContain("submodule other has no ud/main; skipping")
+    expect(res.stderr).not.toContain("missing-target")
+  })
+
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()
     await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")
