@@ -71,16 +71,16 @@ pub(super) fn tag_list(values: &[String]) -> Vec<String> {
 /// came from: relative to the home directory when the first component is a
 /// git repository (`boku/epics/x`).
 pub(super) fn source_label(cwd: &Path, home: Option<&Path>) -> String {
-    if let Some(home) = home {
-        if let Ok(rest) = cwd.strip_prefix(home) {
-            let repo = rest.components().next().map(|first| home.join(first));
-            if repo.is_some_and(|repo| repo.join(".git").exists()) {
-                return rest.to_string_lossy().into_owned();
-            }
-            return format!("~/{}", rest.to_string_lossy());
-        }
+    let Some((home, rest)) =
+        home.and_then(|home| cwd.strip_prefix(home).ok().map(|rest| (home, rest)))
+    else {
+        return cwd.to_string_lossy().into_owned();
+    };
+    let repo = rest.components().next().map(|first| home.join(first));
+    if repo.is_some_and(|repo| repo.join(".git").exists()) {
+        return rest.to_string_lossy().into_owned();
     }
-    cwd.to_string_lossy().into_owned()
+    format!("~/{}", rest.to_string_lossy())
 }
 
 /// `ud fs tag`: add and remove tags on one or more files.
