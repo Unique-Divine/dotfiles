@@ -592,16 +592,25 @@ if (( recurse_submodules )); then
   # branches, are skipped: there is nothing to merge, and their pointers
   # merge as usual. A failure other than "branch missing" stops the run.
   subs=()
+  skipped=()
   for sub in "${all_subs[@]}"; do
     if git -C "$sub" show-ref --verify --quiet "refs/heads/$target"; then
       subs+=("$sub"); continue
     fi
     ls_rc=0
-    git -C "$sub" ls-remote --exit-code --heads origin "$target" >/dev/null 2>&1 \
+    git -C "$sub" ls-remote --exit-code origin "refs/heads/$target" >/dev/null 2>&1 \
       || ls_rc=$?
     case "$ls_rc" in
       0) subs+=("$sub") ;;
-      2) say "submodule $sub has no $target; skipping" ;;
+      2)
+        if [[ -n "$(git -C "$sub" status --porcelain)" ]]; then
+          say "plan: dirty"
+          say "uncommitted changes in skipped submodule $sub; skipping the run"
+          exit 2
+        fi
+        say "submodule $sub has no $target; skipping"
+        skipped+=("$sub")
+        ;;
       *)
         say "can't reach origin for submodule $sub (git ls-remote exit $ls_rc)"
         exit 1
@@ -966,3 +975,11 @@ fi
 
 (( dry_run )) && exit 0
 say "$branch is at $(git rev-parse --short HEAD), including $upstream ($(git rev-parse --short "$upstream"))"
+if (( recurse_submodules )); then
+  for sub in "${skipped[@]}"; do
+    recorded="$(git ls-tree HEAD -- "$sub" | awk '$1 == "160000" {print $3}')"
+    if [[ -n "$recorded" && "$recorded" != "$(git -C "$sub" rev-parse HEAD)" ]]; then
+      say "skipped submodule $sub is now recorded at ${recorded:0:12}; run: git submodule update -- $sub"
+    fi
+  done
+fi
