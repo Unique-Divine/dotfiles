@@ -719,8 +719,16 @@ describe("git_mf --subs", () => {
     await ok(homebox, `${g} submodule add -q ${join(root, "other.git")} other 2>/dev/null || ${g} submodule update -q --init other`)
     await ok(homebox, "git commit -qam 'other' || true")
     const res = await sh(homebox, `${gitMf} ud/main --subs --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
     expect(res.stderr).toContain("submodule other has no ud/main; skipping")
     expect(res.stderr).not.toContain("missing-target")
+    // Uncommitted work in a skipped submodule refuses the run.
+    await writeFile(join(homebox, "other", "o.txt"), "local\n")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const dirty = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(dirty.code).toBe(2)
+    expect(dirty.stderr).toContain("uncommitted changes in submodule other")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
   })
 
   test("a staged change stops the run before any submodule moves", async () => {

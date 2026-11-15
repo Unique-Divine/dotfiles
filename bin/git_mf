@@ -593,6 +593,7 @@ if (( recurse_submodules )); then
   # merge as usual. A failure other than "branch missing" stops the run.
   subs=()
   skipped=()
+  skipped_before=()
   for sub in "${all_subs[@]}"; do
     if git -C "$sub" show-ref --verify --quiet "refs/heads/$target"; then
       subs+=("$sub"); continue
@@ -605,11 +606,13 @@ if (( recurse_submodules )); then
       2)
         if [[ -n "$(git -C "$sub" status --porcelain)" ]]; then
           say "plan: dirty"
-          say "uncommitted changes in skipped submodule $sub; skipping the run"
+          say "uncommitted changes in submodule $sub, which has no $target and is"
+          say "outside --subs (--agent doesn't cover it); commit or discard them, then rerun"
           exit 2
         fi
         say "submodule $sub has no $target; skipping"
         skipped+=("$sub")
+        skipped_before+=("$(git ls-tree HEAD -- "$sub" | awk '$1 == "160000" {print $3}')")
         ;;
       *)
         say "can't reach origin for submodule $sub (git ls-remote exit $ls_rc)"
@@ -976,9 +979,14 @@ fi
 (( dry_run )) && exit 0
 say "$branch is at $(git rev-parse --short HEAD), including $upstream ($(git rev-parse --short "$upstream"))"
 if (( recurse_submodules )); then
-  for sub in "${skipped[@]}"; do
+  # Remind only when this merge moved the pointer of a checkout that was in
+  # sync, so following it can't strand commits made in the submodule.
+  for i in "${!skipped[@]}"; do
+    sub="${skipped[i]}"
+    before="${skipped_before[i]}"
     recorded="$(git ls-tree HEAD -- "$sub" | awk '$1 == "160000" {print $3}')"
-    if [[ -n "$recorded" && "$recorded" != "$(git -C "$sub" rev-parse HEAD)" ]]; then
+    if [[ -n "$recorded" && "$recorded" != "$before" \
+      && "$(git -C "$sub" rev-parse HEAD)" == "$before" ]]; then
       say "skipped submodule $sub is now recorded at ${recorded:0:12}; run: git submodule update -- $sub"
     fi
   done
