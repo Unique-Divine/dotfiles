@@ -67,14 +67,19 @@ pub(super) fn tag_list(values: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Where `publish` ran, relative to `~/ki` when possible, so search can
-/// find files by the repo or epic they came from.
+/// Where `publish` ran, so search can find files by the repo or epic they
+/// came from: relative to the home directory when the first component is a
+/// git repository (`boku/epics/x`), or to the legacy `~/ki` repository root.
 pub(super) fn source_label(cwd: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {
         if let Ok(rest) = cwd.strip_prefix(home.join("ki")) {
             return rest.to_string_lossy().into_owned();
         }
         if let Ok(rest) = cwd.strip_prefix(home) {
+            let repo = rest.components().next().map(|first| home.join(first));
+            if repo.is_some_and(|repo| repo.join(".git").exists()) {
+                return rest.to_string_lossy().into_owned();
+            }
             return format!("~/{}", rest.to_string_lossy());
         }
     }
@@ -258,7 +263,7 @@ pub(super) fn backlinks(
     command.args(["--fixed-strings", "--only-matching", "--with-filename"]);
     command.args(["--no-heading", "--no-line-number", "--color", "never"]);
     // Only text formats can embed a URL; skipping binaries and build output
-    // cuts a full ~/ki scan from about 19 s to about 3 s.
+    // cut a full repository scan from about 19 s to about 3 s.
     command.args(["--glob", BACKLINK_GLOB]);
     // Agent notes live in hidden folders such as .claude/ and .cursor/.
     command.args(["--hidden", "--glob", "!.git"]);

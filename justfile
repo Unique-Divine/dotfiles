@@ -295,7 +295,7 @@ email-sync:
   #!/usr/bin/env bash
   # Configs missing from the private Boku checkout are skipped, not errors.
   set -Eeuo pipefail
-  email_private="${BOKU:-$HOME/ki/boku}/priv-skills/ud/email"
+  email_private="${BOKU:-$HOME/boku}/priv-skills/ud/email"
   email_build() {
     local src="$email_private/$1"
     [[ -f "$src" ]] || return 0

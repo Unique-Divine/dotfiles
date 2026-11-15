@@ -227,7 +227,7 @@ pub fn run_quick(command: QuickCommand) -> Result<i32> {
         QuickCommand::Notes(preview) => quick_helper("notes", "notes", preview),
         QuickCommand::Out(preview) => {
             let home = env::var("HOME").context("HOME is not set")?;
-            quick_helper("out", &format!("nvim {home}/ki/out.txt"), preview)
+            quick_helper("out", &format!("nvim {home}/out.txt"), preview)
         }
         QuickCommand::Symlink { src, dst } => quick_symlink(&src, &dst),
         QuickCommand::Skills(preview) => {
