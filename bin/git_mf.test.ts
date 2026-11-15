@@ -722,6 +722,13 @@ describe("git_mf --subs", () => {
     expect(res.code, res.stderr).toBe(0)
     expect(res.stderr).toContain("submodule other has no ud/main; skipping")
     expect(res.stderr).not.toContain("missing-target")
+    // A real run merges the machine-branch submodule and leaves the skipped one alone.
+    const otherBefore = await ok(join(homebox, "other"), "git rev-parse HEAD")
+    const real = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(real.code, real.stderr).toBe(0)
+    await ok(homebox, "git merge-base --is-ancestor origin/ud/main HEAD")
+    await ok(join(homebox, "sub"), "git merge-base --is-ancestor origin/ud/main HEAD")
+    expect(await ok(join(homebox, "other"), "git rev-parse HEAD")).toBe(otherBefore)
     // Uncommitted work in a skipped submodule refuses the run.
     await writeFile(join(homebox, "other", "o.txt"), "local\n")
     const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
@@ -729,7 +736,7 @@ describe("git_mf --subs", () => {
     expect(dirty.code).toBe(2)
     expect(dirty.stderr).toContain("uncommitted changes in submodule other")
     expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
-  })
+  }, 30_000)
 
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()

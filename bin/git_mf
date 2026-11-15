@@ -987,7 +987,7 @@ if (( recurse_submodules )); then
     recorded="$(git ls-tree HEAD -- "$sub" | awk '$1 == "160000" {print $3}')"
     if [[ -n "$recorded" && "$recorded" != "$before" \
       && "$(git -C "$sub" rev-parse HEAD)" == "$before" ]]; then
-      say "skipped submodule $sub is now recorded at ${recorded:0:12}; run: git submodule update -- $sub"
+      say "skipped submodule $sub is now recorded at ${recorded:0:12}; run: git submodule update -- $(printf '%q' "$sub")"
     fi
   done
 fi
