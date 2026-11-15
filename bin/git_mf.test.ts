@@ -632,9 +632,42 @@ describe("git_mf --subs", () => {
   test("a submodule that needs judgment stops the run and leaves the superproject alone", async () => {
     const { homebox } = await machinePair({ laptop: "same.txt", homebox: "same.txt" })
     const before = await ok(homebox, "git rev-parse HEAD")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
     const res = await sh(homebox, `${gitMf} ud/main --subs`)
     expect(res.code).toBe(3)
-    expect(res.stderr).toContain("submodule sub stopped with exit 3")
+    expect(res.stderr).toContain("submodule sub would stop with exit 3; nothing was changed")
     expect(await ok(homebox, "git rev-parse HEAD")).toBe(before)
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("--dry-run predicts success and changes nothing", async () => {
+    const { homebox } = await machinePair()
+    const before = await snapshot(homebox)
+    const subBefore = await snapshot(join(homebox, "sub"))
+    const res = await sh(homebox, `${gitMf} ud/main --subs --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("plan: subs: merge sub")
+    expect(await snapshot(homebox)).toBe(before)
+    expect(await snapshot(join(homebox, "sub"))).toBe(subBefore)
+  })
+
+  test("a superproject conflict outside the pointers stops before any submodule moves", async () => {
+    const { laptop, homebox } = await machinePair()
+    await ok(laptop, "printf 'laptop\\n' > file.txt && git commit -qam laptop-file && git push -q")
+    await ok(homebox, "printf 'homebox\\n' > file.txt && git commit -qam homebox-file")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("merge-conflict: file.txt")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("a staged change stops the run before any submodule moves", async () => {
+    const { homebox } = await machinePair()
+    await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(2)
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
   })
 })
