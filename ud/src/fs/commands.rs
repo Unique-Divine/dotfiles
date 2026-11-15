@@ -69,12 +69,9 @@ pub(super) fn tag_list(values: &[String]) -> Vec<String> {
 
 /// Where `publish` ran, so search can find files by the repo or epic they
 /// came from: relative to the home directory when the first component is a
-/// git repository (`boku/epics/x`), or to the legacy `~/ki` repository root.
+/// git repository (`boku/epics/x`).
 pub(super) fn source_label(cwd: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {
-        if let Ok(rest) = cwd.strip_prefix(home.join("ki")) {
-            return rest.to_string_lossy().into_owned();
-        }
         if let Ok(rest) = cwd.strip_prefix(home) {
             let repo = rest.components().next().map(|first| home.join(first));
             if repo.is_some_and(|repo| repo.join(".git").exists()) {

@@ -374,7 +374,7 @@ fn docker_kill_all_fails_when_docker_stop_fails() {
 #[test]
 fn quick_shell_helper_runs_the_existing_notes_function() {
     let temp = TempDir::new().unwrap();
-    let repository_root = temp.path().join("ki");
+    let repository_root = temp.path().join("repos");
     let boku = repository_root.join("boku");
     fs::create_dir_all(&boku).unwrap();
     let nvim = temp.path().join("nvim");

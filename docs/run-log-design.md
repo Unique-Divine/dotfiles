@@ -127,7 +127,7 @@ How `end` gets its status: `runlog_end EXIT [status=...]`. Without
 Examples from Tree 2's run (`...` shortens the common fields):
 
 ```json
-{"v":1,"ts":"2026-11-09T14:20:30.101Z","source":"dotfiles","run_id":"261109T142030Z-git_mf-8b9c","parent_run_id":null,"root_run_id":"261109T142030Z-git_mf-8b9c","tool":"git_mf","event":"start","argv":["main","--agent"],"cwd":"/home/realu/ki/boku/jiyuu","host":"wsl-ud","pid":48121,"pid_start":91234567,"boot_id":"3f1c0d2e-...","rev":"52cf393","git":{"repo":"/home/realu/ki/boku/jiyuu","branch":"ud/x","head":"9c1e2aa"}}
+{"v":1,"ts":"2026-11-09T14:20:30.101Z","source":"dotfiles","run_id":"261109T142030Z-git_mf-8b9c","parent_run_id":null,"root_run_id":"261109T142030Z-git_mf-8b9c","tool":"git_mf","event":"start","argv":["main","--agent"],"cwd":"/home/realu/boku/jiyuu","host":"wsl-ud","pid":48121,"pid_start":91234567,"boot_id":"3f1c0d2e-...","rev":"52cf393","git":{"repo":"/home/realu/boku/jiyuu","branch":"ud/x","head":"9c1e2aa"}}
 {"v":1,...,"event":"step","name":"fetch-target","cmd":["git","fetch","--quiet","--prune","origin","+refs/heads/main:refs/remotes/origin/main"],"exit":0,"dur_ms":812,"ref":"origin/main"}
 {"v":1,...,"event":"agent-command","cmd":"just test","exit":1,"ref":{"file":"agent.jsonl","line":57}}
 {"v":1,...,"event":"end","exit":0,"status":"ok","dur_ms":186002,"warns":1,"errors":0}

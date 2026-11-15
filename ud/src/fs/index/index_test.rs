@@ -295,12 +295,8 @@ fn keys_urls_slugs_and_sources() {
     assert_eq!(slug_of("26-10-14-twitter.svg"), "twitter");
     assert_eq!(slug_of("notes.pdf"), "notes");
     let home = Path::new("/home/u");
-    assert_eq!(
-        source_label(Path::new("/home/u/ki/boku/epics/x"), Some(home)),
-        "boku/epics/x"
-    );
     assert_eq!(source_label(Path::new("/home/u/tmp"), Some(home)), "~/tmp");
-    // A repository directly under the home directory labels like ~/ki did.
+    // A repository directly under the home directory labels by repo path.
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(temp.path().join("boku/.git")).unwrap();
     std::fs::create_dir_all(temp.path().join("boku/epics/x")).unwrap();

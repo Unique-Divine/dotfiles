@@ -239,7 +239,7 @@ describe("managed Bun installation", () => {
   })
 
   test("accepts owned bin links that reach the install through a symlinked path", async () => {
-    // A checkout moved behind a symlink (~/ki/boku -> ~/boku) leaves links
+    // A checkout moved behind a symlink (old path -> new path) leaves links
     // whose text names the old path but whose files are the same.
     const config = await fixture()
     await synchronize(config)
