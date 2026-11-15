@@ -662,6 +662,28 @@ describe("git_mf --subs", () => {
     expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
   })
 
+  test("--subs refuses on TARGET itself", async () => {
+    const { homebox } = await machinePair()
+    await ok(homebox, "git switch -q -c ud/main --track origin/ud/main 2>/dev/null || git switch -q ud/main")
+    const before = await ok(homebox, "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("plan: subs-needs-branch")
+    expect(await ok(homebox, "git rev-parse HEAD")).toBe(before)
+  })
+
+  test("an incoming pointer outside the submodule's TARGET stays a conflict", async () => {
+    const { laptop, homebox } = await machinePair()
+    // The laptop records a submodule commit that only exists on another branch.
+    await ok(join(laptop, "sub"), "git switch -q -c side && printf 'side\\n' > side.txt && git add . && git commit -qm side && git push -q -u origin side")
+    await ok(laptop, "git commit -qam 'side pointer' && git push -q")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("merge-conflict: sub")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()
     await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")

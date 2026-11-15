@@ -569,6 +569,14 @@ submodule_paths() {
 if (( recurse_submodules )); then
   cd "$repo"
   mapfile -d '' -t subs < <(submodule_paths)
+  # --subs merges another branch into this one. On TARGET itself or detached,
+  # committing the submodule pointers would make the branch diverge.
+  current_branch="$(git branch --show-current)"
+  if [[ -z "$current_branch" || "$current_branch" == "$target" ]]; then
+    say "plan: subs-needs-branch"
+    say "--subs merges $target into another branch; check out your own branch first"
+    exit 1
+  fi
   if (( dry_run )); then
     # A dry run plans every submodule first; the superproject's own plan
     # below then treats pointer-only conflicts as the fast-forwards they
@@ -591,12 +599,9 @@ if (( recurse_submodules )); then
     "$script_dir/git_mf" "$target" --dry-run --subs "${merge_flags[@]}" >&2 \
       || pre_rc=$?
     if (( pre_rc != 0 )); then
-      if (( use_agent )); then
-        say "preflight would stop with exit $pre_rc; continuing so --agent can resolve it"
-      else
-        say "preflight would stop with exit $pre_rc; nothing was changed"
-        exit "$pre_rc"
-      fi
+      say "preflight would stop with exit $pre_rc; nothing was changed"
+      say "fix the repository named above (git_mf $target --agent there), then rerun"
+      exit "$pre_rc"
     fi
     child_flags=(--subs)
     (( use_agent )) && child_flags+=(--agent)
@@ -795,9 +800,18 @@ else
       if (( recurse_submodules )) && (( ${#conflict_list[@]} )); then
         outside=()
         for path in "${conflict_list[@]}"; do
-          is_sub=0
-          for sub in "${subs[@]}"; do [[ "$path" == "$sub" ]] && is_sub=1; done
-          (( is_sub )) || outside+=("$path")
+          # A pointer conflict fast-forwards only when the submodule's own
+          # TARGET, which --subs merges first, contains the incoming pointer.
+          is_ff=0
+          for sub in "${subs[@]}"; do
+            [[ "$path" == "$sub" ]] || continue
+            theirs="$(git ls-tree "$upstream" -- "$sub" | awk '$1 == "160000" {print $3}')"
+            if [[ -n "$theirs" ]] && git -C "$sub" merge-base --is-ancestor \
+              "$theirs" "origin/$target" 2>/dev/null; then
+              is_ff=1
+            fi
+          done
+          (( is_ff )) || outside+=("$path")
         done
         if (( ${#outside[@]} == 0 )); then
           # Pointers fast-forward once the submodules have merged.
