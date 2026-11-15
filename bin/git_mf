@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 usage() {
   cat <<EOF
-Usage: git_mf [target_branch] [--dry-run] [--agent] [--json]
+Usage: git_mf [target_branch] [--dry-run] [--agent] [--json] [--subs]
               [git merge flags...]
 
 Git "[m]erge [f]rom". Bring the current branch up to date with
@@ -48,6 +48,12 @@ Exit codes:
 Options:
   --dry-run     Print the plan and commands without running them.
   --agent       On exit 2 or 3, run an agent with the merge prompt instead.
+  --subs        First bring each initialized submodule up to date with
+                origin/TARGET (a git_mf run inside it), then commit the
+                submodules' new heads and merge the superproject. Use it to
+                move work between machine branches, such as
+                git_mf ud/main --subs in boku on homebox. Stops at the
+                first submodule that needs judgment.
   --json        Print this run's events to stdout as JSONL. Command output
                 moves to stderr. The agent's own events (from ud boku runs
                 tap) are in the run file, not on stdout.
@@ -143,11 +149,13 @@ fi
 
 target=""
 use_agent=0
+recurse_submodules=0
 merge_flags=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
     --agent) use_agent=1 ;;
+    --subs) recurse_submodules=1 ;;
     --json) json_out=1; export BOKU_RUNLOG_STDOUT=1 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -544,6 +552,53 @@ for (( i = 0; i < ${#merge_flags[@]}; i++ )); do
       ;;
   esac
 done
+
+# ---- Submodules (--subs): bring each one up to date first. ----
+
+# Initialized submodule paths, from .gitmodules.
+submodule_paths() {
+  [[ -f .gitmodules ]] || return 0
+  git config --file .gitmodules --get-regexp '^submodule\..*\.path$' \
+    | awk '{print $2}' | while read -r path; do
+      [[ -e "$path/.git" ]] && printf '%s\n' "$path"
+    done
+}
+
+if (( recurse_submodules )); then
+  cd "$repo"
+  mapfile -t subs < <(submodule_paths)
+  # Changes other than submodule pointers stop the run before any submodule
+  # moves, so a refusal leaves everything as it was.
+  if [[ -n "$(git status --porcelain --ignore-submodules=all)" ]]; then
+    say "plan: dirty"
+    log_plan dirty
+    say "uncommitted changes in $repo besides submodule pointers; skipping"
+    exit 2
+  fi
+  sub_flags=()
+  (( dry_run )) && sub_flags+=(--dry-run)
+  (( use_agent )) && sub_flags+=(--agent)
+  for sub in "${subs[@]}"; do
+    say "submodule $sub: git_mf $target ${sub_flags[*]}"
+    sub_rc=0
+    (cd "$sub" && "$script_dir/git_mf" "$target" "${sub_flags[@]}" \
+      "${merge_flags[@]}") || sub_rc=$?
+    if (( sub_rc != 0 )); then
+      say "submodule $sub stopped with exit $sub_rc; the superproject was not touched"
+      exit "$sub_rc"
+    fi
+  done
+  # Record the submodules' new heads, so the superproject merge sees them.
+  # Git then fast-forwards each pointer that contains the other side's.
+  moved=()
+  for sub in "${subs[@]}"; do
+    git diff --quiet -- "$sub" || moved+=("$sub")
+  done
+  if (( ${#moved[@]} )); then
+    run git commit --quiet \
+      -m "Point ${moved[*]} at their heads after merging $target" -- "${moved[@]}"
+  fi
+fi
 
 # ---- Plan: read-only apart from fetching remote-tracking refs. ----
 
