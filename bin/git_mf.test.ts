@@ -704,6 +704,40 @@ describe("git_mf --subs", () => {
     expect(res.stderr).toContain("--subs can't use --squash")
   })
 
+  test("a submodule without TARGET is skipped, even with a branch ending in TARGET", async () => {
+    const { laptop, homebox } = await machinePair()
+    // A second submodule, recorded identically on both machines, with no ud/main.
+    const g = "git -c protocol.file.allow=always"
+    const root = join(laptop, "..")
+    await ok(root, "git init -q --bare --initial-branch=master other.git && git clone -q other.git other-seed")
+    await ok(join(root, "other-seed"), "git switch -q -c master && printf 'o\\n' > o.txt && git add . && git commit -qm o && git push -q -u origin master")
+    // Only x/ud/main exists: TARGET must match refs/heads/ud/main exactly.
+    await ok(join(root, "other-seed"), "git push -q origin HEAD:refs/heads/x/ud/main")
+    await ok(laptop, `${g} submodule add -q ${join(root, "other.git")} other && git commit -qm other && git push -q`)
+    await ok(homebox, `git fetch -q origin && ${g} merge -q --no-edit origin/ud/main~0 2>/dev/null || true`)
+    await ok(homebox, `git merge --abort 2>/dev/null; git reset -q --hard HEAD`)
+    await ok(homebox, `${g} submodule add -q ${join(root, "other.git")} other 2>/dev/null || ${g} submodule update -q --init other`)
+    await ok(homebox, "git commit -qam 'other' || true")
+    const res = await sh(homebox, `${gitMf} ud/main --subs --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("submodule other has no ud/main; skipping")
+    expect(res.stderr).not.toContain("missing-target")
+    // A real run merges the machine-branch submodule and leaves the skipped one alone.
+    const otherBefore = await ok(join(homebox, "other"), "git rev-parse HEAD")
+    const real = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(real.code, real.stderr).toBe(0)
+    await ok(homebox, "git merge-base --is-ancestor origin/ud/main HEAD")
+    await ok(join(homebox, "sub"), "git merge-base --is-ancestor origin/ud/main HEAD")
+    expect(await ok(join(homebox, "other"), "git rev-parse HEAD")).toBe(otherBefore)
+    // Uncommitted work in a skipped submodule refuses the run.
+    await writeFile(join(homebox, "other", "o.txt"), "local\n")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const dirty = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(dirty.code).toBe(2)
+    expect(dirty.stderr).toContain("uncommitted changes in submodule other")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  }, 30_000)
+
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()
     await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")
