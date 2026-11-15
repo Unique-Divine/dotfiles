@@ -569,99 +569,61 @@ submodule_paths() {
 if (( recurse_submodules )); then
   cd "$repo"
   mapfile -d '' -t subs < <(submodule_paths)
-  op="$(in_progress_op)"
-  if [[ -n "$op" ]]; then
-    say "plan: in-progress: $op"
-    log_plan "in-progress: $op"
-    say "finish or abort the $op first"
-    exit 5
-  fi
-  # Changes besides unstaged submodule pointers stop the run before any
-  # submodule moves, so a refusal leaves everything as it was.
-  if [[ -n "$(git status --porcelain --ignore-submodules=all)" ]] \
-    || ! git diff --cached --quiet; then
-    say "plan: dirty"
-    log_plan dirty
-    if (( use_agent )); then
-      run_agent "the working tree has uncommitted changes besides submodule pointers" \
-        || exit $?
-      exit 0
-    fi
-    say "uncommitted changes in $repo besides submodule pointers; skipping"
-    exit 2
-  fi
-  child_flags=(--subs)
-  (( use_agent )) && child_flags+=(--agent)
-  (( json_out )) && child_flags+=(--json)
-
-  # Preflight, read-only: every submodule must be able to merge, and the
-  # superproject must merge cleanly apart from the submodule pointers, which
-  # fast-forward once the submodules have merged.
-  for sub in "${subs[@]}"; do
-    say "submodule $sub: preflight git_mf $target --dry-run"
-    sub_rc=0
-    (cd "$sub" && "$script_dir/git_mf" "$target" --dry-run --subs \
-      "${merge_flags[@]}") >&2 || sub_rc=$?
-    if (( sub_rc != 0 )); then
-      say "submodule $sub would stop with exit $sub_rc; nothing was changed"
-      say "resolve it first: cd $sub && git_mf $target --agent"
-      exit "$sub_rc"
-    fi
-  done
-  run git fetch --quiet --prune origin \
-    "+refs/heads/$target:refs/remotes/origin/$target" 2>/dev/null || true
-  sub_upstream="origin/$target"
-  if ! git rev-parse -q --verify "$sub_upstream^{commit}" >/dev/null; then
-    sub_upstream="$target"
-    if ! git rev-parse -q --verify "$sub_upstream^{commit}" >/dev/null; then
-      say "plan: missing-target"
-      say "neither origin/$target nor $target exists"
-      exit 1
-    fi
-  fi
-  outside=()
-  if ! tree_out="$(git merge-tree --write-tree --name-only --no-messages -z \
-    "${tree_flags[@]}" HEAD "$sub_upstream" | tr '\0' '\n')"; then
-    while IFS= read -r path; do
-      [[ -z "$path" ]] && continue
-      is_sub=0
-      for sub in "${subs[@]}"; do [[ "$path" == "$sub" ]] && is_sub=1; done
-      (( is_sub )) || outside+=("$path")
-    done < <(tail -n +2 <<<"$tree_out")
-  fi
-  if (( ${#outside[@]} )); then
-    say "plan: merge-conflict: ${outside[*]}"
-    log_plan merge-conflict "${outside[@]}"
-    needs_judgment "merging $sub_upstream into $(git branch --show-current) conflicts in: ${outside[*]}"
-  fi
   if (( dry_run )); then
-    say "plan: subs: merge ${subs[*]:-no submodules}, commit their pointers, then merge $sub_upstream"
-    exit 0
-  fi
-
-  # Apply.
-  merged=()
-  for sub in "${subs[@]}"; do
-    say "submodule $sub: git_mf $target ${child_flags[*]}"
-    sub_rc=0
-    (cd "$sub" && "$script_dir/git_mf" "$target" "${child_flags[@]}" \
-      "${merge_flags[@]}") || sub_rc=$?
-    if (( sub_rc != 0 )); then
-      say "submodule $sub stopped with exit $sub_rc after its preflight passed"
-      say "already merged: ${merged[*]:-none}; the superproject was not touched"
-      exit "$sub_rc"
+    # A dry run plans every submodule first; the superproject's own plan
+    # below then treats pointer-only conflicts as the fast-forwards they
+    # become once the submodules have merged.
+    for sub in "${subs[@]}"; do
+      say "submodule $sub: git_mf $target --dry-run --subs"
+      sub_rc=0
+      (cd "$sub" && "$script_dir/git_mf" "$target" --dry-run --subs \
+        "${merge_flags[@]}") >&2 || sub_rc=$?
+      if (( sub_rc != 0 )); then
+        say "submodule $sub would stop with exit $sub_rc"
+        exit "$sub_rc"
+      fi
+    done
+  else
+    # Preflight: the same command as a dry run must pass before anything
+    # changes, so a refusal anywhere leaves every repository as it was.
+    say "preflight: git_mf $target --dry-run --subs"
+    pre_rc=0
+    "$script_dir/git_mf" "$target" --dry-run --subs "${merge_flags[@]}" >&2 \
+      || pre_rc=$?
+    if (( pre_rc != 0 )); then
+      if (( use_agent )); then
+        say "preflight would stop with exit $pre_rc; continuing so --agent can resolve it"
+      else
+        say "preflight would stop with exit $pre_rc; nothing was changed"
+        exit "$pre_rc"
+      fi
     fi
-    merged+=("$sub")
-  done
-  # Record the submodules' new heads, so the superproject merge sees them.
-  # Git then fast-forwards each pointer that contains the other side's.
-  moved=()
-  for sub in "${subs[@]}"; do
-    git diff --quiet -- "$sub" || moved+=("$sub")
-  done
-  if (( ${#moved[@]} )); then
-    run git commit --quiet \
-      -m "Point ${moved[*]} at their heads after merging $target" -- "${moved[@]}"
+    child_flags=(--subs)
+    (( use_agent )) && child_flags+=(--agent)
+    (( json_out )) && child_flags+=(--json)
+    merged=()
+    for sub in "${subs[@]}"; do
+      say "submodule $sub: git_mf $target ${child_flags[*]}"
+      sub_rc=0
+      (cd "$sub" && "$script_dir/git_mf" "$target" "${child_flags[@]}" \
+        "${merge_flags[@]}") || sub_rc=$?
+      if (( sub_rc != 0 )); then
+        say "submodule $sub stopped with exit $sub_rc"
+        say "already merged: ${merged[*]:-none}; the superproject was not touched"
+        exit "$sub_rc"
+      fi
+      merged+=("$sub")
+    done
+    # Record the submodules' new heads, so the superproject merge sees them.
+    # Git then fast-forwards each pointer that contains the other side's.
+    moved=()
+    for sub in "${subs[@]}"; do
+      git diff --quiet -- "$sub" || moved+=("$sub")
+    done
+    if (( ${#moved[@]} )); then
+      run git commit --quiet \
+        -m "Point ${moved[*]} at their heads after merging $target" -- "${moved[@]}"
+    fi
   fi
 fi
 
@@ -675,7 +637,10 @@ if [[ -n "$op" ]]; then
   exit 5
 fi
 
-if [[ -n "$(git status --porcelain)" ]]; then
+status_flags=()
+(( recurse_submodules )) && status_flags+=(--ignore-submodules=all)
+if [[ -n "$(git status --porcelain "${status_flags[@]}")" ]] \
+  || { (( recurse_submodules )) && ! git diff --cached --quiet; }; then
   say "plan: dirty"
   log_plan dirty
   if (( use_agent )); then
@@ -827,6 +792,23 @@ else
       mapfile -t conflict_list < <(tail -n +2 <<<"$tree_out" | sed '/^$/d' \
         | sort -u)
       conflicts="${conflict_list[*]}"
+      if (( recurse_submodules )) && (( ${#conflict_list[@]} )); then
+        outside=()
+        for path in "${conflict_list[@]}"; do
+          is_sub=0
+          for sub in "${subs[@]}"; do [[ "$path" == "$sub" ]] && is_sub=1; done
+          (( is_sub )) || outside+=("$path")
+        done
+        if (( ${#outside[@]} == 0 )); then
+          # Pointers fast-forward once the submodules have merged.
+          action="merge"
+          conflicts=""
+          conflict_list=()
+        else
+          conflict_list=("${outside[@]}")
+          conflicts="${outside[*]}"
+        fi
+      fi
       ;;
     *)
       say "plan: error"
