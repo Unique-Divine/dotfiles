@@ -118,7 +118,7 @@ impl Settings {
 }
 
 /// Backlink roots from `UD_FS_REF_ROOTS` (colon-separated), then the
-/// `ref_roots` config array, then `~/ki`. A leading `~/` expands to HOME.
+/// `ref_roots` config array, then `~`. A leading `~/` expands to HOME.
 fn ref_roots(
     values: &Map<String, Value>,
     lookup: &impl Fn(&str) -> Option<String>,
@@ -138,5 +138,5 @@ fn ref_roots(
     if let Some(Value::Array(items)) = values.get("ref_roots") {
         return items.iter().filter_map(Value::as_str).map(expand).collect();
     }
-    home.map(|h| vec![h.join("ki")]).unwrap_or_default()
+    home.map(|h| vec![h]).unwrap_or_default()
 }

@@ -20,7 +20,7 @@ live outside this repo.
 clone:
 
 ```bash
-just gmailctl-install   # clones ~/ki/gmailctl or pulls it, then go install
+just gmailctl-install   # clones ~/gmailctl or pulls it, then go install
 ```
 
 The binary lands in `$(go env GOPATH)/bin/gmailctl`.
@@ -50,7 +50,7 @@ This renders each private config that exists and skips the rest:
 | `$BOKU/priv-skills/ud/email/gmailctl-nibi.ts` | `~/.config/gmailctl/config.jsonnet` |
 | `$BOKU/priv-skills/ud/email/gmailctl-ud.ts` | `~/.config/gmailctl-ud/config.jsonnet` |
 
-`$BOKU` defaults to `~/ki/boku`. `just sync` runs `email-sync` too. The
+`$BOKU` defaults to `~/boku`. `just sync` runs `email-sync` too. The
 generated files are never edited or committed; change the TypeScript and
 run `just email-sync` again.
 

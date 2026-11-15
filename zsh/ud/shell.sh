@@ -21,7 +21,7 @@ ud_shell_quick() {
       "$sub"
       ;;
     out)
-      nvim "$HOME/ki/out.txt"
+      nvim "$HOME/out.txt"
       ;;
     *)
       printf 'Unknown ud quick shell operation: %s\n' "$sub" >&2
