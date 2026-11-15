@@ -566,3 +566,150 @@ describe("git_mf review-2 fixes", () => {
     expect(await ok(r.clone, "git rev-list --parents -n1 HEAD | wc -w")).toBe("3")
   })
 })
+
+/**
+ * Two machines sharing a superproject with one submodule, like boku with
+ * dotfiles: the laptop pushes ud/main, homebox works on ud/homebox. Both
+ * commit in the submodule and record the new pointer in the superproject.
+ */
+async function machinePair(subContent: { laptop: string; homebox: string } = {
+  laptop: "laptop.txt",
+  homebox: "homebox.txt",
+}) {
+  const r = await repoPair()
+  const g = "git -c protocol.file.allow=always"
+  const subRemote = join(r.root, "sub.git")
+  const seed = join(r.root, "sub-seed")
+  await ok(r.root, `git init -q --bare --initial-branch=main ${subRemote}`)
+  await ok(r.root, `git clone -q ${subRemote} ${seed}`)
+  await ok(seed, "git switch -q -c main && printf 'a\\n' > a.txt && git add . && git commit -qm a && git push -q -u origin main")
+  await ok(r.peer, `${g} submodule add -q ${subRemote} sub && git commit -qm sub && git push -q`)
+  const machine = async (dir: string, branch: string, file: string) => {
+    await ok(r.root, `${g} clone -q --recurse-submodules ${r.remote} ${dir}`)
+    await ok(dir, `git switch -q -c ${branch}`)
+    await ok(join(dir, "sub"), `git switch -q -c ${branch} && printf '${branch}\\n' > ${file} && git add . && git commit -qm ${branch}`)
+    await ok(dir, `git commit -qam "${branch} pointer"`)
+  }
+  const laptop = join(r.root, "laptop")
+  const homebox = join(r.root, "homebox")
+  await machine(laptop, "ud/main", subContent.laptop)
+  await ok(join(laptop, "sub"), "git push -q -u origin ud/main")
+  await ok(laptop, "git push -q -u origin ud/main")
+  await machine(homebox, "ud/homebox", subContent.homebox)
+  return { laptop, homebox }
+}
+
+describe("git_mf --subs", () => {
+  test("merges the submodule, then the superproject, without pointer conflicts", async () => {
+    const { homebox } = await machinePair()
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("submodule sub: git_mf ud/main")
+    expect(await ok(homebox, "git status --porcelain")).toBe("")
+    const pointer = await ok(homebox, "git ls-tree HEAD sub | awk '{print $3}'")
+    expect(pointer).toBe(await ok(join(homebox, "sub"), "git rev-parse HEAD"))
+    await ok(homebox, "git merge-base --is-ancestor origin/ud/main HEAD")
+    await ok(join(homebox, "sub"), "git merge-base --is-ancestor origin/ud/main HEAD")
+    expect(await ok(join(homebox, "sub"), "ls")).toContain("homebox.txt")
+  })
+
+  test("without --subs, the pointer conflict still needs judgment", async () => {
+    const { homebox } = await machinePair()
+    const res = await sh(homebox, `${gitMf} ud/main`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("merge-conflict: sub")
+  })
+
+  test("other uncommitted changes stop the run before any submodule moves", async () => {
+    const { homebox } = await machinePair()
+    await writeFile(join(homebox, "file.txt"), "local edit\n")
+    const before = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(2)
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(before)
+  })
+
+  test("a submodule that needs judgment stops the run and leaves the superproject alone", async () => {
+    const { homebox } = await machinePair({ laptop: "same.txt", homebox: "same.txt" })
+    const before = await ok(homebox, "git rev-parse HEAD")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("preflight would stop with exit 3; nothing was changed")
+    expect(await ok(homebox, "git rev-parse HEAD")).toBe(before)
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("--dry-run predicts success and changes nothing", async () => {
+    const { homebox } = await machinePair()
+    const before = await snapshot(homebox)
+    const subBefore = await snapshot(join(homebox, "sub"))
+    const res = await sh(homebox, `${gitMf} ud/main --subs --dry-run`)
+    expect(res.code, res.stderr).toBe(0)
+    expect(res.stderr).toContain("git_mf: plan: merge")
+    expect(await snapshot(homebox)).toBe(before)
+    expect(await snapshot(join(homebox, "sub"))).toBe(subBefore)
+  })
+
+  test("a superproject conflict outside the pointers stops before any submodule moves", async () => {
+    const { laptop, homebox } = await machinePair()
+    await ok(laptop, "printf 'laptop\\n' > file.txt && git commit -qam laptop-file && git push -q")
+    await ok(homebox, "printf 'homebox\\n' > file.txt && git commit -qam homebox-file")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("merge-conflict: file.txt")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("--subs refuses on TARGET itself", async () => {
+    const { homebox } = await machinePair()
+    await ok(homebox, "git switch -q -c ud/main --track origin/ud/main 2>/dev/null || git switch -q ud/main")
+    const before = await ok(homebox, "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("plan: subs-needs-branch")
+    expect(await ok(homebox, "git rev-parse HEAD")).toBe(before)
+  })
+
+  test("an incoming pointer outside the submodule's TARGET stays a conflict", async () => {
+    const { laptop, homebox } = await machinePair()
+    // The laptop records a submodule commit that only exists on another branch.
+    await ok(join(laptop, "sub"), "git switch -q -c side && printf 'side\\n' > side.txt && git add . && git commit -qm side && git push -q -u origin side")
+    await ok(laptop, "git commit -qam 'side pointer' && git push -q")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("plan: submodule-pointer: sub")
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("an incoming pointer outside the submodule's TARGET stops a fast-forward plan too", async () => {
+    const r = await machinePair()
+    // homebox with no superproject commits of its own would fast-forward.
+    await ok(r.homebox, "git reset -q --hard HEAD~1")
+    await ok(join(r.laptop, "sub"), "git switch -q -c side && printf 'side\\n' > side.txt && git add . && git commit -qm side && git push -q -u origin side")
+    await ok(r.laptop, "git commit -qam 'side pointer' && git push -q")
+    const before = await ok(r.homebox, "git rev-parse HEAD")
+    const res = await sh(r.homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("plan: submodule-pointer: sub")
+    expect(await ok(r.homebox, "git rev-parse HEAD")).toBe(before)
+  })
+
+  test("--subs refuses --squash, which would not move submodule heads", async () => {
+    const { homebox } = await machinePair()
+    const res = await sh(homebox, `${gitMf} ud/main --subs --squash`)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("--subs can't use --squash")
+  })
+
+  test("a staged change stops the run before any submodule moves", async () => {
+    const { homebox } = await machinePair()
+    await ok(homebox, "printf 'staged\\n' > new.txt && git add new.txt")
+    const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
+    const res = await sh(homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(2)
+    expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+})
