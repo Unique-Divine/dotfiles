@@ -205,7 +205,7 @@ const canonicalPath = async (path: string): Promise<string> => {
 
 /**
  * Whether the link at `path` points at `expected`. Compares real paths, so a
- * link made through a symlinked repository path (~/ki/boku -> ~/boku) counts.
+ * link made through a symlinked repository path (old path -> new path) counts.
  */
 const resolvesTo = async (path: string, expected: string): Promise<boolean> => {
   try {

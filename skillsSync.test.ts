@@ -410,7 +410,7 @@ describe("skills-sync", () => {
   })
 
   test("accepts links that reach skills through a symlinked repository path", async () => {
-    // Moving ~/ki/boku to ~/boku left a ~/ki/boku symlink, so existing links
+    // Moving the repository left its old path as a symlink, so existing links
     // name the old path but still reach the same skills.
     await run(homeDir, repoDir, ["--run"])
     const oldRepo = join(root, "old-repo")
