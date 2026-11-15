@@ -572,7 +572,8 @@ if (( recurse_submodules )); then
   # --subs merges another branch into this one. On TARGET itself or detached,
   # committing the submodule pointers would make the branch diverge.
   current_branch="$(git branch --show-current)"
-  if [[ -z "$current_branch" || "$current_branch" == "$target" ]]; then
+  if (( ${#subs[@]} )) \
+    && [[ -z "$current_branch" || "$current_branch" == "$target" ]]; then
     say "plan: subs-needs-branch"
     say "--subs merges $target into another branch; check out your own branch first"
     exit 1
@@ -765,6 +766,22 @@ if [[ -z "$branch" ]]; then
   branch="$target"
 else
   head_ref=HEAD
+fi
+
+# With --subs, every incoming submodule pointer must be one the submodule's
+# own merge of TARGET will contain; otherwise committing the merged heads
+# could leave the superproject with a pointer conflict.
+if (( recurse_submodules )); then
+  for sub in "${subs[@]}"; do
+    theirs="$(git ls-tree "$upstream" -- "$sub" | awk '$1 == "160000" {print $3}')"
+    [[ -z "$theirs" ]] && continue
+    if ! git -C "$sub" merge-base --is-ancestor "$theirs" "origin/$target" \
+      2>/dev/null; then
+      say "plan: submodule-pointer: $sub"
+      log_plan submodule-pointer "$sub"
+      needs_judgment "$upstream records $sub at ${theirs:0:12}, which $sub's origin/$target doesn't contain"
+    fi
+  done
 fi
 
 conflicts=""

@@ -680,8 +680,21 @@ describe("git_mf --subs", () => {
     const subBefore = await ok(join(homebox, "sub"), "git rev-parse HEAD")
     const res = await sh(homebox, `${gitMf} ud/main --subs`)
     expect(res.code).toBe(3)
-    expect(res.stderr).toContain("merge-conflict: sub")
+    expect(res.stderr).toContain("plan: submodule-pointer: sub")
     expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("an incoming pointer outside the submodule's TARGET stops a fast-forward plan too", async () => {
+    const r = await machinePair()
+    // homebox with no superproject commits of its own would fast-forward.
+    await ok(r.homebox, "git reset -q --hard HEAD~1")
+    await ok(join(r.laptop, "sub"), "git switch -q -c side && printf 'side\\n' > side.txt && git add . && git commit -qm side && git push -q -u origin side")
+    await ok(r.laptop, "git commit -qam 'side pointer' && git push -q")
+    const before = await ok(r.homebox, "git rev-parse HEAD")
+    const res = await sh(r.homebox, `${gitMf} ud/main --subs`)
+    expect(res.code).toBe(3)
+    expect(res.stderr).toContain("plan: submodule-pointer: sub")
+    expect(await ok(r.homebox, "git rev-parse HEAD")).toBe(before)
   })
 
   test("a staged change stops the run before any submodule moves", async () => {
