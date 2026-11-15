@@ -235,7 +235,7 @@ pub enum QuickCommand {
     Music(CommandPreview),
     /// Edit the notes workspace.
     Notes(CommandPreview),
-    /// Edit ~/ki/out.txt.
+    /// Edit ~/out.txt.
     Out(CommandPreview),
     /// Create or replace a symbolic link.
     Symlink {

@@ -159,7 +159,7 @@ describe, delete, and restore to a change log that `ud fs log` prints.
   two characters fall back to substring checks. Results rank by BM25 when there
   is text, otherwise newest first. `--tag` (all must match), `--time`, and
   `--deleted` filter; output formats match `ls` plus `tags` and `description`.
-- `refs` runs `rg` over text files under `~/ki` for each `/f/KEY` path. Set
+- `refs` runs `rg` over text files under `~` for each `/f/KEY` path. Set
   `ref_roots` in `config.json` or colon-separated `UD_FS_REF_ROOTS` to change
   the roots.
 - `rm KEY…` or `rm --tag T` (not both) previews each file with its tags and
@@ -200,7 +200,7 @@ Variables `UD_FS_BASE_URL`, `UD_FS_BUCKET`, `UD_FS_META_BUCKET`, and
 `UD_FS_REF_ROOTS` override settings; the previous `pub` config and `PUB_*`
 variables remain fallbacks. `UD_FS_INDEX_DIR` replaces the meta bucket with a
 local directory, which tests use. The
-[operations guide](/home/realu/ki/gh-io-ud/docs/file-hosting.md) describes
+[operations guide](/home/realu/gh-io-ud/docs/file-hosting.md) describes
 storage, deployment, and recovery.
 
 ## Local health checks

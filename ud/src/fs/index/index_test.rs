@@ -300,6 +300,14 @@ fn keys_urls_slugs_and_sources() {
         "boku/epics/x"
     );
     assert_eq!(source_label(Path::new("/home/u/tmp"), Some(home)), "~/tmp");
+    // A repository directly under the home directory labels like ~/ki did.
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("boku/.git")).unwrap();
+    std::fs::create_dir_all(temp.path().join("boku/epics/x")).unwrap();
+    assert_eq!(
+        source_label(&temp.path().join("boku/epics/x"), Some(temp.path())),
+        "boku/epics/x"
+    );
     assert_eq!(source_label(Path::new("/srv/a"), Some(home)), "/srv/a");
 }
 

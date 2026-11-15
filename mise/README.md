@@ -46,7 +46,7 @@ which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 `just` itself comes from mise, so bootstrap before running `just sync`:
 
 ```bash
-cd ~/ki/boku/dotfiles
+cd "$DOTFILES"
 curl -fsSL https://mise.run | MISE_VERSION=v2026.11.5 sh
 mkdir -p ~/.config && ln -sfn "$PWD/mise" ~/.config/mise   # just sync manages this link later
 ~/.local/bin/mise install --locked

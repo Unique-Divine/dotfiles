@@ -80,8 +80,8 @@ for native build and publishing rules.
 
 ```bash
 # Clone the Boku workspace and its required submodules.
-git clone --recurse-submodules git@github.com:Unique-Divine/boku.git "$HOME/ki/boku"
-cd "$HOME/ki/boku/dotfiles"
+git clone --recurse-submodules git@github.com:Unique-Divine/boku.git "$HOME/boku"
+cd "$HOME/boku/dotfiles"
 
 # Install system packages used by the shell.
 # - build-essential: Used in almost everything
