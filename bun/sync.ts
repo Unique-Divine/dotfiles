@@ -101,7 +101,7 @@ async function executable(path: string): Promise<boolean> {
 
 /**
  * Real path of `path`, or its resolved text when it does not exist. Links made
- * through a symlinked checkout path (~/ki/boku -> ~/boku) name the same files
+ * through a symlinked checkout path (old path -> new path) name the same files
  * as links made through the real path, so ownership checks compare these.
  */
 async function canonicalPath(path: string): Promise<string> {
@@ -571,7 +571,7 @@ export async function prepareDiscord(config: Config): Promise<string> {
 /**
  * An existing mcp-discord link that sync may replace: one reaching the entry,
  * the entry recorded in .installed.json, the entry of a verified Jiyuu
- * checkout at another path (such as ~/ki/boku before ~/boku), or the retired
+ * checkout at another path (such as the path a checkout had before it moved), or the retired
  * package build in the managed global node_modules. Anything else belongs to
  * someone else and stops sync before it switches anything.
  */
