@@ -22,6 +22,7 @@ lazy.nvim and provides a modern, modular setup for software development.
 - [Configuration](#configuration)
   - [Adding Plugins](#adding-plugins)
   - [Customizing Settings](#customizing-settings)
+  - [Editing Structured Secrets With pass](#editing-structured-secrets-with-pass)
   - [Markdown language server](#markdown-language-server)
   - [Mason packages](#mason-packages)
 - [Learning Resources](#learning-resources)
@@ -184,6 +185,22 @@ local lazyPlugins = {
 - **LSP settings:** Edit `lua/core/lsp.lua`
 - **Keymaps:** Distributed across relevant config files
 - **Theme colors:** Edit theme config in `init.lua` (lines 184-245)
+
+### Editing Structured Secrets With pass
+
+Name structured password-store entries with their format, such as
+`service/config.json` or `service/credentials.toml`. The `pass edit` command
+decrypts the entry to a temporary file and appends `.txt`, so Neovim sees a
+name ending in `.json.txt` or `.toml.txt`.
+
+The file-type rule in `lua/core/vim.lua` removes the final `.txt` for
+detection and asks Neovim to detect the remaining filename normally. This
+enables language highlighting and the configured language tools without
+renaming the temporary file that pass reads back for encryption. LSP
+attachment still depends on the server's configuration and workspace rules.
+
+The rule applies to any double-extension filename ending in `.txt`. Ordinary
+text files and unrecognized inner extensions retain normal detection.
 
 ### Markdown language server
 

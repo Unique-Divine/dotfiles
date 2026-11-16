@@ -225,6 +225,18 @@ vim.keymap.set("n", "k", "k", { noremap = true })
 local textwidth = 81
 vim.opt.colorcolumn = tostring(textwidth + 1)
 vim.opt.textwidth = textwidth
+
+-- pass edit appends .txt; detect the language from the original extension.
+vim.filetype.add({
+  pattern = {
+    [".*%..+%.txt"] = function(path)
+      return vim.filetype.match({
+        filename = path:gsub("%.txt$", ""),
+      })
+    end,
+  },
+})
+
 -- Clear previous FileType handlers before recreating them when this file reloads.
 local core_filetype_group =
   vim.api.nvim_create_augroup("CoreVimFileTypes", { clear = true })
