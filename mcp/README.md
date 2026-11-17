@@ -44,21 +44,19 @@ migration runs. Sync leaves other direct definitions, such as a remote HTTP
 server or a launch that also sets `envFile` or `cwd`, alone with a warning,
 and skips migration while the Codex entry is disabled.
 
-Telegram isn't pinned while either of these holds, because a `uvx` launch
-runs from the uv cache and never reads files beside the old checkout launch:
+Telegram isn't pinned while the old checkout launch shows that it depends on
+local files, because a `uvx` launch runs from the uv cache and never reads
+them:
 
 - The old launch directory's `.env` defines a `TELEGRAM_*` key that the
-  Codex entry's `env` lacks.
-- The Codex `env` lacks `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, or a
-  `TELEGRAM_SESSION_STRING` (or `TELEGRAM_SESSION_STRING_<LABEL>`), so a
-  `.env` or `*.session` file may be the login.
-- The Codex `env` sets `TELEGRAM_SESSION_NAME` or
-  `TELEGRAM_SESSION_NAME_<LABEL>`, which names a session file relative to the
-  old launch directory.
+  Codex entry doesn't provide through `env` or `env_vars`.
+- The entry sets `TELEGRAM_SESSION_NAME` or `TELEGRAM_SESSION_NAME_<LABEL>`,
+  which names a session file relative to the old launch directory.
 
 Sync warns with the key names, never values. Move the values into
-`[mcp_servers.telegram-mcp].env`, then rerun `just mcp-sync --run`. A
-`*.session` file alone doesn't hold the pin when the env is complete.
+`[mcp_servers.telegram-mcp].env`, then rerun `just mcp-sync --run`. Missing
+keys alone don't hold the pin, since credentials can come from the inherited
+environment, and neither does a stray `*.session` file.
 
 ### Bump a Pin
 

@@ -38,8 +38,6 @@ export const jiyuuMcpPins = {
     version: "2.0.2",
     auth: {
       prefix: "TELEGRAM_",
-      required: ["TELEGRAM_API_ID", "TELEGRAM_API_HASH"],
-      session: "TELEGRAM_SESSION_STRING",
       fileSession: "TELEGRAM_SESSION_NAME",
     },
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
@@ -54,14 +52,11 @@ export interface JiyuuMcpPin {
   package: string
   version: string
   /**
-   * Credentials a checkout launch may have read from `.env` or a
-   * `*.session` file in its directory, which a registry launch never sees.
-   * `session` also matches `<session>_<LABEL>`.
+   * Checkout-local credentials a registry launch never sees: `.env` keys
+   * with `prefix`, and session files named by `fileSession[_<LABEL>]`.
    */
   auth?: {
     prefix: string
-    required: readonly string[]
-    session: string
     /** Env naming a session file, resolved from the launch directory. */
     fileSession?: string
   }
@@ -181,28 +176,27 @@ export const launchDirectory = (server: McpServer): string | undefined => {
 }
 
 /**
- * Reasons a registry launch could lose credentials that the old checkout
- * launch had: `.env` keys the Codex env lacks, or required env (API keys and
- * a session string) that may come from `.env` or a `*.session` file. A stray
- * `*.session` file alone, with complete env, is no reason.
+ * Positive evidence that the old checkout launch depends on local files:
+ * `.env` keys the entry doesn't provide through `env` or `env_vars`, or env
+ * naming a session file. Credentials may also come from the inherited
+ * environment, so missing keys alone are no evidence.
  */
 export const authGaps = (
   server: McpServer,
   auth: NonNullable<JiyuuMcpPin["auth"]>,
   dotEnv: string[],
-): { missing: string[]; dotEnvOnly: string[]; fileSessions: string[] } => {
-  const env = isRecord(server.env) ? Object.keys(server.env) : []
-  const missing = auth.required.filter((key) => !env.includes(key))
-  if (!env.some((key) =>
-    key === auth.session || key.startsWith(`${auth.session}_`))) {
-    missing.push(auth.session)
-  }
+): { dotEnvOnly: string[]; fileSessions: string[] } => {
+  const provided = [
+    ...(isRecord(server.env) ? Object.keys(server.env) : []),
+    ...(Array.isArray(server.env_vars)
+      ? server.env_vars.filter((key) => typeof key === "string") : []),
+  ]
   const dotEnvOnly = [...new Set(dotEnv)].filter((key) =>
-    key.startsWith(auth.prefix) && !env.includes(key)).sort()
+    key.startsWith(auth.prefix) && !provided.includes(key)).sort()
   const file = auth.fileSession
-  const fileSessions = file ? env.filter((key) =>
+  const fileSessions = file ? [...new Set(provided)].filter((key) =>
     key === file || key.startsWith(`${file}_`)).sort() : []
-  return { missing, dotEnvOnly, fileSessions }
+  return { dotEnvOnly, fileSessions }
 }
 
 export interface PinResult {
@@ -280,16 +274,10 @@ export const applyJiyuuPins = (
           "there, then rerun just mcp-sync --run")
         continue
       }
-      if (gaps.fileSessions.length && oldDir) {
+      if (gaps.fileSessions.length) {
         warnings.push(`${name}: not pinned; ${gaps.fileSessions.join(", ")} ` +
-          `name session files relative to ${oldDir}. Replace them with ` +
-          `session strings in ${entry}, then rerun just mcp-sync --run`)
-        continue
-      }
-      if (gaps.missing.length) {
-        warnings.push(`${name}: not pinned; ${entry} lacks ` +
-          `${gaps.missing.join(", ")}, so the checkout may authenticate ` +
-          "from .env or a *.session file. Add them there, then rerun " +
+          "name session files relative to the old launch directory. " +
+          `Replace them with session strings in ${entry}, then rerun ` +
           "just mcp-sync --run")
         continue
       }

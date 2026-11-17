@@ -128,10 +128,7 @@ describe("applyJiyuuPins", () => {
 describe("Telegram checkout credentials", () => {
   const authPin: JiyuuMcpPin = {
     ...uvPin,
-    auth: {
-      prefix: "TG_", required: ["TG_ID", "TG_HASH"], session: "TG_SESSION",
-      fileSession: "TG_SESSION_NAME",
-    },
+    auth: { prefix: "TG_", fileSession: "TG_SESSION_NAME" },
   }
   const full = { TG_ID: "1", TG_HASH: "h", TG_SESSION: "s" }
   const oldEntry = (env: Record<string, string>) => ({
@@ -151,9 +148,26 @@ describe("Telegram checkout credentials", () => {
     expect(command(run(full, ["TG_ID", "OTHER"]))).toBe("uvx")
   })
 
-  test("a labeled session string counts", () => {
-    const { TG_SESSION: _, ...rest } = full
-    expect(command(run({ ...rest, TG_SESSION_WORK: "s" }))).toBe("uvx")
+  test("pins inherited credentials: no env table and no .env", () => {
+    const servers = { tg: {
+      command: "uv", args: ["--directory", "/old/tg", "run", "main.py"],
+    } }
+    const result = applyJiyuuPins(servers, {
+      pins: { tg: authPin }, readDotEnvKeys: () => [],
+    })
+    expect(command(result)).toBe("uvx")
+    expect(result.warnings).toEqual([])
+  })
+
+  test("env_vars count as providing .env keys", () => {
+    const servers = { tg: {
+      command: "uv", args: ["--directory", "/old/tg", "run", "main.py"],
+      env_vars: ["TG_ID", "TG_HASH"],
+    } }
+    const result = applyJiyuuPins(servers, {
+      pins: { tg: authPin }, readDotEnvKeys: () => ["TG_ID", "TG_HASH"],
+    })
+    expect(command(result)).toBe("uvx")
   })
 
   test("holds the pin when .env defines keys the Codex env lacks", () => {
@@ -169,17 +183,7 @@ describe("Telegram checkout credentials", () => {
     const result = run({ ...full, TG_SESSION_NAME_WORK: "work" })
     expect(command(result)).toBe("uv")
     expect(result.warnings[0]).toContain(
-      "tg: not pinned; TG_SESSION_NAME_WORK name session files relative to /old/tg")
-  })
-
-  test("holds the pin when required env is missing", () => {
-    for (const drop of ["TG_ID", "TG_HASH", "TG_SESSION"]) {
-      const env: Record<string, string> = { ...full }
-      delete env[drop]
-      const result = run(env)
-      expect(command(result)).toBe("uv")
-      expect(result.warnings[0]).toContain(`lacks ${drop}`)
-    }
+      "tg: not pinned; TG_SESSION_NAME_WORK name session files relative to the old launch directory")
   })
 
   test("never prints values", () => {
