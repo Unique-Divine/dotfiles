@@ -35,6 +35,17 @@ release. Sync doesn't create a missing entry, because only you can add its
 `env`; it prints a warning instead. It leaves a `url` entry alone, such as a
 shared Discord server over HTTP.
 
+Sync also replaces a direct Claude Code or Cursor definition of a pinned
+server with the Codex launcher, so no client keeps running a checkout. It
+backs up the replaced entry first and names env keys that differ from the
+Codex entry, never their values. `--check` fails until that migration runs.
+
+Telegram isn't pinned while its Codex entry lacks `TELEGRAM_SESSION_STRING`
+(or `TELEGRAM_SESSION_STRING_<LABEL>`) and the old launch directory holds a
+`.env` or `*.session` file. A `uvx` launch runs from the uv cache and never
+reads those files. Sync warns instead: move the values into
+`[mcp_servers.telegram-mcp].env`, then rerun `just mcp-sync --run`.
+
 ### Bump a Pin
 
 1. Edit the server's `version` line in `pins.ts`.

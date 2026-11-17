@@ -1,4 +1,5 @@
-import { resolve } from "node:path"
+import { existsSync, readdirSync } from "node:fs"
+import { join, resolve } from "node:path"
 
 import { isRecord, type McpServer, type McpServers } from "./servers.ts"
 
@@ -31,6 +32,7 @@ export const jiyuuMcpPins = {
     runner: "uvx",
     package: "uniquedivine-telegram-mcp",
     version: "2.0.2",
+    sessionEnv: "TELEGRAM_SESSION_STRING",
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
   },
 } as const satisfies Record<string, JiyuuMcpPin>
@@ -41,6 +43,12 @@ export interface JiyuuMcpPin {
   runner: "bunx" | "uvx"
   package: string
   version: string
+  /**
+   * Env name (or `<name>_<LABEL>` prefix) that carries the login session.
+   * Without it, a checkout launch may read `.env` or `*.session` files from
+   * its directory, which a registry launch never sees.
+   */
+  sessionEnv?: string
   /** How to run the server from a Jiyuu checkout, relative to its root. */
   local:
     | { command: "bun"; entry: string }
@@ -106,7 +114,29 @@ export interface PinOptions {
   local?: Set<string>
   jiyuuDir?: string
   pins?: Record<string, JiyuuMcpPin>
+  /** Reports whether a directory holds `.env` or `*.session` files. */
+  hasLocalState?: (dir: string) => boolean
 }
+
+/** True when `dir` holds a `.env` file or a Telethon `*.session` file. */
+export const dirHasLocalState = (dir: string): boolean => {
+  try {
+    return existsSync(join(dir, ".env")) ||
+      readdirSync(dir).some((file) => file.endsWith(".session"))
+  } catch { return false }
+}
+
+/** Directory a stdio entry runs from: `uv --directory <dir>`, else `cwd`. */
+export const launchDirectory = (server: McpServer): string | undefined => {
+  const args = Array.isArray(server.args) ? server.args : []
+  const flag = args.indexOf("--directory")
+  const dir = flag >= 0 ? args[flag + 1] : server.cwd
+  return typeof dir === "string" && dir !== "" ? dir : undefined
+}
+
+const hasSessionEnv = (server: McpServer, key: string): boolean =>
+  isRecord(server.env) && Object.keys(server.env).some((name) =>
+    name === key || name.startsWith(`${key}_`))
 
 export interface PinResult {
   servers: Record<string, unknown>
@@ -122,7 +152,7 @@ const sameArgs = (a: unknown, b: string[]): boolean =>
 
 /**
  * Returns Codex `mcp_servers` with each pinned stdio entry launching its
- * pin. Pure: the input is not modified.
+ * pin. The input is not modified; the only read is `hasLocalState`.
  *
  * - Only `command` and `args` change. `env`, `cwd`, `enabled`, and timeouts
  *   stay as they are, so secret wiring never moves.
@@ -131,7 +161,10 @@ const sameArgs = (a: unknown, b: string[]): boolean =>
  */
 export const applyJiyuuPins = (
   servers: Record<string, unknown>,
-  { local = new Set(), jiyuuDir, pins = jiyuuMcpPins }: PinOptions = {},
+  {
+    local = new Set(), jiyuuDir, pins = jiyuuMcpPins,
+    hasLocalState = dirHasLocalState,
+  }: PinOptions = {},
 ): PinResult => {
   const next: Record<string, unknown> = { ...servers }
   const changes: string[] = []
@@ -166,6 +199,18 @@ export const applyJiyuuPins = (
     }
 
     const launch = useLocal ? localLaunch(pin, jiyuuDir!) : pinnedLaunch(pin)
+
+    // A registry launch runs from the uv cache, so files next to the old
+    // checkout launch would silently stop being read.
+    const oldDir = launchDirectory(server)
+    if (!useLocal && pin.sessionEnv && !hasSessionEnv(server, pin.sessionEnv) &&
+      server.command !== launch.command && oldDir && hasLocalState(oldDir)) {
+      warnings.push(`${name}: not pinned; ${oldDir} has .env or *.session ` +
+        `files that ${pin.runner} won't read. Move the values (including ` +
+        `${pin.sessionEnv}) into [mcp_servers.${name}].env in the Codex ` +
+        "config, then rerun just mcp-sync --run")
+      continue
+    }
 
     if (server.command === launch.command &&
       sameArgs(server.args, launch.args)) {

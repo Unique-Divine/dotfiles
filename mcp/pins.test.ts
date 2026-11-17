@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
-  applyJiyuuPins, jiyuuCheckoutDir, jiyuuMcpPins, localLaunch,
+  applyJiyuuPins, dirHasLocalState, jiyuuCheckoutDir, launchDirectory, jiyuuMcpPins, localLaunch,
   parseLocalNames, pinnedLaunch, type JiyuuMcpPin,
 } from "./pins.ts"
 
@@ -117,5 +120,58 @@ describe("applyJiyuuPins", () => {
     const result = applyJiyuuPins({ node: { args: [] }, py: "bad" }, { pins })
     expect(result.warnings).toHaveLength(2)
     expect(result.changes).toEqual([])
+  })
+})
+
+describe("Telegram checkout state", () => {
+  const sessionPin: JiyuuMcpPin = { ...uvPin, sessionEnv: "SESSION" }
+  const oldEntry = (env: Record<string, string>) => ({
+    tg: {
+      command: "uv", args: ["--directory", "/old/tg", "run", "main.py"], env,
+    },
+  })
+  const opts = (hasState: boolean) => ({
+    pins: { tg: sessionPin }, hasLocalState: () => hasState,
+  })
+
+  test("refuses to pin while session files sit beside the old launch", () => {
+    const servers = oldEntry({ API_ID: "1" })
+    const result = applyJiyuuPins(servers, opts(true))
+    expect(result.servers.tg).toEqual(servers.tg)
+    expect(result.changes).toEqual([])
+    expect(result.warnings[0]).toContain("tg: not pinned; /old/tg has .env")
+    expect(result.warnings[0]).toContain("[mcp_servers.tg].env")
+  })
+
+  test("pins once the session is in env, labeled or not", () => {
+    for (const key of ["SESSION", "SESSION_WORK"]) {
+      const result = applyJiyuuPins(oldEntry({ [key]: "s" }), opts(true))
+      expect((result.servers.tg as any).command).toBe("uvx")
+    }
+  })
+
+  test("pins when the old directory has no local state", () => {
+    const result = applyJiyuuPins(oldEntry({}), opts(false))
+    expect((result.servers.tg as any).command).toBe("uvx")
+  })
+
+  test("dirHasLocalState finds .env and *.session files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pins-state-"))
+    try {
+      expect(dirHasLocalState(dir)).toBe(false)
+      await writeFile(join(dir, "telegram.session"), "")
+      expect(dirHasLocalState(dir)).toBe(true)
+      await rm(join(dir, "telegram.session"))
+      await writeFile(join(dir, ".env"), "")
+      expect(dirHasLocalState(dir)).toBe(true)
+      expect(dirHasLocalState(join(dir, "missing"))).toBe(false)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  test("launchDirectory reads uv --directory, then cwd", () => {
+    expect(launchDirectory({ command: "uv", args: ["--directory", "/a"] }))
+      .toBe("/a")
+    expect(launchDirectory({ command: "x", cwd: "/b" })).toBe("/b")
+    expect(launchDirectory({ command: "x" })).toBeUndefined()
   })
 })
