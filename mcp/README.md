@@ -52,6 +52,9 @@ runs from the uv cache and never reads files beside the old checkout launch:
 - The Codex `env` lacks `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, or a
   `TELEGRAM_SESSION_STRING` (or `TELEGRAM_SESSION_STRING_<LABEL>`), so a
   `.env` or `*.session` file may be the login.
+- The Codex `env` sets `TELEGRAM_SESSION_NAME` or
+  `TELEGRAM_SESSION_NAME_<LABEL>`, which names a session file relative to the
+  old launch directory.
 
 Sync warns with the key names, never values. Move the values into
 `[mcp_servers.telegram-mcp].env`, then rerun `just mcp-sync --run`. A

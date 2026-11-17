@@ -40,6 +40,7 @@ export const jiyuuMcpPins = {
       prefix: "TELEGRAM_",
       required: ["TELEGRAM_API_ID", "TELEGRAM_API_HASH"],
       session: "TELEGRAM_SESSION_STRING",
+      fileSession: "TELEGRAM_SESSION_NAME",
     },
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
     legacy: { commands: [], component: "mcp/telegram" },
@@ -57,7 +58,13 @@ export interface JiyuuMcpPin {
    * `*.session` file in its directory, which a registry launch never sees.
    * `session` also matches `<session>_<LABEL>`.
    */
-  auth?: { prefix: string; required: readonly string[]; session: string }
+  auth?: {
+    prefix: string
+    required: readonly string[]
+    session: string
+    /** Env naming a session file, resolved from the launch directory. */
+    fileSession?: string
+  }
   /** How to run the server from a Jiyuu checkout, relative to its root. */
   local:
     | { command: "bun"; entry: string }
@@ -183,7 +190,7 @@ export const authGaps = (
   server: McpServer,
   auth: NonNullable<JiyuuMcpPin["auth"]>,
   dotEnv: string[],
-): { missing: string[]; dotEnvOnly: string[] } => {
+): { missing: string[]; dotEnvOnly: string[]; fileSessions: string[] } => {
   const env = isRecord(server.env) ? Object.keys(server.env) : []
   const missing = auth.required.filter((key) => !env.includes(key))
   if (!env.some((key) =>
@@ -192,7 +199,10 @@ export const authGaps = (
   }
   const dotEnvOnly = [...new Set(dotEnv)].filter((key) =>
     key.startsWith(auth.prefix) && !env.includes(key)).sort()
-  return { missing, dotEnvOnly }
+  const file = auth.fileSession
+  const fileSessions = file ? env.filter((key) =>
+    key === file || key.startsWith(`${file}_`)).sort() : []
+  return { missing, dotEnvOnly, fileSessions }
 }
 
 export interface PinResult {
@@ -268,6 +278,12 @@ export const applyJiyuuPins = (
         warnings.push(`${name}: not pinned; ${oldDir}/.env defines ` +
           `${gaps.dotEnvOnly.join(", ")}, which ${entry} lacks. Move them ` +
           "there, then rerun just mcp-sync --run")
+        continue
+      }
+      if (gaps.fileSessions.length && oldDir) {
+        warnings.push(`${name}: not pinned; ${gaps.fileSessions.join(", ")} ` +
+          `name session files relative to ${oldDir}. Replace them with ` +
+          `session strings in ${entry}, then rerun just mcp-sync --run`)
         continue
       }
       if (gaps.missing.length) {

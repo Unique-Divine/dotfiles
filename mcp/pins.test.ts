@@ -128,7 +128,10 @@ describe("applyJiyuuPins", () => {
 describe("Telegram checkout credentials", () => {
   const authPin: JiyuuMcpPin = {
     ...uvPin,
-    auth: { prefix: "TG_", required: ["TG_ID", "TG_HASH"], session: "TG_SESSION" },
+    auth: {
+      prefix: "TG_", required: ["TG_ID", "TG_HASH"], session: "TG_SESSION",
+      fileSession: "TG_SESSION_NAME",
+    },
   }
   const full = { TG_ID: "1", TG_HASH: "h", TG_SESSION: "s" }
   const oldEntry = (env: Record<string, string>) => ({
@@ -160,6 +163,13 @@ describe("Telegram checkout credentials", () => {
     expect(result.warnings[0]).toContain(
       "tg: not pinned; /old/tg/.env defines TG_SESSION_NAME")
     expect(result.warnings[0]).toContain("[mcp_servers.tg].env")
+  })
+
+  test("holds the pin while env names a session file in the old directory", () => {
+    const result = run({ ...full, TG_SESSION_NAME_WORK: "work" })
+    expect(command(result)).toBe("uv")
+    expect(result.warnings[0]).toContain(
+      "tg: not pinned; TG_SESSION_NAME_WORK name session files relative to /old/tg")
   })
 
   test("holds the pin when required env is missing", () => {
