@@ -166,6 +166,12 @@ does not write: it checks required commands, Mason packages, and Codex,
 Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
 installation remains an explicit action.
 
+`just sync` also runs `just cbm-reindex --run`, which reindexes the
+[Codebase Memory](https://github.com/DeusData/codebase-memory-mcp) code graphs
+for Boku and the repos it links to, then reruns cross-repo linking. The MCP
+server refreshes only the repo of the active session, and a reindex drops a
+project's cross-repo links. Run `just cbm-reindex` alone to print the plan.
+
 Global Bun CLI packages are declared in
 [`bun/global/package.json`](bun/global/package.json), with transitive versions
 recorded in its lockfile. Command `just sync` restores the installation and

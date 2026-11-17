@@ -268,6 +268,9 @@ sync:
   runlog_step herdr-integrations just herdr-integrations
   runlog_step skills-sync bun run skillsSync.ts --run
   runlog_step email-sync just email-sync
+  # The MCP server refreshes only the active session's repo; this keeps the
+  # other code graphs and their cross-repo links current. It never fails sync.
+  runlog_step cbm-reindex just cbm-reindex --run --quiet || true
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
 
@@ -420,6 +423,10 @@ nvim-mason-restore:
   fi
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
+
+# Print or run (--run) the Codebase Memory reindex and cross-repo linking.
+cbm-reindex *ARGS:
+  @bun run cbm/reindex.ts {{ARGS}}
 
 # Preview or apply the MCP union; --from selects directional correction.
 mcp-sync *ARGS:
