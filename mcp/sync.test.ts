@@ -411,3 +411,18 @@ test("hasTomlComments ignores the schema directive", () => {
   expect(hasTomlComments("#:schema https://x\na = 1\n")).toBe(false)
   expect(hasTomlComments("a = 1\n  # note\n")).toBe(true)
 })
+
+test("CLI leaves direct client entries alone when the Codex entry is disabled", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"),
+      '[mcp_servers.slack]\ncommand = "slack-mcp"\nenabled = false\n')
+    const direct = { type: "stdio", command: "slack-mcp" }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: { slack: direct } }))
+    expect((await invoke(["--run"])).code).toBe(0)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    expect(claude.mcpServers.slack).toEqual(direct)
+    const check = await invoke(["--check"])
+    expect(check.output).not.toContain("replace slack")
+    expect(check.code).toBe(0)
+  })
+})

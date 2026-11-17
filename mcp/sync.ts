@@ -122,6 +122,9 @@ export const migrateDirectPins = (
   const warnings: string[] = []
   for (const name of names) {
     if (classifyServer(plan.codex[name]) !== "stdio") continue
+    // The launcher skips disabled Codex entries, so a migrated client entry
+    // would stop starting. Leave the working client definition alone.
+    if (plan.codex[name]?.enabled === false) continue
     for (const target of ["claude", "cursor"] as const) {
       const existing = raw[target][name]
       if (existing === undefined || isLauncherEntry(existing)) continue
