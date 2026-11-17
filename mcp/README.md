@@ -34,6 +34,9 @@ just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
   only one platform restores it from another. Remove it everywhere to keep it
   gone. A dangling generated launcher has no settings to restore, so sync
   warns and preserves it.
+  A launcher referencing an HTTP definition also warns; explicit directional
+  sync replaces it with the correct HTTP entry, including on a retry after
+  an interrupted transport change.
 - Disabled Codex entries stay disabled. SSE, interpolation, and platform-only
   auth fields are preserved and reported when they cannot be mapped.
 - Only local user configurations participate. Claude-hosted connectors,

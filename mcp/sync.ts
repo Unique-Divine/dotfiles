@@ -10,7 +10,8 @@ import {
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
 import { describePlan, hasChanges, sameEntry, writePrivateFile, type McpPlan } from "./plan.ts"
 import {
-  codexConfigPath, defaultLauncherContext, desiredEntries, isLauncherEntry,
+  classifyServer, codexConfigPath, defaultLauncherContext, desiredEntries,
+  isLauncherEntry,
   isRecord, jsonToCodex, transportFields, transportView, type LauncherContext,
   type McpServer, type McpServers,
 } from "./servers.ts"
@@ -82,7 +83,10 @@ export const planUnion = (
       // A launcher reads Codex at runtime. Do not point a differing source
       // definition at a Codex definition we intentionally preserved.
       const normalized = definitions[target][name]
-      if (existing !== undefined && isRecord(normalized) &&
+      const executableTransportMatches = !isLauncherEntry(existing) ||
+        classifyServer(chosen) === "stdio"
+      if (existing !== undefined && executableTransportMatches &&
+        isRecord(normalized) &&
         sameEntry(transportView(normalized), transportView(chosen))) continue
       if (existing === undefined) targets[target].add.push({ name, entry })
       else targets[target].update.push({ name, entry, replacesUnmanaged: true })
@@ -118,8 +122,13 @@ export const resolveDefinitions = async (
             }
           }
         }
-        if (isRecord(server)) definitions[target][name] = server
-        else warnings.push(`${target}/${name}: dangling launcher; preserved`)
+        if (isRecord(server)) {
+          definitions[target][name] = server
+          if (classifyServer(server) !== "stdio") {
+            warnings.push(`${target}/${name}: launcher requires a command; ` +
+              "use directional sync to repair its transport")
+          }
+        } else warnings.push(`${target}/${name}: dangling launcher; preserved`)
       } else {
         const mapped = jsonToCodex(entry)
         if (mapped.ok) definitions[target][name] = mapped.entry

@@ -249,3 +249,42 @@ test("concurrent Claude edit during an earlier write survives and stops reconcil
     expect(config.mcpServers["race-later"].url).toBe("https://concurrent.example")
   })
 })
+
+test("HTTP definition behind a stdio launcher warns by default and repairs directionally", async () => {
+  const raw = inventory()
+  raw.codex.x = url("new-http")
+  raw.claude.x = launcherEntry("x", ctx)
+  raw.cursor.x = launcherEntry("x", ctx, "cursor")
+  const { definitions, warnings } = await resolveDefinitions(raw, ctx.sourcePath)
+  expect(warnings.filter(w => w.includes("launcher requires a command"))).toHaveLength(2)
+  const normal = planUnion(raw, definitions, ctx)
+  expect(normal.targets.claude.update).toEqual([])
+  expect(normal.targets.cursor.update).toEqual([])
+  const repaired = planUnion(raw, definitions, ctx, "codex")
+  expect(repaired.targets.claude.update[0]?.entry).toEqual({ type: "http", ...url("new-http") })
+  expect(repaired.targets.cursor.update[0]?.entry).toEqual(url("new-http"))
+})
+
+test("CLI resumes a partial command-to-HTTP reconciliation", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const sourcePath = join(dir, "config.toml")
+    const context = { ...ctx, sourcePath }
+    await Bun.write(sourcePath, '[mcp_servers.x]\nurl = "https://new.example"\n')
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      x: launcherEntry("x", context),
+    } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: {
+      x: launcherEntry("x", context, "cursor"),
+    } }))
+    const preview = await invoke(["--dry-run"])
+    expect(preview.output).toContain("launcher requires a command")
+    expect((await invoke(["--from", "codex", "--run"])).code).toBe(0)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    const cursor = await Bun.file(join(dir, "cursor.json")).json()
+    expect(claude.mcpServers.x).toEqual({ type: "http", url: "https://new.example" })
+    expect(cursor.mcpServers.x).toEqual({ url: "https://new.example" })
+    const after = await invoke(["--check"])
+    expect(after.code).toBe(0)
+    expect(after.output).not.toContain("launcher requires a command")
+  })
+})
