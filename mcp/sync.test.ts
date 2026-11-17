@@ -90,7 +90,9 @@ describe("MCP union", () => {
 
 const script = join(import.meta.dir, "sync.ts")
 async function run(args: string[]) {
-  const p = Bun.spawn([process.execPath, script, ...args], { stdout: "pipe", stderr: "pipe" })
+  const p = Bun.spawn([process.execPath, script, ...args], {
+    env: { ...process.env, MCP_SYNC_SKIP_PIN_CHECK: "1" }, stdout: "pipe", stderr: "pipe",
+  })
   return { code: await p.exited, output: await new Response(p.stdout).text() + await new Response(p.stderr).text() }
 }
 
@@ -160,6 +162,7 @@ await Bun.write(file, JSON.stringify(config))
       ], {
         env: {
           ...process.env, JIYUU_MCP_LOCAL: "", CLAUDE_CONFIG_DIR: dir,
+          MCP_SYNC_SKIP_PIN_CHECK: "1",
           PATH: `${dir}:${process.env.PATH}`, ...extraEnv,
         },
         stdout: "pipe", stderr: "pipe",
@@ -456,5 +459,27 @@ test("CLI preserves a recognized Jiyuu launch that sets fields the launcher can'
     expect(result.output).toContain("cursor/slack: Jiyuu checkout launch also sets envFile")
     expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(direct)
     expect((await invoke(["--check"])).code).toBe(0)
+  })
+})
+
+test("CLI check fails while a pinned Jiyuu server is missing from Codex", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const enforce = { MCP_SYNC_SKIP_PIN_CHECK: "" }
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.local]\ncommand = "server"\n')
+    expect((await invoke(["--run"])).code).toBe(0)
+    expect((await invoke(["--check"])).code).toBe(0)
+    const check = await invoke(["--check"], enforce)
+    expect(check.code).toBe(1)
+    expect(check.output).toContain(
+      "! missing pinned servers in Codex: discord-mcp, slack, telegram-mcp")
+    expect(check.output).not.toContain("MCP union is current")
+    const pinned = Object.entries(jiyuuMcpPins).map(([name, pin]) => [
+      `[mcp_servers.${name}]`, `command = "${pin.runner}"`,
+      `args = ["${pin.package}@${pin.version}"]`,
+    ].join("\n")).join("\n")
+    await Bun.write(join(dir, "config.toml"),
+      `[mcp_servers.local]\ncommand = "server"\n${pinned}\n`)
+    expect((await invoke(["--run"])).code).toBe(0)
+    expect((await invoke(["--check"], enforce)).code).toBe(0)
   })
 })

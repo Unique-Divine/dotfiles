@@ -165,6 +165,18 @@ export const migrateDirectPins = (
   return warnings
 }
 
+/**
+ * Test hook: set to `1` so `--check` doesn't fail on missing pinned servers.
+ * Fixtures for unrelated union behavior use it instead of carrying stubs.
+ */
+export const skipPinCheckEnvVar = "MCP_SYNC_SKIP_PIN_CHECK"
+
+/** Pinned Jiyuu servers absent from Codex `mcp_servers`, sorted. */
+export const missingPins = (
+  codex: Record<string, unknown>,
+  pins: Record<string, JiyuuMcpPin> = jiyuuMcpPins,
+): string[] => Object.keys(pins).filter(name => codex[name] === undefined).sort()
+
 /** True when TOML text has comment lines other than the schema directive. */
 export const hasTomlComments = (text: string): boolean =>
   text.split("\n").some(line => {
@@ -277,8 +289,14 @@ export const createProgram = (): Command => new Command()
       for (const line of describePlan(plan.targets[target], target)) console.log(`${target}: ${line}`)
     }
     const changed = codexChanged || hasChanges(plan.targets.claude) || hasChanges(plan.targets.cursor)
-    if (!changed) console.log("MCP union is current")
-    if (options.check) { if (changed) process.exitCode = 1; return }
+    // Sync can't create a pinned server, since its env is machine-local, so
+    // --check is the place that fails until someone adds or imports it.
+    const missing = options.check && process.env[skipPinCheckEnvVar] !== "1"
+      ? missingPins(original) : []
+    if (missing.length) {
+      console.log(`! missing pinned servers in Codex: ${missing.join(", ")}`)
+    } else if (!changed) console.log("MCP union is current")
+    if (options.check) { if (changed || missing.length) process.exitCode = 1; return }
     if (!options.run || options.dryRun) return
     // Preflight every input before the first write. Each target also gets a
     // fresh check immediately before its write, including between CLI calls.
