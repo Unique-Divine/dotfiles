@@ -1,4 +1,5 @@
-import { resolve } from "node:path"
+import { existsSync } from "node:fs"
+import { isAbsolute, resolve } from "node:path"
 import { Command } from "commander"
 import { parse, type TomlTable } from "smol-toml"
 
@@ -165,6 +166,164 @@ export const migrateDirectPins = (
   return warnings
 }
 
+/** Version of the `--export` payload that `--import` accepts. */
+export const transferVersion = 1
+
+export interface TransferPayload {
+  version: typeof transferVersion
+  mcp_servers: Record<string, McpServer>
+}
+
+/** Parses `--servers a,b` into names; undefined means every server. */
+export const parseServerNames = (value: string | undefined): string[] | undefined => {
+  if (value === undefined) return undefined
+  const names = value.split(",").map(name => name.trim()).filter(name => name !== "")
+  return [...new Set(names)]
+}
+
+/** Keeps the named servers; an unknown name is an error. */
+export const selectServers = (
+  servers: Record<string, unknown>,
+  names: string[] | undefined,
+): Record<string, McpServer> => {
+  const chosen = names ?? Object.keys(servers).sort()
+  const unknown = chosen.filter(name => !isRecord(servers[name]))
+  if (unknown.length) throw new Error(`Unknown MCP server: ${unknown.join(", ")}`)
+  return Object.fromEntries(chosen.map(name => [name, servers[name] as McpServer]))
+}
+
+/** The `--export` payload: Codex entries as they are, env included. */
+export const exportPayload = (
+  servers: Record<string, unknown>,
+  names?: string[],
+): TransferPayload => ({
+  version: transferVersion, mcp_servers: selectServers(servers, names),
+})
+
+/**
+ * Validates `--import` input. Errors never quote the input, which carries
+ * credentials.
+ */
+export const parseTransferPayload = (text: string): TransferPayload => {
+  let value: unknown
+  try { value = JSON.parse(text) }
+  catch { throw new Error("Import is not valid JSON") }
+  if (!isRecord(value)) throw new Error("Import must be a JSON object")
+  if (value.version !== transferVersion) {
+    throw new Error(`Import version must be ${transferVersion}`)
+  }
+  if (!isRecord(value.mcp_servers)) throw new Error("Import mcp_servers must be an object")
+  for (const [name, server] of Object.entries(value.mcp_servers)) {
+    if (!isRecord(server)) throw new Error(`Import server ${name} must be an object`)
+  }
+  return value as unknown as TransferPayload
+}
+
+/**
+ * Names of the fields that differ between two entries. A differing `env`
+ * lists its key names as `env.KEY`, never values.
+ */
+export const differingFields = (a: McpServer, b: McpServer): string[] => {
+  const fields = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()
+  return fields.flatMap(field => {
+    if (sameEntry({ value: a[field] }, { value: b[field] })) return []
+    if (field === "env" && isStringRecord(a.env ?? {}) && isStringRecord(b.env ?? {})) {
+      return differingEnvKeys(a, b).map(key => `env.${key}`)
+    }
+    return [field]
+  })
+}
+
+export interface ImportResult {
+  servers: Record<string, unknown>
+  /** Credential-free report lines: names and env key names only. */
+  lines: string[]
+}
+
+/**
+ * Merges imported entries into Codex `mcp_servers`. Missing servers are
+ * added. A differing existing server stays unless `overwrite` is set.
+ */
+export const mergeImport = (
+  current: Record<string, unknown>,
+  incoming: Record<string, McpServer>,
+  overwrite = false,
+): ImportResult => {
+  const servers: Record<string, unknown> = { ...current }
+  const lines: string[] = []
+  for (const name of Object.keys(incoming).sort()) {
+    const entry = incoming[name]!
+    const existing = current[name]
+    if (existing === undefined) {
+      servers[name] = entry
+      const keys = isRecord(entry.env) ? Object.keys(entry.env).sort() : []
+      lines.push(`+ add ${name} (env keys: ${keys.length ? keys.join(", ") : "none"})`)
+    } else if (sameEntry(existing, entry)) {
+      lines.push(`= unchanged ${name}`)
+    } else if (overwrite) {
+      servers[name] = entry
+      lines.push(`~ replace ${name}`)
+    } else {
+      const fields = differingFields(isRecord(existing) ? existing : {}, entry)
+      lines.push(`~ differs ${name} (keys: ${fields.join(", ")}); kept, ` +
+        "add --overwrite to replace")
+    }
+  }
+  return { servers, lines }
+}
+
+export interface HostProbe {
+  which: (command: string) => string | null
+  exists: (path: string) => boolean
+}
+
+const hostProbe: HostProbe = { which: command => Bun.which(command), exists: existsSync }
+
+/**
+ * Warnings for an entry that can't start here: a missing command, or an
+ * absolute path in `args` or `cwd` that doesn't exist.
+ */
+export const hostWarnings = (
+  name: string,
+  entry: McpServer,
+  probe: HostProbe = hostProbe,
+): string[] => {
+  const warnings: string[] = []
+  if (typeof entry.command === "string" && entry.command !== "") {
+    const found = isAbsolute(entry.command)
+      ? probe.exists(entry.command) : probe.which(entry.command) !== null
+    if (!found) {
+      warnings.push(`! warning ${name}: command ${entry.command} not found on this machine`)
+    }
+  }
+  const args = Array.isArray(entry.args) ? entry.args : []
+  const paths = [...args, entry.cwd].filter((value): value is string =>
+    typeof value === "string" && isAbsolute(value) && value !== entry.command)
+  for (const path of [...new Set(paths)]) {
+    if (!probe.exists(path)) warnings.push(`! warning ${name}: path ${path} does not exist`)
+  }
+  return warnings
+}
+
+const readImport = async (source: string): Promise<string> => {
+  if (source === "-") return Bun.stdin.text()
+  const file = Bun.file(resolve(source))
+  if (!(await file.exists())) throw new Error(`Import file not found: ${source}`)
+  return file.text()
+}
+
+/**
+ * Test hook: set to `1` so `--check` doesn't fail on missing pinned servers.
+ * Fixtures for unrelated union behavior use it instead of carrying stubs.
+ */
+export const skipPinCheckEnvVar = "MCP_SYNC_SKIP_PIN_CHECK"
+
+/** Pinned Jiyuu servers absent from Codex `mcp_servers`, sorted. */
+export const missingPins = (
+  codex: Record<string, unknown>,
+  pins: Record<string, JiyuuMcpPin> = jiyuuMcpPins,
+): string[] => Object.keys(pins).filter(name => codex[name] === undefined).sort()
+
 /** True when TOML text has comment lines other than the schema directive. */
 export const hasTomlComments = (text: string): boolean =>
   text.split("\n").some(line => {
@@ -226,8 +385,25 @@ export const createProgram = (): Command => new Command()
   .option("--claude-config <file>", "Claude user config", claudeConfigPath())
   .option("--cursor-config <file>", "Cursor config", cursorMcpConfigPath())
   .option("--launcher-path <file>", "stable launcher script for exported servers")
+  .option("--export", "print Codex MCP servers as JSON on stdout")
+  .option("--import <file>", "merge servers from an --export file, or - for stdin")
+  .option("--servers <names>", "comma-separated servers for --export or --import")
+  .option("--overwrite", "with --import, replace servers that differ")
   .action(async options => {
     if (options.from && !platforms.includes(options.from)) throw new Error("Invalid --from platform")
+    const exclusive = ["export", "import", "check", "from"].filter(key => options[key] !== undefined)
+    if ((options.export || options.import !== undefined) && exclusive.length > 1) {
+      throw new Error(`--${exclusive.join(", --")} can't be combined`)
+    }
+    if (options.export && (options.run || options.dryRun)) {
+      throw new Error("--export writes nothing; drop --run and --dry-run")
+    }
+    if ((options.servers !== undefined || options.overwrite) &&
+      !options.export && options.import === undefined) {
+      throw new Error("--servers and --overwrite need --export or --import")
+    }
+    if (options.overwrite && options.export) throw new Error("--overwrite needs --import")
+    const serverNames = parseServerNames(options.servers)
     const paths: Record<Platform, string> = {
       codex: resolve(options.codexConfig), claude: resolve(options.claudeConfig),
       cursor: resolve(options.cursorConfig),
@@ -236,6 +412,18 @@ export const createProgram = (): Command => new Command()
       paths.claude !== resolve(claudeConfigPath())) {
       throw new Error("Claude writes require its user config; set CLAUDE_CONFIG_DIR")
     }
+    if (options.export) {
+      // stdout carries only the payload; diagnostics go to stderr.
+      let exported: TomlTable
+      try { exported = parse(await readText(resolve(options.codexConfig))) }
+      catch { throw new Error(`Unable to parse Codex config at ${options.codexConfig}`) }
+      const servers = isRecord(exported.mcp_servers) ? exported.mcp_servers : {}
+      process.stdout.write(`${JSON.stringify(exportPayload(servers, serverNames))}\n`)
+      return
+    }
+    const imported = options.import === undefined ? undefined
+      : selectServers(parseTransferPayload(await readImport(options.import)).mcp_servers,
+        serverNames)
     const before = Object.fromEntries(await Promise.all(platforms.map(async p =>
       [p, await readText(paths[p])])) ) as Record<Platform, string>
     let config: TomlTable
@@ -255,11 +443,20 @@ export const createProgram = (): Command => new Command()
     // Jiyuu pins rewrite Codex launch commands before the union, so Claude
     // and Cursor launchers, which read Codex, run the pinned releases too.
     const original = raw.codex
+    if (imported) {
+      const merged = mergeImport(original, imported, options.overwrite)
+      for (const line of merged.lines) console.log(line)
+      for (const [name, entry] of Object.entries(imported)) {
+        if (merged.servers[name] !== entry) continue
+        for (const warning of hostWarnings(name, entry)) console.log(warning)
+      }
+      raw.codex = merged.servers
+    }
     const pinOptions = {
       local: parseLocalNames(process.env[localEnvVar]),
       jiyuuDir: jiyuuCheckoutDir(process.env),
     }
-    const pinned = applyJiyuuPins(original, pinOptions)
+    const pinned = applyJiyuuPins(raw.codex, pinOptions)
     raw.codex = pinned.servers
     for (const warning of pinned.warnings) console.log(`! warning ${warning}`)
     for (const change of pinned.changes) console.log(change)
@@ -277,9 +474,18 @@ export const createProgram = (): Command => new Command()
       for (const line of describePlan(plan.targets[target], target)) console.log(`${target}: ${line}`)
     }
     const changed = codexChanged || hasChanges(plan.targets.claude) || hasChanges(plan.targets.cursor)
-    if (!changed) console.log("MCP union is current")
-    if (options.check) { if (changed) process.exitCode = 1; return }
-    if (!options.run || options.dryRun) return
+    // Sync can't create a pinned server, since its env is machine-local, so
+    // --check is the place that fails until someone adds or imports it.
+    const missing = options.check && process.env[skipPinCheckEnvVar] !== "1"
+      ? missingPins(original) : []
+    if (missing.length) {
+      console.log(`! missing pinned servers in Codex: ${missing.join(", ")}`)
+    } else if (!changed) console.log("MCP union is current")
+    if (options.check) { if (changed || missing.length) process.exitCode = 1; return }
+    if (!options.run || options.dryRun) {
+      if (imported) console.log("Dry run: nothing written; add --run to apply")
+      return
+    }
     // Preflight every input before the first write. Each target also gets a
     // fresh check immediately before its write, including between CLI calls.
     const assertUnchanged = async (p: Platform) => {
