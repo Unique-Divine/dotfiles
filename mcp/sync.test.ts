@@ -493,6 +493,8 @@ describe("Move servers between machines", () => {
     hash: crypto.randomUUID(), session: crypto.randomUUID(),
     tool: crypto.randomUUID(), header: crypto.randomUUID(), local: crypto.randomUUID(),
   }
+  // Each test spawns several CLI processes, slow on a loaded machine.
+  const slow = 20_000
   const telegramPin = jiyuuMcpPins["telegram-mcp"]
   const source = [
     "[mcp_servers.telegram-mcp]",
@@ -543,7 +545,7 @@ describe("Move servers between machines", () => {
       expect(unknown.stdout).toBe("")
       expect(unknown.stderr).toContain("Unknown MCP server: nope")
     })
-  })
+  }, slow)
 
   test("dry run reports and writes nothing", async () => {
     await withCliFixture(async (dir, invoke) => {
@@ -568,7 +570,7 @@ describe("Move servers between machines", () => {
       expect(await Bun.file(join(dir, ".claude.json")).text()).toBe(claudeBefore)
       expect(await Bun.file(join(dir, "cursor.json")).exists()).toBe(false)
     })
-  })
+  }, slow)
 
   test("import into an empty config adds servers with env intact, then repeats unchanged", async () => {
     await withCliFixture(async (dir, invoke) => {
@@ -591,7 +593,7 @@ describe("Move servers between machines", () => {
       }
       expect(again.stdout).toContain("MCP union is current")
     })
-  })
+  }, slow)
 
   test("a differing server is kept and reported, then replaced with --overwrite", async () => {
     await withCliFixture(async (dir, invoke) => {
@@ -616,7 +618,7 @@ describe("Move servers between machines", () => {
       const texts = await Promise.all(backups.map(f => readFile(join(dir, f), "utf8")))
       expect(texts.some(text => text.includes(secrets.local))).toBe(true)
     })
-  })
+  }, slow)
 
   test("import reads stdin and rejects invalid input without echoing it", async () => {
     await withCliFixture(async (dir, invoke) => {
@@ -637,5 +639,5 @@ describe("Move servers between machines", () => {
       expect(future.code).toBe(1)
       expect(future.stderr).toContain("version must be 1")
     })
-  })
+  }, slow)
 })

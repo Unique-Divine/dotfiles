@@ -450,7 +450,6 @@ export const createProgram = (): Command => new Command()
         if (merged.servers[name] !== entry) continue
         for (const warning of hostWarnings(name, entry)) console.log(warning)
       }
-      if (!options.run || options.dryRun) console.log("Dry run: nothing written; add --run to apply")
       raw.codex = merged.servers
     }
     const pinOptions = {
@@ -483,7 +482,10 @@ export const createProgram = (): Command => new Command()
       console.log(`! missing pinned servers in Codex: ${missing.join(", ")}`)
     } else if (!changed) console.log("MCP union is current")
     if (options.check) { if (changed || missing.length) process.exitCode = 1; return }
-    if (!options.run || options.dryRun) return
+    if (!options.run || options.dryRun) {
+      if (imported) console.log("Dry run: nothing written; add --run to apply")
+      return
+    }
     // Preflight every input before the first write. Each target also gets a
     // fresh check immediately before its write, including between CLI calls.
     const assertUnchanged = async (p: Platform) => {
