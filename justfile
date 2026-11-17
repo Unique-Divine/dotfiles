@@ -421,6 +421,11 @@ mcp-sync *ARGS:
   status=0
   runlog_step mcp-sync bun run mcp/sync.ts {{ARGS}} >"$output" 2>&1 || status=$?
   cat "$output"
+  while IFS= read -r line; do
+    if [[ "$line" == '! warning '* ]]; then
+      runlog_event warn code=mcp-config msg="${line#'! warning '}"
+    fi
+  done < "$output"
   runlog_artifact mcp-plan "$output"
   exit "$status"
 

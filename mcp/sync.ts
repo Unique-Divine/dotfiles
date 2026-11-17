@@ -204,7 +204,14 @@ export const createProgram = (): Command => new Command()
       await assertUnchanged("claude")
       const backup = await backupReplacedEntries(plan.targets.claude, raw.claude, raw.codex as McpServers, paths.claude, resolve(paths.claude, "../mcp-sync-state.json"))
       if (backup) console.log(`Saved previous Claude entries to ${backup}`)
-      await applyClaudePlan(plan.targets.claude, raw.claude)
+      await applyClaudePlan(plan.targets.claude, raw.claude, "claude",
+        async (name, expected) => {
+          const latest = await readClaudeUserMcpServers(paths.claude)
+          if (expected === undefined ? latest[name] !== undefined :
+            !isRecord(expected) || !sameEntry(latest[name], expected)) {
+            throw new Error(`claude/${name} changed during sync; rerun it`)
+          }
+        })
     }
   })
 

@@ -124,3 +124,128 @@ test("CLI preview, check, apply, permissions, and advisory health", async () => 
     expect(parse(await Bun.file(codex).text()).mcp_servers).toBeDefined()
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
+
+async function withCliFixture(
+  check: (dir: string, invoke: (args: string[]) => Promise<{ code: number; output: string }>) => Promise<void>,
+) {
+  const dir = await mkdtemp(join(tmpdir(), "mcp-union-cli-"))
+  try {
+    // A real subprocess substitute for Claude's configuration commands.
+    // It edits a private test profile, never the workstation configuration.
+    await Bun.write(join(dir, "claude"), `#!${process.execPath}
+const file = process.env.CLAUDE_CONFIG_DIR + '/.claude.json'
+const config = JSON.parse(await Bun.file(file).text())
+const args = process.argv.slice(2)
+const name = args[4]
+if (args[0] !== 'mcp' || args[2] !== '--scope' || args[3] !== 'user') process.exit(2)
+if (args[1] === 'remove') {
+  delete config.mcpServers[name]
+  if (name === 'race-first') config.mcpServers['race-later'] = { url: 'https://concurrent.example' }
+}
+else if (args[1] === 'add-json') {
+  if (name === process.env.FAIL_SERVER) { console.error(args[5]); process.exit(3) }
+  config.mcpServers[name] = JSON.parse(args[5])
+} else process.exit(2)
+await Bun.write(file, JSON.stringify(config))
+`)
+    const { chmod } = await import("node:fs/promises")
+    await chmod(join(dir, "claude"), 0o700)
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {}, unrelated: true }))
+    const invoke = async (args: string[]) => {
+      const p = Bun.spawn([process.execPath, script,
+        "--codex-config", join(dir, "config.toml"),
+        "--claude-config", join(dir, ".claude.json"),
+        "--cursor-config", join(dir, "cursor.json"), ...args,
+      ], {
+        env: { ...process.env, CLAUDE_CONFIG_DIR: dir, PATH: `${dir}:${process.env.PATH}` },
+        stdout: "pipe", stderr: "pipe",
+      })
+      const [code, stdout, stderr] = await Promise.all([
+        p.exited, new Response(p.stdout).text(), new Response(p.stderr).text(),
+      ])
+      return { code, output: stdout + stderr }
+    }
+    await check(dir, invoke)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+}
+
+test("CLI adds through user-scoped Claude commands, then repeats without changes", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.local]\ncommand = "server"\n')
+    expect((await invoke(["--run"])).code).toBe(0)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    expect(claude.unrelated).toBe(true)
+    expect(claude.mcpServers.local.args[3]).toBe("local")
+    expect((await invoke(["--check"])).code).toBe(0)
+    expect((await invoke(["--run"])).output).toContain("MCP union is current")
+  })
+})
+
+test("directional CLI writes source settings, preserves unrelated settings, and backs up", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const secret = crypto.randomUUID()
+    await Bun.write(join(dir, "config.toml"), 'model = "keep"\n[mcp_servers.x]\nurl = "https://old.example"\nstartup_timeout_sec = 45\n')
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      x: { type: "http", url: "https://new.example", headers: { token: secret } },
+    } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ unrelated: true, mcpServers: { x: url("cursor"), only: url("only") } }))
+    const result = await invoke(["--from", "claude", "--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).not.toContain(secret)
+    const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+    expect(config.model).toBe("keep")
+    expect(config.mcp_servers.x.url).toBe("https://new.example")
+    expect(config.mcp_servers.x.startup_timeout_sec).toBe(45)
+    const cursor = await Bun.file(join(dir, "cursor.json")).json()
+    expect(cursor.unrelated).toBe(true)
+    expect(cursor.mcpServers.x.url).toBe("https://new.example")
+    expect(cursor.mcpServers.only).toEqual(url("only"))
+    const { readdir } = await import("node:fs/promises")
+    const backups = (await readdir(dir)).filter(name => name.includes("before-"))
+    expect(backups.length).toBeGreaterThanOrEqual(2)
+    for (const name of backups) expect((await stat(join(dir, name))).mode & 0o777).toBe(0o600)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})
+
+test("malformed inputs fail before writing and do not echo parser credentials", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const secret = crypto.randomUUID()
+    const original = '[mcp_servers.x]\nurl = "https://one.example"\n'
+    await Bun.write(join(dir, "config.toml"), original)
+    await Bun.write(join(dir, ".claude.json"), `{ ${secret}`)
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(1)
+    expect(result.output).not.toContain(secret)
+    expect(await Bun.file(join(dir, "config.toml")).text()).toBe(original)
+    expect(await Bun.file(join(dir, "cursor.json")).exists()).toBe(false)
+  })
+})
+
+test("unsupported WebSocket entries stay local and emit a warning", async () => {
+  const raw = inventory()
+  raw.claude.ws = { type: "ws", url: "ws://localhost:1234" }
+  raw.claude.unknown = { type: "future", url: "https://example.com" }
+  raw.cursor.websocket = { url: "ws://localhost:1234" }
+  const { definitions, warnings } = await resolveDefinitions(raw, ctx.sourcePath)
+  expect(warnings.join()).toContain("unsupported transport type")
+  const result = planUnion(raw, definitions, ctx)
+  expect(result.codex).toEqual({})
+  expect(result.targets.cursor.add).toEqual([])
+  expect(result.targets.claude.update).toEqual([])
+})
+
+
+test("concurrent Claude edit during an earlier write survives and stops reconciliation", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.race-first]\nurl = "https://source.example"\n[mcp_servers.race-later]\nurl = "https://source.example"\n')
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      "race-first": url("old"), "race-later": url("old"),
+    } }))
+    const result = await invoke(["--from", "codex", "--run"])
+    expect(result.code).toBe(1)
+    expect(result.output).toContain("race-later changed during sync")
+    const config = await Bun.file(join(dir, ".claude.json")).json()
+    expect(config.mcpServers["race-later"].url).toBe("https://concurrent.example")
+  })
+})
