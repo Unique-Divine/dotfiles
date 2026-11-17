@@ -445,3 +445,16 @@ test("CLI preserves unrecognized direct entries of pinned servers with a warning
     expect((await invoke(["--check"])).code).toBe(0)
   })
 })
+
+test("CLI preserves a recognized Jiyuu launch that sets fields the launcher can't reproduce", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.slack]\ncommand = "slack-mcp"\n')
+    const direct = { command: "slack-mcp", envFile: "/secrets/slack.env" }
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: { slack: direct } }))
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("cursor/slack: Jiyuu checkout launch also sets envFile")
+    expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(direct)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})

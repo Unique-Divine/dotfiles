@@ -41,8 +41,8 @@ server with the Codex launcher when it's a pre-pin Jiyuu launch, such as
 `mcp/<server>`. It backs up the replaced entry first and names env keys that
 differ from the Codex entry, never their values. `--check` fails until that
 migration runs. Sync leaves other direct definitions, such as a remote HTTP
-server, alone with a warning, and skips migration while the Codex entry is
-disabled.
+server or a launch that also sets `envFile` or `cwd`, alone with a warning,
+and skips migration while the Codex entry is disabled.
 
 Telegram isn't pinned while either of these holds, because a `uvx` launch
 runs from the uv cache and never reads files beside the old checkout launch:

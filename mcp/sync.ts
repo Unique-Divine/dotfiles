@@ -107,6 +107,9 @@ export const differingEnvKeys = (a: unknown, b: unknown): string[] => {
     .filter(key => envA[key] !== envB[key]).sort()
 }
 
+/** Direct-entry fields a Codex launcher reproduces without loss. */
+const migratableFields = new Set(["type", "command", "args", "env"])
+
 /**
  * Replaces direct Claude or Cursor definitions of pinned servers with Codex
  * launchers when they are recognized pre-pin Jiyuu launches. Default sync otherwise preserves them, so a client could keep
@@ -133,6 +136,15 @@ export const migrateDirectPins = (
         warnings.push(`${target}/${name}: direct entry is not a known Jiyuu ` +
           "checkout launch; preserved. Remove it to use the pinned Codex " +
           "launcher")
+        continue
+      }
+      // The launcher reproduces only command, args, and env from Codex.
+      const extra = Object.keys(existing as McpServer)
+        .filter(key => !migratableFields.has(key)).sort()
+      if (extra.length) {
+        warnings.push(`${target}/${name}: Jiyuu checkout launch also sets ` +
+          `${extra.join(", ")}, which the Codex launcher can't reproduce; ` +
+          "preserved. Move them into the Codex entry or remove the entry")
         continue
       }
       const targetPlan = plan.targets[target]
