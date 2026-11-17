@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { basename, join, resolve } from "node:path"
 
 import { isRecord, type McpServer, type McpServers } from "./servers.ts"
@@ -36,7 +36,11 @@ export const jiyuuMcpPins = {
     runner: "uvx",
     package: "uniquedivine-telegram-mcp",
     version: "2.0.2",
-    sessionEnv: "TELEGRAM_SESSION_STRING",
+    auth: {
+      prefix: "TELEGRAM_",
+      required: ["TELEGRAM_API_ID", "TELEGRAM_API_HASH"],
+      session: "TELEGRAM_SESSION_STRING",
+    },
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
     legacy: { commands: [], component: "mcp/telegram" },
   },
@@ -49,11 +53,11 @@ export interface JiyuuMcpPin {
   package: string
   version: string
   /**
-   * Env name (or `<name>_<LABEL>` prefix) that carries the login session.
-   * Without it, a checkout launch may read `.env` or `*.session` files from
-   * its directory, which a registry launch never sees.
+   * Credentials a checkout launch may have read from `.env` or a
+   * `*.session` file in its directory, which a registry launch never sees.
+   * `session` also matches `<session>_<LABEL>`.
    */
-  sessionEnv?: string
+  auth?: { prefix: string; required: readonly string[]; session: string }
   /** How to run the server from a Jiyuu checkout, relative to its root. */
   local:
     | { command: "bun"; entry: string }
@@ -144,16 +148,21 @@ export interface PinOptions {
   local?: Set<string>
   jiyuuDir?: string
   pins?: Record<string, JiyuuMcpPin>
-  /** Reports whether a directory holds `.env` or `*.session` files. */
-  hasLocalState?: (dir: string) => boolean
+  /** Names defined by `<dir>/.env`; never values. */
+  readDotEnvKeys?: (dir: string) => string[]
 }
 
-/** True when `dir` holds a `.env` file or a Telethon `*.session` file. */
-export const dirHasLocalState = (dir: string): boolean => {
-  try {
-    return existsSync(join(dir, ".env")) ||
-      readdirSync(dir).some((file) => file.endsWith(".session"))
-  } catch { return false }
+/** Variable names assigned in dotenv text, such as `A=1` or `export B=2`. */
+export const dotEnvKeys = (text: string): string[] =>
+  text.split("\n").flatMap((line) => {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)
+    return match ? [match[1]!] : []
+  })
+
+/** Names defined by `<dir>/.env`, or none when it's missing or unreadable. */
+export const readDotEnvKeysFrom = (dir: string): string[] => {
+  try { return dotEnvKeys(readFileSync(join(dir, ".env"), "utf8")) }
+  catch { return [] }
 }
 
 /** Directory a stdio entry runs from: `uv --directory <dir>`, else `cwd`. */
@@ -164,9 +173,27 @@ export const launchDirectory = (server: McpServer): string | undefined => {
   return typeof dir === "string" && dir !== "" ? dir : undefined
 }
 
-const hasSessionEnv = (server: McpServer, key: string): boolean =>
-  isRecord(server.env) && Object.keys(server.env).some((name) =>
-    name === key || name.startsWith(`${key}_`))
+/**
+ * Reasons a registry launch could lose credentials that the old checkout
+ * launch had: `.env` keys the Codex env lacks, or required env (API keys and
+ * a session string) that may come from `.env` or a `*.session` file. A stray
+ * `*.session` file alone, with complete env, is no reason.
+ */
+export const authGaps = (
+  server: McpServer,
+  auth: NonNullable<JiyuuMcpPin["auth"]>,
+  dotEnv: string[],
+): { missing: string[]; dotEnvOnly: string[] } => {
+  const env = isRecord(server.env) ? Object.keys(server.env) : []
+  const missing = auth.required.filter((key) => !env.includes(key))
+  if (!env.some((key) =>
+    key === auth.session || key.startsWith(`${auth.session}_`))) {
+    missing.push(auth.session)
+  }
+  const dotEnvOnly = [...new Set(dotEnv)].filter((key) =>
+    key.startsWith(auth.prefix) && !env.includes(key)).sort()
+  return { missing, dotEnvOnly }
+}
 
 export interface PinResult {
   servers: Record<string, unknown>
@@ -182,7 +209,7 @@ const sameArgs = (a: unknown, b: string[]): boolean =>
 
 /**
  * Returns Codex `mcp_servers` with each pinned stdio entry launching its
- * pin. The input is not modified; the only read is `hasLocalState`.
+ * pin. The input is not modified; the only read is `readDotEnvKeys`.
  *
  * - Only `command` and `args` change. `env`, `cwd`, `enabled`, and timeouts
  *   stay as they are, so secret wiring never moves.
@@ -193,7 +220,7 @@ export const applyJiyuuPins = (
   servers: Record<string, unknown>,
   {
     local = new Set(), jiyuuDir, pins = jiyuuMcpPins,
-    hasLocalState = dirHasLocalState,
+    readDotEnvKeys = readDotEnvKeysFrom,
   }: PinOptions = {},
 ): PinResult => {
   const next: Record<string, unknown> = { ...servers }
@@ -230,16 +257,26 @@ export const applyJiyuuPins = (
 
     const launch = useLocal ? localLaunch(pin, jiyuuDir!) : pinnedLaunch(pin)
 
-    // A registry launch runs from the uv cache, so files next to the old
-    // checkout launch would silently stop being read.
-    const oldDir = launchDirectory(server)
-    if (!useLocal && pin.sessionEnv && !hasSessionEnv(server, pin.sessionEnv) &&
-      server.command !== launch.command && oldDir && hasLocalState(oldDir)) {
-      warnings.push(`${name}: not pinned; ${oldDir} has .env or *.session ` +
-        `files that ${pin.runner} won't read. Move the values (including ` +
-        `${pin.sessionEnv}) into [mcp_servers.${name}].env in the Codex ` +
-        "config, then rerun just mcp-sync --run")
-      continue
+    // A registry launch runs from the uv cache, so credentials read from
+    // files beside the old checkout launch would silently stop working.
+    if (!useLocal && pin.auth && server.command !== launch.command) {
+      const oldDir = launchDirectory(server)
+      const gaps = authGaps(server, pin.auth,
+        oldDir ? readDotEnvKeys(oldDir) : [])
+      const entry = `[mcp_servers.${name}].env in the Codex config`
+      if (gaps.dotEnvOnly.length) {
+        warnings.push(`${name}: not pinned; ${oldDir}/.env defines ` +
+          `${gaps.dotEnvOnly.join(", ")}, which ${entry} lacks. Move them ` +
+          "there, then rerun just mcp-sync --run")
+        continue
+      }
+      if (gaps.missing.length) {
+        warnings.push(`${name}: not pinned; ${entry} lacks ` +
+          `${gaps.missing.join(", ")}, so the checkout may authenticate ` +
+          "from .env or a *.session file. Add them there, then rerun " +
+          "just mcp-sync --run")
+        continue
+      }
     }
 
     if (server.command === launch.command &&

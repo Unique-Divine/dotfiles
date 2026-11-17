@@ -301,7 +301,7 @@ test("CLI pins Jiyuu servers in Codex, keeps env, and checks clean after", async
       'command = "uv"',
       'args = ["--directory", "/old/jiyuu/mcp/telegram", "run", "main.py"]',
       'startup_timeout_sec = 30',
-      `env = { TELEGRAM_API_HASH = "${secret}" }`,
+      `env = { TELEGRAM_API_ID = "1", TELEGRAM_API_HASH = "${secret}", TELEGRAM_SESSION_STRING = "s" }`,
       '[mcp_servers.discord-mcp]',
       'url = "http://127.0.0.1:8123/mcp"',
       '',
@@ -317,7 +317,9 @@ test("CLI pins Jiyuu servers in Codex, keeps env, and checks clean after", async
     const pin = jiyuuMcpPins["telegram-mcp"]
     expect(telegram.command).toBe("uvx")
     expect(telegram.args.at(-1)).toBe(`${pin.package}@${pin.version}`)
-    expect(telegram.env).toEqual({ TELEGRAM_API_HASH: secret })
+    expect(telegram.env).toEqual({
+      TELEGRAM_API_ID: "1", TELEGRAM_API_HASH: secret, TELEGRAM_SESSION_STRING: "s",
+    })
     expect(telegram.startup_timeout_sec).toBe(30)
     expect(config.mcp_servers["discord-mcp"]).toEqual({ url: "http://127.0.0.1:8123/mcp" })
     const claude = await Bun.file(join(dir, ".claude.json")).json()

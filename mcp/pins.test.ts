@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  applyJiyuuPins, dirHasLocalState, isLegacyJiyuuLaunch, jiyuuCheckoutDir, launchDirectory, jiyuuMcpPins, localLaunch,
+  applyJiyuuPins, isLegacyJiyuuLaunch, readDotEnvKeysFrom, jiyuuCheckoutDir, launchDirectory, jiyuuMcpPins, localLaunch,
   parseLocalNames, pinnedLaunch, type JiyuuMcpPin,
 } from "./pins.ts"
 
@@ -125,49 +125,89 @@ describe("applyJiyuuPins", () => {
   })
 })
 
-describe("Telegram checkout state", () => {
-  const sessionPin: JiyuuMcpPin = { ...uvPin, sessionEnv: "SESSION" }
+describe("Telegram checkout credentials", () => {
+  const authPin: JiyuuMcpPin = {
+    ...uvPin,
+    auth: { prefix: "TG_", required: ["TG_ID", "TG_HASH"], session: "TG_SESSION" },
+  }
+  const full = { TG_ID: "1", TG_HASH: "h", TG_SESSION: "s" }
   const oldEntry = (env: Record<string, string>) => ({
     tg: {
       command: "uv", args: ["--directory", "/old/tg", "run", "main.py"], env,
     },
   })
-  const opts = (hasState: boolean) => ({
-    pins: { tg: sessionPin }, hasLocalState: () => hasState,
+  const run = (env: Record<string, string>, dotEnv: string[] = []) =>
+    applyJiyuuPins(oldEntry(env), {
+      pins: { tg: authPin }, readDotEnvKeys: () => dotEnv,
+    })
+  const command = (result: ReturnType<typeof run>) =>
+    (result.servers.tg as { command: string }).command
+
+  test("pins with complete env and no extra .env keys (the laptop shape)", () => {
+    expect(command(run(full))).toBe("uvx")
+    expect(command(run(full, ["TG_ID", "OTHER"]))).toBe("uvx")
   })
 
-  test("refuses to pin while session files sit beside the old launch", () => {
-    const servers = oldEntry({ API_ID: "1" })
-    const result = applyJiyuuPins(servers, opts(true))
-    expect(result.servers.tg).toEqual(servers.tg)
+  test("a labeled session string counts", () => {
+    const { TG_SESSION: _, ...rest } = full
+    expect(command(run({ ...rest, TG_SESSION_WORK: "s" }))).toBe("uvx")
+  })
+
+  test("holds the pin when .env defines keys the Codex env lacks", () => {
+    const result = run(full, ["TG_SESSION_NAME", "TG_ID"])
+    expect(command(result)).toBe("uv")
     expect(result.changes).toEqual([])
-    expect(result.warnings[0]).toContain("tg: not pinned; /old/tg has .env")
+    expect(result.warnings[0]).toContain(
+      "tg: not pinned; /old/tg/.env defines TG_SESSION_NAME")
     expect(result.warnings[0]).toContain("[mcp_servers.tg].env")
   })
 
-  test("pins once the session is in env, labeled or not", () => {
-    for (const key of ["SESSION", "SESSION_WORK"]) {
-      const result = applyJiyuuPins(oldEntry({ [key]: "s" }), opts(true))
-      expect((result.servers.tg as any).command).toBe("uvx")
+  test("holds the pin when required env is missing", () => {
+    for (const drop of ["TG_ID", "TG_HASH", "TG_SESSION"]) {
+      const env: Record<string, string> = { ...full }
+      delete env[drop]
+      const result = run(env)
+      expect(command(result)).toBe("uv")
+      expect(result.warnings[0]).toContain(`lacks ${drop}`)
     }
   })
 
-  test("pins when the old directory has no local state", () => {
-    const result = applyJiyuuPins(oldEntry({}), opts(false))
-    expect((result.servers.tg as any).command).toBe("uvx")
+  test("never prints values", () => {
+    const secret = crypto.randomUUID()
+    const result = run({ TG_ID: secret }, ["TG_HASH"])
+    expect(result.warnings.join()).not.toContain(secret)
   })
 
-  test("dirHasLocalState finds .env and *.session files", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pins-state-"))
+  test("an already pinned entry is not rechecked", () => {
+    const pinned = { tg: { command: "uvx", args: ["py-server@2.0.0"] } }
+    const result = applyJiyuuPins(pinned, {
+      pins: { tg: authPin }, readDotEnvKeys: () => ["TG_X"],
+    })
+    expect((result.servers.tg as { args: string[] }).args)
+      .toEqual(["py-server@2.0.1"])
+  })
+
+  test("readDotEnvKeysFrom reads names from a real .env", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pins-dotenv-"))
     try {
-      expect(dirHasLocalState(dir)).toBe(false)
-      await writeFile(join(dir, "telegram.session"), "")
-      expect(dirHasLocalState(dir)).toBe(true)
-      await rm(join(dir, "telegram.session"))
-      await writeFile(join(dir, ".env"), "")
-      expect(dirHasLocalState(dir)).toBe(true)
-      expect(dirHasLocalState(join(dir, "missing"))).toBe(false)
+      expect(readDotEnvKeysFrom(dir)).toEqual([])
+      await writeFile(join(dir, "test_session.session"), "")
+      expect(readDotEnvKeysFrom(dir)).toEqual([])
+      await writeFile(join(dir, ".env"),
+        "# note\nTG_ID=1\nexport TG_HASH = 'x'\n\nnot a line\n")
+      expect(readDotEnvKeysFrom(dir)).toEqual(["TG_ID", "TG_HASH"])
     } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  test("the real Telegram pin checks API keys and the session string", () => {
+    const result = applyJiyuuPins({ "telegram-mcp": {
+      command: "uv", args: ["--directory", "/j/mcp/telegram", "run", "main.py"],
+      env: { TELEGRAM_API_ID: "1", TELEGRAM_API_HASH: "h",
+        TELEGRAM_SESSION_STRING: "s", TELEGRAM_EXPOSED_TOOLS: "x" },
+    } }, { readDotEnvKeys: () => [] })
+    expect(result.changes).toContain(
+      "~ pin telegram-mcp to uniquedivine-telegram-mcp@" +
+      jiyuuMcpPins["telegram-mcp"].version)
   })
 
   test("launchDirectory reads uv --directory, then cwd", () => {
