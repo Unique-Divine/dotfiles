@@ -1,0 +1,236 @@
+/**
+ * Reindex the Codebase Memory MCP projects and rebuild cross-repo links.
+ *
+ * The MCP server watches only the repo of the active session, so the other
+ * projects go stale until something reindexes them. A full reindex also
+ * drops a project's cross-repo links, so linking reruns for every project
+ * after all of them are indexed. Boku's reindex can abort with
+ * `aborted_previous_preserved` when files change during the run; those runs
+ * are retried.
+ *
+ * Usage: bun run cbm/reindex.ts [--run] [--repos a,b] [--no-link]
+ */
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+import { Command as Program } from "commander"
+
+export const defaultRepos = [
+  "boku",
+  "nibi-chain",
+  "sai-perps",
+  "sai-keeper",
+  "sai-web",
+  "nibi-web",
+  "nibi-go-hm",
+  "open-sai",
+]
+
+export interface Command {
+  kind: "index" | "link"
+  repo: string
+  argv: string[]
+  input: string
+}
+
+export interface Plan {
+  commands: Command[]
+  /** Repos skipped because their checkout is missing on this machine. */
+  missing: string[]
+}
+
+export interface PlanOptions {
+  home: string
+  repos: string[]
+  link: boolean
+  bin: string
+  exists: (path: string) => boolean
+}
+
+/** Index every present repo, then link each one against all projects. */
+export function planReindex(opts: PlanOptions): Plan {
+  const present: string[] = []
+  const missing: string[] = []
+  for (const repo of opts.repos) {
+    const path = join(opts.home, repo)
+    if (opts.exists(join(path, ".git"))) present.push(path)
+    else missing.push(repo)
+  }
+  const argv = [opts.bin, "cli", "--quiet", "--json", "index_repository"]
+  const commands: Command[] = present.map((path) => ({
+    kind: "index",
+    repo: path,
+    argv,
+    input: JSON.stringify({ repo_path: path }),
+  }))
+  if (opts.link) {
+    for (const path of present) {
+      commands.push({
+        kind: "link",
+        repo: path,
+        argv,
+        input: JSON.stringify({
+          repo_path: path,
+          mode: "cross-repo-intelligence",
+          target_projects: ["*"],
+        }),
+      })
+    }
+  }
+  return { commands, missing }
+}
+
+export interface RunResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+}
+
+export type Outcome =
+  | { ok: true; summary: string }
+  | { ok: false; retry: boolean; reason: string }
+
+/** Read the MCP result envelope that `cli --json` prints. */
+export function readOutcome(cmd: Command, result: RunResult): Outcome {
+  let body: Record<string, unknown> = {}
+  try {
+    const envelope = JSON.parse(result.stdout)
+    if (envelope.isError) {
+      const text = String(envelope.content?.[0]?.text ?? "tool error")
+      return { ok: false, retry: /abort/i.test(text), reason: text }
+    }
+    body = envelope.structuredContent ?? JSON.parse(
+      envelope.content?.[0]?.text ?? "{}")
+  } catch {
+    const reason = (result.stderr || result.stdout).trim().slice(0, 300) ||
+      `exit ${result.exitCode}`
+    return { ok: false, retry: /abort/i.test(reason), reason }
+  }
+  const status = String(body.status ?? "")
+  const wanted = cmd.kind === "index" ? "indexed" : "success"
+  if (result.exitCode === 0 && status === wanted) {
+    const summary = cmd.kind === "index"
+      ? `${body.nodes} nodes, ${body.edges} edges`
+      : `${body.total_cross_edges} cross-repo edges`
+    return { ok: true, summary }
+  }
+  const reason = `status ${status || "missing"}, exit ${result.exitCode}`
+  return { ok: false, retry: /abort/i.test(JSON.stringify(body)), reason }
+}
+
+export type Runner = (cmd: Command) => Promise<RunResult>
+
+export const spawnRunner: Runner = async (cmd) => {
+  const proc = Bun.spawn(cmd.argv, {
+    stdin: new Blob([cmd.input]),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  return { exitCode, stdout, stderr }
+}
+
+export interface ExecuteOptions {
+  run: Runner
+  attempts: number
+  sleep: (ms: number) => Promise<void>
+  retryDelayMs: number
+  log: (line: string) => void
+}
+
+/**
+ * Run the plan. A failed index skips that repo's link step but the others
+ * continue; the returned list names every repo that failed.
+ */
+export async function execute(
+  plan: Plan, opts: ExecuteOptions,
+): Promise<string[]> {
+  const failed = new Set<string>()
+  for (const cmd of plan.commands) {
+    if (failed.has(cmd.repo)) continue
+    for (let attempt = 1; ; attempt++) {
+      const started = Date.now()
+      const outcome = readOutcome(cmd, await opts.run(cmd))
+      const secs = ((Date.now() - started) / 1000).toFixed(0)
+      if (outcome.ok) {
+        opts.log(`${cmd.kind} ${cmd.repo}: ${outcome.summary} (${secs} s)`)
+        break
+      }
+      if (outcome.retry && attempt < opts.attempts) {
+        opts.log(`${cmd.kind} ${cmd.repo}: ${outcome.reason}; retrying`)
+        await opts.sleep(opts.retryDelayMs)
+        continue
+      }
+      opts.log(`${cmd.kind} ${cmd.repo} failed: ${outcome.reason}`)
+      failed.add(cmd.repo)
+      break
+    }
+  }
+  return [...failed]
+}
+
+export function formatPlan(plan: Plan): string {
+  const lines = plan.commands.map((cmd) =>
+    `${cmd.argv.join(" ")} <<< '${cmd.input}'`)
+  for (const repo of plan.missing) lines.push(`# skip ${repo}: no checkout`)
+  return lines.join("\n")
+}
+
+interface CliOptions {
+  run?: boolean
+  repos?: string
+  link: boolean
+  quiet?: boolean
+}
+
+export function createProgram(): Program {
+  return new Program()
+    .name("cbm-reindex")
+    .description(
+      "Reindex Codebase Memory projects, then rerun cross-repo linking.",
+    )
+    .option("--run", "run the plan instead of printing it")
+    .option("--repos <dirs>", "comma-separated dirs under ~ to index",
+      defaultRepos.join(","))
+    .option("--no-link", "skip cross-repo linking")
+    .option("--quiet", "print only failures with --run")
+    .action(async (options: CliOptions) => {
+      const bin = Bun.which("codebase-memory-mcp")
+      if (!bin) {
+        console.log("codebase-memory-mcp is not installed; skipping")
+        return
+      }
+      const plan = planReindex({
+        home: homedir(),
+        repos: (options.repos ?? "").split(",").filter(Boolean),
+        link: options.link,
+        bin,
+        exists: existsSync,
+      })
+      if (!options.run) {
+        console.log(formatPlan(plan))
+        return
+      }
+      const failed = await execute(plan, {
+        run: spawnRunner,
+        attempts: 3,
+        retryDelayMs: 15_000,
+        sleep: (ms) => Bun.sleep(ms),
+        log: (line) => {
+          if (!options.quiet || line.includes("failed")) console.log(line)
+        },
+      })
+      if (failed.length > 0) {
+        console.error(`cbm-reindex failed for: ${failed.join(", ")}`)
+        process.exitCode = 1
+      }
+    })
+}
+
+if (import.meta.main) {
+  await createProgram().parseAsync()
+}
