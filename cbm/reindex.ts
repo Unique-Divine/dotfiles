@@ -8,10 +8,15 @@
  * `aborted_previous_preserved` when files change during the run; those runs
  * are retried.
  *
- * Usage: bun run cbm/reindex.ts [--run] [--repos a,b] [--no-link]
+ * Usage: bun run cbm/reindex.ts [--run | --background | --status]
+ *   [--repos a,b] [--no-link]
+ *
+ * Runs keep a lock, `status.json`, and (for --background) `last.log` in
+ * `~/.cache/cbm-reindex/`.
  */
+import { spawn } from "node:child_process"
 import {
-  existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -309,6 +314,64 @@ export async function runLocked(
   return status.exitCode ?? 1
 }
 
+export type Launch =
+  | { started: true; pid: number; log: string }
+  | { started: false; pid: number }
+
+/** Start a process that outlives this one, writing to the given log fd. */
+export type Spawner = (argv: string[], logFd: number) => number
+
+export const detachedSpawner: Spawner = (argv, logFd) => {
+  const child = spawn(argv[0]!, argv.slice(1), {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+  })
+  child.unref()
+  return child.pid ?? -1
+}
+
+/**
+ * Start a `--run` in its own session so it survives the caller (`just sync`)
+ * exiting. Returns at once; the run itself takes the lock, so a race with
+ * another launch ends with one of them logging "already running".
+ */
+export function launchBackground(
+  dir: string, argv: string[], spawner: Spawner = detachedSpawner,
+  alive: (pid: number) => boolean = isAlive,
+): Launch {
+  const holder = lockHolder(dir)
+  if (holder !== undefined && alive(holder)) {
+    return { started: false, pid: holder }
+  }
+  mkdirSync(dir, { recursive: true })
+  const log = join(dir, "last.log")
+  const fd = openSync(log, "w")
+  try {
+    return { started: true, pid: spawner(argv, fd), log }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+export function formatStatus(
+  status: Status | undefined, running: boolean,
+): string {
+  if (!status) return "cbm-reindex has not run yet"
+  const state = status.ended === null
+    ? (running ? "running" : "interrupted")
+    : `exit ${status.exitCode}`
+  const lines = [
+    `cbm-reindex ${state}: started ${status.started}` +
+      (status.ended ? `, ended ${status.ended}` : ""),
+  ]
+  for (const [repo, result] of Object.entries(status.repos)) {
+    lines.push(`  ${repo}: index ${result.index ?? "-"}; ` +
+      `link ${result.link ?? "-"}`)
+  }
+  for (const repo of status.missing) lines.push(`  ${repo}: no checkout`)
+  return lines.join("\n")
+}
+
 export function formatPlan(plan: Plan): string {
   const lines = plan.commands.map((cmd) =>
     `${cmd.argv.join(" ")} <<< '${cmd.input}'`)
@@ -318,6 +381,9 @@ export function formatPlan(plan: Plan): string {
 
 interface CliOptions {
   run?: boolean
+  plan?: boolean
+  background?: boolean
+  status?: boolean
   repos?: string
   link: boolean
   quiet?: boolean
@@ -329,12 +395,23 @@ export function createProgram(): Program {
     .description(
       "Reindex Codebase Memory projects, then rerun cross-repo linking.",
     )
-    .option("--run", "run the plan instead of printing it")
+    .option("--run", "run the plan in the foreground")
+    .option("--plan", "print the plan, even with --run")
+    .option("--background",
+      "start a --run detached and return; see --status")
+    .option("--status", "print the last run's result")
     .option("--repos <dirs>", "comma-separated dirs under ~ to index",
       defaultRepos.join(","))
     .option("--no-link", "skip cross-repo linking")
     .option("--quiet", "print only failures with --run")
     .action(async (options: CliOptions) => {
+      const dir = stateDir(process.env)
+      if (options.status) {
+        const holder = lockHolder(dir)
+        const running = holder !== undefined && isAlive(holder)
+        console.log(formatStatus(readStatus(dir), running))
+        return
+      }
       const bin = Bun.which("codebase-memory-mcp")
       if (!bin) {
         console.log("codebase-memory-mcp is not installed; skipping")
@@ -347,11 +424,21 @@ export function createProgram(): Program {
         bin,
         exists: existsSync,
       })
-      if (!options.run) {
+      if (options.plan || !(options.run || options.background)) {
         console.log(formatPlan(plan))
         return
       }
-      process.exitCode = await runLocked(plan, stateDir(process.env), {
+      if (options.background) {
+        const argv = [process.execPath, import.meta.path, "--run",
+          "--repos", options.repos ?? "", ...(options.link ? [] : ["--no-link"])]
+        const launch = launchBackground(dir, argv)
+        console.log(launch.started
+          ? `cbm-reindex started in the background (pid ${launch.pid}); ` +
+            `log ${launch.log}, result: just cbm-status`
+          : `cbm-reindex is already running (pid ${launch.pid})`)
+        return
+      }
+      process.exitCode = await runLocked(plan, dir, {
         run: spawnRunner,
         attempts: 3,
         retryDelayMs: 15_000,

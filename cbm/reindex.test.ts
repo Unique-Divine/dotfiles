@@ -4,8 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  acquireLock, type Command, execute, lockHolder, planReindex, readOutcome,
-  readStatus, runLocked, type RunResult,
+  acquireLock, type Command, execute, launchBackground, lockHolder,
+  planReindex, readOutcome, readStatus, runLocked, type RunResult,
 } from "./reindex.ts"
 
 const bin = "/bin/cbm"
@@ -196,5 +196,25 @@ describe("runLocked", () => {
         "/h/b": { index: "1 nodes, 1156 edges", link: "41 cross-repo edges" },
       },
     })
+  })
+})
+
+describe("launchBackground", () => {
+  test("starts a run with its output in last.log", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
+    const spawned: string[][] = []
+    const got = launchBackground(dir, ["bun", "reindex.ts", "--run"],
+      (argv) => { spawned.push(argv); return 777 })
+    expect(got).toEqual({ started: true, pid: 777, log: join(dir, "last.log") })
+    expect(spawned).toEqual([["bun", "reindex.ts", "--run"]])
+  })
+
+  test("does not start a second run while one holds the lock", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
+    acquireLock(dir, process.pid)
+    const got = launchBackground(dir, ["bun"], () => {
+      throw new Error("must not spawn")
+    })
+    expect(got).toEqual({ started: false, pid: process.pid })
   })
 })
