@@ -305,7 +305,7 @@ managed configuration and Codex scrolling settings.
 
 [`codex/config.ts`](codex/config.ts) maintains portable defaults in
 `$HOME/.codex/config.toml` while preserving local project and onboarding
-state. Its `mcp_servers` table is the MCP source that [`mcp/`](mcp/README.md)
+state. Its `mcp_servers` table participates in the MCP union that [`mcp/`](mcp/README.md)
 exports to the other tools. Run `bun run codex/config.ts` for its usage and
 options.
 

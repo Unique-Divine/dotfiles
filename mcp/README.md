@@ -1,21 +1,52 @@
-# MCP servers
+# MCP Servers
 
-The `[mcp_servers]` table in `$HOME/.codex/config.toml` is the single source
-of truth for MCP servers. `just sync` exports it to the Cursor CLI and Claude
-Code. Add or edit a server in Codex, by hand or with `codex mcp add`, then run
-`just sync`.
+Default sync takes the union of local Codex, Claude Code, and Cursor MCP
+servers by name. Add a server in any of them, then run `ud boku sync` or the
+MCP-only command below. Existing definitions stay in place, even when they
+differ. Codex stores definitions needed by generated launchers, but does not
+win configuration disagreements during default sync.
 
+```bash
+just mcp-sync --dry-run       # preview
+just mcp-sync --run           # union, without other machine setup
+just mcp-sync --check         # used by just health
+just mcp-sync --from claude --run  # explicitly prefer Claude settings
+just mcp-sync --from codex --run   # explicitly prefer Codex settings
+just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
 ```
-                  mcp/ingest.ts --from claude|cursor   (opt-in)
-                        │
-                        ▼
-$HOME/.codex/config.toml [mcp_servers]
-  ├── cursor/mcp.ts ──▶ $HOME/.cursor/mcp.json (Cursor CLI)
-  └── claude/mcp.ts ──▶ $HOME/.claude.json (user scope)
-```
 
-`codex/config.ts` manages only the portable Codex defaults. It never changes
-`mcp_servers`.
+## Union and Directional Sync
+
+- A name missing from another platform is added when its definition can be
+  represented there. Equivalent settings are a no-op.
+- Existing names with different settings are preserved. Sync and health print
+  advisory warnings with platform names and differing field names, never
+  values. Warnings alone do not fail health. Missing propagatable servers do.
+- When a name differs and a third platform lacks it, fill the missing entry
+  from Codex first, then Claude, then Cursor. This order never replaces an
+  existing entry during default sync.
+- `--from` chooses the source for overlapping names and corrects other
+  platforms. Destination-only names remain and participate in the union.
+- `just mcp-ingest` and `just mcp-ingest cursor` are compatibility commands for
+  directional reconciliation. Unlike the old recipe, selecting the source
+  authorizes replacements without an additional `--force`.
+- Default sync never deletes servers. Removing an independent definition from
+  only one platform restores it from another. Remove it everywhere to keep it
+  gone. A dangling generated launcher has no settings to restore, so sync
+  warns and preserves it.
+  A launcher referencing an HTTP definition also warns; explicit directional
+  sync replaces it with the correct HTTP entry, including on a retry after
+  an interrupted transport change.
+- Disabled Codex entries stay disabled. SSE, interpolation, and platform-only
+  auth fields are preserved and reported when they cannot be mapped.
+- Only local user configurations participate. Claude-hosted connectors,
+  project entries, and OAuth sessions are not imported.
+
+The old `mcp/ingest.ts` remains available as a low-level, one-source importer
+with its existing clash and `--force` behavior. The standalone
+`claude/mcp.ts` and `cursor/mcp.ts` exporters also retain their older one-way
+behavior, including managed deletions. Normal sync and health use the union
+coordinator instead.
 
 ## Entry shapes
 
@@ -46,104 +77,33 @@ Claude entries get `"type": "http"`. A url server that uses
 configs have no equivalent that keeps the secret out of the file. Each tool
 runs its own OAuth login for url servers that need it.
 
-A server with `enabled = false` is treated as absent.
+A Codex server with `enabled = false` remains disabled and is not propagated.
 
-## Sync rules
+## Writes, Logs, and Credentials
 
-Codex wins on names. For each target:
+`just sync` records the MCP step in the existing run log. `just mcp-sync`
+also records its own run and captures the credential-free plan as an artifact.
+A preview writes logs but does not change MCP configurations.
 
-- **Add.** A Codex server the target lacks is added.
-- **Replace.** A same-named target entry that differs is replaced. When the
-  sync does not own that entry, the plan says
-  `~ replace <name> (unmanaged ... entry)`, and the old entry is backed up
-  first unless Codex already holds the same definition (see below).
-- **Remove.** An owned entry is removed when its server leaves Codex.
-  Launcher entries are always owned. A url entry is owned when file
-  `$XDG_STATE_HOME/dotfiles/mcp-managed.json` (default
-  `$HOME/.local/state/dotfiles/mcp-managed.json`) lists its name for that
-  target. After a successful run, every url server Codex exports is owned,
-  including a hand-added entry that already matched or was replaced.
-- **Keep.** An entry whose name Codex does not have and that the sync does not
-  own is never touched.
-- **Skip.** A Codex server that cannot be mapped is reported with `! skip`
-  and keeps any existing copy.
+Claude writes use `claude mcp add-json --scope user` and `claude mcp remove`.
+Cursor and Codex writes are atomic, private files. Directional replacements
+save private backups before discarding independent definitions. Backups may
+contain credentials and are not committed or automatically deleted.
 
-`--dry-run`, `--check`, and `--run` print server names only, never env or
-header values. `--print` writes the generated entries, which include url
-header values but never stdio env.
+All inputs are checked before applying the plan. Target changes during the
+run stop further writes. Cross-platform application is not transactional;
+a failure can leave completed additions in place. Fix the reported cause and
+rerun. Claude replacements attempt to restore the old entry if adding fails.
 
-Claude writes go through `claude mcp add-json --scope user` and
-`claude mcp remove`, because Claude Code rewrites `$HOME/.claude.json` while
-it runs. Before replacing entries it does not own, `claude/mcp.ts` saves them
-to `claude-mcp-before-dotfiles-<ms>.json` (mode 0600) beside the managed-state
-file and prints the path. A replacement removes and then re-adds the entry; if
-the add fails, the old entry is added back before the error is reported.
-Errors from a failed `add-json` omit the CLI's stderr, which could echo header
-values. The `add-json` payload is visible in the process list while the
-command runs.
+The `add-json` payload can appear in the process list while Claude runs. CLI
+errors from that operation omit stderr to avoid echoing credentials.
 
-`cursor/mcp.ts` edits `$HOME/.cursor/mcp.json` directly with an atomic, mode
-0600 replacement, and keeps other top-level keys. Before it replaces an entry
-it does not own, it saves the old file as `mcp.json.before-dotfiles-<ms>` and
-prints the path.
+For isolated inspection, the coordinator accepts `--codex-config`,
+`--claude-config`, and `--cursor-config`. Claude writes require its actual
+user config; use `CLAUDE_CONFIG_DIR` for an isolated profile. To test from a
+worktree without creating launcher references to that temporary checkout,
+pass `--launcher-path` pointing to the stable `claude/mcp-launch.ts`.
 
-Both backups can hold tokens. Neither is written when every replaced entry
-has the same definition Codex already holds, as after an ingest, because
-nothing would be lost. Nothing deletes backups; remove them once you have
-checked the result.
-
-## Ingest servers added elsewhere
-
-A server added with `claude mcp add` or by hand in the Cursor file stays in
-that tool. To make it a Codex server and export it everywhere, run:
-
-```bash
-bun run mcp/ingest.ts --from claude --dry-run   # preview
-just mcp-ingest                                 # Claude → Codex → all tools
-just mcp-ingest cursor                          # Cursor → Codex → all tools
-```
-
-Ingest skips launcher entries, which already come from Codex. It also skips,
-with a `! skip` reason, entries Codex cannot hold as they are: SSE servers,
-entries with any field besides `type`, `command`, `args`, `env`, `cwd`, `url`,
-and `headers` (such as Claude's `headersHelper` or `oauth`, or Cursor's
-`auth` or `envFile`), and entries that use `${VAR}` or `${env:VAR}`
-interpolation. Add those to Codex by hand.
-
-Ingest adds a server only when Codex has no server of that name. A same-named
-server with a different definition is reported as `! clash`, as is an entry
-ingest cannot map under a name Codex already has. Both count only when the
-export would overwrite the entry; when the Codex server is disabled or cannot
-be exported, the name is reported as `! skip` instead. The run exits 1 after
-writing the clean additions, so `just mcp-ingest` stops before the
-export would overwrite the clashing entry. `--force` replaces the Codex
-server's transport and auth fields (`command`, `args`, `env`, `env_vars`,
-`cwd`, `url`, `http_headers`, `bearer_token_env_var`, `env_http_headers`) and
-keeps others, such as `startup_timeout_sec`. The Codex file is rewritten with
-mode 0600, and output lists key paths, never values.
-
-After the export, Claude's ingested stdio entry becomes a launcher entry, so
-its env leaves `$HOME/.claude.json`. Url servers that use OAuth need a login
-in Codex once, with `codex mcp login <name>`.
-
-## Commands
-
-`just sync` runs `cursor/mcp.ts --run`, then `claude/mcp.ts --run` when the
-`claude` CLI is installed. `just health` runs both with `--check`.
-
-```bash
-bun run cursor/mcp.ts --dry-run
-bun run cursor/mcp.ts --run
-bun run claude/mcp.ts --check
-bun run claude/mcp.ts --print   # entries with url headers, no stdio env
-```
-
-Both scripts take `--run`, `--dry-run`, `--check`, and `--print`, plus
-`--mcp-source <config.toml>` and `--state <path>`. `cursor/mcp.ts` takes
-`--cursor-config <path>` for its target file. `claude/mcp.ts --claude-config`
-only changes what `--check` and `--dry-run` read: `--run` writes through the
-`claude` CLI, so it refuses a path other than the CLI's own. For another
-Claude profile, set `CLAUDE_CONFIG_DIR`.
-
-Entries hold absolute paths to this checkout and to `bun`. After moving the
-checkout, run `just sync` to rewrite them.
+This synchronizes local runtime settings. It does not store credentials in
+the dotfiles Git repository. Do not use the standalone exporters' `--print`
+option with credentials, because it includes HTTP header values.

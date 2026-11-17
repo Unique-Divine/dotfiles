@@ -112,6 +112,8 @@ export const applyClaudePlan = async (
   plan: McpPlan,
   current: Record<string, unknown>,
   claudeBin = "claude",
+  beforeWrite: (name: string, expected: unknown) => Promise<void> =
+    async () => {},
 ): Promise<void> => {
   const remove = (name: string) =>
     runClaude([claudeBin, "mcp", "remove", "--scope", "user", name])
@@ -120,20 +122,30 @@ export const applyClaudePlan = async (
     JSON.stringify(entry),
   ])
 
-  for (const name of plan.remove) await remove(name)
+  for (const name of plan.remove) {
+    await beforeWrite(name, current[name])
+    await remove(name)
+  }
 
   for (const { name, entry } of plan.update) {
+    await beforeWrite(name, current[name])
     await remove(name)
 
     try {
+      await beforeWrite(name, undefined)
       await add(name, entry)
     } catch (error) {
-      await add(name, current[name]).catch(() => undefined)
+      // Do not overwrite an external edit while attempting rollback.
+      await beforeWrite(name, undefined)
+        .then(() => add(name, current[name])).catch(() => undefined)
       throw error
     }
   }
 
-  for (const { name, entry } of plan.add) await add(name, entry)
+  for (const { name, entry } of plan.add) {
+    await beforeWrite(name, undefined)
+    await add(name, entry)
+  }
 }
 
 interface McpOptions {
