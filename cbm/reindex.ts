@@ -16,7 +16,8 @@
  */
 import { spawn } from "node:child_process"
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync,
+  writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -198,15 +199,6 @@ export function stateDir(env: Record<string, string | undefined>): string {
     "cbm-reindex")
 }
 
-export function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM"
-  }
-}
-
 /**
  * Runs hold an exclusive `flock` on `lock` for their whole life: `--run`
  * re-executes itself under `flock -n`, and the lock stays held while the run
@@ -226,6 +218,7 @@ export function underLock(dir: string, argv: string[]): string[] {
 }
 
 export interface Status {
+  /** For display only; the lock, not this PID, says whether a run is live. */
   pid: number
   started: string
   ended: string | null
@@ -386,9 +379,7 @@ export function createProgram(): Program {
     .action(async (options: CliOptions) => {
       const dir = stateDir(process.env)
       if (options.status) {
-        const pid = readStatus(dir)?.pid
-        const running = pid !== undefined && isAlive(pid)
-        console.log(formatStatus(readStatus(dir), running))
+        console.log(formatStatus(readStatus(dir), isLocked(dir)))
         return
       }
       const bin = Bun.which("codebase-memory-mcp")

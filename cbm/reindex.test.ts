@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test"
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
 } from "node:fs"
+import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  type Command, execute, launchBackground, lockPath, planReindex, readOutcome,
+  type Command, execute, isLocked, launchBackground, lockPath, planReindex, readOutcome,
   readStatus, runPlan, type RunResult,
 } from "./reindex.ts"
 
@@ -214,6 +215,26 @@ describe("the run lock", () => {
     expect(codes.sort()).toEqual([0, 2])
     expect(box.calls()).toBe(1)
     expect(existsSync(lockPath(box.dir))).toBe(true)
+  })
+
+  test("a killed run releases the lock for the next one", async () => {
+    const box = sandbox()
+    // Its own process group, so the kill takes the fake indexer with it.
+    const victim = spawn(box.argv[0]!, box.argv.slice(1),
+      { env: box.env(60), detached: true, stdio: "ignore" })
+    const exited = new Promise((resolve) => victim.on("exit", resolve))
+    while (box.calls() === 0) await Bun.sleep(20)
+    expect(isLocked(box.dir)).toBe(true)
+    process.kill(-victim.pid!, "SIGKILL")
+    await exited
+    // The interrupted run left its lock file and an unfinished status.
+    expect(readStatus(box.dir)?.ended).toBeNull()
+    expect(isLocked(box.dir)).toBe(false)
+    const next = Bun.spawn(box.argv,
+      { env: box.env(0), stdout: "pipe", stderr: "pipe" })
+    expect(await next.exited).toBe(0)
+    expect(box.calls()).toBe(2)
+    expect(readStatus(box.dir)?.exitCode).toBe(0)
   })
 })
 
