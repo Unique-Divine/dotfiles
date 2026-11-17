@@ -338,3 +338,47 @@ test("CLI pins Jiyuu servers in Codex, keeps env, and checks clean after", async
     expect(typo.output).toContain("unknown server telegram")
   })
 })
+
+test("CLI migrates direct client entries of pinned servers to Codex launchers", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const codexToken = crypto.randomUUID()
+    const directToken = crypto.randomUUID()
+    await Bun.write(join(dir, "config.toml"), [
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+      `env = { SLACK_TOKEN = "${codexToken}" }`,
+      '',
+    ].join("\n"))
+    const direct = {
+      command: "slack-mcp", env: { SLACK_TOKEN: directToken, EXTRA: "x" },
+    }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      slack: { type: "stdio", ...direct },
+    } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: {
+      slack: direct,
+    } }))
+    const pending = await invoke(["--check"])
+    expect(pending.code).toBe(1)
+    expect(pending.output).toContain("claude: ~ replace slack")
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("env differs (keys: EXTRA, SLACK_TOKEN)")
+    expect(result.output).not.toContain(codexToken)
+    expect(result.output).not.toContain(directToken)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    const cursor = await Bun.file(join(dir, "cursor.json")).json()
+    expect(claude.mcpServers.slack.args.slice(1)).toEqual(
+      ["--source", join(dir, "config.toml"), "slack"])
+    expect(cursor.mcpServers.slack.args[3]).toBe("slack")
+    const { readdir, readFile } = await import("node:fs/promises")
+    const files = await readdir(dir)
+    const claudeBackup = files.find(f => f.startsWith("claude-mcp-before-dotfiles-"))
+    const cursorBackup = files.find(f => f.startsWith("cursor.json.before-dotfiles-"))
+    expect(claudeBackup).toBeDefined()
+    expect(cursorBackup).toBeDefined()
+    expect(await readFile(join(dir, claudeBackup!), "utf8")).toContain(directToken)
+    expect(await readFile(join(dir, cursorBackup!), "utf8")).toContain(directToken)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})

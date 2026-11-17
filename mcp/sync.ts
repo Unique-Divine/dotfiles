@@ -9,12 +9,12 @@ import {
 } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
 import {
-  applyJiyuuPins, jiyuuCheckoutDir, localEnvVar, parseLocalNames,
+  applyJiyuuPins, jiyuuCheckoutDir, jiyuuMcpPins, localEnvVar, parseLocalNames,
 } from "./pins.ts"
 import { describePlan, hasChanges, sameEntry, writePrivateFile, type McpPlan } from "./plan.ts"
 import {
   classifyServer, codexConfigPath, defaultLauncherContext, desiredEntries,
-  isLauncherEntry,
+  isLauncherEntry, isStringRecord, launcherEntry,
   isRecord, jsonToCodex, transportFields, transportView, type LauncherContext,
   type McpServer, type McpServers,
 } from "./servers.ts"
@@ -96,6 +96,51 @@ export const planUnion = (
     }
   }
   return { codex, targets, warnings }
+}
+
+/** Env names whose values differ between two definitions, sorted. */
+export const differingEnvKeys = (a: unknown, b: unknown): string[] => {
+  const envA = isRecord(a) && isStringRecord(a.env) ? a.env : {}
+  const envB = isRecord(b) && isStringRecord(b.env) ? b.env : {}
+  return [...new Set([...Object.keys(envA), ...Object.keys(envB)])]
+    .filter(key => envA[key] !== envB[key]).sort()
+}
+
+/**
+ * Replaces direct Claude or Cursor definitions of pinned servers with Codex
+ * launchers. Default sync otherwise preserves them, so a client could keep
+ * running a checkout after Codex is pinned. The caller backs up each replaced
+ * entry. Returns warnings that name differing env keys, never values.
+ */
+export const migrateDirectPins = (
+  plan: UnionPlan,
+  raw: Inventory,
+  definitions: Inventory,
+  ctx: LauncherContext,
+  names: readonly string[] = Object.keys(jiyuuMcpPins),
+): string[] => {
+  const warnings: string[] = []
+  for (const name of names) {
+    if (classifyServer(plan.codex[name]) !== "stdio") continue
+    for (const target of ["claude", "cursor"] as const) {
+      const existing = raw[target][name]
+      if (existing === undefined || isLauncherEntry(existing)) continue
+      const targetPlan = plan.targets[target]
+      targetPlan.update = targetPlan.update.filter(u => u.name !== name)
+      targetPlan.add = targetPlan.add.filter(a => a.name !== name)
+      targetPlan.update.push({
+        name, entry: launcherEntry(name, ctx, target), replacesUnmanaged: true,
+      })
+      const keys = differingEnvKeys(definitions[target][name] ?? existing,
+        plan.codex[name])
+      if (keys.length) {
+        warnings.push(`${target}/${name}: direct entry replaced by the pinned ` +
+          `Codex launcher; env differs (keys: ${keys.join(", ")}); check the ` +
+          "backup and move needed values into the Codex entry")
+      }
+    }
+  }
+  return warnings
 }
 
 const readText = async (path: string): Promise<string> =>
@@ -195,7 +240,8 @@ export const createProgram = (): Command => new Command()
     const plan = planUnion(raw, definitions, ctx, options.from)
     // A directional source can carry an old launch command; pins still win.
     plan.codex = applyJiyuuPins(plan.codex, pinOptions).servers as McpServers
-    for (const warning of [...warnings, ...plan.warnings]) console.log(`! warning ${warning}`)
+    const migrated = migrateDirectPins(plan, raw, definitions, ctx)
+    for (const warning of [...warnings, ...plan.warnings, ...migrated]) console.log(`! warning ${warning}`)
     const codexChanged = !sameEntry(original, plan.codex)
     if (codexChanged) console.log("~ update codex MCP definitions")
     for (const target of ["claude", "cursor"] as const) {
@@ -222,12 +268,12 @@ export const createProgram = (): Command => new Command()
     }
     if (hasChanges(plan.targets.cursor)) {
       await assertUnchanged("cursor")
-      const backup = await writeCursorFile(paths.cursor, cursor, plan.targets.cursor, raw.codex as McpServers)
+      const backup = await writeCursorFile(paths.cursor, cursor, plan.targets.cursor, plan.codex)
       if (backup) console.log(`Saved previous Cursor file to ${backup}`)
     }
     if (hasChanges(plan.targets.claude)) {
       await assertUnchanged("claude")
-      const backup = await backupReplacedEntries(plan.targets.claude, raw.claude, raw.codex as McpServers, paths.claude, resolve(paths.claude, "../mcp-sync-state.json"))
+      const backup = await backupReplacedEntries(plan.targets.claude, raw.claude, plan.codex, paths.claude, resolve(paths.claude, "../mcp-sync-state.json"))
       if (backup) console.log(`Saved previous Claude entries to ${backup}`)
       await applyClaudePlan(plan.targets.claude, raw.claude, "claude",
         async (name, expected) => {
