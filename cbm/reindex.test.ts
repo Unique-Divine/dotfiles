@@ -48,20 +48,20 @@ const plan = (repos: string[], present: string[], link = true) =>
   })
 
 describe("planReindex", () => {
-  test("indexes every present repo before linking any", () => {
+  test("indexes every present repo before linking any, Boku last", () => {
     const got = plan(["boku", "sai-web", "gone"], ["boku", "sai-web"])
     expect(got.missing).toEqual(["gone"])
     expect(got.commands.map((cmd) => [cmd.kind, cmd.repo])).toEqual([
       ["index", "/h/boku"],
       ["index", "/h/sai-web"],
-      ["link", "/h/boku"],
       ["link", "/h/sai-web"],
+      ["link", "/h/boku"],
     ])
     expect(got.commands[0]).toEqual({
       kind: "index", repo: "/h/boku", argv,
       input: JSON.stringify({ repo_path: "/h/boku" }),
     })
-    expect(JSON.parse(got.commands[2]!.input)).toEqual({
+    expect(JSON.parse(got.commands[3]!.input)).toEqual({
       repo_path: "/h/boku",
       mode: "cross-repo-intelligence",
       target_projects: ["*"],

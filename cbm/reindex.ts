@@ -12,7 +12,7 @@
  */
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { Command as Program } from "commander"
 
 export const defaultRepos = [
@@ -47,7 +47,11 @@ export interface PlanOptions {
   exists: (path: string) => boolean
 }
 
-/** Index every present repo, then link each one against all projects. */
+/**
+ * Index every present repo, then link each one against all projects. Boku
+ * links last: every refresh deletes a project's links, and Boku, where
+ * agents write all day, refreshes most often.
+ */
 export function planReindex(opts: PlanOptions): Plan {
   const present: string[] = []
   const missing: string[] = []
@@ -64,7 +68,11 @@ export function planReindex(opts: PlanOptions): Plan {
     input: JSON.stringify({ repo_path: path }),
   }))
   if (opts.link) {
-    for (const path of present) {
+    const linkOrder = [
+      ...present.filter((path) => basename(path) !== "boku"),
+      ...present.filter((path) => basename(path) === "boku"),
+    ]
+    for (const path of linkOrder) {
       commands.push({
         kind: "link",
         repo: path,
