@@ -476,9 +476,12 @@ describe("terminal colors", () => {
       await initializeRepository(keeperDir)
       await makeSkill(join(keeperDir, "ai-skills"), "keeper-skill")
 
+      // NO_COLOR in the caller's env (some agent sandboxes set it) would
+      // override FORCE_COLOR, so the child gets an explicit color env.
+      const { NO_COLOR: _noColor, ...env } = process.env
       const proc = Bun.spawn(["bun", scriptPath, "--run"], {
         cwd: import.meta.dir,
-        env: { ...process.env, HOME: homeDir, REPO: repoDir, FORCE_COLOR: "1" },
+        env: { ...env, HOME: homeDir, REPO: repoDir, FORCE_COLOR: "1" },
         stdout: "pipe",
         stderr: "pipe",
       })
