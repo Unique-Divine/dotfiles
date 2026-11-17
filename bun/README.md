@@ -10,8 +10,9 @@ Sync and `just bun-health` act on `$DOTFILES/bun`, the checkout that
 checkout, such as a PR worktree, `just bun-sync` refuses to run, because the
 global tools would follow a directory that `git worktree remove` deletes. Pass
 `--allow-other-checkout` to `bun --no-install bun/sync.ts --run` to sync
-`$DOTFILES` from there anyway. `just bun-lock` and `just bun-activate-mdtoc`
-edit the manifest of the checkout they run in.
+`$DOTFILES` from there anyway. `just bun-add`, `just bun-drop`,
+`just bun-lock`, and `just bun-activate-mdtoc` edit the manifest of the
+checkout they run in.
 
 The first migration preserves the previous global installation in a sibling
 directory named `global.before-dotfiles-<timestamp>`. It installs and checks
@@ -20,31 +21,44 @@ the previous directory and executable links.
 
 ## Change the Tool List
 
-Edit `global/package.json`, then run these commands from dotfiles:
+Add or remove tools with these recipes from dotfiles:
 
 ```sh
-just bun-lock
+just bun-add package-name@1.2.3
+just bun-drop package-name
 git diff -- bun/global/package.json bun/global/bun.lock
 just bun-sync
 just bun-health
 ```
 
-Sync uses the committed lock without updating dependency versions. A manifest
-edit that changes dependencies requires `just bun-lock` first. Removing a
-package removes its previously managed executable links during sync. An
-executable replaced by a user-managed file or unrelated link is preserved.
+`just bun-add` checks that the exact release exists on the registry, pins it
+in `global/package.json`, and refreshes `global/bun.lock`. `just bun-drop`
+removes a package and refreshes the lock. If the lock refresh fails, both
+recipes restore both files.
 
-After migration, normal Bun commands also edit the tracked manifest and lock:
+Never run `bun add -g` or `bun remove -g`, and agents must never run them.
+Bun's global directory is this tracked directory, so those commands write
+into Git: `bun add -g` records a range such as `^2.21.2`, or the absolute path
+of a local tarball, and `just sync` then fails. To try a package without
+adopting it, install it under a throwaway `BUN_INSTALL="$(mktemp -d)"`.
 
-```sh
-bun add --global --exact package-name@1.2.3
-bun remove --global package-name
-just bun-sync
+Every dependency in `global/package.json` must be an exact version. Sync,
+health, `just bun-lock`, and the tests reject ranges, tags, and `file:`,
+`link:`, absolute, relative, and tarball paths. `just bun-policy` runs that
+check offline against the committed files, and CI runs it too.
+
+Each problem names the package and one command to fix it:
+
+```text
+@nibiruchain/nibiru: "^2.21.2" is not an exact version; run just bun-add @nibiruchain/nibiru@2.21.2
+@uniquedivine/tg-sai: "/home/me/uniquedivine-tg-sai-0.3.2.tgz" is a path on this machine, not a registry release; run git checkout -- bun/global
+fixture-helper: package.json has 2.0.0, bun.lock has 1.0.0; run just bun-add fixture-helper@2.0.0
 ```
 
-Review both tracked files before committing. Registry package names are
-portable; adding an absolute tarball or local folder records a machine-specific
-path.
+Sync uses the committed lock without updating dependency versions. After a
+hand edit of the manifest, run `just bun-lock`. Removing a package removes its
+previously managed executable links during sync. An executable replaced by a
+user-managed file or unrelated link is preserved.
 
 ## Install and Repair
 
@@ -71,20 +85,13 @@ The manager follows `BUN_INSTALL`, `BUN_INSTALL_GLOBAL_DIR`, and
 `XDG_DATA_HOME` for `ud` plugin registration. Bun's global configuration rules
 are documented in [Bun's configuration reference](https://bun.sh/docs/runtime/bunfig).
 
-## Discord MCP From Jiyuu
+## MCP Servers From Jiyuu
 
-The `mcp-discord` command runs Jiyuu's
-[`mcp/discord`](https://github.com/Unique-Divine/jiyuu/tree/main/mcp/discord),
-so it isn't in the global manifest. Sync finds Jiyuu at `$REPO/boku/jiyuu`, the
-same place `just sync` updates it. It installs that component's locked
-dependencies with lifecycle scripts disabled when they're incomplete, then
-links `mcp-discord` in Bun's binary directory to `mcp/discord/src/index.ts`.
-Client configurations keep the command name `mcp-discord`.
-
-Health reports a missing or non-executable entrypoint, missing or mismatched
-dependencies, and a link that is missing or points elsewhere. Sync replaces
-the retired package link and a link to a Jiyuu checkout at another path. It
-refuses other `mcp-discord` commands.
+Bun sync no longer links `mcp-discord` to a Jiyuu checkout. The Discord,
+Slack, and Telegram MCP servers run as pinned registry releases through
+`bunx` and `uvx`; see [Jiyuu Pins](../mcp/README.md#jiyuu-pins). Sync leaves an
+existing `mcp-discord` link from an earlier sync in place and stops managing
+it.
 
 ## Update `ud-mdtoc` After Publication
 
@@ -131,9 +138,8 @@ bun test ./bun/sync.test.ts
 bun test ./claude/native.test.ts ./tests/mdtoc.test.ts
 ```
 
-The tests use real local packages, tarballs, a stand-in Jiyuu `mcp/discord`,
-and temporary global installations. They don't change the workstation's live
-global installation or the Jiyuu checkout.
+The tests serve packed fixture packages from a local npm registry and use
+temporary global installations with their own Bun cache. They don't change the workstation's live global installation.
 
 The Neovim test runs when `nvim` and `ud-mdtoc` are installed. To test an
 isolated package installation instead, set `MDTOC_TEST_COMMAND` to its

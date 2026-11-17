@@ -111,6 +111,7 @@ jobs:
         run: just i-bash-ci
       - run: bun install --frozen-lockfile
       - run: just typecheck
+      - run: just bun-policy
       - run: just test-bun
   rust-test:
     name: Root Rust tests

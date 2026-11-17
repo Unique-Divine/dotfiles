@@ -228,7 +228,7 @@ sync:
   source symlinks.sh
   runlog_event step name=symlinks msg=done
   runlog_step mise-install just mise-install
-  # Jiyuu first: bun-sync links mcp-discord to Jiyuu's mcp/discord.
+  # Jiyuu provides gh-rev and the public skills that later steps install.
   runlog_step i-jiyuu just i-jiyuu
   runlog_step bun-sync just bun-sync
   runlog_step claude-install just claude-install
@@ -379,6 +379,19 @@ bun-health:
 # Refresh the global Bun lockfile after editing bun/global/package.json.
 bun-lock:
   bun --no-install bun/sync.ts --lock
+
+# Use this, never `bun add -g`, which writes ranges and paths into git.
+# Pin an exact registry release in the global manifest and refresh the lock.
+bun-add SPEC:
+  bun --no-install bun/sync.ts --add {{quote(SPEC)}}
+
+# Remove a package from the global manifest and refresh the lock.
+bun-drop NAME:
+  bun --no-install bun/sync.ts --drop {{quote(NAME)}}
+
+# Check offline that the global manifest uses exact pins matching its lock.
+bun-policy:
+  bun --no-install bun/sync.ts --policy
 
 # Pin a published ud-mdtoc release in the managed global manifest.
 bun-activate-mdtoc VERSION="0.1.0":

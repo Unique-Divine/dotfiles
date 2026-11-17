@@ -8,14 +8,6 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { parse as parseToml } from "smol-toml"
 
-/**
- * Global command for the Discord MCP server maintained in Jiyuu. Codex and
- * Claude configs launch this name, so keep it when the target changes. It is
- * a direct link to Jiyuu's source, not a global package: `bun link` would add
- * a package to the global node_modules, which sync reinstalls with --force.
- */
-export const discordBin = "mcp-discord"
-const discordEntry = join("src", "index.ts")
 const mdtocPackage = "@uniquedivine/ud-mdtoc"
 const repair = "repair: just bun-sync"
 
@@ -30,8 +22,6 @@ interface Package {
 interface InstalledState {
   bins: Record<string, string>
   plugin?: string
-  /** Jiyuu Discord entrypoint that the mcp-discord link targeted. */
-  discord?: string
   manifest: string
   lock: string
 }
@@ -41,8 +31,6 @@ export interface Config {
   runtimeDir: string
   binDir: string
   pluginDir: string
-  /** Jiyuu's mcp/discord, or undefined when REPO is unset. */
-  discordDir?: string
   env: Environment
 }
 interface Inspection {
@@ -120,9 +108,25 @@ async function manifest(config: Config): Promise<Package> {
   return json<Package>(join(config.globalDir, "package.json"))
 }
 
+/**
+ * The lock text, or an empty string when an empty manifest has no lock. Bun
+ * deletes bun.lock when no packages remain, so removing the last tool leaves
+ * that state, and policy and sync must accept it.
+ */
+async function lockText(config: Config): Promise<string> {
+  try {
+    return await readFile(join(config.globalDir, "bun.lock"), "utf8")
+  } catch (error) {
+    const empty = Object.keys((await manifest(config)).dependencies ?? {})
+      .length === 0
+    if (empty && (error as NodeJS.ErrnoException).code === "ENOENT") return ""
+    throw error
+  }
+}
+
 async function lockHash(config: Config): Promise<string> {
-  return new Bun.CryptoHasher("sha256").update(await readFile(
-    join(config.globalDir, "bun.lock"))).digest("hex")
+  return new Bun.CryptoHasher("sha256").update(await lockText(config))
+    .digest("hex")
 }
 
 /** Match Bun's Unix global settings, with environment overrides first. */
@@ -155,22 +159,11 @@ export async function configuration(
   return {
     root: canonicalRoot,
     globalDir: join(canonicalRoot, "global"),
-    discordDir: discordComponentDir(env),
     runtimeDir, binDir,
     pluginDir: join(env.XDG_DATA_HOME ?? join(home, ".local", "share"),
       "ud", "plugins"),
     env,
   }
-}
-
-/**
- * Jiyuu's Discord MCP component, at `$REPO/boku/jiyuu` like
- * `zsh/sync-jiyuu.sh` and `skillsSync.ts`. Keep these in step: `just sync`
- * runs `i-jiyuu` before `bun-sync` so this path is current when sync links it.
- */
-export function discordComponentDir(env: Environment): string | undefined {
-  return env.REPO ? resolve(env.REPO, "boku", "jiyuu", "mcp", "discord")
-    : undefined
 }
 
 /**
@@ -205,26 +198,84 @@ export async function runCheckoutProblem(
     "pass --allow-other-checkout to sync $DOTFILES from here."
 }
 
-/** The manifest and lock must agree before sync changes an installation. */
+/** An exact registry release, such as 1.2.3 or 1.2.3-beta.1. */
+export const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+
+/** A specifier that names a file on one machine rather than a release. */
+function machinePath(spec: string): boolean {
+  return /^(file:|link:|\/|\.\.?\/|~\/)/.test(spec) ||
+    /\.(tgz|tar\.gz)$/.test(spec)
+}
+
+/**
+ * Every managed dependency must be an exact registry release. `bun add -g`
+ * writes ranges such as `^2.21.2` and local tarball paths into the tracked
+ * manifest; a range lets the lock drift, and a path breaks other machines.
+ * Each problem names the package and the one command that fixes it.
+ */
+export function manifestPolicyProblems(pkg: Package): string[] {
+  const problems: string[] = []
+  for (const [name, spec] of Object.entries(pkg.dependencies ?? {})) {
+    if (exactVersion.test(spec)) continue
+    if (machinePath(spec)) {
+      problems.push(`${name}: "${spec}" is a path on this machine, not a ` +
+        "registry release; run git checkout -- bun/global")
+      continue
+    }
+    const version = spec.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0]
+    problems.push(`${name}: "${spec}" is not an exact version; run ` +
+      `just bun-add ${name}@${version ?? "VERSION"}`)
+  }
+  return problems
+}
+
+/**
+ * Per-package differences between the manifest and the lock's root
+ * workspace, each with both specifiers and one command that reconciles them.
+ * Packages in `skip` already have a policy problem with its own fix.
+ */
+export function driftProblems(
+  desired: Record<string, string>, locked: Record<string, string>,
+  skip = new Set<string>(),
+): string[] {
+  const problems: string[] = []
+  const names = [...new Set([...Object.keys(desired), ...Object.keys(locked)])]
+    .sort((a, b) => a.localeCompare(b))
+  for (const name of names) {
+    if (skip.has(name) || desired[name] === locked[name]) continue
+    if (locked[name] === undefined) {
+      problems.push(`${name}: package.json has ${desired[name]}, bun.lock ` +
+        `has none; run just bun-add ${name}@${desired[name]}`)
+    } else if (desired[name] === undefined) {
+      problems.push(`${name}: bun.lock has ${locked[name]}, package.json ` +
+        `has none; run just bun-drop ${name}`)
+    } else {
+      problems.push(`${name}: package.json has ${desired[name]}, bun.lock ` +
+        `has ${locked[name]}; run just bun-add ${name}@${desired[name]}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * The manifest must follow the exact-pin policy and agree with the lock
+ * before sync changes an installation. Reads only the two committed files.
+ */
 export async function lockProblems(config: Config): Promise<string[]> {
   try {
-    const desired = (await manifest(config)).dependencies ?? {}
-    const lock = Bun.JSON5.parse(await readFile(
-      join(config.globalDir, "bun.lock"), "utf8")) as {
+    const pkg = await manifest(config)
+    const policy = manifestPolicyProblems(pkg)
+    const flagged = new Set(policy.map((problem) => problem.split(": ")[0]!))
+    const text = await lockText(config)
+    const lock = (text ? Bun.JSON5.parse(text) : {}) as {
       workspaces?: Record<string, { dependencies?: Record<string, string> }>
     }
     const locked = lock.workspaces?.[""]?.dependencies ?? {}
-    const normalize = (value: Record<string, string>): string =>
-      JSON.stringify(Object.entries(value).sort(([a], [b]) =>
-        a.localeCompare(b)))
-    if (normalize(desired) !== normalize(locked)) {
-      return ["Bun manifest differs from bun.lock; run just bun-lock, " +
-        "review the lockfile, then just bun-sync"]
-    }
-    return []
+    return [...policy,
+      ...driftProblems(pkg.dependencies ?? {}, locked, flagged)]
   } catch (error) {
-    return [`Bun lockfile is unavailable or invalid: ${error}; ` +
-      "run just bun-lock"]
+    return [`Bun manifest or lockfile is unavailable or invalid: ${error}; ` +
+      "run git checkout -- bun/global"]
   }
 }
 
@@ -262,15 +313,10 @@ async function dependencyDir(
 
 /**
  * Inspect the dependency tree without invoking package code or the registry.
- * With `requireLockRecords`, every visited package must have a bun.lock
- * record. Without it, a package with no record passes at any version within
- * its parent's range (round 2 of the review of
- * https://github.com/Unique-Divine/dotfiles/pull/137). Only the Jiyuu Discord check sets it;
- * the global manifest keeps its existing behavior.
+ * A package with no bun.lock record passes at any version within its
+ * parent's range.
  */
-export async function inspectPackages(
-  config: Config, requireLockRecords = false,
-): Promise<Inspection> {
+export async function inspectPackages(config: Config): Promise<Inspection> {
   const problems: string[] = []
   const packages: Record<string, Package> = {}
   const bins: Record<string, string> = {}
@@ -286,9 +332,6 @@ export async function inspectPackages(
     const key = relative(join(config.globalDir, "node_modules"), path)
       .replaceAll("/node_modules/", "/")
     const record = lock?.packages?.[key]?.[0]
-    if (requireLockRecords && typeof record !== "string") {
-      problems.push(`${pkg.name ?? key}: bun.lock has no record for ${key}`)
-    }
     const pinned = typeof record === "string" ? record.match(/@([^@]+)$/)?.[1]
       : undefined
     if (pinned && /^\d+\.\d+\.\d+/.test(pinned) && pkg.version !== pinned) {
@@ -361,236 +404,6 @@ export async function pathShadowProblem(
     `put ${binDir} before competing tools on PATH`
 }
 
-function discordEntryPath(config: Config): string | undefined {
-  return config.discordDir ? join(config.discordDir, discordEntry) : undefined
-}
-
-/**
- * Problems in Jiyuu's mcp/discord lock itself: unreadable, out of step with
- * package.json, or missing a record that a dependency needs. These refuse
- * sync, because an install cannot fix a lock that Jiyuu committed. Problems
- * in the installed tree are drift, which sync repairs; see
- * `discordDependencyProblems`. Merging the two made a Jiyuu dependency update
- * block its own install (round 3 of the review of
- * https://github.com/Unique-Divine/dotfiles/pull/137).
- */
-async function discordLockProblems(dir: string): Promise<string[]> {
-  const prefix = "Jiyuu mcp/discord lock: "
-  try {
-    const desired = (await json<Package>(join(dir, "package.json")))
-      .dependencies ?? {}
-    const lock = Bun.JSON5.parse(await readFile(join(dir, "bun.lock"), "utf8")) as {
-      workspaces?: Record<string, { dependencies?: Record<string, string> }>
-      packages?: Record<string, unknown[]>
-    }
-    const workspace = lock.workspaces?.[""]
-    if (!workspace || !lock.packages) {
-      throw new Error("missing root workspace or packages")
-    }
-    const locked = workspace.dependencies ?? {}
-    const normalize = (value: Record<string, string>): string =>
-      JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
-    if (normalize(desired) !== normalize(locked)) {
-      return [`${prefix}bun.lock differs from package.json; update Jiyuu`]
-    }
-    return lockReferenceProblems(lock.packages, {
-      ...workspace.dependencies, ...(workspace as Package & {
-        devDependencies?: Record<string, string>
-      }).devDependencies,
-    }).map((problem) => `${prefix}${problem}; update Jiyuu`)
-  } catch (error) {
-    return [`${prefix}bun.lock or package.json is unavailable or invalid: ${
-      error}; update Jiyuu`]
-  }
-}
-
-/** Package names in a lock key such as `a/@scope/b/c`; scopes join two parts. */
-function keyNames(key: string): string[] {
-  const parts = key.split("/")
-  const names: string[] = []
-  for (let i = 0; i < parts.length; i++) {
-    names.push(parts[i]!.startsWith("@") ? `${parts[i]}/${parts[++i]}` : parts[i]!)
-  }
-  return names
-}
-
-/**
- * Lock completeness, judged from the lock alone and never from what is
- * installed: each root dependency and each dependency of a locked package
- * resolves to a record, searching from the dependent's nesting outward as
- * Bun does. Optional dependencies may be absent. Checking only direct
- * dependencies let a missing transitive record pass.
- */
-export function lockReferenceProblems(
-  packages: Record<string, unknown[]>, root: Record<string, string>,
-): string[] {
-  const problems: string[] = []
-  const resolves = (from: string[], name: string): boolean => {
-    for (let depth = from.length; depth >= 0; depth--) {
-      const key = [...from.slice(0, depth), name].join("/")
-      if (typeof packages[key]?.[0] === "string") return true
-    }
-    return false
-  }
-  for (const name of Object.keys(root)) {
-    if (!resolves([], name)) problems.push(`bun.lock has no record for ${name}`)
-  }
-  for (const [key, entry] of Object.entries(packages)) {
-    const info = entry.find((part): part is Package =>
-      typeof part === "object" && part !== null && !Array.isArray(part))
-    for (const name of Object.keys(info?.dependencies ?? {})) {
-      if (name in (info?.optionalDependencies ?? {})) continue
-      if (!resolves(keyNames(key), name)) {
-        problems.push(`bun.lock has no record for ${name}, required by ${key}`)
-      }
-    }
-  }
-  return problems
-}
-
-/**
- * Drift of Jiyuu's installed mcp/discord tree from its complete lock: missing
- * or mismatched packages, or visited ones without a lock record. Health
- * reports it and sync repairs it with a clean frozen install, so a stale tree
- * after a Jiyuu update is never a reason to refuse sync. Packages nothing
- * references are not walked; the next clean install drops them.
- */
-async function discordDependencyProblems(dir: string): Promise<string[]> {
-  const inspection = await inspectPackages({
-    root: dir, globalDir: dir, runtimeDir: dir, binDir: dir, pluginDir: dir,
-    env: {},
-  }, true)
-  return inspection.problems.map((problem) =>
-    `Jiyuu mcp/discord dependencies: ${problem}`)
-}
-
-/**
- * Remove Jiyuu's mcp/discord/node_modules before a clean install. Bun's
- * frozen install leaves packages the lock dropped, and pruning them one by
- * one followed a symlinked package directory and deleted a directory outside
- * Jiyuu (round 4 of the review of https://github.com/Unique-Divine/dotfiles/pull/137).
- * Don't bring per-package pruning back. Refuse unless node_modules is a real
- * directory whose real path is inside this component, so a symlinked
- * node_modules is never emptied. `rm` unlinks symlinks inside without
- * following them; a test covers both cases.
- */
-async function removeDiscordModules(dir: string): Promise<void> {
-  const modules = join(dir, "node_modules")
-  const info = await lstat(modules).catch(() => undefined)
-  if (!info) return
-  if (!info.isDirectory() ||
-      await realpath(modules) !== join(await realpath(dir), "node_modules")) {
-    throw new Error(`Refusing to remove ${modules}: not a plain directory ` +
-      "inside Jiyuu's mcp/discord")
-  }
-  await rm(modules, { recursive: true })
-}
-
-/**
- * True when `entry` is mcp/discord/src/index.ts inside a Jiyuu checkout,
- * recognized by its mcp/upstreams.json listing the mcp/discord component.
- * The path suffix alone matched other projects with the same layout, so sync
- * replaced their links (round 1 of the review of
- * https://github.com/Unique-Divine/dotfiles/pull/137). The marker can be spoofed, but only by
- * someone who can already write the files the link would run.
- */
-export async function isJiyuuDiscordEntry(entry: string): Promise<boolean> {
-  const suffix = "/mcp/discord/src/index.ts"
-  if (!entry.endsWith(suffix)) return false
-  try {
-    const upstreams = await json<{
-      targetRepository?: string; components?: { path?: string }[]
-    }>(join(entry.slice(0, -suffix.length), "mcp", "upstreams.json"))
-    return upstreams.targetRepository === "Unique-Divine/jiyuu" &&
-      (upstreams.components ?? []).some((c) => c.path === "mcp/discord")
-  } catch { return false }
-}
-
-/**
- * Problems with the Jiyuu checkout that sync cannot repair. The executable
- * bit matters because the link runs src/index.ts through its shebang; Jiyuu
- * tracks it as mode 100755. A chmod from here would dirty Jiyuu and stop
- * `just sync` from merging it.
- */
-async function discordSourceProblems(config: Config): Promise<string[]> {
-  const entry = discordEntryPath(config)
-  if (!entry) return ["REPO is unset, so Jiyuu's mcp/discord cannot be found"]
-  if (!await exists(entry)) {
-    return [`Jiyuu Discord MCP entrypoint is missing: ${entry}; ` +
-      "update Jiyuu with just i-jiyuu"]
-  }
-  if (!await executable(entry)) {
-    return [`Jiyuu Discord MCP entrypoint is not executable: ${entry}; ` +
-      "update Jiyuu with just i-jiyuu"]
-  }
-  return []
-}
-
-/**
- * Read-only check that the global mcp-discord command runs Jiyuu's
- * mcp/discord source with its locked dependencies installed. Lock problems
- * hide drift results, since drift is measured against that lock.
- */
-export async function discordProblems(config: Config): Promise<string[]> {
-  const source = await discordSourceProblems(config)
-  if (source.length) return source
-  const entry = discordEntryPath(config)!
-  const lock = await discordLockProblems(config.discordDir!)
-  const problems = lock.length ? lock
-    : await discordDependencyProblems(config.discordDir!)
-  const bin = join(config.binDir, discordBin)
-  if (!await sameTarget(bin, entry)) {
-    problems.push(`Executable link is missing or does not reach Jiyuu: ${
-      bin} should link to ${entry}`)
-  }
-  const shadow = await pathShadowProblem(discordBin, config.binDir, config.env)
-  if (shadow) problems.push(shadow)
-  return problems
-}
-
-/**
- * Refuse a broken checkout or lock, then repair drift with a clean,
- * scripts-ignored frozen install and check again. Returns the link target.
- */
-export async function prepareDiscord(config: Config): Promise<string> {
-  const source = await discordSourceProblems(config)
-  if (source.length) throw new Error(source.join("\n"))
-  const dir = config.discordDir!
-  const lock = await discordLockProblems(dir)
-  if (lock.length) throw new Error(lock.join("\n"))
-  if ((await discordDependencyProblems(dir)).length) {
-    await removeDiscordModules(dir)
-    await command([process.execPath, "install", "--frozen-lockfile",
-      "--ignore-scripts"], dir)
-    const remaining = await discordDependencyProblems(dir)
-    if (remaining.length) throw new Error(remaining.join("\n"))
-  }
-  return discordEntryPath(config)!
-}
-
-/**
- * An existing mcp-discord link that sync may replace: one reaching the entry,
- * the entry recorded in .installed.json, the entry of a verified Jiyuu
- * checkout at another path (such as the path a checkout had before it moved), or the retired
- * package build in the managed global node_modules. Anything else belongs to
- * someone else and stops sync before it switches anything.
- */
-async function ownedDiscordLink(
-  path: string, entry: string, config: Config,
-  previous: InstalledState | undefined,
-): Promise<boolean> {
-  if (await sameTarget(path, entry)) return true
-  const target = resolve(dirname(path), await readlink(path))
-  if (target === previous?.discord) return true
-  const real = await canonicalPath(target)
-  if (await isJiyuuDiscordEntry(real)) return true
-  const packageDirs = await Promise.all([config.runtimeDir, config.globalDir]
-    .flatMap((dir) => [dir, canonicalPath(dir)]))
-  return packageDirs.some((dir) =>
-    target.startsWith(`${dir}/node_modules/${discordBin}/`) ||
-    real.startsWith(`${dir}/node_modules/${discordBin}/`))
-}
-
 async function readState(config: Config): Promise<InstalledState | undefined> {
   try {
     return await json<InstalledState>(
@@ -625,9 +438,11 @@ async function checkMdtoc(
 
 /** Read-only, offline diagnosis with repair commands. */
 export async function check(config: Config): Promise<string[]> {
-  const problems = await lockProblems(config)
+  // Lock problems carry their own fix command; sync cannot repair them.
+  const lock = await lockProblems(config)
+  const problems: string[] = []
   const inspection = await inspectPackages(config)
-  problems.push(...inspection.problems, ...await discordProblems(config))
+  problems.push(...inspection.problems)
   if (!await sameTarget(config.runtimeDir, config.globalDir)) {
     problems.push(`Bun global directory does not point to ${config.globalDir}`)
   }
@@ -650,7 +465,7 @@ export async function check(config: Config): Promise<string[]> {
     problems.push("ud mdtoc plugin link is missing or incorrect")
   }
   problems.push(...await checkMdtoc(config, inspection.bins))
-  return problems.map((problem) => `${problem} (${repair})`)
+  return [...lock, ...problems.map((problem) => `${problem} (${repair})`)]
 }
 
 async function replaceOwnedLink(path: string, target: string): Promise<void> {
@@ -676,7 +491,6 @@ async function removeOwnedLink(path: string, target: string): Promise<void> {
 export async function synchronize(config: Config): Promise<void> {
   const mismatch = await lockProblems(config)
   if (mismatch.length) throw new Error(mismatch.join("\n"))
-  const discordTarget = await prepareDiscord(config)
   const before = await inspectPackages(config)
   const previous = await readState(config)
   if (before.problems.length ||
@@ -711,21 +525,6 @@ export async function synchronize(config: Config): Promise<void> {
           !(previousBin && realTarget === await canonicalPath(previousBin))) {
         throw new Error(`Refusing unrelated executable symlink: ${path} -> ${target}`)
       }
-    }
-  }
-  // A package bin would fight the Jiyuu link on every sync.
-  if (discordBin in installed.bins) {
-    throw new Error(`A global package provides ${discordBin}, which sync ` +
-      "links to Jiyuu's mcp/discord; remove it from bun/global/package.json")
-  }
-  const discordPath = join(config.binDir, discordBin)
-  if (await exists(discordPath)) {
-    if (!(await lstat(discordPath)).isSymbolicLink()) {
-      throw new Error(`Refusing to replace non-symlink executable: ${discordPath}`)
-    }
-    if (!await ownedDiscordLink(discordPath, discordTarget, config, previous)) {
-      throw new Error(`Refusing unrelated executable symlink: ${discordPath} -> ${
-        await readlink(discordPath)}`)
     }
   }
   const pluginPath = join(config.pluginDir, "ud-mdtoc")
@@ -764,7 +563,7 @@ export async function synchronize(config: Config): Promise<void> {
   if (needsLink) {
     for (const name of await readdir(config.binDir).catch(() => [])) {
       if (name in installed.bins || name in (previous?.bins ?? {}) ||
-          name === "claude" || name === discordBin) continue
+          name === "claude") continue
       const path = join(config.binDir, name)
       if (!(await lstat(path)).isSymbolicLink()) continue
       const target = await realpath(path).catch(() => undefined)
@@ -810,14 +609,6 @@ export async function synchronize(config: Config): Promise<void> {
         await removeOwnedLink(path, target)
       }
     }
-    // After removing old package links, so the retired mcp-discord package
-    // link cannot remove the Jiyuu link. saveLink keeps it in the rollback.
-    if (!await sameTarget(discordPath, discordTarget)) {
-      await saveLink(discordPath)
-      await rm(discordPath, { force: true })
-      await mkdir(dirname(discordPath), { recursive: true })
-      await symlink(discordTarget, discordPath)
-    }
     const plugin = join(config.pluginDir, "ud-mdtoc")
     if (installed.bins["ud-mdtoc"]) {
       await saveLink(plugin)
@@ -839,7 +630,6 @@ export async function synchronize(config: Config): Promise<void> {
     await writeFile(join(config.globalDir, ".installed.json"),
       JSON.stringify({ bins: installed.bins,
         plugin: installed.bins["ud-mdtoc"],
-        discord: discordTarget,
         manifest: await readFile(join(config.globalDir, "package.json"), "utf8"),
         lock: await lockHash(config),
       } satisfies InstalledState, null, 2) + "\n")
@@ -857,43 +647,114 @@ export async function synchronize(config: Config): Promise<void> {
   }
 }
 
-/** Update the committed lock only after an intentional manifest edit. */
-export async function refreshLock(config: Config): Promise<void> {
+async function writeLock(config: Config): Promise<void> {
   await command([process.execPath, "install", "--cwd", config.globalDir,
     "--lockfile-only", "--ignore-scripts"], config.root)
+}
+
+/**
+ * Update the committed lock only after an intentional manifest edit. Refuses
+ * a manifest that breaks the exact-pin policy, so a range never reaches the
+ * lock.
+ */
+export async function refreshLock(config: Config): Promise<void> {
+  const policy = manifestPolicyProblems(await manifest(config))
+  if (policy.length) throw new Error(policy.join("\n"))
+  await writeLock(config)
+}
+
+/**
+ * Apply `edit` to the managed manifest and refresh the lock, restoring both
+ * files if the refresh fails or `accept` rejects the new lock. Other packages
+ * are not policy-checked here, so each problem `--check` lists can be fixed
+ * with its own command.
+ */
+async function editManifest(
+  config: Config, edit: (dependencies: Record<string, string>) => void,
+  accept: () => Promise<string | undefined> = async () => undefined,
+): Promise<void> {
+  const path = join(config.globalDir, "package.json")
+  const original = await readFile(path, "utf8")
+  const lockPath = join(config.globalDir, "bun.lock")
+  const originalLock = await readFile(lockPath).catch(() => undefined)
+  const desired = JSON.parse(original) as Package
+  desired.dependencies = { ...desired.dependencies }
+  edit(desired.dependencies)
+  await writeFile(path, JSON.stringify(desired, null, 2) + "\n")
+  try {
+    await writeLock(config)
+    const rejected = await accept()
+    if (rejected) throw new Error(rejected)
+  } catch (error) {
+    await writeFile(path, original)
+    if (originalLock) await writeFile(lockPath, originalLock)
+    else await rm(lockPath, { force: true })
+    throw error
+  }
+}
+
+/** Split `name@1.2.3` or `@scope/name@1.2.3` into a name and exact version. */
+export function parseSpec(spec: string): { name: string; version: string } {
+  const at = spec.lastIndexOf("@")
+  const name = at > 0 ? spec.slice(0, at) : ""
+  const version = at > 0 ? spec.slice(at + 1) : ""
+  if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name) ||
+      !exactVersion.test(version)) {
+    throw new Error(`Supply NAME@VERSION with an exact version, such as ` +
+      `prettier@3.9.6; got ${spec}`)
+  }
+  return { name, version }
+}
+
+/**
+ * Pin an exact registry release in the managed manifest and refresh the
+ * lock. Bun's own resolution is the release check, so it uses the same
+ * registry and credentials as every other install, including those in
+ * bunfig.toml. `verify` may reject the locked package metadata. Nothing
+ * changes unless Bun locks exactly `name@version` and `verify` accepts it.
+ */
+export async function adoptPackage(
+  config: Config, name: string, version: string,
+  verify: (locked: Package) => string | undefined = () => undefined,
+): Promise<void> {
+  parseSpec(`${name}@${version}`)
+  try {
+    await editManifest(config, (dependencies) => {
+      dependencies[name] = version
+    }, async () => {
+      const lock = Bun.JSON5.parse(await readFile(
+        join(config.globalDir, "bun.lock"), "utf8")) as {
+        packages?: Record<string, unknown[]>
+      }
+      const entry = lock.packages?.[name]
+      if (entry?.[0] !== `${name}@${version}`) {
+        return `bun.lock does not record ${name}@${version}`
+      }
+      const info = entry.find((part): part is Package =>
+        typeof part === "object" && part !== null && !Array.isArray(part))
+      return verify({ ...info, name, version })
+    })
+  } catch (error) {
+    throw new Error(`Could not adopt ${name}@${version}; nothing changed: ${
+      error}`)
+  }
+}
+
+/** Remove a package from the managed manifest and refresh the lock. */
+export async function dropPackage(config: Config, name: string): Promise<void> {
+  await editManifest(config, (dependencies) => { delete dependencies[name] })
 }
 
 /** Activate only a release that already exists on the npm registry. */
 export async function activateMdtoc(
   config: Config, version: string,
 ): Promise<void> {
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!exactVersion.test(version)) {
     throw new Error("Supply an exact ud-mdtoc release version")
   }
-  const result = await fetch(`https://registry.npmjs.org/${
-    encodeURIComponent(mdtocPackage)}/${encodeURIComponent(version)}`)
-  if (!result.ok) {
-    throw new Error(`${mdtocPackage}@${version} is not published; ` +
-      "publish with the package's just publish recipe first")
-  }
-  const published = await result.json() as Package
-  if (published.name !== mdtocPackage || published.version !== version ||
-      !("ud-mdtoc" in packageBins(published))) {
-    throw new Error("Published package has unexpected name, version, or bin")
-  }
-  const path = join(config.globalDir, "package.json")
-  const original = await readFile(path, "utf8")
-  const lockPath = join(config.globalDir, "bun.lock")
-  const originalLock = await readFile(lockPath).catch(() => undefined)
-  const desired = JSON.parse(original) as Package
-  desired.dependencies = { ...desired.dependencies, [mdtocPackage]: version }
-  await writeFile(path, JSON.stringify(desired, null, 2) + "\n")
-  try { await refreshLock(config) } catch (error) {
-    await writeFile(path, original)
-    if (originalLock) await writeFile(lockPath, originalLock)
-    else await rm(lockPath, { force: true })
-    throw error
-  }
+  await adoptPackage(config, mdtocPackage, version, (published) =>
+    "ud-mdtoc" in packageBins(published) ? undefined
+      : "Published package does not declare the ud-mdtoc executable")
 }
 
 if (import.meta.main) {
@@ -902,7 +763,8 @@ if (import.meta.main) {
     const allowOther = args.includes("--allow-other-checkout")
     const rest = args.filter((arg) => arg !== "--allow-other-checkout")
     // --check and --run act on the live installation, so they read
-    // $DOTFILES. --lock and --activate-mdtoc edit files in this checkout.
+    // $DOTFILES. --lock, --add, --drop, and --activate-mdtoc edit files in
+    // this checkout; --policy reads them.
     const live = () => configuration(installRoot())
     const local = () => configuration()
     if (rest.length === 1 && rest[0] === "--check") {
@@ -918,13 +780,25 @@ if (import.meta.main) {
     } else if (rest.length === 1 && rest[0] === "--lock") {
       await refreshLock(await local())
       console.log("Bun lock refreshed; review the diff, then run just bun-sync")
+    } else if (rest.length === 1 && rest[0] === "--policy") {
+      const problems = await lockProblems(await local())
+      if (problems.length) throw new Error(problems.join("\n"))
+      console.log("Bun manifest: exact pins that match bun.lock")
+    } else if (rest.length === 2 && rest[0] === "--add") {
+      const { name, version } = parseSpec(rest[1]!)
+      await adoptPackage(await local(), name, version)
+      console.log(`${name}@${version} pinned; review the diff, then run ` +
+        "just bun-sync")
+    } else if (rest.length === 2 && rest[0] === "--drop") {
+      await dropPackage(await local(), rest[1]!)
+      console.log(`${rest[1]} removed; review the diff, then run just bun-sync`)
     } else if (rest.length === 2 && rest[0] === "--activate-mdtoc") {
       await activateMdtoc(await local(), rest[1]!)
       console.log("ud-mdtoc release pinned; run just bun-sync")
     } else {
       throw new Error("Usage: bun --no-install bun/sync.ts " +
-        "--check | --run [--allow-other-checkout] | --lock | " +
-        "--activate-mdtoc VERSION")
+        "--check | --run [--allow-other-checkout] | --lock | --policy | " +
+        "--add NAME@VERSION | --drop NAME | --activate-mdtoc VERSION")
     }
   } catch (error) {
     console.error(String(error))

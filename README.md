@@ -168,9 +168,8 @@ installation remains an explicit action.
 
 Global Bun CLI packages are declared in
 [`bun/global/package.json`](bun/global/package.json), with transitive versions
-recorded in its lockfile. Command `just sync` updates Jiyuu, then restores the
-installation and command links, including `mcp-discord`, which runs Jiyuu's
-`mcp/discord`. Command `just bun-health` checks it without installing
+recorded in its lockfile. Command `just sync` restores the installation and
+command links. Command `just bun-health` checks it without installing
 packages. See [Bun tool management](bun/README.md) for migration,
 package changes, and publishing the Markdown TOC tool.
 
