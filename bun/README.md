@@ -10,8 +10,9 @@ Sync and `just bun-health` act on `$DOTFILES/bun`, the checkout that
 checkout, such as a PR worktree, `just bun-sync` refuses to run, because the
 global tools would follow a directory that `git worktree remove` deletes. Pass
 `--allow-other-checkout` to `bun --no-install bun/sync.ts --run` to sync
-`$DOTFILES` from there anyway. `just bun-lock` and `just bun-activate-mdtoc`
-edit the manifest of the checkout they run in.
+`$DOTFILES` from there anyway. `just bun-add`, `just bun-drop`,
+`just bun-lock`, and `just bun-activate-mdtoc` edit the manifest of the
+checkout they run in.
 
 The first migration preserves the previous global installation in a sibling
 directory named `global.before-dotfiles-<timestamp>`. It installs and checks
@@ -20,31 +21,44 @@ the previous directory and executable links.
 
 ## Change the Tool List
 
-Edit `global/package.json`, then run these commands from dotfiles:
+Add or remove tools with these recipes from dotfiles:
 
 ```sh
-just bun-lock
+just bun-add package-name@1.2.3
+just bun-drop package-name
 git diff -- bun/global/package.json bun/global/bun.lock
 just bun-sync
 just bun-health
 ```
 
-Sync uses the committed lock without updating dependency versions. A manifest
-edit that changes dependencies requires `just bun-lock` first. Removing a
-package removes its previously managed executable links during sync. An
-executable replaced by a user-managed file or unrelated link is preserved.
+`just bun-add` checks that the exact release exists on the registry, pins it
+in `global/package.json`, and refreshes `global/bun.lock`. `just bun-drop`
+removes a package and refreshes the lock. If the lock refresh fails, both
+recipes restore both files.
 
-After migration, normal Bun commands also edit the tracked manifest and lock:
+Never run `bun add -g` or `bun remove -g`, and agents must never run them.
+Bun's global directory is this tracked directory, so those commands write
+into Git: `bun add -g` records a range such as `^2.21.2`, or the absolute path
+of a local tarball, and `just sync` then fails. To try a package without
+adopting it, install it under a throwaway `BUN_INSTALL="$(mktemp -d)"`.
 
-```sh
-bun add --global --exact package-name@1.2.3
-bun remove --global package-name
-just bun-sync
+Every dependency in `global/package.json` must be an exact version. Sync,
+health, `just bun-lock`, and the tests reject ranges, tags, and `file:`,
+`link:`, absolute, relative, and tarball paths. `just bun-policy` runs that
+check offline against the committed files, and CI runs it too.
+
+Each problem names the package and one command to fix it:
+
+```text
+@nibiruchain/nibiru: "^2.21.2" is not an exact version; run just bun-add @nibiruchain/nibiru@2.21.2
+@uniquedivine/tg-sai: "/home/me/uniquedivine-tg-sai-0.3.2.tgz" is a path on this machine, not a registry release; run git checkout -- bun/global
+fixture-helper: package.json has 2.0.0, bun.lock has 1.0.0; run just bun-add fixture-helper@2.0.0
 ```
 
-Review both tracked files before committing. Registry package names are
-portable; adding an absolute tarball or local folder records a machine-specific
-path.
+Sync uses the committed lock without updating dependency versions. After a
+hand edit of the manifest, run `just bun-lock`. Removing a package removes its
+previously managed executable links during sync. An executable replaced by a
+user-managed file or unrelated link is preserved.
 
 ## Install and Repair
 
@@ -124,8 +138,8 @@ bun test ./bun/sync.test.ts
 bun test ./claude/native.test.ts ./tests/mdtoc.test.ts
 ```
 
-The tests use real local packages, tarballs, and temporary global
-installations. They don't change the workstation's live global installation.
+The tests serve packed fixture packages from a local npm registry and use
+temporary global installations with their own Bun cache. They don't change the workstation's live global installation.
 
 The Neovim test runs when `nvim` and `ud-mdtoc` are installed. To test an
 isolated package installation instead, set `MDTOC_TEST_COMMAND` to its
