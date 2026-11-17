@@ -88,6 +88,8 @@ beforeAll(async () => {
     main: "index.js" }, { "index.js": 'export const bullet = "-"\n' })
   await publish({ name: "fixture-helper", version: "2.0.0", type: "module",
     main: "index.js" }, { "index.js": 'export const bullet = "-"\n' })
+  await publish({ name: "dotfiles-fixture-only", version: "1.0.0" },
+    { "index.js": "export {}\n" })
   await publish({ name: "@uniquedivine/ud-mdtoc", version: "0.1.0",
     type: "module", bin: { "ud-mdtoc": "cli.js" },
     dependencies: { "fixture-helper": "1.0.0" } }, { "cli.js": mdtocCli },
@@ -145,7 +147,6 @@ async function fixture(): Promise<Config> {
   await writeFile(join(config.globalDir, "bunfig.toml"),
     `[install]\nregistry = "${registry.url}/"\n` +
     `[install.cache]\ndir = "${join(root, "cache")}"\n`)
-  config.env.BUN_CONFIG_REGISTRY = registry.url
   await writeManifest(config, {
     "@uniquedivine/ud-mdtoc": "0.1.0",
     "fixture-helper": "1.0.0",
@@ -531,6 +532,17 @@ describe("adopt and drop", () => {
     expect(await check(config)).toEqual([])
   })
 
+  test("adopt resolves through the registry that bunfig.toml names",
+    async () => {
+      // Only the fixture registry has this package, and only the fixture's
+      // bunfig.toml points at it.
+      const config = await fixture()
+      await adoptPackage(config, "dotfiles-fixture-only", "1.0.0")
+      expect(JSON.parse((await managedFiles(config))[0]!)
+        .dependencies["dotfiles-fixture-only"]).toBe("1.0.0")
+      expect(await lockProblems(config)).toEqual([])
+    })
+
   test("adopt fixes a range that bun add -g wrote", async () => {
     const config = await fixture()
     await writeManifest(config, {
@@ -545,10 +557,13 @@ describe("adopt and drop", () => {
       const config = await fixture()
       const before = await managedFiles(config)
       await expect(adoptPackage(config, "fixture-helper", "9.9.9"))
-        .rejects.toThrow("fixture-helper@9.9.9 is not published")
+        .rejects.toThrow("Could not adopt fixture-helper@9.9.9")
       expect(await managedFiles(config)).toEqual(before)
-      // ghost@1.0.0 passes the release lookup, but Bun cannot resolve it.
+      // ghost@1.0.0 has a release document but no packument.
       await expect(adoptPackage(config, "ghost", "1.0.0")).rejects.toThrow()
+      expect(await managedFiles(config)).toEqual(before)
+      await expect(adoptPackage(config, "fixture-helper", "2.0.0",
+        () => "rejected by verify")).rejects.toThrow("rejected by verify")
       expect(await managedFiles(config)).toEqual(before)
     })
 

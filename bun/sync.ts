@@ -649,11 +649,13 @@ export async function refreshLock(config: Config): Promise<void> {
 
 /**
  * Apply `edit` to the managed manifest and refresh the lock, restoring both
- * files if the refresh fails. Other packages are not policy-checked here, so
- * each problem `--check` lists can be fixed with its own command.
+ * files if the refresh fails or `accept` rejects the new lock. Other packages
+ * are not policy-checked here, so each problem `--check` lists can be fixed
+ * with its own command.
  */
 async function editManifest(
   config: Config, edit: (dependencies: Record<string, string>) => void,
+  accept: () => Promise<string | undefined> = async () => undefined,
 ): Promise<void> {
   const path = join(config.globalDir, "package.json")
   const original = await readFile(path, "utf8")
@@ -663,7 +665,11 @@ async function editManifest(
   desired.dependencies = { ...desired.dependencies }
   edit(desired.dependencies)
   await writeFile(path, JSON.stringify(desired, null, 2) + "\n")
-  try { await writeLock(config) } catch (error) {
+  try {
+    await writeLock(config)
+    const rejected = await accept()
+    if (rejected) throw new Error(rejected)
+  } catch (error) {
     await writeFile(path, original)
     if (originalLock) await writeFile(lockPath, originalLock)
     else await rm(lockPath, { force: true })
@@ -684,35 +690,38 @@ export function parseSpec(spec: string): { name: string; version: string } {
   return { name, version }
 }
 
-function registryUrl(env: Environment): string {
-  return (env.BUN_CONFIG_REGISTRY ?? env.NPM_CONFIG_REGISTRY ??
-    "https://registry.npmjs.org").replace(/\/+$/, "")
-}
-
 /**
  * Pin an exact registry release in the managed manifest and refresh the
- * lock. `verify` may reject the published metadata. Nothing changes unless
- * the release exists and the lock refresh succeeds.
+ * lock. Bun's own resolution is the release check, so it uses the same
+ * registry and credentials as every other install, including those in
+ * bunfig.toml. `verify` may reject the locked package metadata. Nothing
+ * changes unless Bun locks exactly `name@version` and `verify` accepts it.
  */
 export async function adoptPackage(
   config: Config, name: string, version: string,
-  verify: (published: Package) => string | undefined = () => undefined,
+  verify: (locked: Package) => string | undefined = () => undefined,
 ): Promise<void> {
   parseSpec(`${name}@${version}`)
-  const result = await fetch(`${registryUrl(config.env)}/${
-    encodeURIComponent(name)}/${encodeURIComponent(version)}`)
-  if (!result.ok) {
-    throw new Error(`${name}@${version} is not published on the registry`)
+  try {
+    await editManifest(config, (dependencies) => {
+      dependencies[name] = version
+    }, async () => {
+      const lock = Bun.JSON5.parse(await readFile(
+        join(config.globalDir, "bun.lock"), "utf8")) as {
+        packages?: Record<string, unknown[]>
+      }
+      const entry = lock.packages?.[name]
+      if (entry?.[0] !== `${name}@${version}`) {
+        return `bun.lock does not record ${name}@${version}`
+      }
+      const info = entry.find((part): part is Package =>
+        typeof part === "object" && part !== null && !Array.isArray(part))
+      return verify({ ...info, name, version })
+    })
+  } catch (error) {
+    throw new Error(`Could not adopt ${name}@${version}; nothing changed: ${
+      error}`)
   }
-  const published = await result.json() as Package
-  if (published.name !== name || published.version !== version) {
-    throw new Error("Published package has unexpected name or version")
-  }
-  const rejected = verify(published)
-  if (rejected) throw new Error(rejected)
-  await editManifest(config, (dependencies) => {
-    dependencies[name] = version
-  })
 }
 
 /** Remove a package from the managed manifest and refresh the lock. */
