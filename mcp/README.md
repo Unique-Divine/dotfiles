@@ -15,6 +15,57 @@ just mcp-sync --from codex --run   # explicitly prefer Codex settings
 just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
 ```
 
+## Jiyuu Pins
+
+[`pins.ts`](pins.ts) pins the MCP servers published from
+[Jiyuu](https://github.com/Unique-Divine/jiyuu) to exact releases. It's the
+only place their versions live.
+
+| Codex server   | Package                                  | Runner |
+| -------------- | ---------------------------------------- | ------ |
+| `discord-mcp`  | npm `@uniquedivine/mcp-discord`          | `bunx` |
+| `slack`        | npm `@uniquedivine/mcp-slack`            | `bunx` |
+| `telegram-mcp` | PyPI `uniquedivine-telegram-mcp`         | `uvx`  |
+
+Before the union, sync sets `command` and `args` of each named Codex entry to
+its pin, such as `bunx @uniquedivine/mcp-slack@4.4.3`. It keeps `env`, `cwd`,
+`enabled`, and timeouts, so tokens stay where they are. Claude Code and Cursor
+launchers read the Codex entry when a server starts, so they run the same
+release. Sync doesn't create a missing entry, because only you can add its
+`env`; it prints a warning instead. It leaves a `url` entry alone, such as a
+shared Discord server over HTTP.
+
+The Telegram pin adds `--with mcp<2`. Release 2.0.1 declares
+`mcp[cli]>=1.8.0`, so a fresh resolve picks mcp 2.x, which removed `FastMCP`
+and stops the server at import. Drop `with` once a release caps `mcp`.
+
+### Bump a Pin
+
+1. Edit the server's `version` line in `pins.ts`.
+2. Run `bun test mcp/pins.test.ts`, then `just mcp-sync --dry-run`.
+3. After merging, run `ud boku sync`. Sessions started afterward run the new
+   release.
+
+`just mcp-sync --check`, and so `just health`, fails while a Codex entry
+differs from its pin.
+
+### Run From a Local Jiyuu Checkout
+
+For development, set `JIYUU_MCP_LOCAL` to a comma-separated list of server
+names, or `all`, when you sync:
+
+```bash
+JIYUU_MCP_LOCAL=discord-mcp just mcp-sync --run
+JIYUU_MCP_LOCAL=all ud boku sync
+```
+
+Selected servers run from `$REPO/boku/jiyuu`: Discord and Slack through `bun`
+on their source entry, and Telegram through `uv --directory mcp/telegram run
+main.py`. Install the component's dependencies first, for example
+`just --justfile mcp/discord/justfile install` in Jiyuu. The setting lasts
+only while the variable is set: the next sync without it restores the pins,
+and `--check` without it reports the local entries as drift.
+
 ## Union and Directional Sync
 
 - A name missing from another platform is added when its definition can be

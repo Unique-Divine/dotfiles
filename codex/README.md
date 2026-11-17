@@ -4,8 +4,8 @@
 runtime file at `$HOME/.codex/config.toml` while preserving local state.
 
 Its `mcp_servers` table is the MCP source for every tool. `config.ts` never
-changes it; `just sync` exports it to Claude Code. See
-[`mcp/README.md`](../mcp/README.md).
+changes it; `just sync` exports it to Claude Code and sets the launch
+commands of the pinned Jiyuu servers. See [`mcp/README.md`](../mcp/README.md).
 
 ## Managed settings
 
