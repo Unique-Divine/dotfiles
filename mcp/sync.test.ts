@@ -90,7 +90,9 @@ describe("MCP union", () => {
 
 const script = join(import.meta.dir, "sync.ts")
 async function run(args: string[]) {
-  const p = Bun.spawn([process.execPath, script, ...args], { stdout: "pipe", stderr: "pipe" })
+  const p = Bun.spawn([process.execPath, script, ...args], {
+    env: { ...process.env, MCP_SYNC_SKIP_PIN_CHECK: "1" }, stdout: "pipe", stderr: "pipe",
+  })
   return { code: await p.exited, output: await new Response(p.stdout).text() + await new Response(p.stderr).text() }
 }
 
@@ -126,8 +128,11 @@ test("CLI preview, check, apply, permissions, and advisory health", async () => 
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+interface CliResult { code: number; output: string; stdout: string; stderr: string }
+type Invoke = (args: string[], env?: Record<string, string>, stdin?: string) => Promise<CliResult>
+
 async function withCliFixture(
-  check: (dir: string, invoke: (args: string[], env?: Record<string, string>) => Promise<{ code: number; output: string }>) => Promise<void>,
+  check: (dir: string, invoke: Invoke) => Promise<void>,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "mcp-union-cli-"))
   try {
@@ -152,7 +157,7 @@ await Bun.write(file, JSON.stringify(config))
     const { chmod } = await import("node:fs/promises")
     await chmod(join(dir, "claude"), 0o700)
     await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {}, unrelated: true }))
-    const invoke = async (args: string[], extraEnv: Record<string, string> = {}) => {
+    const invoke: Invoke = async (args, extraEnv = {}, stdin) => {
       const p = Bun.spawn([process.execPath, script,
         "--codex-config", join(dir, "config.toml"),
         "--claude-config", join(dir, ".claude.json"),
@@ -160,14 +165,16 @@ await Bun.write(file, JSON.stringify(config))
       ], {
         env: {
           ...process.env, JIYUU_MCP_LOCAL: "", CLAUDE_CONFIG_DIR: dir,
+          MCP_SYNC_SKIP_PIN_CHECK: "1",
           PATH: `${dir}:${process.env.PATH}`, ...extraEnv,
         },
+        stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
         stdout: "pipe", stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([
         p.exited, new Response(p.stdout).text(), new Response(p.stderr).text(),
       ])
-      return { code, output: stdout + stderr }
+      return { code, output: stdout + stderr, stdout, stderr }
     }
     await check(dir, invoke)
   } finally { await rm(dir, { recursive: true, force: true }) }
@@ -457,4 +464,180 @@ test("CLI preserves a recognized Jiyuu launch that sets fields the launcher can'
     expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(direct)
     expect((await invoke(["--check"])).code).toBe(0)
   })
+})
+
+test("CLI check fails while a pinned Jiyuu server is missing from Codex", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const enforce = { MCP_SYNC_SKIP_PIN_CHECK: "" }
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.local]\ncommand = "server"\n')
+    expect((await invoke(["--run"])).code).toBe(0)
+    expect((await invoke(["--check"])).code).toBe(0)
+    const check = await invoke(["--check"], enforce)
+    expect(check.code).toBe(1)
+    expect(check.output).toContain(
+      "! missing pinned servers in Codex: discord-mcp, slack, telegram-mcp")
+    expect(check.output).not.toContain("MCP union is current")
+    const pinned = Object.entries(jiyuuMcpPins).map(([name, pin]) => [
+      `[mcp_servers.${name}]`, `command = "${pin.runner}"`,
+      `args = ["${pin.package}@${pin.version}"]`,
+    ].join("\n")).join("\n")
+    await Bun.write(join(dir, "config.toml"),
+      `[mcp_servers.local]\ncommand = "server"\n${pinned}\n`)
+    expect((await invoke(["--run"])).code).toBe(0)
+    expect((await invoke(["--check"], enforce)).code).toBe(0)
+  })
+})
+
+describe("Move servers between machines", () => {
+  const secrets = {
+    hash: crypto.randomUUID(), session: crypto.randomUUID(),
+    tool: crypto.randomUUID(), header: crypto.randomUUID(), local: crypto.randomUUID(),
+  }
+  // Each test spawns several CLI processes, slow on a loaded machine.
+  const slow = 20_000
+  const telegramPin = jiyuuMcpPins["telegram-mcp"]
+  const source = [
+    "[mcp_servers.telegram-mcp]",
+    `command = "${telegramPin.runner}"`,
+    `args = ["${telegramPin.package}@${telegramPin.version}"]`,
+    "startup_timeout_sec = 30",
+    `env = { TELEGRAM_API_ID = "1", TELEGRAM_API_HASH = "${secrets.hash}", ` +
+      `TELEGRAM_SESSION_STRING = "${secrets.session}" }`,
+    "[mcp_servers.tool]",
+    'command = "bun"',
+    'args = ["/nonexistent-mcp-xfer/config.json"]',
+    `env = { TOOL_TOKEN = "${secrets.tool}" }`,
+    "[mcp_servers.ghost]",
+    'command = "no-such-mcp-command-xfer"',
+    "[mcp_servers.remote]",
+    'url = "https://remote.example/mcp"',
+    `http_headers = { Authorization = "${secrets.header}" }`,
+    "",
+  ].join("\n")
+
+  const expectNoSecrets = (...texts: string[]) => {
+    for (const text of texts) {
+      for (const secret of Object.values(secrets)) expect(text).not.toContain(secret)
+    }
+  }
+
+  /** Exports `source` from a second config in the fixture directory. */
+  const exportFrom = async (dir: string, invoke: Invoke, extra: string[] = []) => {
+    await Bun.write(join(dir, "source.toml"), source)
+    const result = await invoke(["--export", ...extra, "--codex-config", join(dir, "source.toml")])
+    expectNoSecrets(result.stderr)
+    return result
+  }
+
+  test("export prints only the payload; unknown names fail", async () => {
+    await withCliFixture(async (dir, invoke) => {
+      const result = await exportFrom(dir, invoke)
+      expect(result.code).toBe(0)
+      expect(result.stderr).toBe("")
+      const payload = JSON.parse(result.stdout)
+      expect(payload.version).toBe(1)
+      expect(Object.keys(payload.mcp_servers)).toEqual(["ghost", "remote", "telegram-mcp", "tool"])
+      expect(payload.mcp_servers.tool.env).toEqual({ TOOL_TOKEN: secrets.tool })
+      const some = await exportFrom(dir, invoke, ["--servers", "tool,remote"])
+      expect(Object.keys(JSON.parse(some.stdout).mcp_servers)).toEqual(["tool", "remote"])
+      const unknown = await exportFrom(dir, invoke, ["--servers", "tool,nope"])
+      expect(unknown.code).toBe(1)
+      expect(unknown.stdout).toBe("")
+      expect(unknown.stderr).toContain("Unknown MCP server: nope")
+    })
+  }, slow)
+
+  test("dry run reports and writes nothing", async () => {
+    await withCliFixture(async (dir, invoke) => {
+      const payload = join(dir, "payload.json")
+      await Bun.write(payload, (await exportFrom(dir, invoke)).stdout)
+      const original = 'model = "keep"\n'
+      await Bun.write(join(dir, "config.toml"), original)
+      const claudeBefore = await Bun.file(join(dir, ".claude.json")).text()
+      const result = await invoke(["--import", payload])
+      expect(result.code).toBe(0)
+      expectNoSecrets(result.output)
+      expect(result.stdout).toContain("+ add telegram-mcp (env keys: TELEGRAM_API_HASH, " +
+        "TELEGRAM_API_ID, TELEGRAM_SESSION_STRING)")
+      expect(result.stdout).toContain("+ add tool (env keys: TOOL_TOKEN)")
+      expect(result.stdout).toContain("+ add remote (env keys: none)")
+      expect(result.stdout).toContain(
+        "! warning ghost: command no-such-mcp-command-xfer not found on this machine")
+      expect(result.stdout).toContain(
+        "! warning tool: path /nonexistent-mcp-xfer/config.json does not exist")
+      expect(result.stdout).toContain("Dry run: nothing written")
+      expect(await Bun.file(join(dir, "config.toml")).text()).toBe(original)
+      expect(await Bun.file(join(dir, ".claude.json")).text()).toBe(claudeBefore)
+      expect(await Bun.file(join(dir, "cursor.json")).exists()).toBe(false)
+    })
+  }, slow)
+
+  test("import into an empty config adds servers with env intact, then repeats unchanged", async () => {
+    await withCliFixture(async (dir, invoke) => {
+      const payload = join(dir, "payload.json")
+      await Bun.write(payload, (await exportFrom(dir, invoke)).stdout)
+      const result = await invoke(["--import", payload, "--run"])
+      expect(result.code).toBe(0)
+      expectNoSecrets(result.output)
+      const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+      expect(config.mcp_servers).toEqual((parse(source) as any).mcp_servers)
+      expect((await stat(join(dir, "config.toml"))).mode & 0o777).toBe(0o600)
+      const claude = await Bun.file(join(dir, ".claude.json")).json()
+      expect(claude.mcpServers["telegram-mcp"].args[3]).toBe("telegram-mcp")
+      const cursor = await Bun.file(join(dir, "cursor.json")).json()
+      expect(cursor.mcpServers.tool.args[3]).toBe("tool")
+      const again = await invoke(["--import", payload, "--run"])
+      expect(again.code).toBe(0)
+      for (const name of ["ghost", "remote", "telegram-mcp", "tool"]) {
+        expect(again.stdout).toContain(`= unchanged ${name}`)
+      }
+      expect(again.stdout).toContain("MCP union is current")
+    })
+  }, slow)
+
+  test("a differing server is kept and reported, then replaced with --overwrite", async () => {
+    await withCliFixture(async (dir, invoke) => {
+      const payload = join(dir, "payload.json")
+      await Bun.write(payload, (await exportFrom(dir, invoke, ["--servers", "tool"])).stdout)
+      const local = `[mcp_servers.tool]\ncommand = "bun"\nenv = { TOOL_TOKEN = "${secrets.local}", OTHER = "x" }\n`
+      await Bun.write(join(dir, "config.toml"), local)
+      const kept = await invoke(["--import", payload, "--run"])
+      expect(kept.code).toBe(0)
+      expectNoSecrets(kept.output)
+      expect(kept.stdout).toContain("~ differs tool (keys: args, env.OTHER, env.TOOL_TOKEN)")
+      const keptConfig = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+      expect(keptConfig.mcp_servers.tool.env.TOOL_TOKEN).toBe(secrets.local)
+      const replaced = await invoke(["--import", payload, "--overwrite", "--run"])
+      expect(replaced.code).toBe(0)
+      expectNoSecrets(replaced.output)
+      expect(replaced.stdout).toContain("~ replace tool")
+      const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+      expect(config.mcp_servers.tool.env).toEqual({ TOOL_TOKEN: secrets.tool })
+      const { readdir, readFile } = await import("node:fs/promises")
+      const backups = (await readdir(dir)).filter(f => f.startsWith("config.toml.before-mcp-sync-"))
+      const texts = await Promise.all(backups.map(f => readFile(join(dir, f), "utf8")))
+      expect(texts.some(text => text.includes(secrets.local))).toBe(true)
+    })
+  }, slow)
+
+  test("import reads stdin and rejects invalid input without echoing it", async () => {
+    await withCliFixture(async (dir, invoke) => {
+      const exported = (await exportFrom(dir, invoke)).stdout
+      const result = await invoke(["--import", "-", "--servers", "remote", "--run"], {}, exported)
+      expect(result.code).toBe(0)
+      expectNoSecrets(result.output)
+      expect(result.stdout).toContain("+ add remote (env keys: none)")
+      const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+      expect(Object.keys(config.mcp_servers)).toEqual(["remote"])
+      expect(config.mcp_servers.remote.http_headers.Authorization).toBe(secrets.header)
+      const broken = await invoke(["--import", "-"], {}, `{ "token": "${secrets.tool}"`)
+      expect(broken.code).toBe(1)
+      expect(broken.stderr).toContain("not valid JSON")
+      expectNoSecrets(broken.output)
+      const future = await invoke(["--import", "-"], {},
+        JSON.stringify({ version: 2, mcp_servers: {} }))
+      expect(future.code).toBe(1)
+      expect(future.stderr).toContain("version must be 1")
+    })
+  }, slow)
 })

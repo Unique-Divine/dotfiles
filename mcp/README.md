@@ -9,7 +9,8 @@ win configuration disagreements during default sync.
 ```bash
 just mcp-sync --dry-run       # preview
 just mcp-sync --run           # union, without other machine setup
-just mcp-sync --check         # used by just health
+just mcp-sync --check         # used by just health; fails on missing pins
+just mcp-sync --export        # servers as JSON, for --import elsewhere
 just mcp-sync --from claude --run  # explicitly prefer Claude settings
 just mcp-sync --from codex --run   # explicitly prefer Codex settings
 just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
@@ -32,7 +33,9 @@ its pin, such as `bunx @uniquedivine/mcp-slack@4.4.3`. It keeps `env`, `cwd`,
 `enabled`, and timeouts, so tokens stay where they are. Claude Code and Cursor
 launchers read the Codex entry when a server starts, so they run the same
 release. Sync doesn't create a missing entry, because only you can add its
-`env`; it prints a warning instead. It leaves a `url` entry alone, such as a
+`env`; it prints a warning, and `--check` fails until the entry exists. To
+copy entries from a machine that has them, see
+[Move Servers to Another Machine](#move-servers-to-another-machine). It leaves a `url` entry alone, such as a
 shared Discord server over HTTP.
 
 Sync also replaces a direct Claude Code or Cursor definition of a pinned
@@ -148,6 +151,47 @@ configs have no equivalent that keeps the secret out of the file. Each tool
 runs its own OAuth login for url servers that need it.
 
 A Codex server with `enabled = false` remains disabled and is not propagated.
+
+## Move Servers to Another Machine
+
+Sync never creates a server's credentials, so a new machine starts with no
+MCP servers. `--export` prints this machine's Codex entries, `env` included,
+as JSON on stdout. `--import` merges that JSON into the other machine's Codex
+config, then runs the usual union and pins, so Claude Code and Cursor get
+launchers and the Jiyuu servers run their pinned releases.
+
+```bash
+# Preview over SSH. The payload travels on stdin only.
+just mcp-sync --export | ssh homebox \
+  'zsh -ic "cd ~/boku/dotfiles && just mcp-sync --import -"'
+# Apply. --servers limits both sides; --overwrite replaces differing servers.
+just mcp-sync --export --servers slack,telegram-mcp | ssh homebox \
+  'zsh -ic "cd ~/boku/dotfiles && just mcp-sync --import - --run"'
+```
+
+The payload is `{"version":1,"mcp_servers":{...}}`, holding each Codex entry
+as is. Treat it like the config file: don't save it, paste it, or pass it as
+an argument. `just mcp-sync --export` skips the run log so the payload never
+reaches it.
+
+Import is a dry run until you add `--run`. It reports each server by name and
+env key names, never values:
+
+```text
++ add tool (env keys: OTHER, TOOL_TOKEN)
++ add ghost (env keys: none)
+= unchanged slack
+~ differs remote (keys: url); kept, add --overwrite to replace
+! warning ghost: command no-such-mcp-command not found on this machine
+! warning tool: path /nonexistent-mcp-xfer/config.json does not exist
+```
+
+A server that differs stays as it is unless you pass `--overwrite`, which
+reports `~ replace <name>`. A differing `env` is listed as `env.<KEY>`. The
+warnings flag a `command` missing from `PATH` and an absolute path in `args`
+or `cwd` that doesn't exist, such as a config file only the first machine
+has. Fix those on the new machine; the import still writes the entry. The
+Codex rewrite saves the usual `before-mcp-sync` backup first.
 
 ## Writes, Logs, and Credentials
 

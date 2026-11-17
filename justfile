@@ -451,9 +451,15 @@ cbm-status:
   @bun run cbm/reindex.ts --status
 
 # Preview or apply the MCP union; --from selects directional correction.
+# --export and --import move Codex servers between machines.
 mcp-sync *ARGS:
   #!/usr/bin/env bash
   set -Eeuo pipefail
+  # The export payload carries credentials: keep it out of the run log and
+  # its artifacts, and keep stdout to the payload alone.
+  for arg in {{ARGS}}; do
+    if [[ "$arg" == --export ]]; then exec bun run mcp/sync.ts {{ARGS}}; fi
+  done
   source runlog/runlog.sh
   runlog_start mcp-sync {{ARGS}}
   trap 'runlog_end $?' EXIT
