@@ -16,8 +16,8 @@
  */
 import { spawn } from "node:child_process"
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync,
-  writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
+  readlinkSync, realpathSync, renameSync, writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -136,11 +136,15 @@ export function readOutcome(cmd: Command, result: RunResult): Outcome {
 
 export type Runner = (cmd: Command) => Promise<RunResult>
 
-export const spawnRunner: Runner = async (cmd) => {
+/**
+ * Run each command as a child. With `lockFd`, the child inherits the run
+ * lock's descriptor as fd 3, so the lock stays held until the indexer exits
+ * even if this process dies first.
+ */
+export const spawnRunner = (lockFd?: number): Runner => async (cmd) => {
   const proc = Bun.spawn(cmd.argv, {
-    stdin: new Blob([cmd.input]),
-    stdout: "pipe",
-    stderr: "pipe",
+    stdio: [new Blob([cmd.input]), "pipe", "pipe",
+      ...(lockFd === undefined ? [] : [lockFd])],
   })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -296,6 +300,28 @@ export const detachedSpawner: Spawner = (argv, logFd) => {
   return child.pid ?? -1
 }
 
+/**
+ * The descriptor through which this process holds the lock: `flock` opens
+ * the lock file and the run inherits it. Undefined without /proc.
+ */
+export function inheritedLockFd(dir: string): number | undefined {
+  try {
+    const target = realpathSync(lockPath(dir))
+    for (const entry of readdirSync("/proc/self/fd")) {
+      try {
+        if (readlinkSync(`/proc/self/fd/${entry}`) === target) {
+          return Number(entry)
+        }
+      } catch {
+        // The fd closed while listing (readdir's own handle, for one).
+      }
+    }
+  } catch {
+    // No /proc or no lock file.
+  }
+  return undefined
+}
+
 /** Whether a run holds the lock right now. */
 export function isLocked(dir: string): boolean {
   if (!existsSync(lockPath(dir))) return false
@@ -428,7 +454,7 @@ export function createProgram(): Program {
         return
       }
       process.exitCode = await runPlan(plan, dir, {
-        run: spawnRunner,
+        run: spawnRunner(inheritedLockFd(dir)),
         attempts: 3,
         retryDelayMs: 15_000,
         sleep: (ms) => Bun.sleep(ms),

@@ -217,6 +217,26 @@ describe("the run lock", () => {
     expect(existsSync(lockPath(box.dir))).toBe(true)
   })
 
+  test("the lock outlives a killed worker until its indexer exits", async () => {
+    const box = sandbox()
+    const first = Bun.spawn(box.argv,
+      { env: box.env(3), stdout: "pipe", stderr: "pipe" })
+    while (box.calls() === 0) await Bun.sleep(20)
+    // Kill only the worker; the fake indexer keeps running.
+    process.kill(readStatus(box.dir)!.pid, "SIGKILL")
+    await first.exited
+    const second = Bun.spawn(box.argv,
+      { env: box.env(0), stdout: "pipe", stderr: "pipe" })
+    expect(await second.exited).toBe(2)
+    expect(await new Response(second.stdout).text())
+      .toContain("already running")
+    while (isLocked(box.dir)) await Bun.sleep(100)
+    const third = Bun.spawn(box.argv,
+      { env: box.env(0), stdout: "pipe", stderr: "pipe" })
+    expect(await third.exited).toBe(0)
+    expect(box.calls()).toBe(2)
+  }, 15_000)
+
   test("a killed run releases the lock for the next one", async () => {
     const box = sandbox()
     // Its own process group, so the kill takes the fake indexer with it.
