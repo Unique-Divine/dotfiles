@@ -36,9 +36,13 @@ release. Sync doesn't create a missing entry, because only you can add its
 shared Discord server over HTTP.
 
 Sync also replaces a direct Claude Code or Cursor definition of a pinned
-server with the Codex launcher, so no client keeps running a checkout. It
-backs up the replaced entry first and names env keys that differ from the
-Codex entry, never their values. `--check` fails until that migration runs.
+server with the Codex launcher when it's a pre-pin Jiyuu launch, such as
+`mcp-discord`, `slack-mcp`, or a command that points into the checkout's
+`mcp/<server>`. It backs up the replaced entry first and names env keys that
+differ from the Codex entry, never their values. `--check` fails until that
+migration runs. Sync leaves other direct definitions, such as a remote HTTP
+server, alone with a warning, and skips migration while the Codex entry is
+disabled.
 
 Telegram isn't pinned while its Codex entry lacks `TELEGRAM_SESSION_STRING`
 (or `TELEGRAM_SESSION_STRING_<LABEL>`) and the old launch directory holds a

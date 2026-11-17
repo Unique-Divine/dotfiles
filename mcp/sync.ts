@@ -9,7 +9,8 @@ import {
 } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
 import {
-  applyJiyuuPins, jiyuuCheckoutDir, jiyuuMcpPins, localEnvVar, parseLocalNames,
+  applyJiyuuPins, isLegacyJiyuuLaunch, jiyuuCheckoutDir, jiyuuMcpPins,
+  localEnvVar, parseLocalNames, type JiyuuMcpPin,
 } from "./pins.ts"
 import { describePlan, hasChanges, sameEntry, writePrivateFile, type McpPlan } from "./plan.ts"
 import {
@@ -108,7 +109,7 @@ export const differingEnvKeys = (a: unknown, b: unknown): string[] => {
 
 /**
  * Replaces direct Claude or Cursor definitions of pinned servers with Codex
- * launchers. Default sync otherwise preserves them, so a client could keep
+ * launchers when they are recognized pre-pin Jiyuu launches. Default sync otherwise preserves them, so a client could keep
  * running a checkout after Codex is pinned. The caller backs up each replaced
  * entry. Returns warnings that name differing env keys, never values.
  */
@@ -117,10 +118,10 @@ export const migrateDirectPins = (
   raw: Inventory,
   definitions: Inventory,
   ctx: LauncherContext,
-  names: readonly string[] = Object.keys(jiyuuMcpPins),
+  pins: Record<string, JiyuuMcpPin> = jiyuuMcpPins,
 ): string[] => {
   const warnings: string[] = []
-  for (const name of names) {
+  for (const [name, pin] of Object.entries(pins)) {
     if (classifyServer(plan.codex[name]) !== "stdio") continue
     // The launcher skips disabled Codex entries, so a migrated client entry
     // would stop starting. Leave the working client definition alone.
@@ -128,6 +129,12 @@ export const migrateDirectPins = (
     for (const target of ["claude", "cursor"] as const) {
       const existing = raw[target][name]
       if (existing === undefined || isLauncherEntry(existing)) continue
+      if (!isLegacyJiyuuLaunch(existing, pin)) {
+        warnings.push(`${target}/${name}: direct entry is not a known Jiyuu ` +
+          "checkout launch; preserved. Remove it to use the pinned Codex " +
+          "launcher")
+        continue
+      }
       const targetPlan = plan.targets[target]
       targetPlan.update = targetPlan.update.filter(u => u.name !== name)
       targetPlan.add = targetPlan.add.filter(a => a.name !== name)

@@ -426,3 +426,20 @@ test("CLI leaves direct client entries alone when the Codex entry is disabled", 
     expect(check.code).toBe(0)
   })
 })
+
+test("CLI preserves unrecognized direct entries of pinned servers with a warning", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.slack]\ncommand = "slack-mcp"\n')
+    const remote = { type: "http", url: "https://slack.example/mcp", headers: { A: "b" } }
+    const custom = { command: "npx", args: ["some-other-slack"] }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: { slack: remote } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: { slack: custom } }))
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("claude/slack: direct entry is not a known Jiyuu checkout launch")
+    expect(result.output).toContain("cursor/slack: direct entry is not a known Jiyuu checkout launch")
+    expect((await Bun.file(join(dir, ".claude.json")).json()).mcpServers.slack).toEqual(remote)
+    expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(custom)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})

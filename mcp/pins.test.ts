@@ -4,17 +4,19 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  applyJiyuuPins, dirHasLocalState, jiyuuCheckoutDir, launchDirectory, jiyuuMcpPins, localLaunch,
+  applyJiyuuPins, dirHasLocalState, isLegacyJiyuuLaunch, jiyuuCheckoutDir, launchDirectory, jiyuuMcpPins, localLaunch,
   parseLocalNames, pinnedLaunch, type JiyuuMcpPin,
 } from "./pins.ts"
 
 const bunPin: JiyuuMcpPin = {
   runner: "bunx", package: "@scope/server", version: "1.2.3",
   local: { command: "bun", entry: "mcp/server/src/index.ts" },
+  legacy: { commands: ["server-mcp"], component: "mcp/server" },
 }
 const uvPin: JiyuuMcpPin = {
   runner: "uvx", package: "py-server", version: "2.0.1",
   local: { command: "uv", directory: "mcp/py", entry: "main.py" },
+  legacy: { commands: [], component: "mcp/py" },
 }
 const pins = { node: bunPin, py: uvPin }
 
@@ -173,5 +175,31 @@ describe("Telegram checkout state", () => {
       .toBe("/a")
     expect(launchDirectory({ command: "x", cwd: "/b" })).toBe("/b")
     expect(launchDirectory({ command: "x" })).toBeUndefined()
+  })
+})
+
+describe("isLegacyJiyuuLaunch", () => {
+  const pins = jiyuuMcpPins
+  test("recognizes pre-pin Jiyuu launches", () => {
+    expect(isLegacyJiyuuLaunch({ command: "mcp-discord" }, pins["discord-mcp"]))
+      .toBe(true)
+    expect(isLegacyJiyuuLaunch({ type: "stdio", command: "/home/u/.bun/bin/slack-mcp" },
+      pins.slack)).toBe(true)
+    expect(isLegacyJiyuuLaunch({ command: "bun",
+      args: ["/home/u/boku/jiyuu/mcp/slack/src/cli.js"] }, pins.slack)).toBe(true)
+    expect(isLegacyJiyuuLaunch({ command: "uv", args: ["--directory",
+      "/home/u/boku/jiyuu/mcp/telegram", "run", "main.py"] },
+    pins["telegram-mcp"])).toBe(true)
+  })
+
+  test("rejects remote and unrecognized definitions", () => {
+    expect(isLegacyJiyuuLaunch({ type: "http", url: "https://slack.example" },
+      pins.slack)).toBe(false)
+    expect(isLegacyJiyuuLaunch({ type: "sse", command: "slack-mcp" },
+      pins.slack)).toBe(false)
+    expect(isLegacyJiyuuLaunch({ command: "npx", args: ["other-slack"] },
+      pins.slack)).toBe(false)
+    expect(isLegacyJiyuuLaunch({ command: "slack-mcp" }, pins["discord-mcp"]))
+      .toBe(false)
   })
 })

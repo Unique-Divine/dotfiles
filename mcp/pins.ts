@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 
 import { isRecord, type McpServer, type McpServers } from "./servers.ts"
 
@@ -21,12 +21,16 @@ export const jiyuuMcpPins = {
     package: "@uniquedivine/mcp-discord",
     version: "1.3.8",
     local: { command: "bun", entry: "mcp/discord/src/index.ts" },
+    legacy: { commands: ["mcp-discord"], component: "mcp/discord" },
   },
   slack: {
     runner: "bunx",
     package: "@uniquedivine/mcp-slack",
     version: "4.4.3",
     local: { command: "bun", entry: "mcp/slack/src/cli.js" },
+    legacy: {
+      commands: ["slack-mcp", "slack-mcp-server"], component: "mcp/slack",
+    },
   },
   "telegram-mcp": {
     runner: "uvx",
@@ -34,6 +38,7 @@ export const jiyuuMcpPins = {
     version: "2.0.2",
     sessionEnv: "TELEGRAM_SESSION_STRING",
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
+    legacy: { commands: [], component: "mcp/telegram" },
   },
 } as const satisfies Record<string, JiyuuMcpPin>
 
@@ -53,6 +58,31 @@ export interface JiyuuMcpPin {
   local:
     | { command: "bun"; entry: string }
     | { command: "uv"; directory: string; entry: string }
+  /**
+   * Launches used before the pins: global command names linked to Jiyuu,
+   * and the component directory that checkout launches point into.
+   */
+  legacy: { commands: readonly string[]; component: string }
+}
+
+/**
+ * Reports whether a Claude or Cursor entry is a pre-pin Jiyuu stdio launch,
+ * such as `mcp-discord`, `slack-mcp`, `bun <jiyuu>/mcp/slack/src/cli.js`, or
+ * `uv --directory <jiyuu>/mcp/telegram run main.py`. Remote and unrecognized
+ * definitions return false, so sync never replaces them on its own.
+ */
+export const isLegacyJiyuuLaunch = (
+  entry: unknown, pin: JiyuuMcpPin,
+): boolean => {
+  if (!isRecord(entry) || typeof entry.command !== "string") return false
+  if (entry.url !== undefined) return false
+  if (entry.type !== undefined && entry.type !== "stdio") return false
+  if (pin.legacy.commands.includes(basename(entry.command))) return true
+  const args = Array.isArray(entry.args) ? entry.args : []
+  const component = pin.legacy.component
+  return [entry.command, ...args].some((value) =>
+    typeof value === "string" &&
+    (value.endsWith(`/${component}`) || value.includes(`/${component}/`)))
 }
 
 /** Environment variable that opts servers into a local Jiyuu checkout. */
