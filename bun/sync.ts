@@ -108,9 +108,25 @@ async function manifest(config: Config): Promise<Package> {
   return json<Package>(join(config.globalDir, "package.json"))
 }
 
+/**
+ * The lock text, or an empty string when an empty manifest has no lock. Bun
+ * deletes bun.lock when no packages remain, so removing the last tool leaves
+ * that state, and policy and sync must accept it.
+ */
+async function lockText(config: Config): Promise<string> {
+  try {
+    return await readFile(join(config.globalDir, "bun.lock"), "utf8")
+  } catch (error) {
+    const empty = Object.keys((await manifest(config)).dependencies ?? {})
+      .length === 0
+    if (empty && (error as NodeJS.ErrnoException).code === "ENOENT") return ""
+    throw error
+  }
+}
+
 async function lockHash(config: Config): Promise<string> {
-  return new Bun.CryptoHasher("sha256").update(await readFile(
-    join(config.globalDir, "bun.lock"))).digest("hex")
+  return new Bun.CryptoHasher("sha256").update(await lockText(config))
+    .digest("hex")
 }
 
 /** Match Bun's Unix global settings, with environment overrides first. */
@@ -182,26 +198,84 @@ export async function runCheckoutProblem(
     "pass --allow-other-checkout to sync $DOTFILES from here."
 }
 
-/** The manifest and lock must agree before sync changes an installation. */
+/** An exact registry release, such as 1.2.3 or 1.2.3-beta.1. */
+export const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+
+/** A specifier that names a file on one machine rather than a release. */
+function machinePath(spec: string): boolean {
+  return /^(file:|link:|\/|\.\.?\/|~\/)/.test(spec) ||
+    /\.(tgz|tar\.gz)$/.test(spec)
+}
+
+/**
+ * Every managed dependency must be an exact registry release. `bun add -g`
+ * writes ranges such as `^2.21.2` and local tarball paths into the tracked
+ * manifest; a range lets the lock drift, and a path breaks other machines.
+ * Each problem names the package and the one command that fixes it.
+ */
+export function manifestPolicyProblems(pkg: Package): string[] {
+  const problems: string[] = []
+  for (const [name, spec] of Object.entries(pkg.dependencies ?? {})) {
+    if (exactVersion.test(spec)) continue
+    if (machinePath(spec)) {
+      problems.push(`${name}: "${spec}" is a path on this machine, not a ` +
+        "registry release; run git checkout -- bun/global")
+      continue
+    }
+    const version = spec.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0]
+    problems.push(`${name}: "${spec}" is not an exact version; run ` +
+      `just bun-add ${name}@${version ?? "VERSION"}`)
+  }
+  return problems
+}
+
+/**
+ * Per-package differences between the manifest and the lock's root
+ * workspace, each with both specifiers and one command that reconciles them.
+ * Packages in `skip` already have a policy problem with its own fix.
+ */
+export function driftProblems(
+  desired: Record<string, string>, locked: Record<string, string>,
+  skip = new Set<string>(),
+): string[] {
+  const problems: string[] = []
+  const names = [...new Set([...Object.keys(desired), ...Object.keys(locked)])]
+    .sort((a, b) => a.localeCompare(b))
+  for (const name of names) {
+    if (skip.has(name) || desired[name] === locked[name]) continue
+    if (locked[name] === undefined) {
+      problems.push(`${name}: package.json has ${desired[name]}, bun.lock ` +
+        `has none; run just bun-add ${name}@${desired[name]}`)
+    } else if (desired[name] === undefined) {
+      problems.push(`${name}: bun.lock has ${locked[name]}, package.json ` +
+        `has none; run just bun-drop ${name}`)
+    } else {
+      problems.push(`${name}: package.json has ${desired[name]}, bun.lock ` +
+        `has ${locked[name]}; run just bun-add ${name}@${desired[name]}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * The manifest must follow the exact-pin policy and agree with the lock
+ * before sync changes an installation. Reads only the two committed files.
+ */
 export async function lockProblems(config: Config): Promise<string[]> {
   try {
-    const desired = (await manifest(config)).dependencies ?? {}
-    const lock = Bun.JSON5.parse(await readFile(
-      join(config.globalDir, "bun.lock"), "utf8")) as {
+    const pkg = await manifest(config)
+    const policy = manifestPolicyProblems(pkg)
+    const flagged = new Set(policy.map((problem) => problem.split(": ")[0]!))
+    const text = await lockText(config)
+    const lock = (text ? Bun.JSON5.parse(text) : {}) as {
       workspaces?: Record<string, { dependencies?: Record<string, string> }>
     }
     const locked = lock.workspaces?.[""]?.dependencies ?? {}
-    const normalize = (value: Record<string, string>): string =>
-      JSON.stringify(Object.entries(value).sort(([a], [b]) =>
-        a.localeCompare(b)))
-    if (normalize(desired) !== normalize(locked)) {
-      return ["Bun manifest differs from bun.lock; run just bun-lock, " +
-        "review the lockfile, then just bun-sync"]
-    }
-    return []
+    return [...policy,
+      ...driftProblems(pkg.dependencies ?? {}, locked, flagged)]
   } catch (error) {
-    return [`Bun lockfile is unavailable or invalid: ${error}; ` +
-      "run just bun-lock"]
+    return [`Bun manifest or lockfile is unavailable or invalid: ${error}; ` +
+      "run git checkout -- bun/global"]
   }
 }
 
@@ -364,7 +438,9 @@ async function checkMdtoc(
 
 /** Read-only, offline diagnosis with repair commands. */
 export async function check(config: Config): Promise<string[]> {
-  const problems = await lockProblems(config)
+  // Lock problems carry their own fix command; sync cannot repair them.
+  const lock = await lockProblems(config)
+  const problems: string[] = []
   const inspection = await inspectPackages(config)
   problems.push(...inspection.problems)
   if (!await sameTarget(config.runtimeDir, config.globalDir)) {
@@ -389,7 +465,7 @@ export async function check(config: Config): Promise<string[]> {
     problems.push("ud mdtoc plugin link is missing or incorrect")
   }
   problems.push(...await checkMdtoc(config, inspection.bins))
-  return problems.map((problem) => `${problem} (${repair})`)
+  return [...lock, ...problems.map((problem) => `${problem} (${repair})`)]
 }
 
 async function replaceOwnedLink(path: string, target: string): Promise<void> {
@@ -571,43 +647,114 @@ export async function synchronize(config: Config): Promise<void> {
   }
 }
 
-/** Update the committed lock only after an intentional manifest edit. */
-export async function refreshLock(config: Config): Promise<void> {
+async function writeLock(config: Config): Promise<void> {
   await command([process.execPath, "install", "--cwd", config.globalDir,
     "--lockfile-only", "--ignore-scripts"], config.root)
+}
+
+/**
+ * Update the committed lock only after an intentional manifest edit. Refuses
+ * a manifest that breaks the exact-pin policy, so a range never reaches the
+ * lock.
+ */
+export async function refreshLock(config: Config): Promise<void> {
+  const policy = manifestPolicyProblems(await manifest(config))
+  if (policy.length) throw new Error(policy.join("\n"))
+  await writeLock(config)
+}
+
+/**
+ * Apply `edit` to the managed manifest and refresh the lock, restoring both
+ * files if the refresh fails or `accept` rejects the new lock. Other packages
+ * are not policy-checked here, so each problem `--check` lists can be fixed
+ * with its own command.
+ */
+async function editManifest(
+  config: Config, edit: (dependencies: Record<string, string>) => void,
+  accept: () => Promise<string | undefined> = async () => undefined,
+): Promise<void> {
+  const path = join(config.globalDir, "package.json")
+  const original = await readFile(path, "utf8")
+  const lockPath = join(config.globalDir, "bun.lock")
+  const originalLock = await readFile(lockPath).catch(() => undefined)
+  const desired = JSON.parse(original) as Package
+  desired.dependencies = { ...desired.dependencies }
+  edit(desired.dependencies)
+  await writeFile(path, JSON.stringify(desired, null, 2) + "\n")
+  try {
+    await writeLock(config)
+    const rejected = await accept()
+    if (rejected) throw new Error(rejected)
+  } catch (error) {
+    await writeFile(path, original)
+    if (originalLock) await writeFile(lockPath, originalLock)
+    else await rm(lockPath, { force: true })
+    throw error
+  }
+}
+
+/** Split `name@1.2.3` or `@scope/name@1.2.3` into a name and exact version. */
+export function parseSpec(spec: string): { name: string; version: string } {
+  const at = spec.lastIndexOf("@")
+  const name = at > 0 ? spec.slice(0, at) : ""
+  const version = at > 0 ? spec.slice(at + 1) : ""
+  if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name) ||
+      !exactVersion.test(version)) {
+    throw new Error(`Supply NAME@VERSION with an exact version, such as ` +
+      `prettier@3.9.6; got ${spec}`)
+  }
+  return { name, version }
+}
+
+/**
+ * Pin an exact registry release in the managed manifest and refresh the
+ * lock. Bun's own resolution is the release check, so it uses the same
+ * registry and credentials as every other install, including those in
+ * bunfig.toml. `verify` may reject the locked package metadata. Nothing
+ * changes unless Bun locks exactly `name@version` and `verify` accepts it.
+ */
+export async function adoptPackage(
+  config: Config, name: string, version: string,
+  verify: (locked: Package) => string | undefined = () => undefined,
+): Promise<void> {
+  parseSpec(`${name}@${version}`)
+  try {
+    await editManifest(config, (dependencies) => {
+      dependencies[name] = version
+    }, async () => {
+      const lock = Bun.JSON5.parse(await readFile(
+        join(config.globalDir, "bun.lock"), "utf8")) as {
+        packages?: Record<string, unknown[]>
+      }
+      const entry = lock.packages?.[name]
+      if (entry?.[0] !== `${name}@${version}`) {
+        return `bun.lock does not record ${name}@${version}`
+      }
+      const info = entry.find((part): part is Package =>
+        typeof part === "object" && part !== null && !Array.isArray(part))
+      return verify({ ...info, name, version })
+    })
+  } catch (error) {
+    throw new Error(`Could not adopt ${name}@${version}; nothing changed: ${
+      error}`)
+  }
+}
+
+/** Remove a package from the managed manifest and refresh the lock. */
+export async function dropPackage(config: Config, name: string): Promise<void> {
+  await editManifest(config, (dependencies) => { delete dependencies[name] })
 }
 
 /** Activate only a release that already exists on the npm registry. */
 export async function activateMdtoc(
   config: Config, version: string,
 ): Promise<void> {
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!exactVersion.test(version)) {
     throw new Error("Supply an exact ud-mdtoc release version")
   }
-  const result = await fetch(`https://registry.npmjs.org/${
-    encodeURIComponent(mdtocPackage)}/${encodeURIComponent(version)}`)
-  if (!result.ok) {
-    throw new Error(`${mdtocPackage}@${version} is not published; ` +
-      "publish with the package's just publish recipe first")
-  }
-  const published = await result.json() as Package
-  if (published.name !== mdtocPackage || published.version !== version ||
-      !("ud-mdtoc" in packageBins(published))) {
-    throw new Error("Published package has unexpected name, version, or bin")
-  }
-  const path = join(config.globalDir, "package.json")
-  const original = await readFile(path, "utf8")
-  const lockPath = join(config.globalDir, "bun.lock")
-  const originalLock = await readFile(lockPath).catch(() => undefined)
-  const desired = JSON.parse(original) as Package
-  desired.dependencies = { ...desired.dependencies, [mdtocPackage]: version }
-  await writeFile(path, JSON.stringify(desired, null, 2) + "\n")
-  try { await refreshLock(config) } catch (error) {
-    await writeFile(path, original)
-    if (originalLock) await writeFile(lockPath, originalLock)
-    else await rm(lockPath, { force: true })
-    throw error
-  }
+  await adoptPackage(config, mdtocPackage, version, (published) =>
+    "ud-mdtoc" in packageBins(published) ? undefined
+      : "Published package does not declare the ud-mdtoc executable")
 }
 
 if (import.meta.main) {
@@ -616,7 +763,8 @@ if (import.meta.main) {
     const allowOther = args.includes("--allow-other-checkout")
     const rest = args.filter((arg) => arg !== "--allow-other-checkout")
     // --check and --run act on the live installation, so they read
-    // $DOTFILES. --lock and --activate-mdtoc edit files in this checkout.
+    // $DOTFILES. --lock, --add, --drop, and --activate-mdtoc edit files in
+    // this checkout; --policy reads them.
     const live = () => configuration(installRoot())
     const local = () => configuration()
     if (rest.length === 1 && rest[0] === "--check") {
@@ -632,13 +780,25 @@ if (import.meta.main) {
     } else if (rest.length === 1 && rest[0] === "--lock") {
       await refreshLock(await local())
       console.log("Bun lock refreshed; review the diff, then run just bun-sync")
+    } else if (rest.length === 1 && rest[0] === "--policy") {
+      const problems = await lockProblems(await local())
+      if (problems.length) throw new Error(problems.join("\n"))
+      console.log("Bun manifest: exact pins that match bun.lock")
+    } else if (rest.length === 2 && rest[0] === "--add") {
+      const { name, version } = parseSpec(rest[1]!)
+      await adoptPackage(await local(), name, version)
+      console.log(`${name}@${version} pinned; review the diff, then run ` +
+        "just bun-sync")
+    } else if (rest.length === 2 && rest[0] === "--drop") {
+      await dropPackage(await local(), rest[1]!)
+      console.log(`${rest[1]} removed; review the diff, then run just bun-sync`)
     } else if (rest.length === 2 && rest[0] === "--activate-mdtoc") {
       await activateMdtoc(await local(), rest[1]!)
       console.log("ud-mdtoc release pinned; run just bun-sync")
     } else {
       throw new Error("Usage: bun --no-install bun/sync.ts " +
-        "--check | --run [--allow-other-checkout] | --lock | " +
-        "--activate-mdtoc VERSION")
+        "--check | --run [--allow-other-checkout] | --lock | --policy | " +
+        "--add NAME@VERSION | --drop NAME | --activate-mdtoc VERSION")
     }
   } catch (error) {
     console.error(String(error))

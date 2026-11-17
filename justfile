@@ -363,6 +363,19 @@ bun-health:
 bun-lock:
   bun --no-install bun/sync.ts --lock
 
+# Use this, never `bun add -g`, which writes ranges and paths into git.
+# Pin an exact registry release in the global manifest and refresh the lock.
+bun-add SPEC:
+  bun --no-install bun/sync.ts --add {{quote(SPEC)}}
+
+# Remove a package from the global manifest and refresh the lock.
+bun-drop NAME:
+  bun --no-install bun/sync.ts --drop {{quote(NAME)}}
+
+# Check offline that the global manifest uses exact pins matching its lock.
+bun-policy:
+  bun --no-install bun/sync.ts --policy
+
 # Pin a published ud-mdtoc release in the managed global manifest.
 bun-activate-mdtoc VERSION="0.1.0":
   bun --no-install bun/sync.ts --activate-mdtoc {{quote(VERSION)}}

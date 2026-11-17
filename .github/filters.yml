@@ -6,6 +6,7 @@ bun:
   - '.bun-version'
   - '**/tsconfig*.json'
   - 'bunfig.toml'
+  - 'bun/global/**'
   - '.nvmrc'
   - 'zsh/**'
   - 'bin/**'
