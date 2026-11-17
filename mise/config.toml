@@ -31,5 +31,6 @@ eza = { version = "0.23.5", os = ["linux"] }
 # The registry default for neovim is a vfox plugin; aqua verifies sha256.
 "aqua:neovim/neovim" = "0.12.6"
 "github:mbrt/gmailctl" = "0.13.0"
+grok = "1.0.77"
 # uvx runs the Telegram MCP server (uniquedivine-telegram-mcp) from PyPI.
 uv = "0.13.7"

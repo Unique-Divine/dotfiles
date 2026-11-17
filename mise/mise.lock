@@ -157,6 +157,23 @@ checksum_source = "mise-versions"
 url = "https://github.com/mbrt/gmailctl/releases/download/v0.13.0/gmailctl_0.13.0_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/mbrt/gmailctl/releases/assets/595080727"
 
+[[tools.grok]]
+version = "1.0.77"
+backend = "http:grok"
+specifiers = ["1.0.77"]
+
+[tools.grok."platforms.linux-arm64"]
+checksum = "sha256:b30eee14a656124ef3c9da8577b5e783ef2cffabeb2b679c5c49633e77eed574"
+url = "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.77-linux-aarch64"
+
+[tools.grok."platforms.linux-x64"]
+checksum = "sha256:b702950aa5827d855e493278ab6215a4e0f5bceb5bba6c6243a9f55cdd143b0a"
+url = "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.77-linux-x86_64"
+
+[tools.grok."platforms.macos-arm64"]
+checksum = "sha256:197c66a63e5ac46e07450b0ca21d141ce665050a412180f185dadfae1c7a5b2a"
+url = "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.77-macos-aarch64"
+
 [[tools.jq]]
 version = "1.8.2"
 backend = "aqua:jqlang/jq"
