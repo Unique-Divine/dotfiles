@@ -30,10 +30,7 @@ export const jiyuuMcpPins = {
   "telegram-mcp": {
     runner: "uvx",
     package: "uniquedivine-telegram-mcp",
-    version: "2.0.1",
-    // 2.0.1 declares `mcp[cli]>=1.8.0`, so a fresh resolve picks mcp 2.x,
-    // which removed FastMCP. Drop this once a release caps mcp below 2.
-    with: ["mcp<2"],
+    version: "2.0.2",
     local: { command: "uv", directory: "mcp/telegram", entry: "main.py" },
   },
 } as const satisfies Record<string, JiyuuMcpPin>
@@ -44,8 +41,6 @@ export interface JiyuuMcpPin {
   runner: "bunx" | "uvx"
   package: string
   version: string
-  /** Extra requirements that uvx installs beside the package. */
-  with?: readonly string[]
   /** How to run the server from a Jiyuu checkout, relative to its root. */
   local:
     | { command: "bun"; entry: string }
@@ -63,10 +58,7 @@ export interface Launch {
 /** The registry launch for one pin, such as `bunx pkg@1.2.3`. */
 export const pinnedLaunch = (pin: JiyuuMcpPin): Launch => ({
   command: pin.runner,
-  args: [
-    ...(pin.with ?? []).flatMap((requirement) => ["--with", requirement]),
-    `${pin.package}@${pin.version}`,
-  ],
+  args: [`${pin.package}@${pin.version}`],
 })
 
 /** The development launch for one pin from a Jiyuu checkout. */

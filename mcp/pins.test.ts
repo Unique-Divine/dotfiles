@@ -10,17 +10,17 @@ const bunPin: JiyuuMcpPin = {
   local: { command: "bun", entry: "mcp/server/src/index.ts" },
 }
 const uvPin: JiyuuMcpPin = {
-  runner: "uvx", package: "py-server", version: "2.0.1", with: ["dep<2"],
+  runner: "uvx", package: "py-server", version: "2.0.1",
   local: { command: "uv", directory: "mcp/py", entry: "main.py" },
 }
 const pins = { node: bunPin, py: uvPin }
 
 describe("pinned and local launches", () => {
-  test("pin exact versions, with uvx requirements before the package", () => {
+  test("pin exact versions", () => {
     expect(pinnedLaunch(bunPin)).toEqual(
       { command: "bunx", args: ["@scope/server@1.2.3"] })
     expect(pinnedLaunch(uvPin)).toEqual(
-      { command: "uvx", args: ["--with", "dep<2", "py-server@2.0.1"] })
+      { command: "uvx", args: ["py-server@2.0.1"] })
   })
 
   test("local launches run sources from the Jiyuu checkout", () => {
@@ -74,7 +74,7 @@ describe("applyJiyuuPins", () => {
       startup_timeout_sec: 9,
     })
     expect(result.servers.py).toEqual({
-      command: "uvx", args: ["--with", "dep<2", "py-server@2.0.1"],
+      command: "uvx", args: ["py-server@2.0.1"],
       enabled: false,
     })
     expect(result.servers.other).toEqual({ command: "other" })

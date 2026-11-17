@@ -35,10 +35,6 @@ release. Sync doesn't create a missing entry, because only you can add its
 `env`; it prints a warning instead. It leaves a `url` entry alone, such as a
 shared Discord server over HTTP.
 
-The Telegram pin adds `--with mcp<2`. Release 2.0.1 declares
-`mcp[cli]>=1.8.0`, so a fresh resolve picks mcp 2.x, which removed `FastMCP`
-and stops the server at import. Drop `with` once a release caps `mcp`.
-
 ### Bump a Pin
 
 1. Edit the server's `version` line in `pins.ts`.
