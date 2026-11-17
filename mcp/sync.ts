@@ -8,6 +8,9 @@ import {
   readClaudeUserMcpServers,
 } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
+import {
+  applyJiyuuPins, jiyuuCheckoutDir, localEnvVar, parseLocalNames,
+} from "./pins.ts"
 import { describePlan, hasChanges, sameEntry, writePrivateFile, type McpPlan } from "./plan.ts"
 import {
   classifyServer, codexConfigPath, defaultLauncherContext, desiredEntries,
@@ -175,12 +178,25 @@ export const createProgram = (): Command => new Command()
     for (const [name, server] of Object.entries(raw.codex)) {
       if (!isRecord(server)) throw new Error(`Codex server ${name} must be a table`)
     }
+    // Jiyuu pins rewrite Codex launch commands before the union, so Claude
+    // and Cursor launchers, which read Codex, run the pinned releases too.
+    const original = raw.codex
+    const pinOptions = {
+      local: parseLocalNames(process.env[localEnvVar]),
+      jiyuuDir: jiyuuCheckoutDir(process.env),
+    }
+    const pinned = applyJiyuuPins(original, pinOptions)
+    raw.codex = pinned.servers
+    for (const warning of pinned.warnings) console.log(`! warning ${warning}`)
+    for (const change of pinned.changes) console.log(change)
     const { definitions, warnings } = await resolveDefinitions(raw, paths.codex)
     const ctx = defaultLauncherContext(paths.codex)
     if (options.launcherPath) ctx.launcherPath = resolve(options.launcherPath)
     const plan = planUnion(raw, definitions, ctx, options.from)
+    // A directional source can carry an old launch command; pins still win.
+    plan.codex = applyJiyuuPins(plan.codex, pinOptions).servers as McpServers
     for (const warning of [...warnings, ...plan.warnings]) console.log(`! warning ${warning}`)
-    const codexChanged = !sameEntry(raw.codex, plan.codex)
+    const codexChanged = !sameEntry(original, plan.codex)
     if (codexChanged) console.log("~ update codex MCP definitions")
     for (const target of ["claude", "cursor"] as const) {
       for (const line of describePlan(plan.targets[target], target)) console.log(`${target}: ${line}`)
@@ -196,8 +212,8 @@ export const createProgram = (): Command => new Command()
     }
     for (const p of platforms) await assertUnchanged(p)
     if (codexChanged) {
-      if (options.from && before.codex && Object.keys(raw.codex).some(name =>
-        !sameEntry(raw.codex[name], plan.codex[name] ?? {}))) {
+      if (options.from && before.codex && Object.keys(original).some(name =>
+        !sameEntry(original[name], plan.codex[name] ?? {}))) {
         const backup = `${paths.codex}.before-mcp-sync-${Date.now()}`
         await writePrivateFile(backup, before.codex)
         console.log(`Saved previous Codex config to ${backup}`)

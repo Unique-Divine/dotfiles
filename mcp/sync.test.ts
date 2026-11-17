@@ -6,6 +6,7 @@ import { parse } from "smol-toml"
 import { planUnion, resolveDefinitions, type Inventory, type Platform } from "./sync.ts"
 import { applyPlan } from "../cursor/mcp.ts"
 import { launcherEntry } from "./servers.ts"
+import { jiyuuMcpPins } from "./pins.ts"
 
 const ctx = { bunPath: "/bin/bun", launcherPath: "/repo/claude/mcp-launch.ts", sourcePath: "/codex.toml" }
 const inventory = (): Inventory => ({ codex: {}, claude: {}, cursor: {} })
@@ -126,7 +127,7 @@ test("CLI preview, check, apply, permissions, and advisory health", async () => 
 })
 
 async function withCliFixture(
-  check: (dir: string, invoke: (args: string[]) => Promise<{ code: number; output: string }>) => Promise<void>,
+  check: (dir: string, invoke: (args: string[], env?: Record<string, string>) => Promise<{ code: number; output: string }>) => Promise<void>,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "mcp-union-cli-"))
   try {
@@ -151,13 +152,16 @@ await Bun.write(file, JSON.stringify(config))
     const { chmod } = await import("node:fs/promises")
     await chmod(join(dir, "claude"), 0o700)
     await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {}, unrelated: true }))
-    const invoke = async (args: string[]) => {
+    const invoke = async (args: string[], extraEnv: Record<string, string> = {}) => {
       const p = Bun.spawn([process.execPath, script,
         "--codex-config", join(dir, "config.toml"),
         "--claude-config", join(dir, ".claude.json"),
         "--cursor-config", join(dir, "cursor.json"), ...args,
       ], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: dir, PATH: `${dir}:${process.env.PATH}` },
+        env: {
+          ...process.env, JIYUU_MCP_LOCAL: "", CLAUDE_CONFIG_DIR: dir,
+          PATH: `${dir}:${process.env.PATH}`, ...extraEnv,
+        },
         stdout: "pipe", stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([
@@ -286,5 +290,51 @@ test("CLI resumes a partial command-to-HTTP reconciliation", async () => {
     const after = await invoke(["--check"])
     expect(after.code).toBe(0)
     expect(after.output).not.toContain("launcher requires a command")
+  })
+})
+
+test("CLI pins Jiyuu servers in Codex, keeps env, and checks clean after", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const secret = crypto.randomUUID()
+    await Bun.write(join(dir, "config.toml"), [
+      '[mcp_servers.telegram-mcp]',
+      'command = "uv"',
+      'args = ["--directory", "/old/jiyuu/mcp/telegram", "run", "main.py"]',
+      'startup_timeout_sec = 30',
+      `env = { TELEGRAM_API_HASH = "${secret}" }`,
+      '[mcp_servers.discord-mcp]',
+      'url = "http://127.0.0.1:8123/mcp"',
+      '',
+    ].join("\n"))
+    expect((await invoke(["--check"])).code).toBe(1)
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("~ pin telegram-mcp to uniquedivine-telegram-mcp@")
+    expect(result.output).toContain("! warning slack: not in the Codex config")
+    expect(result.output).not.toContain(secret)
+    const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+    const telegram = config.mcp_servers["telegram-mcp"]
+    const pin = jiyuuMcpPins["telegram-mcp"]
+    expect(telegram.command).toBe("uvx")
+    expect(telegram.args.at(-1)).toBe(`${pin.package}@${pin.version}`)
+    expect(telegram.env).toEqual({ TELEGRAM_API_HASH: secret })
+    expect(telegram.startup_timeout_sec).toBe(30)
+    expect(config.mcp_servers["discord-mcp"]).toEqual({ url: "http://127.0.0.1:8123/mcp" })
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    expect(claude.mcpServers["telegram-mcp"].args[3]).toBe("telegram-mcp")
+    expect((await invoke(["--check"])).code).toBe(0)
+
+    const local = { JIYUU_MCP_LOCAL: "telegram-mcp", REPO: "/repos" }
+    expect((await invoke(["--check"], local)).code).toBe(1)
+    expect((await invoke(["--run"], local)).code).toBe(0)
+    const dev = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+    expect(dev.mcp_servers["telegram-mcp"].args).toEqual(
+      ["--directory", "/repos/boku/jiyuu/mcp/telegram", "run", "main.py"])
+    expect((await invoke(["--check"], local)).code).toBe(0)
+    expect((await invoke(["--check"])).code).toBe(1)
+
+    const typo = await invoke(["--dry-run"], { JIYUU_MCP_LOCAL: "telegram" })
+    expect(typo.code).toBe(1)
+    expect(typo.output).toContain("unknown server telegram")
   })
 })
