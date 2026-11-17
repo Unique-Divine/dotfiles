@@ -15,6 +15,76 @@ just mcp-sync --from codex --run   # explicitly prefer Codex settings
 just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
 ```
 
+## Jiyuu Pins
+
+[`pins.ts`](pins.ts) pins the MCP servers published from
+[Jiyuu](https://github.com/Unique-Divine/jiyuu) to exact releases. It's the
+only place their versions live.
+
+| Codex server   | Package                                  | Runner |
+| -------------- | ---------------------------------------- | ------ |
+| `discord-mcp`  | npm `@uniquedivine/mcp-discord`          | `bunx` |
+| `slack`        | npm `@uniquedivine/mcp-slack`            | `bunx` |
+| `telegram-mcp` | PyPI `uniquedivine-telegram-mcp`         | `uvx`  |
+
+Before the union, sync sets `command` and `args` of each named Codex entry to
+its pin, such as `bunx @uniquedivine/mcp-slack@4.4.3`. It keeps `env`, `cwd`,
+`enabled`, and timeouts, so tokens stay where they are. Claude Code and Cursor
+launchers read the Codex entry when a server starts, so they run the same
+release. Sync doesn't create a missing entry, because only you can add its
+`env`; it prints a warning instead. It leaves a `url` entry alone, such as a
+shared Discord server over HTTP.
+
+Sync also replaces a direct Claude Code or Cursor definition of a pinned
+server with the Codex launcher when it's a pre-pin Jiyuu launch, such as
+`mcp-discord`, `slack-mcp`, or a command that points into the checkout's
+`mcp/<server>`. It backs up the replaced entry first and names env keys that
+differ from the Codex entry, never their values. `--check` fails until that
+migration runs. Sync leaves other direct definitions, such as a remote HTTP
+server or a launch that also sets `envFile` or `cwd`, alone with a warning,
+and skips migration while the Codex entry is disabled.
+
+Telegram isn't pinned while the old checkout launch shows that it depends on
+local files, because a `uvx` launch runs from the uv cache and never reads
+them:
+
+- The old launch directory's `.env` defines a `TELEGRAM_*` key that the
+  Codex entry doesn't provide through `env` or `env_vars`.
+- The entry sets `TELEGRAM_SESSION_NAME` or `TELEGRAM_SESSION_NAME_<LABEL>`,
+  which names a session file relative to the old launch directory.
+
+Sync warns with the key names, never values. Move the values into
+`[mcp_servers.telegram-mcp].env`, then rerun `just mcp-sync --run`. Missing
+keys alone don't hold the pin, since credentials can come from the inherited
+environment, and neither does a stray `*.session` file.
+
+### Bump a Pin
+
+1. Edit the server's `version` line in `pins.ts`.
+2. Run `bun test mcp/pins.test.ts`, then `just mcp-sync --dry-run`.
+3. After merging, run `ud boku sync`. Sessions started afterward run the new
+   release.
+
+`just mcp-sync --check`, and so `just health`, fails while a Codex entry
+differs from its pin.
+
+### Run From a Local Jiyuu Checkout
+
+For development, set `JIYUU_MCP_LOCAL` to a comma-separated list of server
+names, or `all`, when you sync:
+
+```bash
+JIYUU_MCP_LOCAL=discord-mcp just mcp-sync --run
+JIYUU_MCP_LOCAL=all ud boku sync
+```
+
+Selected servers run from `$REPO/boku/jiyuu`: Discord and Slack through `bun`
+on their source entry, and Telegram through `uv --directory mcp/telegram run
+main.py`. Install the component's dependencies first, for example
+`just --justfile mcp/discord/justfile install` in Jiyuu. The setting lasts
+only while the variable is set: the next sync without it restores the pins,
+and `--check` without it reports the local entries as drift.
+
 ## Union and Directional Sync
 
 - A name missing from another platform is added when its definition can be
@@ -84,6 +154,10 @@ A Codex server with `enabled = false` remains disabled and is not propagated.
 `just sync` records the MCP step in the existing run log. `just mcp-sync`
 also records its own run and captures the credential-free plan as an artifact.
 A preview writes logs but does not change MCP configurations.
+
+Any rewrite of the Codex config first saves the old file to
+`config.toml.before-mcp-sync-<timestamp>`. The rewrite drops comments, so sync
+warns when the old file had any; they stay in the backup.
 
 Claude writes use `claude mcp add-json --scope user` and `claude mcp remove`.
 Cursor and Codex writes are atomic, private files. Directional replacements

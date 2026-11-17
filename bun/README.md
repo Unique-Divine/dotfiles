@@ -71,20 +71,13 @@ The manager follows `BUN_INSTALL`, `BUN_INSTALL_GLOBAL_DIR`, and
 `XDG_DATA_HOME` for `ud` plugin registration. Bun's global configuration rules
 are documented in [Bun's configuration reference](https://bun.sh/docs/runtime/bunfig).
 
-## Discord MCP From Jiyuu
+## MCP Servers From Jiyuu
 
-The `mcp-discord` command runs Jiyuu's
-[`mcp/discord`](https://github.com/Unique-Divine/jiyuu/tree/main/mcp/discord),
-so it isn't in the global manifest. Sync finds Jiyuu at `$REPO/boku/jiyuu`, the
-same place `just sync` updates it. It installs that component's locked
-dependencies with lifecycle scripts disabled when they're incomplete, then
-links `mcp-discord` in Bun's binary directory to `mcp/discord/src/index.ts`.
-Client configurations keep the command name `mcp-discord`.
-
-Health reports a missing or non-executable entrypoint, missing or mismatched
-dependencies, and a link that is missing or points elsewhere. Sync replaces
-the retired package link and a link to a Jiyuu checkout at another path. It
-refuses other `mcp-discord` commands.
+Bun sync no longer links `mcp-discord` to a Jiyuu checkout. The Discord,
+Slack, and Telegram MCP servers run as pinned registry releases through
+`bunx` and `uvx`; see [Jiyuu Pins](../mcp/README.md#jiyuu-pins). Sync leaves an
+existing `mcp-discord` link from an earlier sync in place and stops managing
+it.
 
 ## Update `ud-mdtoc` After Publication
 
@@ -131,9 +124,8 @@ bun test ./bun/sync.test.ts
 bun test ./claude/native.test.ts ./tests/mdtoc.test.ts
 ```
 
-The tests use real local packages, tarballs, a stand-in Jiyuu `mcp/discord`,
-and temporary global installations. They don't change the workstation's live
-global installation or the Jiyuu checkout.
+The tests use real local packages, tarballs, and temporary global
+installations. They don't change the workstation's live global installation.
 
 The Neovim test runs when `nvim` and `ud-mdtoc` are installed. To test an
 isolated package installation instead, set `MDTOC_TEST_COMMAND` to its

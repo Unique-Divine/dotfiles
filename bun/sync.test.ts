@@ -7,8 +7,8 @@ import {
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
-  check, configuration, discordBin, discordComponentDir, discordProblems,
-  inspectPackages, lockReferenceProblems, pathShadowProblem, installRoot, lockProblems, refreshLock,
+  check, configuration, inspectPackages, pathShadowProblem, installRoot,
+  lockProblems, refreshLock,
   runCheckoutProblem, synchronize, type Config,
 } from "./sync"
 
@@ -32,9 +32,7 @@ async function fixture(): Promise<Config> {
     BUN_INSTALL_BIN: binDir,
     XDG_DATA_HOME: join(home, "xdg"),
     PATH: `${binDir}:${process.env.PATH}`,
-    REPO: join(root, "workspace"),
   })
-  await jiyuuDiscord(config)
   const helper = join(managed, "sources", "fixture-helper")
   await mkdir(helper, { recursive: true })
   await writeFile(join(helper, "package.json"), JSON.stringify({
@@ -75,46 +73,6 @@ if (process.argv.includes("--plugin-info")) {
     } }, null, 2) + "\n")
   await refreshLock(config)
   return config
-}
-
-/** Jiyuu's marker: mcp/upstreams.json listing the mcp/discord component. */
-async function jiyuuMarker(jiyuuRoot: string): Promise<void> {
-  await mkdir(join(jiyuuRoot, "mcp"), { recursive: true })
-  await writeFile(join(jiyuuRoot, "mcp", "upstreams.json"), JSON.stringify({
-    targetRepository: "Unique-Divine/jiyuu",
-    components: [{ path: "mcp/discord" }],
-  }))
-}
-
-/** Write a Discord stand-in's manifest and lock it with Bun. */
-async function lockDiscord(
-  dir: string, dependencies: Record<string, string>,
-): Promise<void> {
-  await writeFile(join(dir, "package.json"), JSON.stringify({
-    name: "mcp-discord", private: true, bin: { "mcp-discord": "src/index.ts" },
-    dependencies,
-  }))
-  if (!Object.keys(dependencies).length) {
-    // Bun deletes a lockfile without packages, so write the empty one.
-    await writeFile(join(dir, "bun.lock"), JSON.stringify({ lockfileVersion: 1,
-      workspaces: { "": { name: "mcp-discord" } }, packages: {} }))
-    return
-  }
-  const locked = await bash(`cd '${dir}' && '${process.execPath}' install ` +
-    "--lockfile-only --ignore-scripts")
-  if (locked.exitCode) throw new Error(locked.stderr)
-}
-
-/** A Jiyuu mcp/discord stand-in: an executable entry and no dependencies. */
-async function jiyuuDiscord(config: Config): Promise<string> {
-  const dir = config.discordDir!
-  await mkdir(join(dir, "src"), { recursive: true })
-  await jiyuuMarker(join(dir, "..", ".."))
-  await lockDiscord(dir, {})
-  const entry = join(dir, "src", "index.ts")
-  await writeFile(entry, '#!/usr/bin/env bun\nconsole.log("fixture discord")\n')
-  await chmod(entry, 0o755)
-  return entry
 }
 
 async function snapshot(root: string): Promise<Record<string, string>> {
@@ -296,16 +254,16 @@ describe("managed Bun installation", () => {
   test("reports a wrong link once, without a PATH message", async () => {
     const config = await fixture()
     await synchronize(config)
-    const bin = join(config.binDir, discordBin)
+    const bin = join(config.binDir, "ud-mdtoc")
     const elsewhere = join(config.root, "elsewhere")
     await writeFile(elsewhere, "#!/bin/sh\n")
     await chmod(elsewhere, 0o755)
     await rm(bin)
     await symlink(elsewhere, bin)
     const problems = (await check(config)).join("\n")
-    expect(problems).toContain("does not reach Jiyuu")
+    expect(problems).toContain(`Executable link is missing or incorrect: ${bin}`)
     expect(problems).not.toContain("PATH resolves")
-    expect(await pathShadowProblem(discordBin, config.binDir, config.env))
+    expect(await pathShadowProblem("ud-mdtoc", config.binDir, config.env))
       .toBeUndefined()
   })
 
@@ -383,236 +341,6 @@ describe("managed Bun installation", () => {
     })
     expect(xdgConfig.runtimeDir).toBe(join(xdg, "relative-global"))
     expect(xdgConfig.binDir).toBe(join(xdg, "relative-bin"))
-  })
-})
-
-describe("Jiyuu Discord MCP link", () => {
-  test("locates Jiyuu under REPO the way just sync does", () => {
-    expect(discordComponentDir({ REPO: "/work" }))
-      .toBe("/work/boku/jiyuu/mcp/discord")
-    expect(discordComponentDir({})).toBeUndefined()
-  })
-
-  test("sync links mcp-discord to the Jiyuu entrypoint", async () => {
-    const config = await fixture()
-    const entry = join(config.discordDir!, "src", "index.ts")
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("Executable link is missing or does not reach Jiyuu")
-    await synchronize(config)
-    expect(await readlink(join(config.binDir, discordBin))).toBe(entry)
-    expect(await discordProblems(config)).toEqual([])
-    expect(await check(config)).toEqual([])
-    expect((await bash(`'${join(config.binDir, discordBin)}'`)).stdout.trim())
-      .toBe("fixture discord")
-  })
-
-  test("reports a missing, non-executable or unlocatable entrypoint", async () => {
-    const config = await fixture()
-    const entry = join(config.discordDir!, "src", "index.ts")
-    await chmod(entry, 0o644)
-    expect(await discordProblems(config)).toEqual([
-      `Jiyuu Discord MCP entrypoint is not executable: ${entry}; ` +
-      "update Jiyuu with just i-jiyuu"])
-    await expect(synchronize(config)).rejects.toThrow("not executable")
-    expect(await lstat(join(config.binDir, discordBin)).catch(() => undefined))
-      .toBeUndefined()
-    await rm(entry)
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("entrypoint is missing")
-    expect(await discordProblems({ ...config, discordDir: undefined }))
-      .toEqual(["REPO is unset, so Jiyuu's mcp/discord cannot be found"])
-  })
-
-  test("installs missing Jiyuu dependencies from its lock", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
-    await lockDiscord(dir, { "fixture-helper": `file:${
-      join(config.root, "sources", "fixture-helper")}` })
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("Jiyuu mcp/discord dependencies: fixture-helper")
-    await synchronize(config)
-    expect(await discordProblems(config)).toEqual([])
-    await rm(join(dir, "node_modules"), { recursive: true })
-    expect((await check(config)).join("\n")).toContain("fixture-helper")
-  })
-
-  test("replaces the retired package link and a Jiyuu link at another path", async () => {
-    const config = await fixture()
-    await synchronize(config)
-    const bin = join(config.binDir, discordBin)
-    const entry = join(config.discordDir!, "src", "index.ts")
-    await rm(bin)
-    await symlink(join(config.runtimeDir, "node_modules", discordBin, "build",
-      "index.js"), bin)
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("does not reach Jiyuu")
-    await synchronize(config)
-    expect(await readlink(bin)).toBe(entry)
-    const other = join(config.root, "old-boku", "jiyuu", "mcp", "discord",
-      "src", "index.ts")
-    await mkdir(dirname(other), { recursive: true })
-    await jiyuuMarker(join(config.root, "old-boku", "jiyuu"))
-    await writeFile(other, "#!/usr/bin/env bun\n")
-    await rm(bin)
-    await symlink(other, bin)
-    await synchronize(config)
-    expect(await readlink(bin)).toBe(entry)
-  })
-
-  test("refuses another project's mcp/discord/src/index.ts", async () => {
-    const config = await fixture()
-    const bin = join(config.binDir, discordBin)
-    const foreign = join(config.root, "other-project", "mcp", "discord", "src",
-      "index.ts")
-    await mkdir(dirname(foreign), { recursive: true })
-    await writeFile(foreign, "#!/bin/sh\necho other\n")
-    await chmod(foreign, 0o755)
-    await symlink(foreign, bin)
-    await expect(synchronize(config)).rejects.toThrow(
-      "Refusing unrelated executable symlink")
-    expect(await readlink(bin)).toBe(foreign)
-  })
-
-  test("requires a readable Jiyuu lock that records every dependency", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
-    await lockDiscord(dir, { "fixture-helper": `file:${
-      join(config.root, "sources", "fixture-helper")}` })
-    await synchronize(config)
-    expect(await discordProblems(config)).toEqual([])
-    const lock = await readFile(join(dir, "bun.lock"), "utf8")
-
-    await rm(join(dir, "bun.lock"))
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("Jiyuu mcp/discord lock: bun.lock or package.json is unavailable")
-    await expect(synchronize(config)).rejects.toThrow("Jiyuu mcp/discord lock")
-
-    await writeFile(join(dir, "bun.lock"), "{ not a lock")
-    expect((await discordProblems(config)).join("\n"))
-      .toContain("unavailable or invalid")
-
-    const parsed = Bun.JSON5.parse(lock) as { packages: Record<string, unknown> }
-    delete parsed.packages["fixture-helper"]
-    await writeFile(join(dir, "bun.lock"), JSON.stringify(parsed))
-    expect(await discordProblems(config)).toEqual([
-      "Jiyuu mcp/discord lock: bun.lock has no record for fixture-helper; " +
-      "update Jiyuu"])
-  })
-
-  /** Jiyuu stand-in depending on fixture-parent, which needs fixture-helper. */
-  async function parentFixture(config: Config): Promise<string> {
-    const parent = join(config.root, "sources", "fixture-parent")
-    await mkdir(parent, { recursive: true })
-    await writeFile(join(parent, "package.json"), JSON.stringify({
-      name: "fixture-parent", version: "1.0.0",
-      dependencies: { "fixture-helper": `file:${
-        join(config.root, "sources", "fixture-helper")}` },
-    }))
-    await lockDiscord(config.discordDir!, { "fixture-parent": `file:${parent}` })
-    return parent
-  }
-
-  test("refuses a lock missing a record its own packages reference", async () => {
-    const config = await fixture()
-    await parentFixture(config)
-    await synchronize(config)
-    expect(await discordProblems(config)).toEqual([])
-    const lockPath = join(config.discordDir!, "bun.lock")
-    const parsed = Bun.JSON5.parse(await readFile(lockPath, "utf8")) as {
-      packages: Record<string, unknown>
-    }
-    // Bun may nest the transitive record under its parent.
-    const transitive = Object.keys(parsed.packages)
-      .filter((key) => key !== "fixture-parent")
-    expect(transitive.length).toBe(1)
-    expect(transitive[0]!.endsWith("fixture-helper")).toBe(true)
-    delete parsed.packages[transitive[0]!]
-    await writeFile(lockPath, JSON.stringify(parsed))
-    const message = "Jiyuu mcp/discord lock: bun.lock has no record for " +
-      "fixture-helper, required by fixture-parent; update Jiyuu"
-    expect(await discordProblems(config)).toEqual([message])
-    await expect(synchronize(config)).rejects.toThrow(message)
-  })
-
-  test("repairs installed packages that a lock update dropped", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
-    await parentFixture(config)
-    await synchronize(config)
-    // Jiyuu drops fixture-parent and depends on fixture-helper directly; the
-    // old fixture-parent tree is still installed.
-    await lockDiscord(dir, { "fixture-helper": `file:${
-      join(config.root, "sources", "fixture-helper")}` })
-    const drift = (await discordProblems(config)).join("\n")
-    expect(drift).toContain("Jiyuu mcp/discord dependencies: fixture-helper")
-    await synchronize(config)
-    expect(await discordProblems(config)).toEqual([])
-    expect(await lstat(join(dir, "node_modules", "fixture-parent"))
-      .catch(() => undefined)).toBeUndefined()
-  })
-
-  test("refuses to remove a node_modules symlink that leaves Jiyuu", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
-    await parentFixture(config)
-    const outside = join(config.root, "outside-modules")
-    await mkdir(join(outside, "keep"), { recursive: true })
-    await writeFile(join(outside, "keep", "file"), "keep")
-    await symlink(outside, join(dir, "node_modules"))
-    await expect(synchronize(config)).rejects.toThrow(
-      "not a plain directory inside Jiyuu's mcp/discord")
-    expect(await readFile(join(outside, "keep", "file"), "utf8")).toBe("keep")
-    expect((await lstat(join(dir, "node_modules"))).isSymbolicLink()).toBe(true)
-  })
-
-  test("repair removes symlinks inside node_modules without following them", async () => {
-    const config = await fixture()
-    const dir = config.discordDir!
-    await parentFixture(config)
-    await synchronize(config)
-    const outside = join(config.root, "outside-package")
-    await mkdir(outside, { recursive: true })
-    await writeFile(join(outside, "file"), "keep")
-    await mkdir(join(dir, "node_modules", "@scope"), { recursive: true })
-    await symlink(outside, join(dir, "node_modules", "@scope", "linked"))
-    await symlink(outside, join(dir, "node_modules", "linked"))
-    await rm(join(dir, "node_modules", "fixture-parent"), { recursive: true })
-    expect((await discordProblems(config)).length).toBeGreaterThan(0)
-    await synchronize(config)
-    expect(await discordProblems(config)).toEqual([])
-    expect(await readFile(join(outside, "file"), "utf8")).toBe("keep")
-    expect(await lstat(join(dir, "node_modules", "linked"))
-      .catch(() => undefined)).toBeUndefined()
-  })
-
-  test("lockReferenceProblems resolves nested and scoped records", () => {
-    const packages = {
-      "@s/a": ["@s/a@1.0.0", "", { dependencies: { b: "^1", c: "^1" } }],
-      "@s/a/b": ["b@1.0.0", "", {}],
-      c: ["c@1.0.0", "", { dependencies: { d: "^1" },
-        optionalDependencies: { d: "^1" } }],
-    }
-    expect(lockReferenceProblems(packages, { "@s/a": "^1" })).toEqual([])
-    expect(lockReferenceProblems(packages, { "@s/a": "^1", e: "^1" }))
-      .toEqual(["bun.lock has no record for e"])
-    const { "@s/a/b": _, ...withoutB } = packages
-    expect(lockReferenceProblems(withoutB, { "@s/a": "^1" }))
-      .toEqual(["bun.lock has no record for b, required by @s/a"])
-  })
-
-  test("refuses an unrelated mcp-discord command", async () => {
-    const config = await fixture()
-    const bin = join(config.binDir, discordBin)
-    const foreign = join(config.root, "foreign-discord")
-    await writeFile(foreign, "#!/bin/sh\necho foreign\n")
-    await chmod(foreign, 0o755)
-    await symlink(foreign, bin)
-    await expect(synchronize(config)).rejects.toThrow(
-      "Refusing unrelated executable symlink")
-    expect(await readlink(bin)).toBe(foreign)
-    await rm(bin)
-    await writeFile(bin, "#!/bin/sh\n")
-    await expect(synchronize(config)).rejects.toThrow("non-symlink")
   })
 })
 

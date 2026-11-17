@@ -3,9 +3,10 @@ import { mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "smol-toml"
-import { planUnion, resolveDefinitions, type Inventory, type Platform } from "./sync.ts"
+import { hasTomlComments, planUnion, resolveDefinitions, type Inventory, type Platform } from "./sync.ts"
 import { applyPlan } from "../cursor/mcp.ts"
 import { launcherEntry } from "./servers.ts"
+import { jiyuuMcpPins } from "./pins.ts"
 
 const ctx = { bunPath: "/bin/bun", launcherPath: "/repo/claude/mcp-launch.ts", sourcePath: "/codex.toml" }
 const inventory = (): Inventory => ({ codex: {}, claude: {}, cursor: {} })
@@ -126,7 +127,7 @@ test("CLI preview, check, apply, permissions, and advisory health", async () => 
 })
 
 async function withCliFixture(
-  check: (dir: string, invoke: (args: string[]) => Promise<{ code: number; output: string }>) => Promise<void>,
+  check: (dir: string, invoke: (args: string[], env?: Record<string, string>) => Promise<{ code: number; output: string }>) => Promise<void>,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "mcp-union-cli-"))
   try {
@@ -151,13 +152,16 @@ await Bun.write(file, JSON.stringify(config))
     const { chmod } = await import("node:fs/promises")
     await chmod(join(dir, "claude"), 0o700)
     await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {}, unrelated: true }))
-    const invoke = async (args: string[]) => {
+    const invoke = async (args: string[], extraEnv: Record<string, string> = {}) => {
       const p = Bun.spawn([process.execPath, script,
         "--codex-config", join(dir, "config.toml"),
         "--claude-config", join(dir, ".claude.json"),
         "--cursor-config", join(dir, "cursor.json"), ...args,
       ], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: dir, PATH: `${dir}:${process.env.PATH}` },
+        env: {
+          ...process.env, JIYUU_MCP_LOCAL: "", CLAUDE_CONFIG_DIR: dir,
+          PATH: `${dir}:${process.env.PATH}`, ...extraEnv,
+        },
         stdout: "pipe", stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([
@@ -286,5 +290,171 @@ test("CLI resumes a partial command-to-HTTP reconciliation", async () => {
     const after = await invoke(["--check"])
     expect(after.code).toBe(0)
     expect(after.output).not.toContain("launcher requires a command")
+  })
+})
+
+test("CLI pins Jiyuu servers in Codex, keeps env, and checks clean after", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const secret = crypto.randomUUID()
+    await Bun.write(join(dir, "config.toml"), [
+      '[mcp_servers.telegram-mcp]',
+      'command = "uv"',
+      'args = ["--directory", "/old/jiyuu/mcp/telegram", "run", "main.py"]',
+      'startup_timeout_sec = 30',
+      `env = { TELEGRAM_API_ID = "1", TELEGRAM_API_HASH = "${secret}", TELEGRAM_SESSION_STRING = "s" }`,
+      '[mcp_servers.discord-mcp]',
+      'url = "http://127.0.0.1:8123/mcp"',
+      '',
+    ].join("\n"))
+    expect((await invoke(["--check"])).code).toBe(1)
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("~ pin telegram-mcp to uniquedivine-telegram-mcp@")
+    expect(result.output).toContain("! warning slack: not in the Codex config")
+    expect(result.output).not.toContain(secret)
+    const config = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+    const telegram = config.mcp_servers["telegram-mcp"]
+    const pin = jiyuuMcpPins["telegram-mcp"]
+    expect(telegram.command).toBe("uvx")
+    expect(telegram.args.at(-1)).toBe(`${pin.package}@${pin.version}`)
+    expect(telegram.env).toEqual({
+      TELEGRAM_API_ID: "1", TELEGRAM_API_HASH: secret, TELEGRAM_SESSION_STRING: "s",
+    })
+    expect(telegram.startup_timeout_sec).toBe(30)
+    expect(config.mcp_servers["discord-mcp"]).toEqual({ url: "http://127.0.0.1:8123/mcp" })
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    expect(claude.mcpServers["telegram-mcp"].args[3]).toBe("telegram-mcp")
+    expect((await invoke(["--check"])).code).toBe(0)
+
+    const local = { JIYUU_MCP_LOCAL: "telegram-mcp", REPO: "/repos" }
+    expect((await invoke(["--check"], local)).code).toBe(1)
+    expect((await invoke(["--run"], local)).code).toBe(0)
+    const dev = parse(await Bun.file(join(dir, "config.toml")).text()) as any
+    expect(dev.mcp_servers["telegram-mcp"].args).toEqual(
+      ["--directory", "/repos/boku/jiyuu/mcp/telegram", "run", "main.py"])
+    expect((await invoke(["--check"], local)).code).toBe(0)
+    expect((await invoke(["--check"])).code).toBe(1)
+
+    const typo = await invoke(["--dry-run"], { JIYUU_MCP_LOCAL: "telegram" })
+    expect(typo.code).toBe(1)
+    expect(typo.output).toContain("unknown server telegram")
+  })
+})
+
+test("CLI migrates direct client entries of pinned servers to Codex launchers", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const codexToken = crypto.randomUUID()
+    const directToken = crypto.randomUUID()
+    await Bun.write(join(dir, "config.toml"), [
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+      `env = { SLACK_TOKEN = "${codexToken}" }`,
+      '',
+    ].join("\n"))
+    const direct = {
+      command: "slack-mcp", env: { SLACK_TOKEN: directToken, EXTRA: "x" },
+    }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      slack: { type: "stdio", ...direct },
+    } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: {
+      slack: direct,
+    } }))
+    const pending = await invoke(["--check"])
+    expect(pending.code).toBe(1)
+    expect(pending.output).toContain("claude: ~ replace slack")
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("env differs (keys: EXTRA, SLACK_TOKEN)")
+    expect(result.output).not.toContain(codexToken)
+    expect(result.output).not.toContain(directToken)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    const cursor = await Bun.file(join(dir, "cursor.json")).json()
+    expect(claude.mcpServers.slack.args.slice(1)).toEqual(
+      ["--source", join(dir, "config.toml"), "slack"])
+    expect(cursor.mcpServers.slack.args[3]).toBe("slack")
+    const { readdir, readFile } = await import("node:fs/promises")
+    const files = await readdir(dir)
+    const claudeBackup = files.find(f => f.startsWith("claude-mcp-before-dotfiles-"))
+    const cursorBackup = files.find(f => f.startsWith("cursor.json.before-dotfiles-"))
+    expect(claudeBackup).toBeDefined()
+    expect(cursorBackup).toBeDefined()
+    expect(await readFile(join(dir, claudeBackup!), "utf8")).toContain(directToken)
+    expect(await readFile(join(dir, cursorBackup!), "utf8")).toContain(directToken)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})
+
+test("CLI backs up the Codex config before a default rewrite and flags lost comments", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const original = [
+      '# keep me: model notes',
+      'model = "keep"',
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+      '',
+    ].join("\n")
+    await Bun.write(join(dir, "config.toml"), original)
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("Saved previous Codex config to")
+    expect(result.output).toContain("comments in")
+    const { readdir, readFile } = await import("node:fs/promises")
+    const backups = (await readdir(dir)).filter(f => f.startsWith("config.toml.before-mcp-sync-"))
+    expect(backups).toHaveLength(1)
+    expect(await readFile(join(dir, backups[0]!), "utf8")).toBe(original)
+    expect((await stat(join(dir, backups[0]!))).mode & 0o777).toBe(0o600)
+    // A current config is not rewritten, so it gets no further backup.
+    expect((await invoke(["--run"])).output).not.toContain("Saved previous Codex config")
+  })
+})
+
+test("hasTomlComments ignores the schema directive", () => {
+  expect(hasTomlComments("#:schema https://x\na = 1\n")).toBe(false)
+  expect(hasTomlComments("a = 1\n  # note\n")).toBe(true)
+})
+
+test("CLI leaves direct client entries alone when the Codex entry is disabled", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"),
+      '[mcp_servers.slack]\ncommand = "slack-mcp"\nenabled = false\n')
+    const direct = { type: "stdio", command: "slack-mcp" }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: { slack: direct } }))
+    expect((await invoke(["--run"])).code).toBe(0)
+    const claude = await Bun.file(join(dir, ".claude.json")).json()
+    expect(claude.mcpServers.slack).toEqual(direct)
+    const check = await invoke(["--check"])
+    expect(check.output).not.toContain("replace slack")
+    expect(check.code).toBe(0)
+  })
+})
+
+test("CLI preserves unrecognized direct entries of pinned servers with a warning", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.slack]\ncommand = "slack-mcp"\n')
+    const remote = { type: "http", url: "https://slack.example/mcp", headers: { A: "b" } }
+    const custom = { command: "npx", args: ["some-other-slack"] }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: { slack: remote } }))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: { slack: custom } }))
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("claude/slack: direct entry is not a known Jiyuu checkout launch")
+    expect(result.output).toContain("cursor/slack: direct entry is not a known Jiyuu checkout launch")
+    expect((await Bun.file(join(dir, ".claude.json")).json()).mcpServers.slack).toEqual(remote)
+    expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(custom)
+    expect((await invoke(["--check"])).code).toBe(0)
+  })
+})
+
+test("CLI preserves a recognized Jiyuu launch that sets fields the launcher can't reproduce", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    await Bun.write(join(dir, "config.toml"), '[mcp_servers.slack]\ncommand = "slack-mcp"\n')
+    const direct = { command: "slack-mcp", envFile: "/secrets/slack.env" }
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify({ mcpServers: { slack: direct } }))
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("cursor/slack: Jiyuu checkout launch also sets envFile")
+    expect((await Bun.file(join(dir, "cursor.json")).json()).mcpServers.slack).toEqual(direct)
+    expect((await invoke(["--check"])).code).toBe(0)
   })
 })
