@@ -577,6 +577,27 @@ describe("adopt and drop", () => {
       await expect(activateMdtoc(config, "^0.1.0")).rejects.toThrow("exact")
     })
 
+  test("dropping every package leaves a state that syncs", async () => {
+    const config = await fixture()
+    await synchronize(config)
+    expect(await lstat(join(config.binDir, "ud-mdtoc"))).toBeDefined()
+    await dropPackage(config, "@uniquedivine/ud-mdtoc")
+    await dropPackage(config, "fixture-helper")
+    // Bun deletes the lockfile once no packages remain.
+    expect(await lstat(join(config.globalDir, "bun.lock"))
+      .catch(() => undefined)).toBeUndefined()
+    expect(await lockProblems(config)).toEqual([])
+    await synchronize(config)
+    expect(await lstat(join(config.binDir, "ud-mdtoc"))
+      .catch(() => undefined)).toBeUndefined()
+    expect(await lstat(join(config.pluginDir, "ud-mdtoc"))
+      .catch(() => undefined)).toBeUndefined()
+    expect(await check(config)).toEqual([])
+    // A deleted lock still fails while the manifest lists packages.
+    await writeManifest(config, { "fixture-helper": "1.0.0" })
+    expect((await lockProblems(config)).join("\n")).toContain("ENOENT")
+  })
+
   test("drop removes a package and refreshes the lock", async () => {
     const config = await fixture()
     await dropPackage(config, "@uniquedivine/ud-mdtoc")

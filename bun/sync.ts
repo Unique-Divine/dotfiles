@@ -108,9 +108,25 @@ async function manifest(config: Config): Promise<Package> {
   return json<Package>(join(config.globalDir, "package.json"))
 }
 
+/**
+ * The lock text, or an empty string when an empty manifest has no lock. Bun
+ * deletes bun.lock when no packages remain, so removing the last tool leaves
+ * that state, and policy and sync must accept it.
+ */
+async function lockText(config: Config): Promise<string> {
+  try {
+    return await readFile(join(config.globalDir, "bun.lock"), "utf8")
+  } catch (error) {
+    const empty = Object.keys((await manifest(config)).dependencies ?? {})
+      .length === 0
+    if (empty && (error as NodeJS.ErrnoException).code === "ENOENT") return ""
+    throw error
+  }
+}
+
 async function lockHash(config: Config): Promise<string> {
-  return new Bun.CryptoHasher("sha256").update(await readFile(
-    join(config.globalDir, "bun.lock"))).digest("hex")
+  return new Bun.CryptoHasher("sha256").update(await lockText(config))
+    .digest("hex")
 }
 
 /** Match Bun's Unix global settings, with environment overrides first. */
@@ -250,8 +266,8 @@ export async function lockProblems(config: Config): Promise<string[]> {
     const pkg = await manifest(config)
     const policy = manifestPolicyProblems(pkg)
     const flagged = new Set(policy.map((problem) => problem.split(": ")[0]!))
-    const lock = Bun.JSON5.parse(await readFile(
-      join(config.globalDir, "bun.lock"), "utf8")) as {
+    const text = await lockText(config)
+    const lock = (text ? Bun.JSON5.parse(text) : {}) as {
       workspaces?: Record<string, { dependencies?: Record<string, string> }>
     }
     const locked = lock.workspaces?.[""]?.dependencies ?? {}
