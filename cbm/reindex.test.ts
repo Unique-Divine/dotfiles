@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
-  acquireLock, type Command, execute, launchBackground, lockHolder,
-  planReindex, readOutcome, readStatus, runLocked, type RunResult,
+  type Command, execute, launchBackground, lockPath, planReindex, readOutcome,
+  readStatus, runPlan, type RunResult,
 } from "./reindex.ts"
+
+const scriptPath = join(import.meta.dir, "reindex.ts")
 
 const bin = "/bin/cbm"
 const argv = [bin, "cli", "--quiet", "--json", "index_repository"]
@@ -141,54 +145,23 @@ describe("execute", () => {
   })
 })
 
-describe("runLocked", () => {
-  const tempDir = () => mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
-  const fakeRun = (results: RunResult[]) => ({
-    run: async (cmd: Command) => {
-      const next = results.shift()
-      if (!next) throw new Error(`unexpected ${cmd.kind} ${cmd.repo}`)
-      return next
-    },
-    attempts: 2,
-    retryDelayMs: 0,
-    sleep: async () => {},
-    log: () => {},
-  })
-
-  test("a held lock blocks a second run without running anything", async () => {
-    const dir = tempDir()
-    // The test runner's own PID is alive, so it holds the lock.
-    expect(acquireLock(dir, process.pid)).toEqual({ ok: true })
-    const code = await runLocked(plan(["boku"], ["boku"]), dir, fakeRun([]),
-      process.pid + 1)
-    expect(code).toBe(2)
-    expect(lockHolder(dir)).toBe(process.pid)
-    expect(readStatus(dir)).toBeUndefined()
-  })
-
-  test("a stale lock from a dead PID is cleared", async () => {
-    const dir = tempDir()
-    writeFileSync(join(dir, "lock"), "999999999\n")
-    const code = await runLocked(plan(["boku"], ["boku"]), dir,
-      fakeRun([indexed(5), linked]), 4242)
-    expect(code).toBe(0)
-    // The run released its own lock at the end.
-    expect(lockHolder(dir)).toBeUndefined()
-    expect(readStatus(dir)?.pid).toBe(4242)
-  })
-
+describe("runPlan", () => {
   test("the status file records a failed repo", async () => {
-    const dir = tempDir()
+    const dir = mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
     let tick = 0
-    const now = () => `t${tick++}`
-    const code = await runLocked(plan(["a", "b"], ["a", "b"]), dir,
-      fakeRun([aborted, aborted, indexed(1), linked]), 4242, now)
+    const code = await runPlan(plan(["a", "b"], ["a", "b"]), dir, {
+      run: async () => [aborted, aborted, indexed(1), linked][tick++]!,
+      attempts: 2,
+      retryDelayMs: 0,
+      sleep: async () => {},
+      log: () => {},
+    }, 4242, () => "t")
     expect(code).toBe(1)
     const status = JSON.parse(readFileSync(join(dir, "status.json"), "utf8"))
     expect(status).toEqual({
       pid: 4242,
-      started: "t0",
-      ended: "t1",
+      started: "t",
+      ended: "t",
       exitCode: 1,
       missing: [],
       repos: {
@@ -199,22 +172,67 @@ describe("runLocked", () => {
   })
 })
 
+/**
+ * A real `--run` against a fake `codebase-memory-mcp` on PATH that records
+ * each call and sleeps for FAKE_SLEEP seconds.
+ */
+function sandbox() {
+  const root = mkdtempSync(join(tmpdir(), "cbm-reindex-run-"))
+  mkdirSync(join(root, "home/x/.git"), { recursive: true })
+  mkdirSync(join(root, "bin"))
+  const fake = join(root, "bin/codebase-memory-mcp")
+  writeFileSync(fake, [
+    "#!/bin/sh",
+    `echo call >> '${root}/calls'`,
+    "sleep \"${FAKE_SLEEP:-0}\"",
+    `echo '{"structuredContent":{"status":"indexed","nodes":1,"edges":1}}'`,
+  ].join("\n") + "\n")
+  chmodSync(fake, 0o755)
+  const { CBM_REINDEX_LOCKED: _locked, ...base } = process.env
+  const env = (sleep: number) => ({
+    ...base,
+    HOME: join(root, "home"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    PATH: `${join(root, "bin")}:${process.env.PATH}`,
+    FAKE_SLEEP: String(sleep),
+  })
+  const argv = [process.execPath, scriptPath, "--run", "--repos", "x",
+    "--no-link"]
+  const calls = () => existsSync(join(root, "calls"))
+    ? readFileSync(join(root, "calls"), "utf8").trim().split("\n").length
+    : 0
+  return { root, env, argv, calls, dir: join(root, "cache/cbm-reindex") }
+}
+
+describe("the run lock", () => {
+  test("of two runs started at once, exactly one runs", async () => {
+    const box = sandbox()
+    const start = () => Bun.spawn(box.argv,
+      { env: box.env(2), stdout: "pipe", stderr: "pipe" })
+    const runs = [start(), start()]
+    const codes = await Promise.all(runs.map((run) => run.exited))
+    expect(codes.sort()).toEqual([0, 2])
+    expect(box.calls()).toBe(1)
+    expect(existsSync(lockPath(box.dir))).toBe(true)
+  })
+})
+
 describe("launchBackground", () => {
-  test("starts a run with its output in last.log", () => {
+  test("starts a run under the lock with its output in last.log", () => {
     const dir = mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
     const spawned: string[][] = []
     const got = launchBackground(dir, ["bun", "reindex.ts", "--run"],
-      (argv) => { spawned.push(argv); return 777 })
+      (argv) => { spawned.push(argv); return 777 }, () => false)
     expect(got).toEqual({ started: true, pid: 777, log: join(dir, "last.log") })
-    expect(spawned).toEqual([["bun", "reindex.ts", "--run"]])
+    expect(spawned).toEqual([["flock", "-n", "-E", "75", lockPath(dir),
+      "bun", "reindex.ts", "--run"]])
   })
 
   test("does not start a second run while one holds the lock", () => {
     const dir = mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
-    acquireLock(dir, process.pid)
     const got = launchBackground(dir, ["bun"], () => {
       throw new Error("must not spawn")
-    })
-    expect(got).toEqual({ started: false, pid: process.pid })
+    }, () => true)
+    expect(got).toEqual({ started: false, pid: -1 })
   })
 })

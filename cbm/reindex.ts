@@ -207,43 +207,22 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-export type Lock = { ok: true } | { ok: false; pid: number }
-
 /**
- * Take the lock by creating `lock` with this PID. A lock whose PID is dead
- * is stale (the run was killed) and is replaced.
+ * Runs hold an exclusive `flock` on `lock` for their whole life: `--run`
+ * re-executes itself under `flock -n`, and the lock stays held while the run
+ * or any child it started is alive. The kernel releases it when they exit or
+ * are killed, so there is no stale lock to clear and no PID to trust.
  */
-export function acquireLock(
-  dir: string, pid: number, alive: (pid: number) => boolean = isAlive,
-): Lock {
-  mkdirSync(dir, { recursive: true })
-  const path = join(dir, "lock")
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, `${pid}\n`, { flag: "wx" })
-      return { ok: true }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
-    }
-    const holder = lockHolder(dir)
-    if (holder !== undefined && alive(holder)) return { ok: false, pid: holder }
-    rmSync(path, { force: true })
-  }
-  throw new Error(`cannot take the lock at ${path}`)
+export const lockedEnv = "CBM_REINDEX_LOCKED"
+/** Exit code `flock -n` returns when another run holds the lock. */
+export const busyCode = 75
+
+export function lockPath(dir: string): string {
+  return join(dir, "lock")
 }
 
-/** The PID in the lock file, if there is one. */
-export function lockHolder(dir: string): number | undefined {
-  try {
-    const pid = Number.parseInt(readFileSync(join(dir, "lock"), "utf8"), 10)
-    return Number.isNaN(pid) ? undefined : pid
-  } catch {
-    return undefined
-  }
-}
-
-export function releaseLock(dir: string, pid: number): void {
-  if (lockHolder(dir) === pid) rmSync(join(dir, "lock"), { force: true })
+export function underLock(dir: string, argv: string[]): string[] {
+  return ["flock", "-n", "-E", String(busyCode), lockPath(dir), ...argv]
 }
 
 export interface Status {
@@ -271,19 +250,13 @@ export function readStatus(dir: string): Status | undefined {
 }
 
 /**
- * Run the plan under the lock, recording progress in `status.json`.
- * Returns the exit code: 0, 1 when a repo failed, 2 when another run holds
- * the lock.
+ * Run the plan, recording progress in `status.json`. The caller holds the
+ * lock (see `underLock`). Returns 0, or 1 when a repo failed.
  */
-export async function runLocked(
+export async function runPlan(
   plan: Plan, dir: string, opts: ExecuteOptions,
   pid = process.pid, now = () => new Date().toISOString(),
 ): Promise<number> {
-  const lock = acquireLock(dir, pid)
-  if (!lock.ok) {
-    opts.log(`cbm-reindex is already running (pid ${lock.pid})`)
-    return 2
-  }
   const status: Status = {
     pid, started: now(), ended: null, exitCode: null,
     missing: plan.missing, repos: {},
@@ -309,7 +282,6 @@ export async function runLocked(
   } finally {
     status.ended = now()
     writeStatus(dir, status)
-    releaseLock(dir, pid)
   }
   return status.exitCode ?? 1
 }
@@ -325,27 +297,34 @@ export const detachedSpawner: Spawner = (argv, logFd) => {
   const child = spawn(argv[0]!, argv.slice(1), {
     detached: true,
     stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, [lockedEnv]: "1" },
   })
   child.unref()
   return child.pid ?? -1
 }
 
+/** Whether a run holds the lock right now. */
+export function isLocked(dir: string): boolean {
+  if (!existsSync(lockPath(dir))) return false
+  return Bun.spawnSync(underLock(dir, ["true"])).exitCode === busyCode
+}
+
 /**
- * Start a `--run` in its own session so it survives the caller (`just sync`)
- * exiting. Returns at once; the run itself takes the lock, so a race with
- * another launch ends with one of them logging "already running".
+ * Start a `--run` under the lock in its own session, so it survives the
+ * caller (`just sync`) exiting. Returns at once. If two launches race past
+ * the `isLocked` check, `flock -n` lets only one of them run.
  */
 export function launchBackground(
   dir: string, argv: string[], spawner: Spawner = detachedSpawner,
-  alive: (pid: number) => boolean = isAlive,
+  locked: (dir: string) => boolean = isLocked,
 ): Launch {
-  const holder = lockHolder(dir)
-  if (holder !== undefined && alive(holder)) {
-    return { started: false, pid: holder }
+  if (locked(dir)) {
+    return { started: false, pid: readStatus(dir)?.pid ?? -1 }
   }
   mkdirSync(dir, { recursive: true })
   const log = join(dir, "last.log")
   const fd = openSync(log, "w")
+  argv = underLock(dir, argv)
   try {
     return { started: true, pid: spawner(argv, fd), log }
   } finally {
@@ -407,8 +386,8 @@ export function createProgram(): Program {
     .action(async (options: CliOptions) => {
       const dir = stateDir(process.env)
       if (options.status) {
-        const holder = lockHolder(dir)
-        const running = holder !== undefined && isAlive(holder)
+        const pid = readStatus(dir)?.pid
+        const running = pid !== undefined && isAlive(pid)
         console.log(formatStatus(readStatus(dir), running))
         return
       }
@@ -428,6 +407,25 @@ export function createProgram(): Program {
         console.log(formatPlan(plan))
         return
       }
+      mkdirSync(dir, { recursive: true })
+      if (options.run && !options.background &&
+        process.env[lockedEnv] !== "1") {
+        // Re-run this command under the lock; flock exits 75 if it's held.
+        const proc = Bun.spawn(
+          underLock(dir, [process.execPath, import.meta.path,
+            ...process.argv.slice(2)]),
+          { env: { ...process.env, [lockedEnv]: "1" }, stdio: ["inherit",
+            "inherit", "inherit"] })
+        const code = await proc.exited
+        if (code === busyCode) {
+          const pid = readStatus(dir)?.pid ?? "unknown"
+          console.log(`cbm-reindex is already running (pid ${pid})`)
+          process.exitCode = 2
+        } else {
+          process.exitCode = code
+        }
+        return
+      }
       if (options.background) {
         const argv = [process.execPath, import.meta.path, "--run",
           "--repos", options.repos ?? "", ...(options.link ? [] : ["--no-link"])]
@@ -438,7 +436,7 @@ export function createProgram(): Program {
           : `cbm-reindex is already running (pid ${launch.pid})`)
         return
       }
-      process.exitCode = await runLocked(plan, dir, {
+      process.exitCode = await runPlan(plan, dir, {
         run: spawnRunner,
         attempts: 3,
         retryDelayMs: 15_000,
