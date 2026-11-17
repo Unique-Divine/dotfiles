@@ -498,8 +498,10 @@ i-bash:
     curl trash-cli clang-format sqlite3 pass unzip)
   missing=()
   for pkg in "${apt_packages[@]}"; do
-    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
-      | grep -q 'install ok installed'; then
+    # db:Status-Status is "installed" whatever the selection (install,
+    # hold), so a held package doesn't count as missing.
+    if [[ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" \
+      != installed ]]; then
       missing+=("$pkg")
     fi
   done
