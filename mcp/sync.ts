@@ -143,6 +143,13 @@ export const migrateDirectPins = (
   return warnings
 }
 
+/** True when TOML text has comment lines other than the schema directive. */
+export const hasTomlComments = (text: string): boolean =>
+  text.split("\n").some(line => {
+    const trimmed = line.trimStart()
+    return trimmed.startsWith("#") && !trimmed.startsWith("#:schema")
+  })
+
 const readText = async (path: string): Promise<string> =>
   await Bun.file(path).exists() ? Bun.file(path).text() : ""
 
@@ -258,13 +265,18 @@ export const createProgram = (): Command => new Command()
     }
     for (const p of platforms) await assertUnchanged(p)
     if (codexChanged) {
-      if (options.from && before.codex && Object.keys(original).some(name =>
-        !sameEntry(original[name], plan.codex[name] ?? {}))) {
+      const next = serialize({ ...config, mcp_servers: plan.codex as TomlTable })
+      // The rewrite drops comments and formatting, so keep the original.
+      if (before.codex && next !== before.codex) {
         const backup = `${paths.codex}.before-mcp-sync-${Date.now()}`
         await writePrivateFile(backup, before.codex)
         console.log(`Saved previous Codex config to ${backup}`)
+        if (hasTomlComments(before.codex)) {
+          console.log(`! warning codex: comments in ${paths.codex} were not ` +
+            `preserved; they remain in ${backup}`)
+        }
       }
-      await writePrivateFile(paths.codex, serialize({ ...config, mcp_servers: plan.codex as TomlTable }))
+      await writePrivateFile(paths.codex, next)
     }
     if (hasChanges(plan.targets.cursor)) {
       await assertUnchanged("cursor")

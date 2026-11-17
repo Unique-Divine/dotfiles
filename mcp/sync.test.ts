@@ -3,7 +3,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "smol-toml"
-import { planUnion, resolveDefinitions, type Inventory, type Platform } from "./sync.ts"
+import { hasTomlComments, planUnion, resolveDefinitions, type Inventory, type Platform } from "./sync.ts"
 import { applyPlan } from "../cursor/mcp.ts"
 import { launcherEntry } from "./servers.ts"
 import { jiyuuMcpPins } from "./pins.ts"
@@ -381,4 +381,33 @@ test("CLI migrates direct client entries of pinned servers to Codex launchers", 
     expect(await readFile(join(dir, cursorBackup!), "utf8")).toContain(directToken)
     expect((await invoke(["--check"])).code).toBe(0)
   })
+})
+
+test("CLI backs up the Codex config before a default rewrite and flags lost comments", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const original = [
+      '# keep me: model notes',
+      'model = "keep"',
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+      '',
+    ].join("\n")
+    await Bun.write(join(dir, "config.toml"), original)
+    const result = await invoke(["--run"])
+    expect(result.code).toBe(0)
+    expect(result.output).toContain("Saved previous Codex config to")
+    expect(result.output).toContain("comments in")
+    const { readdir, readFile } = await import("node:fs/promises")
+    const backups = (await readdir(dir)).filter(f => f.startsWith("config.toml.before-mcp-sync-"))
+    expect(backups).toHaveLength(1)
+    expect(await readFile(join(dir, backups[0]!), "utf8")).toBe(original)
+    expect((await stat(join(dir, backups[0]!))).mode & 0o777).toBe(0o600)
+    // A current config is not rewritten, so it gets no further backup.
+    expect((await invoke(["--run"])).output).not.toContain("Saved previous Codex config")
+  })
+})
+
+test("hasTomlComments ignores the schema directive", () => {
+  expect(hasTomlComments("#:schema https://x\na = 1\n")).toBe(false)
+  expect(hasTomlComments("a = 1\n  # note\n")).toBe(true)
 })

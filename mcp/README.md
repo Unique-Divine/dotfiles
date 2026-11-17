@@ -143,6 +143,10 @@ A Codex server with `enabled = false` remains disabled and is not propagated.
 also records its own run and captures the credential-free plan as an artifact.
 A preview writes logs but does not change MCP configurations.
 
+Any rewrite of the Codex config first saves the old file to
+`config.toml.before-mcp-sync-<timestamp>`. The rewrite drops comments, so sync
+warns when the old file had any; they stay in the backup.
+
 Claude writes use `claude mcp add-json --scope user` and `claude mcp remove`.
 Cursor and Codex writes are atomic, private files. Directional replacements
 save private backups before discarding independent definitions. Backups may
