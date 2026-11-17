@@ -102,7 +102,7 @@ export const entriesNeedingBackup = (
       replacesUnmanaged && !heldByCodex(servers[name], codexServers[name]))
     .map(({ name }) => name)
 
-const writeCursorFile = async (
+export const writeCursorFile = async (
   path: string,
   before: CursorMcpFile,
   plan: McpPlan,

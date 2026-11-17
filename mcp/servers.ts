@@ -149,10 +149,19 @@ export type Mapped =
  * fields have no JSON equivalent without expanding the secret, so a server
  * that uses them is skipped.
  */
+const isHttpUrl = (url: unknown): boolean => {
+  if (typeof url !== "string") return false
+  try { return ["http:", "https:"].includes(new URL(url).protocol) }
+  catch { return false }
+}
+
 export const codexUrlToJson = (
   server: McpServer,
   target: McpTarget,
 ): Mapped => {
+  if (!isHttpUrl(server.url)) {
+    return { ok: false, reason: "requires an HTTP or HTTPS URL" }
+  }
   for (const field of ["bearer_token_env_var", "env_http_headers"]) {
     if (server[field] !== undefined) {
       return { ok: false, reason: `uses ${field}; add it to ${target} by hand` }
@@ -199,6 +208,11 @@ export const isExported = (server: unknown, target: McpTarget): boolean => {
 export const jsonToCodex = (entry: unknown): Mapped => {
   if (!isRecord(entry)) return { ok: false, reason: "not an object" }
 
+  if (entry.type !== undefined &&
+    !["stdio", "http", "sse"].includes(String(entry.type))) {
+    return { ok: false, reason: "unsupported transport type" }
+  }
+
   if (entry.type === "sse") {
     return { ok: false, reason: "Codex does not support SSE servers" }
   }
@@ -218,6 +232,10 @@ export const jsonToCodex = (entry: unknown): Mapped => {
   }
 
   const kind = classifyServer(entry)
+  if ((entry.type === "http" && kind !== "url") ||
+    (entry.type === "stdio" && kind !== "stdio")) {
+    return { ok: false, reason: "transport type disagrees with command or url" }
+  }
 
   if (kind === "stdio") {
     const { args, env, cwd } = entry
@@ -246,6 +264,9 @@ export const jsonToCodex = (entry: unknown): Mapped => {
   }
 
   if (kind === "url") {
+    if (!isHttpUrl(entry.url)) {
+      return { ok: false, reason: "requires an HTTP or HTTPS URL" }
+    }
     const headers = entry.headers
 
     if (headers !== undefined && !isStringRecord(headers)) {

@@ -263,14 +263,9 @@ sync:
   runlog_step codex-config bun run codex/config.ts --run
   runlog_step grok-config bun run grok/config.ts --run
   runlog_step cursor-cli-config bun run cursor/cli-config.ts --run
-  runlog_step cursor-mcp bun run cursor/mcp.ts --run
+  runlog_step mcp-sync just mcp-sync --run
   runlog_step claude-config bun run claude/config.ts --run
   runlog_step herdr-integrations just herdr-integrations
-  if command -v claude >/dev/null 2>&1; then
-    runlog_step claude-mcp bun run claude/mcp.ts --run
-  else
-    runlog_event step name=claude-mcp msg=skipped
-  fi
   runlog_step skills-sync bun run skillsSync.ts --run
   runlog_step email-sync just email-sync
   # Pruning old runs must never fail the sync.
@@ -430,17 +425,30 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
-# Copy MCP servers only Claude (default) or Cursor has into Codex, then export.
-mcp-ingest FROM="claude" *ARGS="":
+# Preview or apply the MCP union; --from selects directional correction.
+mcp-sync *ARGS:
   #!/usr/bin/env bash
-  # Exports to every tool. Preview with:
-  # bun run mcp/ingest.ts --from claude --dry-run
   set -Eeuo pipefail
-  bun run mcp/ingest.ts --from "{{FROM}}" --run {{ARGS}}
-  bun run cursor/mcp.ts --run
-  if command -v claude >/dev/null 2>&1; then
-    bun run claude/mcp.ts --run
-  fi
+  source runlog/runlog.sh
+  runlog_start mcp-sync {{ARGS}}
+  trap 'runlog_end $?' EXIT
+  runlog_trap_signals
+  output="$(mktemp)"
+  trap 'exit_status=$?; rm -f "$output"; runlog_end "$exit_status"' EXIT
+  status=0
+  runlog_step mcp-sync bun run mcp/sync.ts {{ARGS}} >"$output" 2>&1 || status=$?
+  cat "$output"
+  while IFS= read -r line; do
+    if [[ "$line" == '! warning '* ]]; then
+      runlog_event warn code=mcp-config msg="${line#'! warning '}"
+    fi
+  done < "$output"
+  runlog_artifact mcp-plan "$output"
+  exit "$status"
+
+# Reconcile from Claude or Cursor, including differing names, then propagate.
+mcp-ingest FROM="claude" *ARGS="":
+  just mcp-sync --from "{{FROM}}" --run {{ARGS}}
 
 # Manage Claude configuration or MCPs, e.g. just claude config --check.
 claude TOOL *ARGS:
