@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
-  type Command, execute, planReindex, readOutcome, type RunResult,
+  acquireLock, type Command, execute, lockHolder, planReindex, readOutcome,
+  readStatus, runLocked, type RunResult,
 } from "./reindex.ts"
 
 const bin = "/bin/cbm"
@@ -134,5 +138,63 @@ describe("execute", () => {
       ["index", "/h/a"], ["index", "/h/a"], ["index", "/h/a"],
       ["index", "/h/b"], ["link", "/h/b"],
     ])
+  })
+})
+
+describe("runLocked", () => {
+  const tempDir = () => mkdtempSync(join(tmpdir(), "cbm-reindex-test-"))
+  const fakeRun = (results: RunResult[]) => ({
+    run: async (cmd: Command) => {
+      const next = results.shift()
+      if (!next) throw new Error(`unexpected ${cmd.kind} ${cmd.repo}`)
+      return next
+    },
+    attempts: 2,
+    retryDelayMs: 0,
+    sleep: async () => {},
+    log: () => {},
+  })
+
+  test("a held lock blocks a second run without running anything", async () => {
+    const dir = tempDir()
+    // The test runner's own PID is alive, so it holds the lock.
+    expect(acquireLock(dir, process.pid)).toEqual({ ok: true })
+    const code = await runLocked(plan(["boku"], ["boku"]), dir, fakeRun([]),
+      process.pid + 1)
+    expect(code).toBe(2)
+    expect(lockHolder(dir)).toBe(process.pid)
+    expect(readStatus(dir)).toBeUndefined()
+  })
+
+  test("a stale lock from a dead PID is cleared", async () => {
+    const dir = tempDir()
+    writeFileSync(join(dir, "lock"), "999999999\n")
+    const code = await runLocked(plan(["boku"], ["boku"]), dir,
+      fakeRun([indexed(5), linked]), 4242)
+    expect(code).toBe(0)
+    // The run released its own lock at the end.
+    expect(lockHolder(dir)).toBeUndefined()
+    expect(readStatus(dir)?.pid).toBe(4242)
+  })
+
+  test("the status file records a failed repo", async () => {
+    const dir = tempDir()
+    let tick = 0
+    const now = () => `t${tick++}`
+    const code = await runLocked(plan(["a", "b"], ["a", "b"]), dir,
+      fakeRun([aborted, aborted, indexed(1), linked]), 4242, now)
+    expect(code).toBe(1)
+    const status = JSON.parse(readFileSync(join(dir, "status.json"), "utf8"))
+    expect(status).toEqual({
+      pid: 4242,
+      started: "t0",
+      ended: "t1",
+      exitCode: 1,
+      missing: [],
+      repos: {
+        "/h/a": { index: "failed: status aborted_previous_preserved, exit 0" },
+        "/h/b": { index: "1 nodes, 1156 edges", link: "41 cross-repo edges" },
+      },
+    })
   })
 })

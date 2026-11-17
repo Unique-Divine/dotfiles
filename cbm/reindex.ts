@@ -10,7 +10,9 @@
  *
  * Usage: bun run cbm/reindex.ts [--run] [--repos a,b] [--no-link]
  */
-import { existsSync } from "node:fs"
+import {
+  existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { Command as Program } from "commander"
@@ -148,6 +150,8 @@ export interface ExecuteOptions {
   sleep: (ms: number) => Promise<void>
   retryDelayMs: number
   log: (line: string) => void
+  /** Called once per command with its final outcome. */
+  record?: (cmd: Command, outcome: Outcome) => void
 }
 
 /**
@@ -166,6 +170,7 @@ export async function execute(
       const secs = ((Date.now() - started) / 1000).toFixed(0)
       if (outcome.ok) {
         opts.log(`${cmd.kind} ${cmd.repo}: ${outcome.summary} (${secs} s)`)
+        opts.record?.(cmd, outcome)
         break
       }
       if (outcome.retry && attempt < opts.attempts) {
@@ -174,11 +179,134 @@ export async function execute(
         continue
       }
       opts.log(`${cmd.kind} ${cmd.repo} failed: ${outcome.reason}`)
+      opts.record?.(cmd, outcome)
       failed.add(cmd.repo)
       break
     }
   }
   return [...failed]
+}
+
+/** Where runs keep their lock, status, and log. */
+export function stateDir(env: Record<string, string | undefined>): string {
+  return join(env.XDG_CACHE_HOME || join(env.HOME || homedir(), ".cache"),
+    "cbm-reindex")
+}
+
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+export type Lock = { ok: true } | { ok: false; pid: number }
+
+/**
+ * Take the lock by creating `lock` with this PID. A lock whose PID is dead
+ * is stale (the run was killed) and is replaced.
+ */
+export function acquireLock(
+  dir: string, pid: number, alive: (pid: number) => boolean = isAlive,
+): Lock {
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, "lock")
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(path, `${pid}\n`, { flag: "wx" })
+      return { ok: true }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+    }
+    const holder = lockHolder(dir)
+    if (holder !== undefined && alive(holder)) return { ok: false, pid: holder }
+    rmSync(path, { force: true })
+  }
+  throw new Error(`cannot take the lock at ${path}`)
+}
+
+/** The PID in the lock file, if there is one. */
+export function lockHolder(dir: string): number | undefined {
+  try {
+    const pid = Number.parseInt(readFileSync(join(dir, "lock"), "utf8"), 10)
+    return Number.isNaN(pid) ? undefined : pid
+  } catch {
+    return undefined
+  }
+}
+
+export function releaseLock(dir: string, pid: number): void {
+  if (lockHolder(dir) === pid) rmSync(join(dir, "lock"), { force: true })
+}
+
+export interface Status {
+  pid: number
+  started: string
+  ended: string | null
+  exitCode: number | null
+  missing: string[]
+  /** Per repo path: "index" and "link" hold a summary or "failed: why". */
+  repos: Record<string, { index?: string; link?: string }>
+}
+
+export function writeStatus(dir: string, status: Status): void {
+  const path = join(dir, "status.json")
+  writeFileSync(`${path}.tmp`, `${JSON.stringify(status, null, 2)}\n`)
+  renameSync(`${path}.tmp`, path)
+}
+
+export function readStatus(dir: string): Status | undefined {
+  try {
+    return JSON.parse(readFileSync(join(dir, "status.json"), "utf8"))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Run the plan under the lock, recording progress in `status.json`.
+ * Returns the exit code: 0, 1 when a repo failed, 2 when another run holds
+ * the lock.
+ */
+export async function runLocked(
+  plan: Plan, dir: string, opts: ExecuteOptions,
+  pid = process.pid, now = () => new Date().toISOString(),
+): Promise<number> {
+  const lock = acquireLock(dir, pid)
+  if (!lock.ok) {
+    opts.log(`cbm-reindex is already running (pid ${lock.pid})`)
+    return 2
+  }
+  const status: Status = {
+    pid, started: now(), ended: null, exitCode: null,
+    missing: plan.missing, repos: {},
+  }
+  try {
+    writeStatus(dir, status)
+    const failed = await execute(plan, {
+      ...opts,
+      record: (cmd, outcome) => {
+        const entry = status.repos[cmd.repo] ??= {}
+        entry[cmd.kind] = outcome.ok ? outcome.summary
+          : `failed: ${outcome.reason}`
+        writeStatus(dir, status)
+      },
+    })
+    status.exitCode = failed.length > 0 ? 1 : 0
+    if (failed.length > 0) {
+      opts.log(`cbm-reindex failed for: ${failed.join(", ")}`)
+    }
+  } catch (err) {
+    status.exitCode = 1
+    opts.log(`cbm-reindex crashed: ${err}`)
+  } finally {
+    status.ended = now()
+    writeStatus(dir, status)
+    releaseLock(dir, pid)
+  }
+  return status.exitCode ?? 1
 }
 
 export function formatPlan(plan: Plan): string {
@@ -223,19 +351,16 @@ export function createProgram(): Program {
         console.log(formatPlan(plan))
         return
       }
-      const failed = await execute(plan, {
+      process.exitCode = await runLocked(plan, stateDir(process.env), {
         run: spawnRunner,
         attempts: 3,
         retryDelayMs: 15_000,
         sleep: (ms) => Bun.sleep(ms),
         log: (line) => {
-          if (!options.quiet || line.includes("failed")) console.log(line)
+          const quiet = options.quiet && !/failed|crashed|running/.test(line)
+          if (!quiet) console.log(line)
         },
       })
-      if (failed.length > 0) {
-        console.error(`cbm-reindex failed for: ${failed.join(", ")}`)
-        process.exitCode = 1
-      }
     })
 }
 
