@@ -492,8 +492,21 @@ i-bash:
   export PATH="$BUN_INSTALL/bin:$HOME/.local/bin:$PATH"
   # System packages only; CLI tools such as gh, ripgrep, fzf and jq come from
   # mise (just mise-install).
-  sudo apt install -y build-essential wslu openssh-server \
-    ca-certificates gnupg curl trash-cli clang-format sqlite3 pass unzip
+  # Ask for sudo only when a package is missing, so a set-up machine syncs
+  # without a password prompt (and over SSH without a terminal).
+  apt_packages=(build-essential wslu openssh-server ca-certificates gnupg \
+    curl trash-cli clang-format sqlite3 pass unzip)
+  missing=()
+  for pkg in "${apt_packages[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
+      | grep -q 'install ok installed'; then
+      missing+=("$pkg")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    echo "i-bash: installing ${missing[*]}"
+    sudo apt install -y "${missing[@]}"
+  fi
   if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
   fi
