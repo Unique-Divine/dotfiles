@@ -9,7 +9,7 @@
     "@notionhq/notion-mcp-server": "2.4.1",
     "@openapitools/openapi-generator-cli": "2.23.4",
     "@tailwindcss/language-server": "0.16.0",
-    "@uniquedivine/tg-sai": "0.3.2",
+    "@uniquedivine/tg-sai": "0.3.3",
     "@uniquedivine/ud-mdtoc": "0.1.0",
     "@vue/language-server": "3.3.10",
     "@vue/typescript-plugin": "3.3.10",
