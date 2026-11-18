@@ -346,6 +346,14 @@ win-sync:
 audio-capture-build: win-sync
   cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\build.cmd'
 
+# Install audio-capture: build, Start Menu shortcut, Start with Windows.
+audio-capture-install: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\install.cmd --no-pause'
+
+# Remove audio-capture's shortcuts and exe; keeps %USERPROFILE%\.audio-capture.
+audio-capture-uninstall: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\uninstall.cmd --no-pause'
+
 # Start audio-capture, or send ARGS (--toggle, --stop, --quit) to it.
 audio-capture-run *ARGS:
   cd /mnt/c && powershell.exe -NoProfile -Command "Start-Process \"\$env:LOCALAPPDATA\Programs\audio-capture\audio-capture.exe\" {{ if ARGS == "" { "" } else { "-ArgumentList '" + ARGS + "'" } }}" > /dev/null 2>&1 < /dev/null
