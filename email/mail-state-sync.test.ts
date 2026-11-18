@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import * as gmailFixture from "./fixtures/gmail";
 import {
   BATCH_MODIFY_MAX,
+  GMAIL_API,
+  GmailAccount,
   SCOPE_MODIFY,
   SCOPE_READONLY,
+  TOKEN_URL,
   backoffMs,
   buildAuthUrl,
   cachePath,
@@ -27,6 +31,7 @@ import {
   shellQuote,
   tokenPath,
   writePrivateJson,
+  type StoredToken,
   type TargetMessage,
 } from "./mail-state-sync.ts";
 
@@ -297,6 +302,72 @@ describe("paths and modes", () => {
       expect(await Bun.file(path).json()).toEqual({ a: 1 });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+  test("concurrent writePrivateJson calls to one path succeed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mss-"));
+    try {
+      const path = join(root, "sub", "tok.json");
+      await Promise.all(
+        Array.from({ length: 20 }, (_, i) => writePrivateJson(path, { i })),
+      );
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect(await Bun.file(path).json()).toHaveProperty("i");
+      expect(await readdir(join(root, "sub"))).toEqual(["tok.json"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GmailAccount token refresh", () => {
+  test("concurrent calls with an expired token refresh once", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mss-"));
+    const refresh = gmailFixture.targetTokenRefresh;
+    const callers = 3;
+    let refreshCalls = 0;
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === TOKEN_URL) {
+        refreshCalls++;
+        // pace() spaces requests REQUEST_INTERVAL_MS apart; hold the refresh
+        // open until every caller has seen the expired token.
+        await Bun.sleep(REQUEST_INTERVAL_MS * callers);
+        return Response.json(refresh);
+      }
+      if (url === `${GMAIL_API}/profile`) {
+        return Response.json(gmailFixture.targetProfile);
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const token: StoredToken = {
+      email: TGT,
+      scope: refresh.scope,
+      refreshToken: "fixture-refresh-token",
+      accessToken: "expired-access-token",
+      expiresAt: 0,
+    };
+    try {
+      const acct = new GmailAccount(
+        TGT,
+        token,
+        { clientId: "fixture-client", clientSecret: "fixture-secret" },
+        { home, fetch: fakeFetch },
+      );
+      const emails = await Promise.all(
+        Array.from({ length: callers }, () => acct.profileEmail()),
+      );
+      const expected = gmailFixture.targetProfile.emailAddress.toLowerCase();
+      expect(emails).toEqual(Array(callers).fill(expected));
+      expect(refreshCalls).toBe(1);
+      const path = tokenPath(TGT, home);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      const saved = (await Bun.file(path).json()) as StoredToken;
+      expect(saved.accessToken).toBe(refresh.access_token);
+      expect(saved.refreshToken).toBe("fixture-refresh-token");
+      expect(saved.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

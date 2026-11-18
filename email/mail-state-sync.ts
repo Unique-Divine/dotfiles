@@ -491,7 +491,9 @@ export async function writePrivateJson(
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(dir, PRIVATE_DIR_MODE);
-  const tmp = `${path}.${process.pid}.tmp`;
+  // A unique name per call: concurrent writers to one path must not share a
+  // temp file, or the first rename removes it from under the others.
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   await writeFile(tmp, JSON.stringify(data), { mode: PRIVATE_FILE_MODE });
   await chmod(tmp, PRIVATE_FILE_MODE);
   await rename(tmp, path);
@@ -652,8 +654,9 @@ function tryOpenBrowser(url: string): void {
 
 export async function tokenRequest(
   params: Record<string, string>,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<OAuthTokenResponse> {
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params).toString(),
@@ -749,26 +752,55 @@ export async function loopbackAuth(
   }
 }
 
+/** Test seams for GmailAccount; production uses the defaults. */
+export interface GmailAccountOptions {
+  /** Home directory for the token file. Defaults to `homedir()`. */
+  home?: string;
+  /** HTTP client for Gmail and token requests. Defaults to `fetch`. */
+  fetch?: typeof fetch;
+}
+
 /** A Gmail client bound to one signed-in account. */
 export class GmailAccount {
+  private readonly fetchImpl: typeof fetch;
+  private readonly home: string | undefined;
+  /** The in-flight token refresh, shared by every concurrent caller. */
+  private refreshing: Promise<string> | null = null;
+
   constructor(
     readonly email: string,
     private token: StoredToken,
     private creds: ClientCredentials,
-  ) {}
+    options: GmailAccountOptions = {},
+  ) {
+    this.fetchImpl = options.fetch ?? fetch;
+    this.home = options.home;
+  }
 
   private async accessToken(): Promise<string> {
     if (Date.now() < this.token.expiresAt - 60_000) {
       return this.token.accessToken;
     }
-    const body = await tokenRequest({
-      client_id: this.creds.clientId,
-      client_secret: this.creds.clientSecret,
-      refresh_token: this.token.refreshToken,
-      grant_type: "refresh_token",
-    });
+    if (!this.refreshing) {
+      this.refreshing = this.refreshAccessToken().finally(() => {
+        this.refreshing = null;
+      });
+    }
+    return this.refreshing;
+  }
+
+  private async refreshAccessToken(): Promise<string> {
+    const body = await tokenRequest(
+      {
+        client_id: this.creds.clientId,
+        client_secret: this.creds.clientSecret,
+        refresh_token: this.token.refreshToken,
+        grant_type: "refresh_token",
+      },
+      this.fetchImpl,
+    );
     this.token = applyTokenRefresh(this.token, body, Date.now());
-    await writePrivateJson(tokenPath(this.email), this.token);
+    await writePrivateJson(tokenPath(this.email, this.home), this.token);
     return this.token.accessToken;
   }
 
@@ -797,7 +829,7 @@ export class GmailAccount {
       const token = await this.accessToken();
       let res: Response;
       try {
-        res = await fetch(`${GMAIL_API}${path}`, {
+        res = await this.fetchImpl(`${GMAIL_API}${path}`, {
           method: init.method ?? "GET",
           headers: {
             authorization: `Bearer ${token}`,
