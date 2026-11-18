@@ -29,7 +29,7 @@ only place their versions live.
 | `telegram-mcp` | PyPI `uniquedivine-telegram-mcp`         | `uvx`  |
 
 Before the union, sync sets `command` and `args` of each named Codex entry to
-its pin, such as `bunx @uniquedivine/mcp-slack@4.5.2`. It keeps `env`, `cwd`,
+its pin, such as `bunx @uniquedivine/mcp-slack@4.5.3`. It keeps `env`, `cwd`,
 `enabled`, and timeouts, so tokens stay where they are. Claude Code and Cursor
 launchers read the Codex entry when a server starts, so they run the same
 release. Sync doesn't create a missing entry, because only you can add its
