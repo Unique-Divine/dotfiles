@@ -2696,6 +2696,9 @@ commands:
     public readonly List<SegmentInfo> Finished = new();
     /// Segments being closed off the UI thread; Stop waits for them.
     public readonly List<Task> Closing = new();
+    /// The same segments for session.json, from leaving Live until they
+    /// land in Finished, so a crash mid-close still recovers them.
+    public readonly List<ClosingSegment> ClosingSegments = new();
     public int Failures;
     public int Count;
     public long NextRetryTicks;
@@ -2710,6 +2713,9 @@ commands:
       Kind = kind;
     }
   }
+
+  /// A capture being stopped: what session.json lists for it meanwhile.
+  sealed record ClosingSegment(Func<SegmentInfo> Snapshot);
 
   enum MicAction { None, Wait, StartLive, StartPending, CancelPending }
 
@@ -2775,8 +2781,29 @@ commands:
     public IEnumerable<Source> Sources =>
       new[] { System, Mic }.Where(x => x != null).Select(x => x!);
 
-    /// Writes session.json from finished and live segments, under the lock
-    /// so a segment moving from live to finished is never listed twice.
+    /// Lists a capture as closing. Call it under Gate in the same lock that
+    /// takes the capture out of Live, so no manifest misses it.
+    public ClosingSegment BeginClose(Source src, Func<SegmentInfo> snapshot) {
+      var c = new ClosingSegment(snapshot);
+      lock (Gate) {
+        src.ClosingSegments.Add(c);
+      }
+      return c;
+    }
+
+    /// Moves a closed capture from closing to finished in one step. An
+    /// empty one is dropped.
+    public void EndClose(Source src, ClosingSegment c, SegmentInfo seg) {
+      lock (Gate) {
+        src.ClosingSegments.Remove(c);
+        if (seg.Bytes > 0) {
+          src.Finished.Add(seg);
+        }
+      }
+    }
+
+    /// Writes session.json from finished, closing, and live segments,
+    /// under the lock so a segment moving between them is listed once.
     public void WriteManifest() {
       try {
         lock (Gate) {
@@ -2785,6 +2812,7 @@ commands:
           };
           foreach (var src in Sources) {
             var segs = src.Finished.ToList();
+            segs.AddRange(src.ClosingSegments.Select(c => c.Snapshot()));
             if (src.Live != null) {
               segs.Add(src.Live.ToSegment());
             }
@@ -3186,15 +3214,15 @@ commands:
           continue;
         }
         var lost = src.Live;
-        lock (ses.Gate) {
-          src.Live = null;
-        }
         Log.Warn($"{src.Kind}.lost", reason, new {
           session = ses.Name, kind = src.Kind, device = lost.Target.Display,
           endpoint = lost.Target.EndpointId, pid = lost.Pid,
           bytes = lost.Bytes, at = Math.Round(ses.Elapsed, 3),
         });
-        CloseSegment(ses, src, lost, graceful: false, endAt: null);
+        lock (ses.Gate) {
+          src.Live = null;
+          CloseSegment(ses, src, lost, graceful: false, endAt: null);
+        }
         src.Failures++;
         SetRetry(src);
         if (src == ses.Mic) {
@@ -3237,15 +3265,15 @@ commands:
       lock (ses.Gate) {
         old = src.Live;
         src.Live = next;
+        if (old != null) {
+          CloseSegment(ses, src, old, graceful: true, endAt: start);
+        }
       }
       src.Pending = null;
       src.Target = next.Target;
       src.WaitingLogged = false;
       src.SwitchRetryTicks = null;
       src.SwitchFailures = 0;
-      if (old != null) {
-        CloseSegment(ses, src, old, graceful: true, endAt: start);
-      }
       Log.Info("mic.switched", $"mic switched to {next.Target.Display}", new {
         session = ses.Name, from = old?.Target.Display,
         to = next.Target.Display, to_endpoint = next.Target.EndpointId,
@@ -3260,9 +3288,11 @@ commands:
 
     /// Stops or kills a capture and files its segment, off the UI thread:
     /// it can block for seconds and the pill must keep drawing. The task
-    /// never faults; the save waits for it.
+    /// never faults; the save waits for it. session.json lists the segment
+    /// as closing until it moves to Finished.
     void CloseSegment(Session ses, Source src, PcmCapture cap, bool graceful,
         double? endAt) {
+      var closing = ses.BeginClose(src, () => cap.ToSegment(endAt));
       var task = Task.Run(() => {
         try {
           if (graceful) {
@@ -3277,12 +3307,8 @@ commands:
         }
         var seg = cap.ToSegment(endAt);
         int drops = cap.DropWarnings;
+        ses.EndClose(src, closing, seg);
         cap.Dispose();
-        lock (ses.Gate) {
-          if (seg.Bytes > 0) {
-            src.Finished.Add(seg);
-          }
-        }
         if (seg.Bytes > 0) {
           Log.Info("segment.done", DescribeSegment(seg),
             SegmentFields(ses.Name, seg, drops));
@@ -4865,6 +4891,7 @@ commands:
         ("policy", TestMicPolicy),
         ("tones", TestTones),
         ("manifest", TestManifest),
+        ("closing", TestManifestClosing),
         ("log", TestLogFormat),
         ("limiter", TestLineLimiter),
         ("decide", TestMicDecision),
@@ -5245,6 +5272,72 @@ commands:
         Eq("saved path", "C:\\out.mp3", SessionManifest.SavedPath(dir));
         Check("saved is not unfinished",
           !SessionManifest.Unfinished(parent).Contains(dir));
+      } finally {
+        Directory.Delete(dir, true);
+      }
+    }
+
+    /// A crash while a mic handoff closes the old segment: session.json
+    /// still lists that segment, with its end cap, and --recover mixes it.
+    static void TestManifestClosing() {
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      const int bps = SegmentInfo.BytesPerSecond;
+      string P(string name) => Path.Combine(dir, name);
+      try {
+        File.WriteAllBytes(P("system-01.pcm"), new byte[bps * 6]);
+        File.WriteAllBytes(P("mic-01.pcm"), new byte[bps * 5]);
+        File.WriteAllBytes(P("mic-02.pcm"), new byte[bps * 3]);
+        var ses = new Session(1, dir, Stopwatch.GetTimestamp(),
+          DateTime.UtcNow, new DateTime(2026, 11, 18, 9, 0, 0),
+          MicPolicy.Parse("communications", new List<string>()),
+          new FakeResolver(_ => null)) {
+          System = new Source("system"), Mic = new Source("mic"),
+        };
+        ses.System.Finished.Add(new SegmentInfo("system", P("system-01.pcm"),
+          "vac", 0.0, bps * 6, null));
+        // Handoff at 3.0 s: the Yeti's segment is still closing (its byte
+        // count lags the file), and the AirPods' segment has taken over.
+        var yeti = new SegmentInfo("mic", P("mic-01.pcm"), "yeti", 0.5,
+          bps * 2, null, End: 3.0);
+        var closing = ses.BeginClose(ses.Mic, () => yeti);
+        ses.Mic.Finished.Add(new SegmentInfo("mic", P("mic-02.pcm"),
+          "airpods", 3.0, bps * 3, null));
+        ses.WriteManifest();
+
+        // The app dies here; --recover reads session.json.
+        var manifest = SessionManifest.Read(P(SessionManifest.FileName));
+        var segs = manifest.ToSegments(dir);
+        var old = segs.FirstOrDefault(x => x.Path == P("mic-01.pcm"));
+        Check("closing segment in manifest", old != null);
+        Eq("closing keeps its end cap", (double?)3.0, old?.End);
+        Eq("closing bytes from the file", (long?)(bps * 5), old?.Bytes);
+        Eq("recover uses all three", 3, Mixer.Usable(segs, 6.0).Count);
+        Check("recover caps the old mic", Mixer.BuildFilter(segs, 6.0)
+          .Contains("atrim=end=2.500,adelay=delays=500:all=1"),
+          Mixer.BuildFilter(segs, 6.0));
+
+        ses.EndClose(ses.Mic, closing, yeti with { Bytes = bps * 5 });
+        ses.WriteManifest();
+        var after = SessionManifest.Read(P(SessionManifest.FileName));
+        Eq("closed segment listed once", 1,
+          after.Segments.Count(x => x.File == "mic-01.pcm"));
+        Eq("closed segment finished", 2, ses.Mic.Finished.Count);
+        Eq("nothing left closing", 0, ses.Mic.ClosingSegments.Count);
+        var empty = ses.BeginClose(ses.Mic, () => yeti);
+        ses.EndClose(ses.Mic, empty, yeti with { Bytes = 0 });
+        Eq("empty close dropped", 2, ses.Mic.Finished.Count);
+
+        string ffmpeg;
+        try {
+          ffmpeg = FfmpegLocator.Find("");
+        } catch (FileNotFoundException) {
+          Console.WriteLine("skip closing recover mix: no ffmpeg");
+          return;
+        }
+        var mix = Mixer.MixAndVerify(ffmpeg, segs, P("out.mp3"), dir, 6.0);
+        Check("recover mixes the closing manifest", mix.Ok, mix.Message);
       } finally {
         Directory.Delete(dir, true);
       }
