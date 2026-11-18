@@ -1727,6 +1727,8 @@ commands:
   sealed class DshowCache : IDeviceResolver {
     readonly Func<List<DshowDevice>> list;
     readonly string systemName;
+    /// Endpoints already matched against the current list.
+    readonly HashSet<string> checkedIds = new();
     List<DshowDevice>? devices;
 
     public DshowCache(Func<List<DshowDevice>> list, string systemName) {
@@ -1739,15 +1741,23 @@ commands:
     List<DshowDevice> Refresh() {
       Refreshes++;
       devices = list();
+      checkedIds.Clear();
       return devices;
     }
 
+    /// A GUID match on the cached list is trusted. A name match is checked
+    /// against a fresh list the first time an endpoint asks: a USB mic
+    /// plugged back in can get a new endpoint GUID under the same name,
+    /// and the cached entry with that name is the old, dead device.
     public DeviceTarget? ForEndpoint(Endpoint e) {
       bool fresh = devices == null;
       var t = DeviceMatch.ForEndpoint(e, devices ?? Refresh(), systemName);
-      if (t == null && !fresh) {
+      bool trusted = t != null &&
+        (t.Method == "EndpointGuid" || checkedIds.Contains(e.Id));
+      if (!fresh && !trusted) {
         t = DeviceMatch.ForEndpoint(e, Refresh(), systemName);
       }
+      checkedIds.Add(e.Id);
       return t;
     }
 
@@ -5034,6 +5044,45 @@ commands:
       Eq("dshow cache lists once", 1, lists);
       cache.ForEndpoint(new Endpoint("{z}", "New Mic", 1));
       Eq("dshow cache refreshes on miss", 2, lists);
+
+      // The Yeti comes back on another port: same name, new endpoint GUID.
+      // The cached entry with that name is the old device.
+      const string yetiName = "Yeti Microphone - Main (Yeti Stereo Microphone)";
+      const string oldGuid = "af25d041-8695-4e1c-8672-b28919582119";
+      const string newGuid = "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0";
+      List<DshowDevice> Yeti(string guid) => new() {
+        new DshowDevice(yetiName, "@device_cm_{33D9A762-90C8-11D0-BD43-" +
+          "00A0C91E6086}\\wave_{" + guid.ToUpperInvariant() + "}"),
+      };
+      var listed = Yeti(oldGuid);
+      int replugLists = 0;
+      var replug = new DshowCache(() => { replugLists++; return listed; },
+        "virtual-audio-capturer");
+      var before = new Endpoint("{0.0.1.00000000}.{" + oldGuid + "}",
+        yetiName, 1);
+      Eq("replug first match", "EndpointGuid", replug.ForEndpoint(before)
+        ?.Method);
+      listed = Yeti(newGuid);
+      var after = new Endpoint("{0.0.1.00000000}.{" + newGuid + "}",
+        yetiName, 1);
+      var t = replug.ForEndpoint(after);
+      Eq("replug refreshes for a name match", 2, replugLists);
+      Eq("replug matches the new device", "EndpointGuid", t?.Method);
+      Check("replug opens the new device",
+        t?.Spec.EndsWith(newGuid.ToUpperInvariant() + "}") == true,
+        t?.Spec ?? "");
+      // A device with no GUID in its DirectShow name: one check per list.
+      var plainCache = new DshowCache(() => { replugLists++; return plain
+        .ToList(); }, "vac");
+      var usb = new Endpoint("{0.0.1.00000000}.{" + newGuid + "}",
+        "Other", 1);
+      plainCache.ForEndpoint(usb);
+      int afterFirst = replugLists;
+      plainCache.ForEndpoint(usb);
+      Eq("name match checked once", afterFirst, replugLists);
+      plainCache.ForEndpoint(new Endpoint("{0.0.1.00000000}.{" + oldGuid +
+        "}", "Other", 1));
+      Eq("name match checked for a new endpoint", afterFirst + 1, replugLists);
     }
 
     static void TestMicPolicy() {
