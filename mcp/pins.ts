@@ -19,14 +19,14 @@ export const jiyuuMcpPins = {
   "discord-mcp": {
     runner: "bunx",
     package: "@uniquedivine/mcp-discord",
-    version: "1.3.9",
+    version: "1.3.10",
     local: { command: "bun", entry: "mcp/discord/src/index.ts" },
     legacy: { commands: ["mcp-discord"], component: "mcp/discord" },
   },
   slack: {
     runner: "bunx",
     package: "@uniquedivine/mcp-slack",
-    version: "4.5.3",
+    version: "4.5.4",
     local: { command: "bun", entry: "mcp/slack/src/cli.js" },
     legacy: {
       commands: ["slack-mcp", "slack-mcp-server"], component: "mcp/slack",
@@ -35,7 +35,7 @@ export const jiyuuMcpPins = {
   "telegram-mcp": {
     runner: "uvx",
     package: "uniquedivine-telegram-mcp",
-    version: "2.0.3",
+    version: "2.0.4",
     auth: {
       prefix: "TELEGRAM_",
       fileSession: "TELEGRAM_SESSION_NAME",
