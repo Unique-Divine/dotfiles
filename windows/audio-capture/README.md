@@ -13,32 +13,92 @@ at its real time offset, so it plays as one continuous recording.
 Design notes, decisions, and the QA checklist are in the boku epic
 `epics/boku/26-11-13-audio-capture/README.md`.
 
-## Build and Run
+## Install
 
-The build needs the .NET 10 SDK (`winget install Microsoft.DotNet.SDK.10`)
-and FFmpeg 7 or newer. ShareX's `ffmpeg.exe` works.
+Installing needs the .NET 10 SDK (`winget install Microsoft.DotNet.SDK.10`)
+and FFmpeg 7 or newer. ShareX's `ffmpeg.exe` works. The reference install is
+the Windows side of Unique's laptop, installed from its WSL.
 
 From WSL:
 
 ```sh
-just audio-capture-build   # win-sync, then build.cmd on Windows
-just audio-capture-run     # start it (tray icon, hotkey ready)
+just audio-capture-install     # win-sync, then install.cmd on Windows
+just audio-capture-uninstall   # win-sync, then uninstall.cmd on Windows
 ```
 
-Without WSL, run `build.cmd` from `%USERPROFILE%\.files\windows\audio-capture`.
+On Windows without WSL, double-click `install.cmd` or `uninstall.cmd` in
+`%USERPROFILE%\.files\windows\audio-capture`. Both routes run the same
+scripts.
 
-The build does the following:
+`install.cmd` does the following:
 
-- Refuses to run while a recording or a save is in progress.
-- Publishes `%LOCALAPPDATA%\Programs\audio-capture\audio-capture.exe`.
-- Creates `%USERPROFILE%\.audio-capture\config.toml` from the example on a
-  first install.
-- Runs the self-tests.
+1. Runs `build.cmd`, which refuses to run while a recording or a save is in
+   progress, publishes `%LOCALAPPDATA%\Programs\audio-capture\audio-capture.exe`,
+   creates `%USERPROFILE%\.audio-capture\config.toml` from the example on a
+   first install, and runs the self-tests.
+2. Creates the Start Menu shortcut,
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\audio-capture.lnk`, so
+   the app shows up in Windows search.
+3. Creates the Startup shortcut in
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`, unless
+   Start with Windows is off.
+4. Starts the app through the Start Menu shortcut.
+
+Rerunning it updates the exe and both shortcuts. Both shortcuts run
+`audio-capture.exe --tray`, which starts the app without recording; if the
+app is already running, it shows a tray notification instead.
+
+`just audio-capture-build` runs step 1 alone, and `just audio-capture-run`
+starts the app.
+
+### Start With Windows
+
+Start with Windows is on after install. The tray menu's "Start with
+Windows" item turns it off and on. The setting lives in `config.toml`:
+
+```toml
+[app]
+start_with_windows = true
+```
+
+The tray item writes this key, keeping the rest of the file as it was, and
+then adds or removes the Startup shortcut. A hand edit of the key applies at
+the next app start, recording start, or tray menu open. Copies outside the
+install folder (dev builds) never touch the Startup shortcut.
+
+### Uninstall
+
+`uninstall.cmd` removes only what install created:
+
+- The Start Menu and Startup shortcuts (the Windows launcher `.lnk` files,
+  not hotkeys).
+- `%LOCALAPPDATA%\Programs\audio-capture`, the exe folder.
+
+It keeps `%USERPROFILE%\.audio-capture` entirely: `config.toml` with your
+hotkeys and other settings, the logs, and any unsaved sessions. Like the
+build, it refuses to run while a recording or a save is in progress.
+
+### Icon and Version
+
+The app icon is Unique's lion avatar with a microphone badge. `icon/`
+holds the source photo, the generated `audio-capture.ico` (16 to 256 px),
+`icon-preview.png`, and the generator:
+
+```sh
+uv run --with pillow python windows/audio-capture/icon/make-icon.py
+```
+
+The build embeds the icon in the exe, and the tray and both shortcuts use
+it. `#:property Version` at the top of `audio-capture.cs` sets the version
+shown by `--version`, the exe's Properties, and Task Manager.
+
+## Use
 
 Press the hotkey (`ctrl+alt+f2` by default) to start, and press it again to
 stop. Saving runs in the background, so the hotkey can start the next
 recording right away. The tray icon's menu also starts and stops recording,
-opens the recordings folder and the log, and quits the app.
+opens the recordings folder and the log, toggles Start with Windows, and
+quits the app.
 
 ## Files
 
@@ -72,6 +132,9 @@ their command to it and exit.
 | Command | Effect |
 | --- | --- |
 | `audio-capture` | Start the app, or toggle recording if it's running |
+| `--tray` | Start the app without recording; if running, show a notification |
+| `--install` | Create the shortcuts (run by `install.cmd`) |
+| `--uninstall` | Remove the shortcuts (run by `uninstall.cmd`) |
 | `--toggle` | Start or stop recording, starting the app if needed |
 | `--start`, `--stop` | Start or stop recording |
 | `--quit` | Stop, wait for every save, then exit |

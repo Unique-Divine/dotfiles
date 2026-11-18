@@ -12,7 +12,10 @@ call "%~dp0build.cmd"
 if errorlevel 1 goto fail
 "%OUT%\audio-capture.exe" --install
 if errorlevel 1 goto fail
-start "" "%OUT%\audio-capture.exe" --tray
+rem Launch through the new Start Menu shortcut. Explorer starts it, so the
+rem app doesn't inherit this window's pipes, which would keep a WSL caller
+rem waiting until the app exits.
+explorer.exe "%APPDATA%\Microsoft\Windows\Start Menu\Programs\audio-capture.lnk"
 echo installed audio-capture; it is running in the tray
 goto done
 
