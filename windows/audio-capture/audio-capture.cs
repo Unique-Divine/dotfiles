@@ -4,6 +4,10 @@
 #:property PublishAot=false
 #:property Nullable=enable
 #:property ApplicationHighDpiMode=PerMonitorV2
+#:property ApplicationIcon=icon/audio-capture.ico
+#:property Version=0.2.0
+#:property Product=audio-capture
+#:property AssemblyTitle=audio-capture
 
 // audio-capture: hotkey audio recorder (system audio + mic -> MP3) that
 // survives a mic unplug. See README.md next to this file.
@@ -57,12 +61,15 @@ namespace AudioCapture {
   }
 
   static class Program {
-    public const string Version = "0.1.0";
+    /// From `#:property Version` above, which also sets the exe's file
+    /// version shown in Properties and Task Manager.
+    public static readonly string Version = typeof(Program).Assembly
+      .GetName().Version?.ToString(3) ?? "0.0.0";
     static string MutexName =>
       $"Local\\audio-capture{Instance.Suffix}-single-instance";
 
     public static readonly string[] SignalNames =
-      { "toggle", "start", "stop", "quit" };
+      { "toggle", "start", "stop", "quit", "show" };
 
     public static string SignalEventName(string signal) =>
       $"Local\\audio-capture{Instance.Suffix}-{signal}";
@@ -98,7 +105,7 @@ namespace AudioCapture {
       // Before any config load, so --list-devices and --recover see the
       // same config as the resident app after an upgrade.
       if (cli.Command is not ("help" or "version" or "self-test" or
-          "simulate")) {
+          "simulate" or "uninstall")) {
         MigrateConfig();
       }
 
@@ -131,12 +138,22 @@ namespace AudioCapture {
         case "recover":
           Native.EnsureConsole();
           return Commands.Recover(cli.ConfigPath, cli.Argument!);
+        case "install":
+          Native.EnsureConsole();
+          return Commands.Install(cli.ConfigPath);
+        case "uninstall":
+          Native.EnsureConsole();
+          return Commands.Uninstall();
       }
 
       using var mutex = new Mutex(true, MutexName, out bool isFirst);
       if (!isFirst) {
         // A running instance owns the hotkey: pass the command along.
-        string signal = cli.Command == "run" ? "toggle" : cli.Command;
+        string signal = cli.Command switch {
+          "run" => "toggle",
+          "tray" => "show",
+          _ => cli.Command,
+        };
         if (cli.Command == "quit-if-idle") {
           if (Commands.IsBusy()) {
             Native.EnsureConsole();
@@ -217,6 +234,9 @@ With no command, starts the resident app (hotkey + tray icon). If it is
 already running, toggles recording instead.
 
 commands:
+  --tray            start the app if needed, never recording; if it is
+                    running, show a tray notification (the shortcuts use
+                    this)
   --toggle          start or stop recording (starts the app if needed)
   --start           start recording
   --stop            stop recording and save
@@ -224,6 +244,9 @@ commands:
   --quit-if-idle    exit if not recording or saving; else exit code 3
   --list-devices    print FFmpeg, DirectShow devices, and the resolved mic
   --recover <dir>   mix an unfinished session directory into an MP3
+  --install         create the Start Menu shortcut, and the Startup one
+                    if [app] start_with_windows is on (install.cmd)
+  --uninstall       remove both shortcuts (uninstall.cmd)
   --self-test       run the built-in unit tests
   --watch-devices [s] print Windows recording devices and every change
                     notification for s seconds (default 60); plug and
@@ -274,6 +297,9 @@ commands:
             command = "recover";
             argument = args[++i];
             break;
+          case "--tray": command = "tray"; break;
+          case "--install": command = "install"; break;
+          case "--uninstall": command = "uninstall"; break;
           case "--toggle": command = "toggle"; break;
           case "--start": command = "start"; break;
           case "--stop": command = "stop"; break;
@@ -411,6 +437,68 @@ commands:
         Console.Error.WriteLine("audio-capture: " + e.Message);
         return 1;
       }
+    }
+
+    /// Creates the Start Menu shortcut and applies the Startup setting.
+    /// Only the installed exe installs: a dev build would point the
+    /// shortcuts at a folder that install.cmd doesn't manage.
+    public static int Install(string? configPath) {
+      if (!Instance.IsMain) {
+        Console.Error.WriteLine("audio-capture: --install runs from the " +
+          "installed exe (install.marker missing next to this one)");
+        return 1;
+      }
+      try {
+        bool enabled = ConfigLoader.Load(configPath).Config.StartWithWindows;
+        string exe = Environment.ProcessPath!;
+        int status = InstallLinks(Shortcuts.StartMenuLink,
+          Shortcuts.StartupLink, exe, enabled, Console.Out, Console.Error);
+        if (status == 0) {
+          Log.Info("app.installed", "shortcuts created", new {
+            start_menu = Shortcuts.StartMenuLink, startup = enabled, exe,
+          });
+        }
+        return status;
+      } catch (Exception e) {
+        Console.Error.WriteLine("audio-capture: install failed: " + e.Message);
+        return 1;
+      }
+    }
+
+    /// Applies both shortcuts. A shortcut of ours blocked by someone else's
+    /// with the same name fails the install (exit 1), so install.cmd
+    /// reports it instead of claiming success.
+    public static int InstallLinks(string startMenu, string startup,
+        string exe, bool enabled, TextWriter stdout, TextWriter stderr) {
+      int status = 0;
+      foreach (string result in new[] {
+          Shortcuts.Apply(startMenu, exe, true),
+          Shortcuts.Apply(startup, exe, enabled) }) {
+        if (result.StartsWith("kept")) {
+          stderr.WriteLine("audio-capture: " + result + ". Rename or " +
+            "remove it, then install again.");
+          status = 1;
+        } else {
+          stdout.WriteLine(result);
+        }
+      }
+      return status;
+    }
+
+    /// Removes both shortcuts. uninstall.cmd then deletes the exe folder.
+    /// %USERPROFILE%\.audio-capture stays.
+    public static int Uninstall() {
+      int status = 0;
+      foreach (string link in new[] { Shortcuts.StartMenuLink,
+          Shortcuts.StartupLink }) {
+        try {
+          Console.WriteLine(Shortcuts.Remove(link, Environment.ProcessPath!));
+        } catch (Exception e) {
+          Console.Error.WriteLine($"audio-capture: {link}: {e.Message}");
+          status = 1;
+        }
+      }
+      return status;
     }
 
     public static int Recover(string? configPath, string dir) {
@@ -943,6 +1031,7 @@ commands:
     public string Mic { get; init; } = "communications";
     public string Ffmpeg { get; init; } = "";
     public bool KeepSession { get; init; }
+    public bool StartWithWindows { get; init; } = true;
     public static readonly Color DefaultDotColor = Color.FromArgb(255, 69, 58);
     public Color DotColor { get; init; } = DefaultDotColor;
 
@@ -950,7 +1039,7 @@ commands:
       "keys.toggle", "pill.position", "pill.monitor", "pill.dot_color",
       "output.dir",
       "output.name", "audio.system", "audio.mic", "audio.ffmpeg",
-      "debug.keep_session",
+      "debug.keep_session", "app.start_with_windows",
     };
 
     public static (AppConfig, List<string>) FromToml(string text) {
@@ -1015,6 +1104,12 @@ commands:
         cfg = cfg with {
           KeepSession = keep as bool? ?? throw new FormatException(
             "debug.keep_session must be true or false"),
+        };
+      }
+      if (values.TryGetValue("app.start_with_windows", out object? boot)) {
+        cfg = cfg with {
+          StartWithWindows = boot as bool? ?? throw new FormatException(
+            "app.start_with_windows must be true or false"),
         };
       }
       MicPolicy.Parse(cfg.Mic, warnings);
@@ -1112,6 +1207,259 @@ commands:
         }
       }
       return new LoadedConfig(new AppConfig(), null, new List<string>());
+    }
+  }
+
+  /// Edits one key of a TOML config in place, keeping comments, order, and
+  /// line endings, so the tray menu can change a setting without
+  /// rewriting the user's file.
+  static class ConfigEdit {
+    public static string SetBool(string text, string section, string key,
+        bool value) {
+      string nl = text.Contains("\r\n") ? "\r\n" : "\n";
+      string v = value ? "true" : "false";
+      var lines = text.Length == 0 ? new List<string>()
+        : text.Replace("\r\n", "\n").Split('\n').ToList();
+      bool trailingNewline = lines.Count > 0 && lines[^1].Length == 0;
+      if (trailingNewline) {
+        lines.RemoveAt(lines.Count - 1);
+      }
+      var header = new Regex(@"^\s*\[\s*" + Regex.Escape(section) +
+        @"\s*\]\s*(#.*)?$");
+      var anyHeader = new Regex(@"^\s*\[");
+      // The key bare or quoted, as Toml.ParseKey accepts it, with any value:
+      // a non-bool value gets replaced too, never shadowed by a duplicate.
+      var keyLine = new Regex(@"^(\s*(?:" + Regex.Escape(key) + "|\"" +
+        Regex.Escape(key) + "\"" + @")\s*=\s*)" +
+        @"(""[^""]*""|'[^']*'|[^\s#]+)(.*)$");
+      int start = lines.FindIndex(l => header.IsMatch(l));
+      if (start < 0) {
+        if (lines.Count > 0 && lines[^1].Trim().Length > 0) {
+          lines.Add("");
+        }
+        lines.Add($"[{section}]");
+        lines.Add($"{key} = {v}");
+      } else {
+        int end = lines.FindIndex(start + 1, l => anyHeader.IsMatch(l));
+        if (end < 0) {
+          end = lines.Count;
+        }
+        int at = lines.FindIndex(start + 1, end - start - 1,
+          l => keyLine.IsMatch(l));
+        if (at >= 0) {
+          lines[at] = keyLine.Replace(lines[at], "${1}" + v + "${3}");
+        } else {
+          lines.Insert(start + 1, $"{key} = {v}");
+        }
+      }
+      return string.Join(nl, lines) + (trailingNewline || start < 0 ? nl : "");
+    }
+
+    /// SetBool, then checks that the result still loads and has the new
+    /// value. Throws FormatException if not, so the caller keeps the file.
+    public static string SetBoolChecked(string text, string section,
+        string key, bool value) {
+      string next = SetBool(text, section, key, value);
+      Dictionary<string, object> parsed;
+      try {
+        parsed = Toml.Parse(next);
+        AppConfig.FromToml(next);
+      } catch (Exception e) when (e is TomlException or FormatException) {
+        throw new FormatException("the edited config would not load (" +
+          e.Message + "); config.toml left unchanged");
+      }
+      if (!parsed.TryGetValue(section + "." + key, out object? got) ||
+          got is not bool b || b != value) {
+        throw new FormatException($"the edit did not set {section}.{key}; " +
+          "config.toml left unchanged");
+      }
+      return next;
+    }
+
+    /// Writes through a temp file so a crash can't leave half a config.
+    public static void SetBoolInFile(string path, string section, string key,
+        bool value) {
+      string text = File.Exists(path) ? File.ReadAllText(path) : "";
+      string next = SetBoolChecked(text, section, key, value);
+      Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(
+        path))!);
+      string tmp = path + ".tmp";
+      File.WriteAllText(tmp, next);
+      File.Move(tmp, path, true);
+    }
+  }
+
+  /// The Windows launcher .lnk files: one in the Start Menu, so the app
+  /// shows up in Windows search, and one in the Startup folder for
+  /// "Start with Windows". Both run `audio-capture.exe --tray`.
+  static class Shortcuts {
+    public const string FileName = "audio-capture.lnk";
+    public const string Arguments = "--tray";
+    const string Description = "Hotkey audio recorder: system audio and mic";
+
+    public static string StartMenuLink => Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.Programs), FileName);
+    public static string StartupLink => Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.Startup), FileName);
+
+    public sealed record Link(string Target, string Arguments,
+      string WorkingDir, string IconPath, int IconIndex);
+
+    /// Makes `link` match `enabled`: creates or updates it to run `exe`,
+    /// or deletes it. Returns what it did, for logs and install output; a
+    /// result starting with "kept" means a shortcut that isn't ours is in
+    /// the way and was left alone.
+    public static string Apply(string link, string exe, bool enabled) {
+      if (!enabled) {
+        return Remove(link, exe);
+      }
+      var want = new Link(exe, Arguments, Path.GetDirectoryName(exe)!, exe, 0);
+      if (File.Exists(link)) {
+        Link? have = TryRead(link);
+        if (have == null || !Owned(have, exe)) {
+          return Kept(link, have);
+        }
+        if (Same(have, want)) {
+          return "unchanged " + link;
+        }
+        Write(link, want);
+        return "updated " + link;
+      }
+      Write(link, want);
+      return "created " + link;
+    }
+
+    /// Deletes `link` only if it launches `exe`. A file with our name that
+    /// points elsewhere, or can't be read, isn't ours, so it stays.
+    public static string Remove(string link, string exe) {
+      if (!File.Exists(link)) {
+        return "absent " + link;
+      }
+      Link? have = TryRead(link);
+      if (have == null || !Owned(have, exe)) {
+        return Kept(link, have);
+      }
+      File.Delete(link);
+      return "removed " + link;
+    }
+
+    /// Ours means it targets this exe, compared as normalized paths.
+    public static bool Owned(Link l, string exe) =>
+      SamePath(l.Target, exe);
+
+    static bool SamePath(string a, string b) {
+      static string Norm(string p) {
+        try {
+          return Path.GetFullPath(Environment.ExpandEnvironmentVariables(p))
+            .TrimEnd('\\', '/');
+        } catch (Exception e) when (e is ArgumentException or
+            NotSupportedException or PathTooLongException) {
+          return p;
+        }
+      }
+      return a.Length > 0 && string.Equals(Norm(a), Norm(b),
+        StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string Kept(string link, Link? have) =>
+      $"kept {link}: not ours (it " + (have == null ? "can't be read"
+        : $"points at {have.Target}") + ")";
+
+    static bool Same(Link a, Link b) =>
+      SamePath(a.Target, b.Target) && a.Arguments == b.Arguments &&
+      SamePath(a.WorkingDir, b.WorkingDir) &&
+      SamePath(a.IconPath, b.IconPath) && a.IconIndex == b.IconIndex;
+
+    public static void Write(string link, Link l) {
+      var sl = (IShellLinkW)new CShellLink();
+      try {
+        sl.SetPath(l.Target);
+        sl.SetArguments(l.Arguments);
+        sl.SetWorkingDirectory(l.WorkingDir);
+        sl.SetIconLocation(l.IconPath, l.IconIndex);
+        sl.SetDescription(Description);
+        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+        ((IPersistFile)sl).Save(link, true);
+      } finally {
+        Marshal.FinalReleaseComObject(sl);
+      }
+    }
+
+    public static Link? TryRead(string link) {
+      try {
+        return Read(link);
+      } catch (Exception e) when (e is COMException or IOException or
+          UnauthorizedAccessException) {
+        return null;
+      }
+    }
+
+    public static Link Read(string link) {
+      var sl = (IShellLinkW)new CShellLink();
+      try {
+        ((IPersistFile)sl).Load(link, 0);
+        var sb = new StringBuilder(1024);
+        sl.GetPath(sb, sb.Capacity, IntPtr.Zero, 0x4); // SLGP_RAWPATH
+        string target = sb.ToString();
+        sb.Clear();
+        sl.GetArguments(sb, sb.Capacity);
+        string args = sb.ToString();
+        sb.Clear();
+        sl.GetWorkingDirectory(sb, sb.Capacity);
+        string dir = sb.ToString();
+        sb.Clear();
+        sl.GetIconLocation(sb, sb.Capacity, out int index);
+        return new Link(target, args, dir, sb.ToString(), index);
+      } finally {
+        Marshal.FinalReleaseComObject(sl);
+      }
+    }
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class CShellLink {
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
+      Guid("000214F9-0000-0000-C000-000000000046")]
+    interface IShellLinkW {
+      void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file,
+        int cch, IntPtr findData, int flags);
+      void GetIDList(out IntPtr pidl);
+      void SetIDList(IntPtr pidl);
+      void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)]
+        StringBuilder name, int cch);
+      void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+      void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)]
+        StringBuilder dir, int cch);
+      void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+      void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)]
+        StringBuilder args, int cch);
+      void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+      void GetHotkey(out short hotkey);
+      void SetHotkey(short hotkey);
+      void GetShowCmd(out int showCmd);
+      void SetShowCmd(int showCmd);
+      void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)]
+        StringBuilder path, int cch, out int index);
+      void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path,
+        int index);
+      void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path,
+        int reserved);
+      void Resolve(IntPtr hwnd, int flags);
+      void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
+      Guid("0000010b-0000-0000-C000-000000000046")]
+    interface IPersistFile {
+      void GetClassID(out Guid classId);
+      [PreserveSig]
+      int IsDirty();
+      void Load([MarshalAs(UnmanagedType.LPWStr)] string file, int mode);
+      void Save([MarshalAs(UnmanagedType.LPWStr)] string file,
+        [MarshalAs(UnmanagedType.Bool)] bool remember);
+      void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string file);
+      void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string file);
     }
   }
 
@@ -3845,7 +4193,10 @@ commands:
     readonly Recorder recorder;
     readonly MMDeviceSource endpoints;
     readonly string? configPath;
+    /// The file the config came from, or null for built-in defaults.
+    string? loadedPath;
     AppConfig cfg;
+    ToolStripMenuItem? startupItem;
     volatile bool quitting;
     public static App? Current { get; private set; }
 
@@ -3854,6 +4205,7 @@ commands:
     public App(LoadedConfig loaded, string? configPath) {
       this.configPath = configPath;
       cfg = loaded.Config;
+      loadedPath = loaded.Path;
       Log.Info("config.loaded", "config " + (loaded.Path ?? "(defaults)"),
         new { path = loaded.Path });
       // Sessions from before 2026-11-13 live in the old folder.
@@ -3887,6 +4239,7 @@ commands:
       hotkeys.Pressed += () => OnCommand("toggle");
       RegisterHotkey();
       SetupTray();
+      ApplyStartup("app.start");
       CheckFfmpeg();
       timer.Tick += (_, _) => {
         recorder.Tick();
@@ -3948,7 +4301,7 @@ commands:
     }
 
     void SetupTray() {
-      tray.Icon = TrayIcon.Make();
+      tray.Icon = TrayIcon.Load();
       tray.Text = Clip($"{TrayName}: idle ({cfg.Toggle.Text})");
       var menu = new ContextMenuStrip();
       if (!Instance.IsMain) {
@@ -3969,12 +4322,82 @@ commands:
         Process.Start(new ProcessStartInfo("notepad.exe", Log.FilePath) {
           UseShellExecute = true,
         }));
+      if (Instance.IsMain) {
+        startupItem = new ToolStripMenuItem("Start with Windows", null,
+          (_, _) => ToggleStartup());
+        menu.Items.Add(startupItem);
+        // Config edits made by hand show up the next time the menu opens.
+        menu.Opening += (_, _) => {
+          ReloadStartupSetting();
+          ApplyStartup("menu.open");
+        };
+      }
       menu.Items.Add("Quit", null, (_, _) => OnCommand("quit"));
       tray.ContextMenuStrip = menu;
       tray.Visible = true;
     }
 
     static string Clip(string s) => s.Length > 63 ? s[..63] : s;
+
+    /// The config file the tray writes: the one loaded, else the default.
+    string WritableConfig => loadedPath ?? configPath ?? StateDir.Config;
+
+    void ReloadStartupSetting() {
+      try {
+        var loaded = ConfigLoader.Load(configPath);
+        loadedPath = loaded.Path;
+        cfg = cfg with { StartWithWindows = loaded.Config.StartWithWindows };
+      } catch (Exception e) {
+        Log.Warn("config.reload_failed", "config reload failed; keeping " +
+          "the previous Start with Windows setting", new { error = e.Message });
+      }
+    }
+
+    /// Makes the Startup shortcut match the config. The installed copy only:
+    /// a dev build must not take over Windows startup.
+    void ApplyStartup(string reason) {
+      if (startupItem != null) {
+        startupItem.Checked = cfg.StartWithWindows;
+      }
+      if (!Instance.IsMain) {
+        return;
+      }
+      try {
+        string result = Shortcuts.Apply(Shortcuts.StartupLink,
+          Environment.ProcessPath!, cfg.StartWithWindows);
+        if (result.StartsWith("kept")) {
+          Log.Warn("startup.foreign_shortcut", result);
+        } else if (!result.StartsWith("unchanged") &&
+            !result.StartsWith("absent")) {
+          Log.Info("startup.applied", result, new {
+            reason, enabled = cfg.StartWithWindows,
+          });
+        }
+      } catch (Exception e) {
+        Log.Error("startup.failed", e.Message, new { reason });
+      }
+    }
+
+    /// The tray toggle: writes the config first, so the config and the
+    /// Startup shortcut never disagree, then applies it.
+    void ToggleStartup() {
+      bool next = !cfg.StartWithWindows;
+      try {
+        ConfigEdit.SetBoolInFile(WritableConfig, "app", "start_with_windows",
+          next);
+        loadedPath = WritableConfig;
+      } catch (Exception e) {
+        Log.Error("startup.config_write_failed", e.Message,
+          new { path = WritableConfig });
+        tray.ShowBalloonTip(5000, "audio-capture", "Could not save the " +
+          "setting: " + e.Message, ToolTipIcon.Error);
+        return;
+      }
+      Log.Info("startup.toggled", "start with Windows " + (next ? "on"
+        : "off"), new { path = WritableConfig });
+      cfg = cfg with { StartWithWindows = next };
+      ApplyStartup("menu.toggle");
+    }
 
     static string TrayName => Instance.IsMain ? "audio-capture"
       : "audio-capture (dev)";
@@ -4017,6 +4440,12 @@ commands:
         case "stop":
           recorder.Stop();
           break;
+        case "show":
+          tray.ShowBalloonTip(4000, TrayName, recorder.State ==
+            RecorderState.Recording ? "Recording. Press " + cfg.Toggle.Text +
+            " to stop." : "Running. Press " + cfg.Toggle.Text +
+            " to record.", ToolTipIcon.Info);
+          break;
         case "quit":
           quitting = true;
           recorder.Closing = true;
@@ -4041,7 +4470,9 @@ commands:
             "audio-capture to apply");
         }
         cfg = loaded.Config with { Toggle = cfg.Toggle };
+        loadedPath = loaded.Path;
         recorder.UpdateConfig(cfg);
+        ApplyStartup("config.reload");
       } catch (Exception e) {
         Log.Error("config.reload_failed", "config reload failed; keeping the " +
           "previous config", new { error = e.Message });
@@ -4100,6 +4531,21 @@ commands:
   }
 
   static class TrayIcon {
+    /// The app icon embedded in the exe at the tray's size, else a drawn
+    /// fallback (a `dotnet run` build has no icon resource of its own).
+    public static Icon Load() {
+      try {
+        string? exe = Environment.ProcessPath;
+        if (exe != null && Icon.ExtractIcon(exe, 0,
+            SystemInformation.SmallIconSize.Width) is Icon icon) {
+          return icon;
+        }
+      } catch (Exception e) when (e is IOException or ArgumentException) {
+        Log.Warn("tray.icon_fallback", e.Message);
+      }
+      return Make();
+    }
+
     public static Icon Make() {
       using var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
       using (var g = Graphics.FromImage(bmp)) {
@@ -4937,6 +5383,8 @@ commands:
         ("unwritable", TestLogUnwritable),
         ("mixcleanup", TestMixFailureCleanup),
         ("state", TestStateDir),
+        ("configedit", TestConfigEdit),
+        ("shortcuts", TestShortcuts),
         ("capture", TestCaptureLifecycle),
         ("health", TestHealth),
         ("timing", TestTiming),
@@ -5826,8 +6274,184 @@ commands:
       Eq("elapsed hours", "1:00:01", PillLayout.FormatElapsed(3601));
     }
 
+    static void TestConfigEdit() {
+      Eq("start with windows default on", true,
+        AppConfig.FromToml("").Item1.StartWithWindows);
+      Eq("start with windows off", false, AppConfig.FromToml(
+        "[app]\nstart_with_windows = false\n").Item1.StartWithWindows);
+      Eq("start with windows known key", 0, AppConfig.FromToml(
+        "[app]\nstart_with_windows = true\n").Item2.Count);
+      Throws<FormatException>("start with windows non-bool",
+        () => AppConfig.FromToml("[app]\nstart_with_windows = \"yes\"\n"));
+      Eq("edit appends section", "[keys]\ntoggle = \"f9\"\n\n[app]\n" +
+        "start_with_windows = false\n", ConfigEdit.SetBool(
+        "[keys]\ntoggle = \"f9\"\n", "app", "start_with_windows", false));
+      Eq("edit empty file", "[app]\nstart_with_windows = true\n",
+        ConfigEdit.SetBool("", "app", "start_with_windows", true));
+      Eq("edit keeps comments and other keys",
+        "# top\n[app]\n# why\nstart_with_windows = false # note\n" +
+        "[keys]\ntoggle = \"f9\"\n",
+        ConfigEdit.SetBool("# top\n[app]\n# why\n" +
+          "start_with_windows = true # note\n[keys]\ntoggle = \"f9\"\n",
+          "app", "start_with_windows", false));
+      Eq("edit inserts into existing section",
+        "[app]\nstart_with_windows = true\nother = 1\n[keys]\n",
+        ConfigEdit.SetBool("[app]\nother = 1\n[keys]\n", "app",
+          "start_with_windows", true));
+      Eq("edit ignores the key in another section",
+        "[x]\nstart_with_windows = true\n\n[app]\nstart_with_windows = " +
+        "false\n", ConfigEdit.SetBool("[x]\nstart_with_windows = true\n",
+          "app", "start_with_windows", false));
+      Eq("edit keeps CRLF", "[app]\r\nstart_with_windows = false\r\n",
+        ConfigEdit.SetBool("[app]\r\nstart_with_windows = true\r\n", "app",
+          "start_with_windows", false));
+      Eq("edit quoted key", "[app]\n\"start_with_windows\" = false\n",
+        ConfigEdit.SetBool("[app]\n\"start_with_windows\" = true\n", "app",
+          "start_with_windows", false));
+      Eq("edit spaced quoted key",
+        "[ app ]\n  \"start_with_windows\"   =   true  # c\n",
+        ConfigEdit.SetBool("[ app ]\n  \"start_with_windows\"   =   " +
+          "false  # c\n", "app", "start_with_windows", true));
+      Eq("edit replaces a non-bool", "[app]\nstart_with_windows = false\n",
+        ConfigEdit.SetBool("[app]\nstart_with_windows = \"yes\"\n", "app",
+          "start_with_windows", false));
+      foreach (string before in new[] {
+          "[app]\n\"start_with_windows\" = true\n",
+          "[app]\n  start_with_windows=true\n",
+          "[app]\nstart_with_windows = \"on\"\n" }) {
+        string after = ConfigEdit.SetBoolChecked(before, "app",
+          "start_with_windows", false);
+        Eq("edit no duplicate: " + before.Replace("\n", " "), false,
+          AppConfig.FromToml(after).Item1.StartWithWindows);
+      }
+      Throws<FormatException>("edit refuses a config that won't load",
+        () => ConfigEdit.SetBoolChecked("[app]\nstart_with_windows = true\n" +
+          "start_with_windows = true\n", "app", "start_with_windows", false));
+      // Round trip: an edit parses to the new value
+      // with no new warnings, and toggling back restores it byte for byte.
+      string sample = "[keys]\ntoggle = \"ctrl+alt+f2\"\n\n[app]\n" +
+        "# Start with Windows.\nstart_with_windows = true\n";
+      string off = ConfigEdit.SetBool(sample, "app", "start_with_windows",
+        false);
+      var (offCfg, offWarn) = AppConfig.FromToml(off);
+      Eq("edit round trip off", false, offCfg.StartWithWindows);
+      Eq("edit round trip no warnings", 0, offWarn.Count);
+      Eq("edit round trip restores", sample, ConfigEdit.SetBool(off, "app",
+        "start_with_windows", true));
+    }
+
+    /// Shortcut writes and the tray toggle's config-then-shortcut order,
+    /// against a temp folder instead of the real Start Menu and Startup.
+    static void TestShortcuts() {
+      string dir = Path.Combine(Path.GetTempPath(),
+        "audio-capture-test-" + Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(dir);
+      try {
+        string exe = Environment.ProcessPath!;
+        string link = Path.Combine(dir, Shortcuts.FileName);
+        Check("shortcut created", Shortcuts.Apply(link, exe, true)
+          .StartsWith("created"));
+        var l = Shortcuts.Read(link);
+        Eq("shortcut target", exe.ToLowerInvariant(),
+          l.Target.ToLowerInvariant());
+        Eq("shortcut args", "--tray", l.Arguments);
+        Eq("shortcut icon", exe.ToLowerInvariant(),
+          l.IconPath.ToLowerInvariant());
+        Eq("shortcut workdir", Path.GetDirectoryName(exe)!.ToLowerInvariant(),
+          l.WorkingDir.ToLowerInvariant());
+        Check("shortcut idempotent", Shortcuts.Apply(link, exe, true)
+          .StartsWith("unchanged"));
+        Shortcuts.Write(link, l with { Arguments = "" });
+        Check("shortcut repaired", Shortcuts.Apply(link, exe, true)
+          .StartsWith("updated"));
+        Check("shortcut removed", Shortcuts.Apply(link, exe, false)
+          .StartsWith("removed") && !File.Exists(link));
+        Check("shortcut absent", Shortcuts.Apply(link, exe, false)
+          .StartsWith("absent"));
+        string notepad = Path.Combine(Environment.GetFolderPath(
+          Environment.SpecialFolder.Windows), "notepad.exe");
+        var foreign = new Shortcuts.Link(notepad, "", dir, notepad, 0);
+        Shortcuts.Write(link, foreign);
+        Check("foreign shortcut kept on remove", Shortcuts.Remove(link, exe)
+          .StartsWith("kept") && File.Exists(link));
+        Check("foreign shortcut kept on disable", Shortcuts.Apply(link, exe,
+          false).StartsWith("kept") && File.Exists(link));
+        Check("foreign shortcut kept on install", Shortcuts.Apply(link, exe,
+          true).StartsWith("kept"));
+        Eq("foreign shortcut untouched", foreign.Target.ToLowerInvariant(),
+          Shortcuts.Read(link).Target.ToLowerInvariant());
+        // Another audio-capture.exe, say a dev build, isn't ours either.
+        string other = Path.Combine(dir, "audio-capture.exe");
+        Shortcuts.Write(link, foreign with { Target = other });
+        Check("other audio-capture kept", Shortcuts.Remove(link, exe)
+          .StartsWith("kept") && File.Exists(link));
+        File.WriteAllText(link, "not a shortcut");
+        Check("unreadable shortcut kept", Shortcuts.Apply(link, exe, false)
+          .StartsWith("kept") && File.Exists(link));
+        File.Delete(link);
+
+        // --install with someone else's Start Menu shortcut in the way.
+        string menu = Path.Combine(dir, "menu", Shortcuts.FileName);
+        string boot = Path.Combine(dir, "boot", Shortcuts.FileName);
+        Shortcuts.Write(menu, foreign);
+        var outText = new StringWriter();
+        var errText = new StringWriter();
+        Eq("install fails on a foreign start menu link", 1,
+          Commands.InstallLinks(menu, boot, exe, true, outText, errText));
+        Check("install says why", errText.ToString().Contains("not ours"),
+          errText.ToString());
+        Eq("install keeps the foreign link", foreign.Target.ToLowerInvariant(),
+          Shortcuts.Read(menu).Target.ToLowerInvariant());
+        Check("install still adds startup", File.Exists(boot));
+        File.Delete(menu);
+        Eq("install succeeds once clear", 0, Commands.InstallLinks(menu, boot,
+          exe, true, TextWriter.Null, TextWriter.Null));
+        Check("install creates start menu link", Shortcuts.Owned(
+          Shortcuts.Read(menu), exe));
+        Check("owned by normalized path", Shortcuts.Owned(
+          new Shortcuts.Link(exe.ToUpperInvariant(), "", "", "", 0), exe));
+
+        // The tray toggle: config first, then the shortcut from the config.
+        string cfgPath = Path.Combine(dir, "config.toml");
+        File.WriteAllText(cfgPath, "[keys]\ntoggle = \"ctrl+alt+f2\"\n");
+        bool Loaded() => ConfigLoader.Load(cfgPath).Config.StartWithWindows;
+        Eq("toggle default on", true, Loaded());
+        Shortcuts.Apply(link, exe, Loaded());
+        Check("toggle on has shortcut", File.Exists(link));
+        ConfigEdit.SetBoolInFile(cfgPath, "app", "start_with_windows",
+          !Loaded());
+        Eq("toggle writes off", false, Loaded());
+        Shortcuts.Apply(link, exe, Loaded());
+        Check("toggle off removes shortcut", !File.Exists(link));
+        ConfigEdit.SetBoolInFile(cfgPath, "app", "start_with_windows",
+          !Loaded());
+        Eq("toggle writes on", true, Loaded());
+        Shortcuts.Apply(link, exe, Loaded());
+        Check("toggle on restores shortcut", File.Exists(link));
+        Check("toggle keeps hotkey", File.ReadAllText(cfgPath).Contains(
+          "toggle = \"ctrl+alt+f2\""));
+        Check("no temp file left", !File.Exists(cfgPath + ".tmp"));
+
+        // A failed edit leaves the file byte for byte.
+        string broken = "[keys]\ntoggle = \"ctrl+alt+f2\"\ntoggle = \"x\"\n";
+        File.WriteAllText(cfgPath, broken);
+        Throws<FormatException>("toggle refuses a broken config",
+          () => ConfigEdit.SetBoolInFile(cfgPath, "app", "start_with_windows",
+            false));
+        Eq("toggle rollback keeps the file", broken,
+          File.ReadAllText(cfgPath));
+        Check("toggle rollback leaves no temp", !File.Exists(cfgPath + ".tmp"));
+      } finally {
+        Directory.Delete(dir, true);
+      }
+    }
+
     static void TestCli() {
       Eq("cli default", "run", Cli.Parse(Array.Empty<string>()).Command);
+      Eq("cli tray", "tray", Cli.Parse(new[] { "--tray" }).Command);
+      Eq("cli install", "install", Cli.Parse(new[] { "--install" }).Command);
+      Eq("cli uninstall", "uninstall",
+        Cli.Parse(new[] { "--uninstall" }).Command);
       Eq("cli toggle", "toggle", Cli.Parse(new[] { "--toggle" }).Command);
       Eq("cli quit-if-idle", "quit-if-idle",
         Cli.Parse(new[] { "--quit-if-idle" }).Command);

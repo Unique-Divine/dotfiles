@@ -26,7 +26,7 @@ export const jiyuuMcpPins = {
   slack: {
     runner: "bunx",
     package: "@uniquedivine/mcp-slack",
-    version: "4.5.1",
+    version: "4.5.2",
     local: { command: "bun", entry: "mcp/slack/src/cli.js" },
     legacy: {
       commands: ["slack-mcp", "slack-mcp-server"], component: "mcp/slack",
