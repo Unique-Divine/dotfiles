@@ -1206,8 +1206,11 @@ commands:
       var header = new Regex(@"^\s*\[\s*" + Regex.Escape(section) +
         @"\s*\]\s*(#.*)?$");
       var anyHeader = new Regex(@"^\s*\[");
-      var keyLine = new Regex(@"^(\s*" + Regex.Escape(key) +
-        @"\s*=\s*)(true|false)(.*)$");
+      // The key bare or quoted, as Toml.ParseKey accepts it, with any value:
+      // a non-bool value gets replaced too, never shadowed by a duplicate.
+      var keyLine = new Regex(@"^(\s*(?:" + Regex.Escape(key) + "|\"" +
+        Regex.Escape(key) + "\"" + @")\s*=\s*)" +
+        @"(""[^""]*""|'[^']*'|[^\s#]+)(.*)$");
       int start = lines.FindIndex(l => header.IsMatch(l));
       if (start < 0) {
         if (lines.Count > 0 && lines[^1].Trim().Length > 0) {
@@ -1231,11 +1234,32 @@ commands:
       return string.Join(nl, lines) + (trailingNewline || start < 0 ? nl : "");
     }
 
+    /// SetBool, then checks that the result still loads and has the new
+    /// value. Throws FormatException if not, so the caller keeps the file.
+    public static string SetBoolChecked(string text, string section,
+        string key, bool value) {
+      string next = SetBool(text, section, key, value);
+      Dictionary<string, object> parsed;
+      try {
+        parsed = Toml.Parse(next);
+        AppConfig.FromToml(next);
+      } catch (Exception e) when (e is TomlException or FormatException) {
+        throw new FormatException("the edited config would not load (" +
+          e.Message + "); config.toml left unchanged");
+      }
+      if (!parsed.TryGetValue(section + "." + key, out object? got) ||
+          got is not bool b || b != value) {
+        throw new FormatException($"the edit did not set {section}.{key}; " +
+          "config.toml left unchanged");
+      }
+      return next;
+    }
+
     /// Writes through a temp file so a crash can't leave half a config.
     public static void SetBoolInFile(string path, string section, string key,
         bool value) {
       string text = File.Exists(path) ? File.ReadAllText(path) : "";
-      string next = SetBool(text, section, key, value);
+      string next = SetBoolChecked(text, section, key, value);
       Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(
         path))!);
       string tmp = path + ".tmp";
@@ -6234,6 +6258,28 @@ commands:
       Eq("edit keeps CRLF", "[app]\r\nstart_with_windows = false\r\n",
         ConfigEdit.SetBool("[app]\r\nstart_with_windows = true\r\n", "app",
           "start_with_windows", false));
+      Eq("edit quoted key", "[app]\n\"start_with_windows\" = false\n",
+        ConfigEdit.SetBool("[app]\n\"start_with_windows\" = true\n", "app",
+          "start_with_windows", false));
+      Eq("edit spaced quoted key",
+        "[ app ]\n  \"start_with_windows\"   =   true  # c\n",
+        ConfigEdit.SetBool("[ app ]\n  \"start_with_windows\"   =   " +
+          "false  # c\n", "app", "start_with_windows", true));
+      Eq("edit replaces a non-bool", "[app]\nstart_with_windows = false\n",
+        ConfigEdit.SetBool("[app]\nstart_with_windows = \"yes\"\n", "app",
+          "start_with_windows", false));
+      foreach (string before in new[] {
+          "[app]\n\"start_with_windows\" = true\n",
+          "[app]\n  start_with_windows=true\n",
+          "[app]\nstart_with_windows = \"on\"\n" }) {
+        string after = ConfigEdit.SetBoolChecked(before, "app",
+          "start_with_windows", false);
+        Eq("edit no duplicate: " + before.Replace("\n", " "), false,
+          AppConfig.FromToml(after).Item1.StartWithWindows);
+      }
+      Throws<FormatException>("edit refuses a config that won't load",
+        () => ConfigEdit.SetBoolChecked("[app]\nstart_with_windows = true\n" +
+          "start_with_windows = true\n", "app", "start_with_windows", false));
       // Round trip: an edit parses to the new value
       // with no new warnings, and toggling back restores it byte for byte.
       string sample = "[keys]\ntoggle = \"ctrl+alt+f2\"\n\n[app]\n" +
@@ -6302,6 +6348,16 @@ commands:
         Check("toggle keeps hotkey", File.ReadAllText(cfgPath).Contains(
           "toggle = \"ctrl+alt+f2\""));
         Check("no temp file left", !File.Exists(cfgPath + ".tmp"));
+
+        // A failed edit leaves the file byte for byte.
+        string broken = "[keys]\ntoggle = \"ctrl+alt+f2\"\ntoggle = \"x\"\n";
+        File.WriteAllText(cfgPath, broken);
+        Throws<FormatException>("toggle refuses a broken config",
+          () => ConfigEdit.SetBoolInFile(cfgPath, "app", "start_with_windows",
+            false));
+        Eq("toggle rollback keeps the file", broken,
+          File.ReadAllText(cfgPath));
+        Check("toggle rollback leaves no temp", !File.Exists(cfgPath + ".tmp"));
       } finally {
         Directory.Delete(dir, true);
       }
