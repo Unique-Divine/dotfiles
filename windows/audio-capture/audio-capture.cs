@@ -2699,6 +2699,10 @@ commands:
     public int Failures;
     public int Count;
     public long NextRetryTicks;
+    /// A mic switch that failed while the old mic kept working: when to
+    /// try it again, since no device event may come to prompt it.
+    public long? SwitchRetryTicks;
+    public int SwitchFailures;
     public bool WaitingLogged;
     public string? LastDevice;
 
@@ -2993,6 +2997,15 @@ commands:
       ses.WriteManifest();
     }
 
+    /// Backs off 1, 2, 4, ... s up to 30 s: the old mic still records, so
+    /// a device that keeps failing need not be hammered.
+    static void SetSwitchRetry(Source src) {
+      src.SwitchFailures++;
+      int delayMs = 1000 * (1 << Math.Min(src.SwitchFailures - 1, 5));
+      src.SwitchRetryTicks = Stopwatch.GetTimestamp() +
+        Math.Min(delayMs, 30000) * Stopwatch.Frequency / 1000;
+    }
+
     static void SetRetry(Source src) {
       int delayMs = Math.Clamp(1000 * (1 << Math.Max(src.Failures - 1, 0)),
         1000, 5000);
@@ -3064,6 +3077,11 @@ commands:
       }
       var action = MicDecision.Decide(mic.Live?.Target.Spec,
         mic.Pending?.Target.Spec, target?.Spec);
+      if (target != null && target.Spec == mic.Live?.Target.Spec) {
+        // The default is back on the live mic: no switch left to retry.
+        mic.SwitchRetryTicks = null;
+        mic.SwitchFailures = 0;
+      }
       if (action == MicAction.CancelPending) {
         var stale = mic.Pending!;
         mic.Pending = null;
@@ -3093,7 +3111,9 @@ commands:
           CloseSegment(ses, mic, stale, graceful: false, endAt: null);
         }
         var cap = StartCapture(ses, mic, target);
-        if (cap != null) {
+        if (cap == null) {
+          SetSwitchRetry(mic);
+        } else {
           mic.Pending = cap;
           mic.PendingReason = reason;
           Log.Info("mic.switch_begin", "default changed; starting the new " +
@@ -3137,6 +3157,11 @@ commands:
         ses.TimeZero is double z ? ses.Elapsed - z : 0, starting);
       if (ses.Mic?.Pending is PcmCapture pending) {
         TickPending(ses, ses.Mic, pending, now);
+      }
+      if (ses.Mic is { Live: not null, Pending: null } mic &&
+          mic.SwitchRetryTicks is long due && now >= due && !reconcileBusy) {
+        mic.SwitchRetryTicks = null;
+        Reconcile("switch retry");
       }
       foreach (var src in ses.Sources) {
         if (src.Live == null) {
@@ -3201,6 +3226,7 @@ commands:
         CloseSegment(ses, src, pending, graceful: false, endAt: null);
         src.Failures++;
         SetRetry(src);
+        SetSwitchRetry(src);
       }
     }
 
@@ -3215,6 +3241,8 @@ commands:
       src.Pending = null;
       src.Target = next.Target;
       src.WaitingLogged = false;
+      src.SwitchRetryTicks = null;
+      src.SwitchFailures = 0;
       if (old != null) {
         CloseSegment(ses, src, old, graceful: true, endAt: start);
       }
@@ -4348,14 +4376,16 @@ commands:
     public const double ToneAmplitude = 0.125;
     public const double BurstAmplitude = 0.25;
 
-    public sealed record Spec(int Tone, int Burst, int PhaseMs);
+    public sealed record Spec(int Tone, int Burst, int PhaseMs, bool Fail);
 
-    /// "tone=440,burst=3000,phase=500"
+    /// "tone=440,burst=3000,phase=500"; "fail=1" exits at once, like
+    /// FFmpeg on a device that can't be opened yet.
     public static Spec Parse(string spec) {
       var kv = spec.Split(',').Select(x => x.Split('='))
         .ToDictionary(x => x[0], x => int.Parse(x[1],
           CultureInfo.InvariantCulture));
-      return new Spec(kv["tone"], kv["burst"], kv.GetValueOrDefault("phase"));
+      return new Spec(kv["tone"], kv["burst"], kv.GetValueOrDefault("phase"),
+        kv.GetValueOrDefault("fail") != 0);
     }
 
     /// True when a sample at this wall-clock time is inside a burst.
@@ -4367,6 +4397,9 @@ commands:
 
     public static int Run(string pipePath, string specText) {
       var spec = Parse(specText);
+      if (spec.Fail) {
+        return 1;
+      }
       string name = pipePath.Replace(@"\\.\pipe\", "");
       using var pipe = new System.IO.Pipes.NamedPipeClientStream(".", name,
         PipeDirection.Out);
@@ -4454,7 +4487,8 @@ commands:
 
   static class Simulator {
     public static readonly string[] Scenarios = {
-      "replug", "bump", "airpods", "console-change", "back-to-back",
+      "replug", "bump", "airpods", "switch-retry", "console-change",
+      "back-to-back",
     };
 
     const int SystemHz = 150;
@@ -4500,8 +4534,16 @@ commands:
         Mic = "communications",
         KeepSession = true,
       };
+      // Devices that can't be opened yet: their fake exits at once.
+      var failing = new HashSet<string>();
+      bool Failing(string id) {
+        lock (failing) {
+          return failing.Contains(id);
+        }
+      }
       var resolver = new FakeResolver(e => Devices.TryGetValue(e.Id,
-          out var d) ? $"fake:tone={d.Hz},burst={MicBurstHz},phase=500"
+          out var d) ? $"fake:tone={d.Hz},burst={MicBurstHz},phase=500" +
+            (Failing(e.Id) ? ",fail=1" : "")
           : null);
       Log.Info("simulate.start", scenario, new { scenario });
       Console.WriteLine($"== {scenario}");
@@ -4561,6 +4603,23 @@ commands:
             fake.SetDefault(CaptureRole.Communications, "airpods");
             Note("airpods connect; communications default -> airpods");
             await Task.Delay(4000);
+            break;
+          case "switch-retry":
+            // The AirPods become the default but fail to open, then work
+            // with no further device event, while the Yeti keeps working.
+            await Task.Delay(3000);
+            lock (failing) {
+              failing.Add("airpods");
+            }
+            fake.Add("airpods", Devices["airpods"].Name);
+            fake.SetDefault(CaptureRole.Communications, "airpods");
+            Note("airpods connect but fail to open; default -> airpods");
+            await Task.Delay(2000);
+            lock (failing) {
+              failing.Remove("airpods");
+            }
+            Note("airpods open now (no device event)");
+            await Task.Delay(6000);
             break;
           case "console-change":
             await Task.Delay(3000);
@@ -4746,6 +4805,7 @@ commands:
           Expect($"bump gap under 2.5 s ({maxGap:0.00} s)", maxGap < 2.5);
           break;
         case "airpods":
+        case "switch-retry":
           Expect($"tones 440 -> 880 (got {seq})", seq == "440 -> 880");
           Expect($"seamless switch: gap {maxGap * 1000:0} ms, overlap " +
             $"{overlap * 1000:0} ms", maxGap <= 0.06 && overlap <= 0.06);
@@ -5328,7 +5388,8 @@ commands:
 
     static void TestBursts() {
       var spec = FakeDevice.Parse("tone=440,burst=3000,phase=500");
-      Eq("fake spec", new FakeDevice.Spec(440, 3000, 500), spec);
+      Eq("fake spec", new FakeDevice.Spec(440, 3000, 500, false), spec);
+      Check("fake spec fail", FakeDevice.Parse("tone=1,burst=2,fail=1").Fail);
       var sec = new DateTime(2026, 11, 13, 12, 0, 0, DateTimeKind.Utc);
       Check("burst at phase", FakeDevice.InBurst(sec.AddMilliseconds(510),
         500));

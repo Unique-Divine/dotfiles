@@ -154,6 +154,7 @@ hardware: run it, plug and unplug mics, and watch the events and defaults.
 | `replug` | Yeti out for 4 s: laptop mic, then Yeti |
 | `bump` | Yeti out for 0.7 s |
 | `airpods` | AirPods connect and become the default |
+| `switch-retry` | AirPods become the default but fail to open for 2 s |
 | `console-change` | Only the Default Device changes: ignored |
 | `back-to-back` | A second recording starts while the first saves |
 | `all` | Every scenario |
