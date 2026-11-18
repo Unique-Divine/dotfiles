@@ -29,14 +29,20 @@ echo removed %OUT%
 goto kept
 
 :noexe
-rem No exe to ask: remove the shortcuts by name.
+rem No exe to ask: remove a shortcut only if its target is the installed
+rem exe's path. A same-name shortcut that points elsewhere isn't ours.
 echo audio-capture is not installed in %OUT%
-for %%L in ("%PROGRAMS%\audio-capture.lnk" "%PROGRAMS%\Startup\audio-capture.lnk") do (
-  if exist %%L (
-    del %%L
-    echo removed %%~L
-  )
-)
+powershell.exe -NoProfile -Command ^
+  "$exe = [IO.Path]::GetFullPath($env:EXE);" ^
+  "$sh = New-Object -ComObject WScript.Shell;" ^
+  "foreach ($p in @(($env:PROGRAMS + '\audio-capture.lnk')," ^
+  "    ($env:PROGRAMS + '\Startup\audio-capture.lnk'))) {" ^
+  "  if (-not (Test-Path -LiteralPath $p)) { continue }" ^
+  "  $t = $sh.CreateShortcut($p).TargetPath;" ^
+  "  if ($t -and [IO.Path]::GetFullPath($t) -ieq $exe) {" ^
+  "    Remove-Item -LiteralPath $p; 'removed ' + $p" ^
+  "  } else { 'kept ' + $p + ': not ours (it points at ' + $t + ')' } }"
+if errorlevel 1 goto fail
 
 :kept
 echo kept %USERPROFILE%\.audio-capture

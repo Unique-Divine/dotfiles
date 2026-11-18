@@ -451,9 +451,15 @@ commands:
       try {
         bool enabled = ConfigLoader.Load(configPath).Config.StartWithWindows;
         string exe = Environment.ProcessPath!;
-        Console.WriteLine(Shortcuts.Apply(Shortcuts.StartMenuLink, exe, true));
-        Console.WriteLine(Shortcuts.Apply(Shortcuts.StartupLink, exe,
-          enabled));
+        foreach (string result in new[] {
+            Shortcuts.Apply(Shortcuts.StartMenuLink, exe, true),
+            Shortcuts.Apply(Shortcuts.StartupLink, exe, enabled) }) {
+          if (result.StartsWith("kept")) {
+            Console.Error.WriteLine("warning: " + result);
+          } else {
+            Console.WriteLine(result);
+          }
+        }
         Log.Info("app.installed", "shortcuts created", new {
           start_menu = Shortcuts.StartMenuLink, startup = enabled, exe,
         });
@@ -471,7 +477,7 @@ commands:
       foreach (string link in new[] { Shortcuts.StartMenuLink,
           Shortcuts.StartupLink }) {
         try {
-          Console.WriteLine(Shortcuts.Remove(link));
+          Console.WriteLine(Shortcuts.Remove(link, Environment.ProcessPath!));
         } catch (Exception e) {
           Console.Error.WriteLine($"audio-capture: {link}: {e.Message}");
           status = 1;
@@ -1285,15 +1291,20 @@ commands:
       string WorkingDir, string IconPath, int IconIndex);
 
     /// Makes `link` match `enabled`: creates or updates it to run `exe`,
-    /// or deletes it. Returns what it did, for logs and install output.
+    /// or deletes it. Returns what it did, for logs and install output; a
+    /// result starting with "kept" means a shortcut that isn't ours is in
+    /// the way and was left alone.
     public static string Apply(string link, string exe, bool enabled) {
       if (!enabled) {
-        return Remove(link);
+        return Remove(link, exe);
       }
       var want = new Link(exe, Arguments, Path.GetDirectoryName(exe)!, exe, 0);
       if (File.Exists(link)) {
         Link? have = TryRead(link);
-        if (have != null && Same(have, want)) {
+        if (have == null || !Owned(have, exe)) {
+          return Kept(link, have);
+        }
+        if (Same(have, want)) {
           return "unchanged " + link;
         }
         Write(link, want);
@@ -1303,28 +1314,46 @@ commands:
       return "created " + link;
     }
 
-    /// Deletes `link` if it launches an audio-capture.exe. A file with our
-    /// name that points elsewhere isn't ours, so it stays.
-    public static string Remove(string link) {
+    /// Deletes `link` only if it launches `exe`. A file with our name that
+    /// points elsewhere, or can't be read, isn't ours, so it stays.
+    public static string Remove(string link, string exe) {
       if (!File.Exists(link)) {
         return "absent " + link;
       }
       Link? have = TryRead(link);
-      if (have != null && !string.Equals(Path.GetFileName(have.Target),
-          "audio-capture.exe", StringComparison.OrdinalIgnoreCase)) {
-        return $"kept {link}: it points at {have.Target}";
+      if (have == null || !Owned(have, exe)) {
+        return Kept(link, have);
       }
       File.Delete(link);
       return "removed " + link;
     }
 
+    /// Ours means it targets this exe, compared as normalized paths.
+    public static bool Owned(Link l, string exe) =>
+      SamePath(l.Target, exe);
+
+    static bool SamePath(string a, string b) {
+      static string Norm(string p) {
+        try {
+          return Path.GetFullPath(Environment.ExpandEnvironmentVariables(p))
+            .TrimEnd('\\', '/');
+        } catch (Exception e) when (e is ArgumentException or
+            NotSupportedException or PathTooLongException) {
+          return p;
+        }
+      }
+      return a.Length > 0 && string.Equals(Norm(a), Norm(b),
+        StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string Kept(string link, Link? have) =>
+      $"kept {link}: not ours (it " + (have == null ? "can't be read"
+        : $"points at {have.Target}") + ")";
+
     static bool Same(Link a, Link b) =>
-      string.Equals(a.Target, b.Target, StringComparison.OrdinalIgnoreCase) &&
-      a.Arguments == b.Arguments &&
-      string.Equals(a.WorkingDir, b.WorkingDir,
-        StringComparison.OrdinalIgnoreCase) &&
-      string.Equals(a.IconPath, b.IconPath,
-        StringComparison.OrdinalIgnoreCase) && a.IconIndex == b.IconIndex;
+      SamePath(a.Target, b.Target) && a.Arguments == b.Arguments &&
+      SamePath(a.WorkingDir, b.WorkingDir) &&
+      SamePath(a.IconPath, b.IconPath) && a.IconIndex == b.IconIndex;
 
     public static void Write(string link, Link l) {
       var sl = (IShellLinkW)new CShellLink();
@@ -4321,7 +4350,10 @@ commands:
       try {
         string result = Shortcuts.Apply(Shortcuts.StartupLink,
           Environment.ProcessPath!, cfg.StartWithWindows);
-        if (!result.StartsWith("unchanged") && !result.StartsWith("absent")) {
+        if (result.StartsWith("kept")) {
+          Log.Warn("startup.foreign_shortcut", result);
+        } else if (!result.StartsWith("unchanged") &&
+            !result.StartsWith("absent")) {
           Log.Info("startup.applied", result, new {
             reason, enabled = cfg.StartWithWindows,
           });
@@ -6323,10 +6355,27 @@ commands:
           .StartsWith("absent"));
         string notepad = Path.Combine(Environment.GetFolderPath(
           Environment.SpecialFolder.Windows), "notepad.exe");
-        Shortcuts.Write(link, new Shortcuts.Link(notepad, "", dir, notepad, 0));
-        Check("foreign shortcut kept", Shortcuts.Remove(link)
+        var foreign = new Shortcuts.Link(notepad, "", dir, notepad, 0);
+        Shortcuts.Write(link, foreign);
+        Check("foreign shortcut kept on remove", Shortcuts.Remove(link, exe)
+          .StartsWith("kept") && File.Exists(link));
+        Check("foreign shortcut kept on disable", Shortcuts.Apply(link, exe,
+          false).StartsWith("kept") && File.Exists(link));
+        Check("foreign shortcut kept on install", Shortcuts.Apply(link, exe,
+          true).StartsWith("kept"));
+        Eq("foreign shortcut untouched", foreign.Target.ToLowerInvariant(),
+          Shortcuts.Read(link).Target.ToLowerInvariant());
+        // Another audio-capture.exe, say a dev build, isn't ours either.
+        string other = Path.Combine(dir, "audio-capture.exe");
+        Shortcuts.Write(link, foreign with { Target = other });
+        Check("other audio-capture kept", Shortcuts.Remove(link, exe)
+          .StartsWith("kept") && File.Exists(link));
+        File.WriteAllText(link, "not a shortcut");
+        Check("unreadable shortcut kept", Shortcuts.Apply(link, exe, false)
           .StartsWith("kept") && File.Exists(link));
         File.Delete(link);
+        Check("owned by normalized path", Shortcuts.Owned(
+          new Shortcuts.Link(exe.ToUpperInvariant(), "", "", "", 0), exe));
 
         // The tray toggle: config first, then the shortcut from the config.
         string cfgPath = Path.Combine(dir, "config.toml");

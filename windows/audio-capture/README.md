@@ -74,7 +74,10 @@ install folder (dev builds) never touch the Startup shortcut.
   not hotkeys).
 - `%LOCALAPPDATA%\Programs\audio-capture`, the exe folder.
 
-It keeps `%USERPROFILE%\.audio-capture` entirely: `config.toml` with your
+A shortcut counts as install's only if its target is the installed exe;
+install, the tray toggle, and uninstall leave any other `audio-capture.lnk`
+alone and print or log a warning. Uninstall keeps
+`%USERPROFILE%\.audio-capture` entirely: `config.toml` with your
 hotkeys and other settings, the logs, and any unsaved sessions. Like the
 build, it refuses to run while a recording or a save is in progress.
 
