@@ -42,7 +42,10 @@ scripts.
 3. Creates the Startup shortcut in
    `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`, unless
    Start with Windows is off.
-4. Starts the app through the Start Menu shortcut.
+4. Starts the installed exe with `--tray`.
+
+If a shortcut named `audio-capture.lnk` that points at another program is
+in the way, install leaves it, names it, and fails.
 
 Rerunning it updates the exe and both shortcuts. Both shortcuts run
 `audio-capture.exe --tray`, which starts the app without recording; if the
@@ -74,9 +77,10 @@ install folder (dev builds) never touch the Startup shortcut.
   not hotkeys).
 - `%LOCALAPPDATA%\Programs\audio-capture`, the exe folder.
 
-A shortcut counts as install's only if its target is the installed exe;
-install, the tray toggle, and uninstall leave any other `audio-capture.lnk`
-alone and print or log a warning. Uninstall keeps
+A shortcut counts as install's only if its target is the installed exe.
+Install, the tray toggle, and uninstall leave any other `audio-capture.lnk`
+alone: install fails, the tray logs a warning, and uninstall prints one.
+Uninstall keeps
 `%USERPROFILE%\.audio-capture` entirely: `config.toml` with your
 hotkeys and other settings, the logs, and any unsaved sessions. Like the
 build, it refuses to run while a recording or a save is in progress.

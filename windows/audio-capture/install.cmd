@@ -12,10 +12,12 @@ call "%~dp0build.cmd"
 if errorlevel 1 goto fail
 "%OUT%\audio-capture.exe" --install
 if errorlevel 1 goto fail
-rem Launch through the new Start Menu shortcut. Explorer starts it, so the
-rem app doesn't inherit this window's pipes, which would keep a WSL caller
-rem waiting until the app exits.
-explorer.exe "%APPDATA%\Microsoft\Windows\Start Menu\Programs\audio-capture.lnk"
+rem Start the installed exe itself, never a shortcut. Start-Process uses
+rem ShellExecute, so the app doesn't inherit this window's pipes, which
+rem would keep a WSL caller waiting until the app exits.
+powershell.exe -NoProfile -Command ^
+  "Start-Process -FilePath $env:OUT\audio-capture.exe -ArgumentList '--tray'"
+if errorlevel 1 goto fail
 echo installed audio-capture; it is running in the tray
 goto done
 

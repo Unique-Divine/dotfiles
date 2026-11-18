@@ -451,23 +451,38 @@ commands:
       try {
         bool enabled = ConfigLoader.Load(configPath).Config.StartWithWindows;
         string exe = Environment.ProcessPath!;
-        foreach (string result in new[] {
-            Shortcuts.Apply(Shortcuts.StartMenuLink, exe, true),
-            Shortcuts.Apply(Shortcuts.StartupLink, exe, enabled) }) {
-          if (result.StartsWith("kept")) {
-            Console.Error.WriteLine("warning: " + result);
-          } else {
-            Console.WriteLine(result);
-          }
+        int status = InstallLinks(Shortcuts.StartMenuLink,
+          Shortcuts.StartupLink, exe, enabled, Console.Out, Console.Error);
+        if (status == 0) {
+          Log.Info("app.installed", "shortcuts created", new {
+            start_menu = Shortcuts.StartMenuLink, startup = enabled, exe,
+          });
         }
-        Log.Info("app.installed", "shortcuts created", new {
-          start_menu = Shortcuts.StartMenuLink, startup = enabled, exe,
-        });
-        return 0;
+        return status;
       } catch (Exception e) {
         Console.Error.WriteLine("audio-capture: install failed: " + e.Message);
         return 1;
       }
+    }
+
+    /// Applies both shortcuts. A shortcut of ours blocked by someone else's
+    /// with the same name fails the install (exit 1), so install.cmd
+    /// reports it instead of claiming success.
+    public static int InstallLinks(string startMenu, string startup,
+        string exe, bool enabled, TextWriter stdout, TextWriter stderr) {
+      int status = 0;
+      foreach (string result in new[] {
+          Shortcuts.Apply(startMenu, exe, true),
+          Shortcuts.Apply(startup, exe, enabled) }) {
+        if (result.StartsWith("kept")) {
+          stderr.WriteLine("audio-capture: " + result + ". Rename or " +
+            "remove it, then install again.");
+          status = 1;
+        } else {
+          stdout.WriteLine(result);
+        }
+      }
+      return status;
     }
 
     /// Removes both shortcuts. uninstall.cmd then deletes the exe folder.
@@ -6374,6 +6389,25 @@ commands:
         Check("unreadable shortcut kept", Shortcuts.Apply(link, exe, false)
           .StartsWith("kept") && File.Exists(link));
         File.Delete(link);
+
+        // --install with someone else's Start Menu shortcut in the way.
+        string menu = Path.Combine(dir, "menu", Shortcuts.FileName);
+        string boot = Path.Combine(dir, "boot", Shortcuts.FileName);
+        Shortcuts.Write(menu, foreign);
+        var outText = new StringWriter();
+        var errText = new StringWriter();
+        Eq("install fails on a foreign start menu link", 1,
+          Commands.InstallLinks(menu, boot, exe, true, outText, errText));
+        Check("install says why", errText.ToString().Contains("not ours"),
+          errText.ToString());
+        Eq("install keeps the foreign link", foreign.Target.ToLowerInvariant(),
+          Shortcuts.Read(menu).Target.ToLowerInvariant());
+        Check("install still adds startup", File.Exists(boot));
+        File.Delete(menu);
+        Eq("install succeeds once clear", 0, Commands.InstallLinks(menu, boot,
+          exe, true, TextWriter.Null, TextWriter.Null));
+        Check("install creates start menu link", Shortcuts.Owned(
+          Shortcuts.Read(menu), exe));
         Check("owned by normalized path", Shortcuts.Owned(
           new Shortcuts.Link(exe.ToUpperInvariant(), "", "", "", 0), exe));
 
