@@ -3102,6 +3102,11 @@ commands:
         Log.Warn("mic.check_error", error, new {
           session = ses.Name, reason,
         });
+        // The lookup failed while the old mic records: no device event may
+        // come once it would succeed, so keep checking with backoff.
+        if (mic.Live != null && mic.Pending == null) {
+          SetSwitchRetry(mic);
+        }
       }
       var action = MicDecision.Decide(mic.Live?.Target.Spec,
         mic.Pending?.Target.Spec, target?.Spec);
@@ -4513,8 +4518,8 @@ commands:
 
   static class Simulator {
     public static readonly string[] Scenarios = {
-      "replug", "bump", "airpods", "switch-retry", "console-change",
-      "back-to-back",
+      "replug", "bump", "airpods", "switch-retry", "switch-lookup",
+      "console-change", "back-to-back",
     };
 
     const int SystemHz = 150;
@@ -4567,7 +4572,15 @@ commands:
           return failing.Contains(id);
         }
       }
-      var resolver = new FakeResolver(e => Devices.TryGetValue(e.Id,
+      // Devices DirectShow can't find yet: the resolver returns nothing.
+      var unresolved = new HashSet<string>();
+      bool Unresolved(string id) {
+        lock (failing) {
+          return unresolved.Contains(id);
+        }
+      }
+      var resolver = new FakeResolver(e => !Unresolved(e.Id) &&
+          Devices.TryGetValue(e.Id,
           out var d) ? $"fake:tone={d.Hz},burst={MicBurstHz},phase=500" +
             (Failing(e.Id) ? ",fail=1" : "")
           : null);
@@ -4645,6 +4658,29 @@ commands:
               failing.Remove("airpods");
             }
             Note("airpods open now (no device event)");
+            await Task.Delay(6000);
+            break;
+          case "switch-lookup":
+            // The AirPods fail to open, then the retry can't find them in
+            // DirectShow, then they work. No device event after the first.
+            await Task.Delay(3000);
+            lock (failing) {
+              failing.Add("airpods");
+            }
+            fake.Add("airpods", Devices["airpods"].Name);
+            fake.SetDefault(CaptureRole.Communications, "airpods");
+            Note("airpods connect but fail to open; default -> airpods");
+            await Task.Delay(600);
+            lock (failing) {
+              failing.Remove("airpods");
+              unresolved.Add("airpods");
+            }
+            Note("airpods missing from DirectShow");
+            await Task.Delay(1900);
+            lock (failing) {
+              unresolved.Remove("airpods");
+            }
+            Note("airpods found and open now (no device event)");
             await Task.Delay(6000);
             break;
           case "console-change":
@@ -4832,6 +4868,7 @@ commands:
           break;
         case "airpods":
         case "switch-retry":
+        case "switch-lookup":
           Expect($"tones 440 -> 880 (got {seq})", seq == "440 -> 880");
           Expect($"seamless switch: gap {maxGap * 1000:0} ms, overlap " +
             $"{overlap * 1000:0} ms", maxGap <= 0.06 && overlap <= 0.06);
