@@ -1,0 +1,29 @@
+{
+  "id": "19a0000000000004",
+  "threadId": "19b0000000000004",
+  "labelIds": [
+    "CATEGORY_PROMOTIONS",
+    "UNREAD",
+    "Label_28",
+    "Label_30",
+    "Label_31",
+    "INBOX"
+  ],
+  "snippet": "Fixture snippet for target message 2.",
+  "payload": {
+    "mimeType": "multipart/alternative",
+    "headers": [
+      {
+        "name": "Subject",
+        "value": "Fixture subject 2"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<fixture-target-2@mail.example.com>"
+      }
+    ]
+  },
+  "sizeEstimate": 49000,
+  "historyId": "1000002",
+  "internalDate": "1762560000000"
+}

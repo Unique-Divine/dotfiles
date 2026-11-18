@@ -92,3 +92,64 @@ Superhuman.
 
 The agent workflow (label convention, bulk actions, triage rules) is in the
 private `ud` agent skill, branch `email.md`.
+
+## Gmail Archive Bridge
+
+`just gmail-bridge` runs [gmail-bridge.ts](./gmail-bridge.ts), a persistent
+JSONL transport for the private local archive. Send one request per line:
+
+```json
+{"version":1,"request_id":"connect-1","account":"reader@example.org","op":"connect","args":{"interactive":false}}
+```
+
+Responses echo `version` and `request_id`, with `ok` and either `data` or
+`error: {code, message, retryable}`. Stdout contains JSONL only. Interactive
+OAuth browser instructions go to stderr. Each account must authorize
+`gmail.modify`; noninteractive calls return `auth_required` when necessary.
+Tokens use the existing mail-state-sync private token directory. The bridge
+checks the signed-in identity against the requested account.
+
+Operations are `connect`, `profile`, `list`, `fetch`, `threads`, `history`,
+`labels`, `create_labels`, `modify`, and `unsubscribe`. Provider responses
+retain their original fields. `fetch` and `threads` use HTTP multipart batches
+of at most 50 and report individual failures. Separate text MIME bodies
+appear in `text_parts`, with per-message `completeness`; binary attachments
+are never downloaded. `threads` refreshes conversation membership before
+applying a conversation decision. `modify` accepts at most 1000 message IDs.
+Missing labels are created without replacing the existing catalog.
+
+The bridge weighs requests using the current Gmail quota costs, including
+60 units for full messages, 20 for minimal messages, and the sum of multipart
+children. Defaults are 6000 units per minute per account and 1200000 per
+project. These limits govern a single bridge process; callers should share
+one process rather than launch competing collectors. Quota 403s, 429s,
+Retry-After, transient reads, and expired access tokens receive bounded
+retries. Uncertain writes return `uncertain_result` for reconciliation.
+
+One-click unsubscribe requires declared RFC 8058 HTTPS headers. It rejects
+recognized group relays and local/private destinations, makes a separate POST
+without Gmail authorization, follows no redirects, and never sends email.
+Network failures return `outcome: "uncertain"` and are never blindly retried.
+Callers own approval, protected-mail checks, and durable cleanup records.
+
+| Environment | Meaning |
+|---|---|
+| `UD_MAIL_CREDENTIALS` | OAuth client JSON path. Defaults to the mail-state-sync credentials path. |
+| `UD_MAIL_TOKEN_DIR` | Private per-account token directory override. |
+| `UD_MAIL_ACCOUNT_QUOTA` | Per-account quota units per minute. |
+| `UD_MAIL_PROJECT_QUOTA` | Shared project quota units per minute. |
+
+Run `just email-test` for transport and existing filter/sync tests, and
+`just email-check` for native Bun type checking. Tests use local HTTP servers
+and synthetic mail. They do not contact live mailboxes.
+
+Every JSONL response, including errors, includes a per-request `metrics`
+delta. `http_requests` counts Gmail HTTP attempts plus external one-click
+POST attempts; `logical_requests` counts individual Gmail API children plus
+external POSTs. OAuth exchange traffic is outside these counters.
+`quota_units_reserved` sums reserved method costs, including retries.
+`retries` counts retry rounds, `retry_wait_ms` counts their waits, and
+`quota_wait_ms` includes quota pacing plus quota-error waits. `bytes_received`
+counts decoded response-body bytes read by the Gmail client, including
+multipart wrappers. `external_http_requests` distinguishes one-click calls.
+Counters include failed attempts and never contain credentials or URLs.
