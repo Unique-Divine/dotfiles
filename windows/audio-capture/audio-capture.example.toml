@@ -5,6 +5,12 @@
 # Edits apply at the next recording start, except keys.toggle, which needs
 # a restart (audio-capture --quit, then launch it again).
 
+[app]
+# Launch at Windows sign-in through a shortcut in the Startup folder. The
+# tray menu's "Start with Windows" item flips this value, and the app keeps
+# the shortcut in step with it.
+start_with_windows = true
+
 [keys]
 # One global chord in herdr's syntax: ctrl, alt, shift, and win (or super,
 # cmd) plus one key, such as a letter, a digit, f1 to f24, or a named key
