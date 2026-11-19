@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseLogLines, savedSeconds, sessionFacts } from "./log"
+import { parseLogLines, savedSeconds, sessionFacts, winPathKey } from "./log"
 import { parseSince } from "./recordings"
 import { formatCommand, winToWslVia, wslToWinVia } from "./system"
 import {
@@ -96,6 +96,11 @@ describe("log", () => {
     expect(facts?.saved?.duration_s).toBe(15.6)
     expect(facts?.segments).toHaveLength(1)
   })
+  test("winPathKey normalizes slashes, repeats, and case", () => {
+    expect(winPathKey("C:/Users//Test\\Rec\\\\a.MP3")).toBe("c:\\users\\test\\rec\\a.mp3")
+    expect(winPathKey("\\\\server\\share\\a.mp3")).toBe("\\\\server\\share\\a.mp3")
+  })
+
   test("savedSeconds", () => {
     expect(savedSeconds("saved x (2.0 s, expected 2.0 s)")).toBe(2)
     expect(savedSeconds(null)).toBeNull()

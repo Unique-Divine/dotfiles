@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { basename, join } from "node:path"
 import { parse as parseToml } from "smol-toml"
 import {
-  factsByOutputName, readLog, sessionFacts, winBaseName, type SessionFacts,
+  factsByOutputPath, readLog, sessionFacts, winPathKey, type SessionFacts,
 } from "./log"
 import { readSidecar, sidecarPath, type Sidecar } from "./sidecar"
 import type { WinSystem } from "./system"
@@ -149,6 +149,7 @@ export const describe = (
   ctx: Context,
   path: string,
   facts: SessionFacts | null,
+  winPath: string = ctx.system.toWin(path),
 ): RecordingDetail => {
   const stat = statSync(path)
   const name = basename(path)
@@ -166,7 +167,7 @@ export const describe = (
     recording: {
       name,
       path,
-      win_path: ctx.system.toWin(path),
+      win_path: winPath,
       time: time.toISOString(),
       size_bytes: stat.size,
       modified: stat.mtime.toISOString(),
@@ -188,7 +189,7 @@ export const describe = (
 /** Every recording on disk, newest first. */
 export const listRecordings = (ctx: Context): RecordingDetail[] => {
   const logsDir = join(ctx.stateDir, "logs")
-  const byName = factsByOutputName(sessionFacts(readLog(logsDir)))
+  const byPath = factsByOutputPath(sessionFacts(readLog(logsDir)))
   if (!existsSync(join(logsDir, "audio-capture.jsonl"))) {
     ctx.warn(`no log at ${join(logsDir, "audio-capture.jsonl")}; ` +
       "durations, mics, and sessions are unknown")
@@ -202,7 +203,7 @@ export const listRecordings = (ctx: Context): RecordingDetail[] => {
       ctx.warn(`recordings folder not found: ${ctx.root.wsl}`)
     }
   }
-  for (const facts of byName.values()) {
+  for (const facts of byPath.values()) {
     const output = facts.saved?.output
     if (!output) continue
     try {
@@ -213,7 +214,10 @@ export const listRecordings = (ctx: Context): RecordingDetail[] => {
     }
   }
   return [...paths]
-    .map((path) => describe(ctx, path, byName.get(winBaseName(path)) ?? null))
+    .map((path) => {
+      const winPath = ctx.system.toWin(path)
+      return describe(ctx, path, byPath.get(winPathKey(winPath)) ?? null, winPath)
+    })
     .sort((a, b) =>
       b.recording.time.localeCompare(a.recording.time) ||
       b.recording.name.localeCompare(a.recording.name))

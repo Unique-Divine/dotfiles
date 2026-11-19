@@ -245,6 +245,33 @@ describe("time-only name templates", () => {
   })
 })
 
+describe("log join", () => {
+  test("the same name in two folders keeps each folder's session", () => {
+    const fake = makeFakeWindows()
+    fakes.push(fake)
+    writeFileSync(join(fake.stateDir, "config.toml"),
+      '[output]\ndir = "{documents}/rec/{yyyy-MM-dd}"\nname = "{HHmmss}.mp3"\n')
+    fake.addRecording("../../rec/2026-11-17", "090000.mp3")
+    fake.addRecording("../../rec/2026-11-18", "090000.mp3")
+    fake.addLog([
+      ...sessionEvents({ session: "day17", started: "2026-11-17T09:00:00",
+        // Another case and slash style than the file system, on purpose.
+        output: "c:/users/TEST/Documents/rec/2026-11-17/090000.mp3",
+        seconds: 3, mics: ["Yeti"] }),
+      ...sessionEvents({ session: "day18", started: "2026-11-18T09:00:00",
+        output: "C:\\Users\\test\\Documents\\rec\\2026-11-18\\090000.mp3",
+        seconds: 7, mics: [] }),
+    ])
+    const rows = JSON.parse(fake.run(["ls", "--json"]).stdout) as
+      { path: string; session: string; duration_s: number; mics: string[] }[]
+    expect(rows.map((r) => [r.path.split("/").slice(-2).join("/"), r.session,
+      r.duration_s, r.mics])).toEqual([
+      ["2026-11-18/090000.mp3", "day18", 7, []],
+      ["2026-11-17/090000.mp3", "day17", 3, ["Yeti"]],
+    ])
+  })
+})
+
 describe("ids", () => {
   test("a unique prefix, a full name, a stem, and paths all resolve", () => {
     const fake = fixture()

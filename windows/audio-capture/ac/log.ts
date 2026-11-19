@@ -163,18 +163,26 @@ export const sessionFacts = (events: LogEvent[]): Map<string, SessionFacts> => {
   return sessions
 }
 
-/** Windows file name of a path, lowercased, for matching. */
-export const winBaseName = (path: string): string =>
-  (path.split(/[\\/]/).pop() ?? path).toLowerCase()
+/**
+ * A Windows path as a join key: forward slashes become backslashes,
+ * repeated separators collapse, and case folds, since Windows paths are
+ * case-insensitive.
+ */
+export const winPathKey = (path: string): string =>
+  path.replaceAll("/", "\\").replace(/(?<!^)\\{2,}/g, "\\").toLowerCase()
 
-/** Facts of saved recordings by output file name (lowercased). */
-export const factsByOutputName = (
+/**
+ * Facts of saved recordings by full output path (see winPathKey). The
+ * same file name can repeat in different dated folders, so the name alone
+ * would mix sessions. A later save to the same path wins.
+ */
+export const factsByOutputPath = (
   sessions: Map<string, SessionFacts>,
 ): Map<string, SessionFacts> => {
   const out = new Map<string, SessionFacts>()
   for (const facts of sessions.values()) {
     if (facts.saved?.ok && facts.saved.output) {
-      out.set(winBaseName(facts.saved.output), facts)
+      out.set(winPathKey(facts.saved.output), facts)
     }
   }
   return out
