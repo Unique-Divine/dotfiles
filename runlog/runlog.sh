@@ -126,6 +126,12 @@ def redact_lines($p): (if pem_begin then split("\n") | pem_lines
     | redact($p)]
   | join("\n");'
 
+# jq compiles a regex on every call: 43 patterns over about nine strings
+# per event was 55 of the 60 ms an event cost. `clean` first tests one
+# alternation of all patterns (`keep` names dropped) against every string
+# of the event, each ended by a newline. When nothing matches, no pattern
+# would change any string, so only `cut` runs. Otherwise every string takes
+# the full pass below, as before.
 # The jq program behind every line. `redact` applies each shared pattern,
 # `cut` keeps 512 characters, and a line over 4,095 bytes falls back to
 # the common fields plus `truncated: true`. Positional args are KEY=VAL
@@ -133,8 +139,14 @@ def redact_lines($p): (if pem_begin then split("\n") | pem_lines
 # shellcheck disable=SC2016
 _runlog_jq_line="${_runlog_jq_redact}"'
 def cut: if length > 512 then .[:512] + "[cut]" else . end;
+def any_re($p): [$p[].regex | gsub("\\(\\?<keep>"; "(?:") | "(?:" + . + ")"]
+  | join("|");
 def clean: pats as $p
-  | walk(if type == "string" then redact($p) | cut else . end);
+  | ([.. | strings | . + "\n"] | join("")) as $all
+  | if (($p | length) > 0 and (($all | test(any_re($p); "i")) | not))
+      and (($all | contains("-----") and pem_begin) | not)
+    then walk(if type == "string" then cut else . end)
+    else walk(if type == "string" then redact($p) | cut else . end) end;
 def ts: ($ms / 1000 | floor | strftime("%Y-%m-%dT%H:%M:%S")) + "."
   + (($ms % 1000) + 1000 | tostring | .[1:]) + "Z";
 ({v: 1, ts: ts, source: $source, run_id: $run_id,
