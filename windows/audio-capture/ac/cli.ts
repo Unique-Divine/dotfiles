@@ -17,12 +17,16 @@ import {
   listRecordings, loadContext, outputDirFor, parseSince, resolveId,
   type Context, type RecordingDetail,
 } from "./recordings"
+import {
+  applySidecarChange, readSidecar, sidecarPath, writeSidecar,
+} from "./sidecar"
 import { createSystem, spawnRun, type Run } from "./system"
 
 export interface Io {
   out: (text: string) => void
   err: (text: string) => void
   env: Record<string, string | undefined>
+  stdoutIsTTY: boolean | undefined
   stderrIsTTY: boolean | undefined
   now: () => Date
 }
@@ -57,8 +61,10 @@ interface State {
 /** Runs ac with argv (without the program name); returns the exit code. */
 export const main = async (argv: string[], deps: Deps): Promise<number> => {
   const { io } = deps
-  const paint: Paint = painter(colorEnabled(io.env, io.stderrIsTTY))
-  const warn = (message: string) => io.err(`${paint("warning:", "warning")} ${message}`)
+  const paint: Paint = painter(colorEnabled(io.env, io.stdoutIsTTY))
+  const paintErr: Paint = painter(colorEnabled(io.env, io.stderrIsTTY))
+  const warn = (message: string) =>
+    io.err(`${paintErr("warning:", "warning")} ${message}`)
   const state: State = { ctx: null, recordings: null }
   const program = new Command("ac")
 
@@ -148,6 +154,26 @@ export const main = async (argv: string[], deps: Deps): Promise<number> => {
       ctx.system.explorer([ctx.system.toWin(folder)])
     })
 
+  program.command("note")
+    .description("write or update a recording's sidecar")
+    .argument("<id>", "last, a name prefix, or a path")
+    .argument("[text]", 'the note; "" clears it')
+    .option("--tag <tags>", "add comma-separated tags")
+    .option("--link <url>", "add a link (repeatable)",
+      (value: string, all: string[]) => [...all, value], [] as string[])
+    .action((id: string, text: string | undefined,
+      opts: { tag?: string; link: string[] }) => {
+      const tags = opts.tag?.split(",") ?? []
+      if (text === undefined && tags.length === 0 && opts.link.length === 0) {
+        throw new Error('nothing to change; give a note, --tag, or --link')
+      }
+      const { recording } = find(id)
+      const next = applySidecarChange(readSidecar(recording.path), recording.name,
+        { note: text, addTags: tags, addLinks: opts.link }, io.now())
+      writeSidecar(recording.path, next)
+      io.out(`💚 ${paint("Saved", "success")} ${sidecarPath(recording.path)}`)
+    })
+
   try {
     await program.parseAsync(argv, { from: "user" })
     return 0
@@ -172,6 +198,7 @@ if (import.meta.main) {
       out: (text) => process.stdout.write(text + "\n"),
       err: (text) => process.stderr.write(text + "\n"),
       env: process.env,
+      stdoutIsTTY: process.stdout.isTTY,
       stderrIsTTY: process.stderr.isTTY,
       now: () => new Date(),
     },

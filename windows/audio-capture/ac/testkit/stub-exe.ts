@@ -60,13 +60,11 @@ switch (name) {
   case "explorer.exe":
     // The real Explorer exits 1 after handing off to a running Explorer.
     process.exit(1)
-    break
   case "clip.exe":
     break
   case "fzf":
     write(env.AC_STUB_FZF_OUT ?? "")
     process.exit(Number(env.AC_STUB_FZF_CODE ?? "0"))
-    break
   default:
     process.stderr.write(`stub-exe: unknown program ${name}\n`)
     process.exit(2)

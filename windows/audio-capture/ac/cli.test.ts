@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { rmSync, writeFileSync } from "node:fs"
+import {
+  afterEach, describe, expect, setDefaultTimeout, test,
+} from "bun:test"
+import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   makeFakeWindows, standardFixture, type FakeWindows,
 } from "./testkit/testkit"
+
+// Each case runs the CLI and stub programs as real subprocesses.
+setDefaultTimeout(30_000)
 
 const fakes: FakeWindows[] = []
 const fixture = (): FakeWindows => {
@@ -295,5 +300,67 @@ describe("ac open", () => {
     expect(out.stdout).toBe("explorer.exe /select,C:\\Users\\test\\Documents\\" +
       "ShareX\\Screenshots\\2026-11\\26-11-18__215216-audio.mp3\n")
     expect(fake.calls().some((c) => c.name === "explorer.exe")).toBe(false)
+  })
+})
+
+describe("ac note", () => {
+  const sidecarFile = (fake: FakeWindows) =>
+    join(fake.screenshots, "2026-11", "26-11-18__113708-audio.json")
+
+  test("creates a v1 sidecar and then merges into it", () => {
+    const fake = fixture()
+    const first = fake.run(["note", "26-11-18__11370", "Infra call",
+      "--tag", "call,infra", "--link", "https://example.com/1"])
+    expect(first.stderr).toBe("")
+    expect(first.stdout).toBe(`💚 Saved ${sidecarFile(fake)}\n`)
+    const created = JSON.parse(readFileSync(sidecarFile(fake), "utf8"))
+    expect(Object.keys(created)).toEqual(
+      ["version", "recording", "note", "tags", "links", "updated"])
+    expect(created).toMatchObject({
+      version: 1, recording: "26-11-18__113708-audio.mp3", note: "Infra call",
+      tags: ["call", "infra"], links: ["https://example.com/1"],
+    })
+
+    fake.run(["note", "26-11-18__11370", "--tag", "infra,followup",
+      "--link", "https://example.com/1", "--link", "https://example.com/2"])
+    const merged = JSON.parse(readFileSync(sidecarFile(fake), "utf8"))
+    expect(merged.note).toBe("Infra call")
+    expect(merged.tags).toEqual(["call", "infra", "followup"])
+    expect(merged.links).toEqual(["https://example.com/1", "https://example.com/2"])
+
+    const shown = JSON.parse(fake.run(["ls", "--json"]).stdout)
+      .find((r: { name: string }) => r.name === "26-11-18__113708-audio.mp3")
+    expect(shown.note).toBe("Infra call")
+  })
+
+  test("keeps unknown fields and leaves no temp files", () => {
+    const fake = fixture()
+    writeFileSync(sidecarFile(fake), JSON.stringify({
+      version: 1, recording: "26-11-18__113708-audio.mp3", note: null,
+      tags: [], links: [], updated: "2026-11-18T05:00:00Z",
+      transcript: { path: "t.md" },
+    }))
+    fake.run(["note", "26-11-18__11370", "hello"])
+    const text = readFileSync(sidecarFile(fake), "utf8")
+    expect(JSON.parse(text).transcript).toEqual({ path: "t.md" })
+    expect(text).toContain('\n  "note": "hello",\n')
+    expect(readdirSync(join(fake.screenshots, "2026-11"))
+      .filter((n) => n.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("refuses to overwrite a sidecar of an unknown version", () => {
+    const fake = fixture()
+    writeFileSync(sidecarFile(fake), '{"version": 2}')
+    const out = fake.run(["note", "26-11-18__11370", "x"])
+    expect(out.code).toBe(1)
+    expect(out.stderr).toContain("unsupported version 2")
+    expect(readFileSync(sidecarFile(fake), "utf8")).toBe('{"version": 2}')
+  })
+
+  test("needs something to change", () => {
+    const fake = fixture()
+    const out = fake.run(["note", "last"])
+    expect(out.code).toBe(1)
+    expect(out.stderr).toContain("nothing to change")
   })
 })
