@@ -91,7 +91,7 @@ export const outputDirFor = (ctx: Context, date: Date): string | null => {
 /** Files that fit the dir and name templates under the root. */
 export const scanFiles = (rootWsl: string, templates: OutputTemplates): string[] => {
   const { dated } = splitDir(templates.dir)
-  const nameMatcher = templateMatcher(templates.name).regex
+  const nameMatcher = templateMatcher(templates.name, { collisionSuffix: true }).regex
   let dirs = [rootWsl]
   for (const segment of dated) {
     const matcher = templateMatcher(segment).regex

@@ -29,6 +29,23 @@ describe("templates", () => {
     expect(regex.test("26-11-18__113708-audio.MP3")).toBe(true)
     expect(regex.test("26-11-18__113708.png")).toBe(false)
     expect(regex.test("x26-11-18__113708-audio.mp3")).toBe(false)
+    expect(regex.test("26-11-18__113708-audio-2.mp3")).toBe(false)
+  })
+
+  test("collisionSuffix accepts Paths.Unique names and keeps their time", () => {
+    const template = "{yy-MM-dd}__{HHmmss}-audio.mp3"
+    const { regex } = templateMatcher(template, { collisionSuffix: true })
+    for (const name of ["26-11-18__113708-audio.mp3",
+      "26-11-18__113708-audio-2.mp3", "26-11-18__113708-audio-12.mp3"]) {
+      expect(regex.test(name)).toBe(true)
+    }
+    for (const name of ["26-11-18__113708-audio-1.mp3",
+      "26-11-18__113708-audio-02.mp3", "26-11-18__113708-audio-x.mp3",
+      "26-11-18__113708-audio.mp3-2"]) {
+      expect(regex.test(name)).toBe(false)
+    }
+    expect(parseNameTime("26-11-18__113708-audio-3.mp3", template))
+      .toEqual(new Date(2026, 10, 18, 11, 37, 8))
   })
 
   test("parseNameTime reads the local time from a name", () => {

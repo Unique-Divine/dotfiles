@@ -98,10 +98,28 @@ interface Field {
   width: number
 }
 
-/** A regex for names a template produces, with one group per date field. */
+/**
+ * The extension of a name template, when it has no tokens: ".mp3" in
+ * "{yy-MM-dd}__{HHmmss}-audio.mp3".
+ */
+const plainExtension = (template: string): string => {
+  const dot = template.lastIndexOf(".")
+  const ext = dot > 0 ? template.slice(dot) : ""
+  return /[{}\\/]/.test(ext) ? "" : ext
+}
+
+/**
+ * A regex for names a template produces, with one group per date field.
+ * With `collisionSuffix`, it also accepts the app's Paths.Unique names: a
+ * taken `x.mp3` becomes `x-2.mp3`, `x-3.mp3`, and so on.
+ */
 export const templateMatcher = (
   template: string,
+  options: { collisionSuffix?: boolean } = {},
 ): { regex: RegExp; fields: Field[] } => {
+  const ext = options.collisionSuffix ? plainExtension(template) : ""
+  const suffix = options.collisionSuffix ? `(?:-[2-9]|-[1-9]\\d+)?` : ""
+  if (ext !== "") template = template.slice(0, -ext.length)
   const fields: Field[] = []
   let source = ""
   let last = 0
@@ -122,13 +140,16 @@ export const templateMatcher = (
       }
     }
   }
-  source += escapeRegex(template.slice(last))
+  source += escapeRegex(template.slice(last)) + suffix + escapeRegex(ext)
   return { regex: new RegExp(`^${source}$`, "i"), fields }
 }
 
-/** The local time a name encodes, or null when it doesn't fit the template. */
+/**
+ * The local time a name encodes, or null when it doesn't fit the template.
+ * A collision suffix (`-2`) keeps the original name's time.
+ */
 export const parseNameTime = (name: string, template: string): Date | null => {
-  const { regex, fields } = templateMatcher(template)
+  const { regex, fields } = templateMatcher(template, { collisionSuffix: true })
   const match = regex.exec(name)
   if (!match) return null
   const parts = { y: 2000, M: 1, d: 1, H: 0, m: 0, s: 0, f: 0 }

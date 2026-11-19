@@ -128,6 +128,19 @@ describe("ac ls", () => {
     ])
   })
 
+  test("finds collision-suffixed recordings that have no log entry", () => {
+    const fake = fixture()
+    const path = fake.addRecording("2026-11", "26-11-18__113708-audio-2.mp3")
+    const rows = JSON.parse(fake.run(["ls", "--json"]).stdout)
+    const row = rows.find((r: { name: string }) =>
+      r.name === "26-11-18__113708-audio-2.mp3")
+    expect(row.session).toBeNull()
+    expect(row.time).toBe(new Date(2026, 10, 18, 11, 37, 8).toISOString())
+    const shown = JSON.parse(fake.run(["show", path, "--json"]).stdout)
+    expect(shown.recording.name).toBe("26-11-18__113708-audio-2.mp3")
+    expect(shown.log).toBeNull()
+  })
+
   test("rejects a bad --since", () => {
     const fake = fixture()
     const out = fake.run(["ls", "--since", "yesterday"])
