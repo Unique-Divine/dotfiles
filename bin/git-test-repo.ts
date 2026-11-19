@@ -1,8 +1,8 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
 import { afterAll } from "bun:test"
-import { mkdtempSync, realpathSync, rmSync } from "node:fs"
-import { mkdtemp, rm } from "node:fs/promises"
+import { accessSync, constants, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -68,6 +68,51 @@ export async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix))
   roots.push(dir)
   return dir
+}
+
+/**
+ * Where fixture copies go: /dev/shm when it is writable (a copy costs about
+ * a third of the time on tmpfs), else the normal temp folder.
+ */
+const copyBase: string = (() => {
+  try {
+    accessSync("/dev/shm", constants.W_OK)
+    return "/dev/shm"
+  } catch {
+    return tmpdir()
+  }
+})()
+
+/**
+ * Rewrites `from` to `to` in every Git config file under dir. The tracked
+ * .gitmodules stays as built: editing it would make the superproject dirty,
+ * and submodule commands read the URL from .git/config once initialized.
+ */
+async function retargetPaths(dir: string, from: string, to: string) {
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, e.name)
+    if (e.isDirectory()) {
+      if (e.name !== "objects") await retargetPaths(path, from, to)
+    } else if (e.name === "config") {
+      const text = await readFile(path, "utf8")
+      if (text.includes(from)) {
+        await writeFile(path, text.replaceAll(from, to))
+      }
+    }
+  }
+}
+
+/**
+ * A private copy of a prebuilt fixture folder (cp -a), removed by `cleanup`.
+ * Clones and submodules store the absolute paths of their remotes, so the
+ * copy's configs are rewritten to point at the copy, never the template.
+ */
+export async function copyFixture(template: string): Promise<string> {
+  const dest = await mkdtemp(join(copyBase, "git-fixture-"))
+  roots.push(dest)
+  await ok(dest, `cp -a "${template}/." "${dest}/"`)
+  await retargetPaths(dest, template, dest)
+  return dest
 }
 
 /** A bare remote, a `clone` of it on main, and a `peer` clone that can push. */

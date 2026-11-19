@@ -2,10 +2,11 @@
 // repository state, runs --dry-run (which must change nothing but
 // remote-tracking refs), then runs for real and checks that the result
 // matches the plan. A disagreement means the plan logic is wrong.
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { cleanup, jqDir, ok, repoPair, sh } from "./git-test-repo"
+import { cleanup, copyFixture, jqDir, ok, repoPair, sh } from "./git-test-repo"
 
 const gitMf = join(resolve(import.meta.dir), "git_mf")
 
@@ -571,33 +572,84 @@ describe("git_mf review-2 fixes", () => {
  * Two machines sharing a superproject with one submodule, like boku with
  * dotfiles: the laptop pushes ud/main, homebox works on ud/homebox. Both
  * commit in the submodule and record the new pointer in the superproject.
+ *
+ * Building one takes about 740 ms of git processes and copying a built one
+ * about 40-120 ms, so each distinct `subContent` is built once per file
+ * and every test gets a private copy (see copyFixture). repoPair is not
+ * cached: it builds in about 125 ms, which a copy would not beat.
  */
-async function machinePair(subContent: { laptop: string; homebox: string } = {
-  laptop: "laptop.txt",
-  homebox: "homebox.txt",
-}) {
-  const r = await repoPair()
+type SubContent = { laptop: string; homebox: string }
+const defaultSub: SubContent = { laptop: "laptop.txt", homebox: "homebox.txt" }
+const templates = new Map<string, Promise<string>>()
+const templateRoots: string[] = []
+
+async function buildMachinePair(subContent: SubContent): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "git-template-"))
+  templateRoots.push(root)
+  const remote = join(root, "remote.git")
+  const peer = join(root, "peer")
   const g = "git -c protocol.file.allow=always"
-  const subRemote = join(r.root, "sub.git")
-  const seed = join(r.root, "sub-seed")
-  await ok(r.root, `git init -q --bare --initial-branch=main ${subRemote}`)
-  await ok(r.root, `git clone -q ${subRemote} ${seed}`)
+  const subRemote = join(root, "sub.git")
+  const seed = join(root, "sub-seed")
+  await ok(root, `git init -q --bare --initial-branch=main ${remote}`)
+  await ok(root, `git clone -q ${remote} ${peer}`)
+  await ok(peer, "git switch -q -c main")
+  await ok(peer, "printf 'one\\n' > file.txt && git add . && git commit -qm one")
+  await ok(peer, "git push -q -u origin main")
+  await ok(root, `git init -q --bare --initial-branch=main ${subRemote}`)
+  await ok(root, `git clone -q ${subRemote} ${seed}`)
   await ok(seed, "git switch -q -c main && printf 'a\\n' > a.txt && git add . && git commit -qm a && git push -q -u origin main")
-  await ok(r.peer, `${g} submodule add -q ${subRemote} sub && git commit -qm sub && git push -q`)
+  await ok(peer, `${g} submodule add -q ${subRemote} sub && git commit -qm sub && git push -q`)
   const machine = async (dir: string, branch: string, file: string) => {
-    await ok(r.root, `${g} clone -q --recurse-submodules ${r.remote} ${dir}`)
+    await ok(root, `${g} clone -q --recurse-submodules ${remote} ${dir}`)
     await ok(dir, `git switch -q -c ${branch}`)
     await ok(join(dir, "sub"), `git switch -q -c ${branch} && printf '${branch}\\n' > ${file} && git add . && git commit -qm ${branch}`)
     await ok(dir, `git commit -qam "${branch} pointer"`)
   }
-  const laptop = join(r.root, "laptop")
-  const homebox = join(r.root, "homebox")
+  const laptop = join(root, "laptop")
   await machine(laptop, "ud/main", subContent.laptop)
   await ok(join(laptop, "sub"), "git push -q -u origin ud/main")
   await ok(laptop, "git push -q -u origin ud/main")
-  await machine(homebox, "ud/homebox", subContent.homebox)
-  return { laptop, homebox }
+  await machine(join(root, "homebox"), "ud/homebox", subContent.homebox)
+  return root
 }
+
+function machineTemplate(subContent: SubContent): Promise<string> {
+  const key = JSON.stringify(subContent)
+  let t = templates.get(key)
+  if (!t) {
+    t = buildMachinePair(subContent)
+    templates.set(key, t)
+  }
+  return t
+}
+
+async function machinePair(subContent: SubContent = defaultSub) {
+  const root = await copyFixture(await machineTemplate(subContent))
+  return { laptop: join(root, "laptop"), homebox: join(root, "homebox") }
+}
+
+/** Every ref of every repository under a template, as one comparable string. */
+async function refSnapshot(root: string): Promise<string> {
+  const repos = ["remote.git", "sub.git", "laptop", "laptop/sub", "homebox", "homebox/sub"]
+  const parts: string[] = []
+  for (const repo of repos) {
+    const refs = await ok(join(root, repo), "git for-each-ref && git rev-parse HEAD")
+    parts.push(`${repo}\n${refs}`)
+  }
+  return parts.join("\n")
+}
+
+let defaultSnapshot = ""
+
+beforeAll(async () => {
+  // Build the default fixture up front, so no test pays for it.
+  defaultSnapshot = await refSnapshot(await machineTemplate(defaultSub))
+}, 30_000)
+
+afterAll(async () => {
+  await Promise.all(templateRoots.map((p) => rm(p, { recursive: true, force: true })))
+})
 
 describe("git_mf --subs", () => {
   test("merges the submodule, then the superproject, without pointer conflicts", async () => {
@@ -745,5 +797,12 @@ describe("git_mf --subs", () => {
     const res = await sh(homebox, `${gitMf} ud/main --subs`)
     expect(res.code).toBe(2)
     expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
+  })
+
+  test("the prebuilt fixture is unchanged after the --subs tests", async () => {
+    // Copies must write to themselves; a push into the template would show
+    // up here as a moved ref.
+    const [template] = await Promise.all([machineTemplate(defaultSub)])
+    expect(await refSnapshot(template)).toBe(defaultSnapshot)
   })
 })
