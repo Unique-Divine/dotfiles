@@ -339,7 +339,9 @@ win-sync:
   fi
   dest="$(wslpath -u "$win_home")/.files/windows"
   mkdir -p "$dest"
-  rsync -rt --delete --exclude '*.test.ts' windows/ "$dest/"
+  # ac is a WSL CLI; Windows never runs it.
+  rsync -rt --delete --exclude '*.test.ts' --exclude 'audio-capture/ac/' \
+    windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
 # Build audio-capture on Windows into %LOCALAPPDATA%\Programs\audio-capture.
@@ -353,6 +355,10 @@ audio-capture-install: win-sync
 # Remove audio-capture's shortcuts and exe; keeps %USERPROFILE%\.audio-capture.
 audio-capture-uninstall: win-sync
   cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\uninstall.cmd --no-pause'
+
+# Run ac, the WSL CLI for audio-capture recordings (linked as ~/.local/bin/ac).
+ac *ARGS:
+  @bun run windows/audio-capture/ac/cli.ts {{ARGS}}
 
 # Start audio-capture, or send ARGS (--toggle, --stop, --quit) to it.
 audio-capture-run *ARGS:

@@ -5,8 +5,8 @@
  * Usage: ac [--dry-run] <command> [options]
  *
  * Reads the app's log and config under %USERPROFILE%\.audio-capture and the
- * recordings in its output folders. `bin/ac` links here. See "Terminal
- * Access" in windows/audio-capture/README.md.
+ * recordings in its output folders. Sync links ~/.local/bin/ac here. See
+ * "Terminal Access" in windows/audio-capture/README.md.
  */
 import { Command } from "commander"
 import { existsSync } from "node:fs"
