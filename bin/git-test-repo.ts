@@ -1,12 +1,18 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
-import { mkdtempSync, realpathSync } from "node:fs"
+import { afterAll } from "bun:test"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 /** Run-log home for these tests, so nothing writes into the real ~/.boku. */
 export const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
+// Removed after the importing test file's last test, passing or failing.
+// (bun test does not run process "exit" handlers.)
+afterAll(() => {
+  rmSync(testBokuHome, { recursive: true, force: true })
+})
 
 export type Result = { code: number; stdout: string; stderr: string }
 
@@ -55,6 +61,13 @@ export async function cleanup() {
   await Promise.all(
     roots.splice(0).map((p) => rm(p, { recursive: true, force: true })),
   )
+}
+
+/** A temporary folder that `cleanup` removes, so a failing test leaks none. */
+export async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  roots.push(dir)
+  return dir
 }
 
 /** A bare remote, a `clone` of it on main, and a `peer` clone that can push. */
