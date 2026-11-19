@@ -9,10 +9,13 @@
  * Access" in windows/audio-capture/README.md.
  */
 import { Command } from "commander"
-import { colorEnabled, formatRow, painter, type Paint } from "./format"
+import { existsSync } from "node:fs"
 import {
-  listRecordings, loadContext, parseSince, resolveId, type Context,
-  type RecordingDetail,
+  colorEnabled, formatDetail, formatRow, painter, type Paint,
+} from "./format"
+import {
+  listRecordings, loadContext, outputDirFor, parseSince, resolveId,
+  type Context, type RecordingDetail,
 } from "./recordings"
 import { createSystem, spawnRun, type Run } from "./system"
 
@@ -30,6 +33,21 @@ export interface Deps {
 }
 
 const json = (value: unknown): string => JSON.stringify(value, null, 2)
+
+/** `ac show --json`: the recording row plus file, log, and sidecar facts. */
+export const showJson = (detail: RecordingDetail) => ({
+  recording: detail.recording,
+  file: {
+    path: detail.recording.path,
+    win_path: detail.recording.win_path,
+    size_bytes: detail.recording.size_bytes,
+    modified: detail.recording.modified,
+  },
+  log: detail.facts,
+  sidecar: detail.sidecar,
+  sidecar_path: detail.sidecar_path,
+  sidecar_error: detail.sidecar_error,
+})
 
 interface State {
   ctx: Context | null
@@ -96,6 +114,38 @@ export const main = async (argv: string[], deps: Deps): Promise<number> => {
       }
       if (opts.json) io.out(json(rows))
       else for (const row of rows) io.out(formatRow(row))
+    })
+
+  program.command("show")
+    .description("print everything known about a recording")
+    .argument("<id>", "last, a name prefix such as 26-11-18__1137, or a path")
+    .option("--json", "print JSON")
+    .action((id: string, opts: { json?: boolean }) => {
+      const detail = find(id)
+      io.out(opts.json ? json(showJson(detail)) : formatDetail(detail))
+    })
+
+  program.command("open")
+    .description("show a recording in Explorer, or this month's folder")
+    .argument("[id]", "last, a name prefix, or a path")
+    .action((id: string | undefined) => {
+      const ctx = context()
+      if (id !== undefined) {
+        const { recording } = find(id)
+        ctx.system.explorer([`/select,${recording.win_path}`])
+        return
+      }
+      const month = outputDirFor(ctx, io.now())
+      if (month === null) throw new Error("the recordings folder is unknown")
+      let folder = month
+      if (!existsSync(month)) {
+        warn(`no folder for this month yet: ${month}`)
+        if (!ctx.root || !existsSync(ctx.root.wsl)) {
+          throw new Error(`recordings folder not found: ${ctx.root?.wsl ?? month}`)
+        }
+        folder = ctx.root.wsl
+      }
+      ctx.system.explorer([ctx.system.toWin(folder)])
     })
 
   try {

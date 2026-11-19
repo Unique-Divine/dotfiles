@@ -184,3 +184,116 @@ describe("ac ls", () => {
     expect(fake.calls().some((c) => c.name === "powershell.exe")).toBe(false)
   })
 })
+
+describe("ids", () => {
+  test("a unique prefix, a full name, a stem, and paths all resolve", () => {
+    const fake = fixture()
+    const name = "26-11-18__215216-audio.mp3"
+    const wsl = join(fake.screenshots, "2026-11", name)
+    for (const id of ["26-11-18__2152", name, "26-11-18__215216-audio", wsl,
+      `C:\\Users\\test\\Documents\\ShareX\\Screenshots\\2026-11\\${name}`]) {
+      const out = fake.run(["show", id, "--json"])
+      expect(out.stderr).toBe("")
+      expect(JSON.parse(out.stdout).recording.name).toBe(name)
+    }
+  })
+
+  test("an ambiguous prefix errors with the candidates", () => {
+    const fake = fixture()
+    const out = fake.run(["show", "26-11-18__1137"])
+    expect(out.code).toBe(1)
+    expect(out.stderr).toBe('ac: "26-11-18__1137" matches 2 recordings:\n' +
+      "  26-11-18__113755-audio.mp3\n  26-11-18__113708-audio.mp3\n")
+  })
+
+  test("an unknown id errors", () => {
+    const fake = fixture()
+    expect(fake.run(["show", "25-01"]).stderr).toBe(
+      'ac: no recording matches "25-01"\n')
+  })
+})
+
+describe("ac show", () => {
+  test("--json has file, log, and sidecar facts", () => {
+    const fake = fixture()
+    const shown = JSON.parse(fake.run(["show", "26-10-30", "--json"]).stdout)
+    expect(Object.keys(shown).sort()).toEqual([
+      "file", "log", "recording", "sidecar", "sidecar_error", "sidecar_path",
+    ])
+    expect(shown.file).toEqual({
+      path: join(fake.screenshots, "2026-10", "26-10-30__090000-audio.mp3"),
+      win_path: "C:\\Users\\test\\Documents\\ShareX\\Screenshots\\2026-10\\" +
+        "26-10-30__090000-audio.mp3",
+      size_bytes: 2_000_000,
+      modified: shown.recording.modified,
+    })
+    expect(shown.log.session).toBe("20261030-090000-001")
+    expect(shown.log.started).toBe("2026-10-30T09:00:00.000+07:00")
+    expect(shown.log.mics).toEqual(["Yeti", "Laptop Mic"])
+    expect(shown.log.segments.map((s: { file: string }) => s.file))
+      .toEqual(["system-01.pcm", "mic-01.pcm", "mic-02.pcm"])
+    expect(shown.sidecar).toBeNull()
+    expect(shown.sidecar_path).toBe(
+      join(fake.screenshots, "2026-10", "26-10-30__090000-audio.json"))
+  })
+
+  test("text output labels each fact", () => {
+    const fake = fixture()
+    const out = fake.run(["show", "last"]).stdout
+    expect(out).toContain("26-11-18__215216-audio.mp3\n  path         ")
+    expect(out).toContain("  session      20261118-215216-052\n")
+    expect(out).toContain("  sidecar      none\n")
+  })
+
+  test("a broken sidecar warns but still shows the recording", () => {
+    const fake = fixture()
+    writeFileSync(join(fake.screenshots, "2026-11", "26-11-18__215216-audio.json"),
+      '{"version": 9}')
+    const out = fake.run(["show", "last", "--json"])
+    expect(out.code).toBe(0)
+    expect(out.stderr).toContain("warning: ")
+    expect(out.stderr).toContain("unsupported version 9")
+    expect(JSON.parse(out.stdout).sidecar_error).toContain("unsupported version 9")
+  })
+})
+
+describe("ac open", () => {
+  test("selects the recording in Explorer with a Windows path", () => {
+    const fake = fixture()
+    const out = fake.run(["open", "26-11-18__1137", "--dry-run"])
+    expect(out.code).toBe(1)
+    const open = fake.run(["open", "26-11-18__11370"])
+    expect(open.code).toBe(0)
+    const explorer = fake.calls().filter((c) => c.name === "explorer.exe")
+    expect(explorer).toEqual([{
+      name: "explorer.exe",
+      argv: ["/select,C:\\Users\\test\\Documents\\ShareX\\Screenshots\\" +
+        "2026-11\\26-11-18__113708-audio.mp3"],
+      stdin: null,
+    }])
+  })
+
+  test("no id opens this month's folder, or the root when it's missing", () => {
+    const fake = fixture()
+    const now = new Date()
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
+    fake.addRecording(month, "keep.txt")
+    fake.run(["open"])
+    rmSync(join(fake.screenshots, month), { recursive: true })
+    const out = fake.run(["open"])
+    expect(out.stderr).toContain("warning: no folder for this month yet")
+    const explorer = fake.calls().filter((c) => c.name === "explorer.exe")
+    expect(explorer.map((c) => c.argv)).toEqual([
+      [`C:\\Users\\test\\Documents\\ShareX\\Screenshots\\${month}`],
+      ["C:\\Users\\test\\Documents\\ShareX\\Screenshots"],
+    ])
+  })
+
+  test("--dry-run prints the explorer command and runs nothing", () => {
+    const fake = fixture()
+    const out = fake.run(["--dry-run", "open", "last"])
+    expect(out.stdout).toBe("explorer.exe /select,C:\\Users\\test\\Documents\\" +
+      "ShareX\\Screenshots\\2026-11\\26-11-18__215216-audio.mp3\n")
+    expect(fake.calls().some((c) => c.name === "explorer.exe")).toBe(false)
+  })
+})

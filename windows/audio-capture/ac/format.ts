@@ -1,5 +1,5 @@
 /** Terminal formatting for `ac`: named ANSI colors, sizes, and rows. */
-import type { Recording } from "./recordings"
+import type { Recording, RecordingDetail } from "./recordings"
 
 /**
  * Named ANSI colors, one meaning each: yellow warns, green labels a final
@@ -74,4 +74,42 @@ export const formatRow = (r: Recording): string => {
     r.tags.length > 0 ? `[${r.tags.join(", ")}]` : "",
   ].filter((s) => s !== "").join(" ")
   return cells.join("  ") + (extra ? `  ${extra}` : "")
+}
+
+const seconds = (value: number | null): string =>
+  value === null ? "?" : `${value.toFixed(2)} s`
+
+/** `ac show`: labeled lines for one recording. */
+export const formatDetail = (detail: RecordingDetail): string => {
+  const { recording: r, facts, sidecar } = detail
+  const lines: [string, string][] = [
+    ["path", r.path],
+    ["windows", r.win_path],
+    ["time", `${formatLocalTime(r.time)}, ${formatDuration(r.duration_s)}`],
+    ["size", `${formatSize(r.size_bytes)}, modified ${formatLocalTime(r.modified)}`],
+  ]
+  if (facts) {
+    lines.push(["session", facts.session])
+    if (facts.started) lines.push(["started", facts.started])
+    if (facts.stopped) lines.push(["stopped", facts.stopped])
+    if (facts.mic_policy) lines.push(["mic policy", facts.mic_policy])
+    lines.push(["mics", facts.mics.length > 0 ? facts.mics.join("; ") : "none"])
+    facts.segments.forEach((segment, i) => {
+      lines.push([i === 0 ? "segments" : "", `${segment.kind} ` +
+        `${segment.device ?? "?"}: at ${seconds(segment.start)}, ` +
+        `${seconds(segment.media_seconds)} of audio`])
+    })
+  } else {
+    lines.push(["log", "no entry"])
+  }
+  lines.push(["sidecar", sidecar ? detail.sidecar_path : "none"])
+  if (detail.sidecar_error) lines.push(["sidecar error", detail.sidecar_error])
+  if (sidecar) {
+    if (sidecar.note) lines.push(["note", sidecar.note])
+    if (sidecar.tags.length > 0) lines.push(["tags", sidecar.tags.join(", ")])
+    sidecar.links.forEach((link, i) => lines.push([i === 0 ? "links" : "", link]))
+    lines.push(["updated", sidecar.updated])
+  }
+  return [r.name, ...lines.map(([label, value]) =>
+    `  ${label.padEnd(13)}${value}`)].join("\n")
 }
