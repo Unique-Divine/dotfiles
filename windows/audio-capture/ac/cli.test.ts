@@ -424,3 +424,69 @@ describe("ac index", () => {
     expect(out.stderr).toContain(`ac: no audio-capture folder at ${fake.stateDir}`)
   })
 })
+
+describe("ac pick", () => {
+  const picked = (key: string, name: string) =>
+    ({ AC_STUB_FZF_OUT: `${key}\n${name}\t2026-11-18 11:37  row text\n` })
+  const name = "26-11-18__113708-audio.mp3"
+  const winPath = `C:\\Users\\test\\Documents\\ShareX\\Screenshots\\2026-11\\${name}`
+
+  test("feeds fzf the rows with an ac show preview; enter prints the path", () => {
+    const fake = fixture()
+    const out = fake.run(["pick"], picked("", name))
+    expect(out.stderr).toBe("")
+    expect(out.stdout).toBe(join(fake.screenshots, "2026-11", name) + "\n")
+    const fzf = fake.calls().filter((c) => c.name === "fzf")
+    expect(fzf).toHaveLength(1)
+    expect(fzf[0]?.argv).toEqual([
+      "--expect=ctrl-o,ctrl-y,ctrl-n",
+      "--delimiter=\t",
+      "--with-nth=2",
+      "--no-sort",
+      `--preview=${process.execPath} ${join(import.meta.dir, "cli.ts")} show {1}`,
+      "--preview-window=right,55%,wrap",
+      "--header=enter: print path  ctrl-o: open  ctrl-y: copy path  ctrl-n: note",
+    ])
+    const lines = (fzf[0]?.stdin ?? "").trimEnd().split("\n")
+    expect(lines).toHaveLength(5)
+    expect(lines[0]?.startsWith("26-11-18__215216-audio.mp3\t2026-11-18 21:52"))
+      .toBe(true)
+  })
+
+  test("ctrl-o selects it in Explorer", () => {
+    const fake = fixture()
+    fake.run(["pick"], picked("ctrl-o", name))
+    expect(fake.calls().filter((c) => c.name === "explorer.exe")
+      .map((c) => c.argv)).toEqual([[`/select,${winPath}`]])
+  })
+
+  test("ctrl-y copies the Windows path", () => {
+    const fake = fixture()
+    const out = fake.run(["pick"], picked("ctrl-y", name))
+    expect(out.stdout).toBe(winPath + "\n")
+    expect(fake.calls().filter((c) => c.name === "clip.exe")
+      .map((c) => c.stdin)).toEqual([winPath])
+  })
+
+  test("ctrl-n asks for a note and saves it", () => {
+    const fake = fixture()
+    const out = fake.run(["pick"], picked("ctrl-n", name), "Great call\n")
+    expect(out.code).toBe(0)
+    const sidecar = JSON.parse(readFileSync(
+      join(fake.screenshots, "2026-11", "26-11-18__113708-audio.json"), "utf8"))
+    expect(sidecar.note).toBe("Great call")
+  })
+
+  test("--dry-run prints the action instead of running it", () => {
+    const fake = fixture()
+    const out = fake.run(["--dry-run", "pick"], picked("ctrl-o", name))
+    expect(out.stdout).toBe(`explorer.exe /select,${winPath}\n`)
+    expect(fake.calls().some((c) => c.name === "explorer.exe")).toBe(false)
+  })
+
+  test("Esc in fzf does nothing", () => {
+    const fake = fixture()
+    const out = fake.run(["pick"], { AC_STUB_FZF_OUT: "", AC_STUB_FZF_CODE: "130" })
+    expect(out).toEqual({ code: 0, stdout: "", stderr: "" })
+  })
+})

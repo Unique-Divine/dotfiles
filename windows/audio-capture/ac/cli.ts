@@ -17,18 +17,21 @@ import {
 } from "./format"
 import {
   listRecordings, loadContext, outputDirFor, parseSince, resolveId,
-  type Context, type RecordingDetail,
+  type Context, type Recording, type RecordingDetail,
 } from "./recordings"
 import {
   applySidecarChange, readSidecar, sidecarPath, writeSidecar,
+  type SidecarChange,
 } from "./sidecar"
-import { createSystem, spawnRun, type Run } from "./system"
+import { createSystem, quoteArg, spawnRun, type Run } from "./system"
 
 export interface Io {
   out: (text: string) => void
   err: (text: string) => void
   env: Record<string, string | undefined>
   stdoutIsTTY: boolean | undefined
+  /** Asks a question on the terminal; null when there's no answer. */
+  ask: (question: string) => string | null
   stderrIsTTY: boolean | undefined
   now: () => Date
 }
@@ -37,6 +40,20 @@ export interface Deps {
   run: Run
   io: Io
 }
+
+export const PICK_KEYS = ["ctrl-o", "ctrl-y", "ctrl-n"]
+
+/** fzf arguments for `ac pick`; the preview runs `ac show` on field 1. */
+export const pickArgs = (showCommand: string[]): string[] => [
+  "--expect=" + PICK_KEYS.join(","),
+  "--delimiter=\t",
+  "--with-nth=2",
+  "--no-sort",
+  "--preview=" + [...showCommand, "show", "{1}"].map(quoteArg).join(" ")
+    .replace("'{1}'", "{1}"),
+  "--preview-window=right,55%,wrap",
+  "--header=enter: print path  ctrl-o: open  ctrl-y: copy path  ctrl-n: note",
+]
 
 const json = (value: unknown): string => JSON.stringify(value, null, 2)
 
@@ -83,6 +100,19 @@ export const main = async (argv: string[], deps: Deps): Promise<number> => {
   }
   const find = (id: string): RecordingDetail =>
     resolveId(id, recordings(), (win) => context().system.toWsl(win))
+
+  const saveNote = (recording: Recording, change: SidecarChange): void => {
+    const next = applySidecarChange(readSidecar(recording.path), recording.name,
+      change, io.now())
+    writeSidecar(recording.path, next)
+    io.out(`💚 ${paint("Saved", "success")} ${sidecarPath(recording.path)}`)
+    // Keep an existing index current; never create one as a side effect.
+    const indexPath = join(context().stateDir, "index.jsonl")
+    if (existsSync(indexPath)) {
+      state.recordings = null
+      updateIndex(indexPath, recordings().map(indexEntry), false)
+    }
+  }
 
   program
     .description("Find, open, and annotate audio-capture recordings.")
@@ -169,16 +199,47 @@ export const main = async (argv: string[], deps: Deps): Promise<number> => {
       if (text === undefined && tags.length === 0 && opts.link.length === 0) {
         throw new Error('nothing to change; give a note, --tag, or --link')
       }
-      const { recording } = find(id)
-      const next = applySidecarChange(readSidecar(recording.path), recording.name,
-        { note: text, addTags: tags, addLinks: opts.link }, io.now())
-      writeSidecar(recording.path, next)
-      io.out(`💚 ${paint("Saved", "success")} ${sidecarPath(recording.path)}`)
-      // Keep an existing index current; never create one as a side effect.
-      const indexPath = join(context().stateDir, "index.jsonl")
-      if (existsSync(indexPath)) {
-        state.recordings = null
-        updateIndex(indexPath, recordings().map(indexEntry), false)
+      saveNote(find(id).recording,
+        { note: text, addTags: tags, addLinks: opts.link })
+    })
+
+  program.command("pick")
+    .description("choose a recording with fzf, then print, open, copy, or note it")
+    .option("--limit <n>", "offer at most n recordings", "200")
+    .action((opts: { limit: string }) => {
+      const ctx = context()
+      const rows = recordings().slice(0, Number(opts.limit) || 200)
+      if (rows.length === 0) throw new Error("no recordings found")
+      const lines = rows.map(({ recording }) =>
+        `${recording.name}\t${formatRow(recording)}`)
+      const result = ctx.system.fzf(lines,
+        pickArgs([process.execPath, import.meta.path]))
+      // 130: Esc or ctrl-c; 1: nothing matched.
+      if (result.code === 130 || result.code === 1) return
+      if (result.code !== 0) throw new Error(`fzf exited ${result.code}`)
+      const [key = "", line = ""] = result.stdout.replace(/\n$/, "").split("\n")
+      const name = line.split("\t")[0] ?? ""
+      if (name === "") return
+      const { recording } = find(name)
+      switch (key) {
+        case "ctrl-o":
+          ctx.system.explorer([`/select,${recording.win_path}`])
+          break
+        case "ctrl-y":
+          ctx.system.copy(recording.win_path)
+          io.out(recording.win_path)
+          break
+        case "ctrl-n": {
+          const text = io.ask(`Note for ${recording.name}: `)
+          if (text === null || text.trim() === "") {
+            warn("no note given; nothing saved")
+            break
+          }
+          saveNote(recording, { note: text })
+          break
+        }
+        default:
+          io.out(recording.path)
       }
     })
 
@@ -225,6 +286,7 @@ if (import.meta.main) {
       stdoutIsTTY: process.stdout.isTTY,
       stderrIsTTY: process.stderr.isTTY,
       now: () => new Date(),
+      ask: (question) => prompt(question),
     },
   })
   process.exit(code)

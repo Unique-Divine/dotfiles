@@ -39,7 +39,7 @@ export interface FakeWindows {
   /** Appends events to the live log (or a rotated copy). */
   addLog: (events: object[], file?: string) => void
   calls: () => StubCall[]
-  run: (args: string[], env?: Record<string, string>) => RunOutput
+  run: (args: string[], env?: Record<string, string>, input?: string) => RunOutput
   cleanup: () => void
 }
 
@@ -79,7 +79,7 @@ export const makeFakeWindows = (): FakeWindows => {
         .filter((line) => line !== "")
         .map((line) => JSON.parse(line) as StubCall)
     },
-    run(args, env = {}) {
+    run(args, env = {}, input) {
       const result = Bun.spawnSync({
         cmd: [process.execPath, CLI, ...args],
         cwd: root,
@@ -93,7 +93,7 @@ export const makeFakeWindows = (): FakeWindows => {
           AC_STUB_C: cDrive,
           ...env,
         },
-        stdin: "ignore",
+        stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
         stdout: "pipe",
         stderr: "pipe",
       })
