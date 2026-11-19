@@ -10,7 +10,10 @@ export const testBokuHome = mkdtempSync(join(tmpdir(), "boku-home-"))
 
 export type Result = { code: number; stdout: string; stderr: string }
 
+// BOKU_RUNLOG=0: the run log costs about 60 ms per event and most git_mf
+// tests never read it. Suites that assert on it pass BOKU_RUNLOG: "1".
 const gitEnv = {
+  BOKU_RUNLOG: "0",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_AUTHOR_NAME: "Test",

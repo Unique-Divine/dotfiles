@@ -7,12 +7,15 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { cleanup, jqDir, ok, repoPair, sh as baseSh } from "./git-test-repo"
 
-/** baseSh, with BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents. */
+/**
+ * baseSh with the run log on, which the shared helper turns off, and
+ * BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents.
+ */
 const sh = (dir: string, command: string, env: Record<string, string> = {}) => {
   const fakeBin = env.PATH?.split(":")[0]
   const runsCli: Record<string, string> =
     fakeBin ? { BOKU_RUNS_CLI: join(fakeBin, "runs-cli") } : {}
-  return baseSh(dir, command, { ...runsCli, ...env })
+  return baseSh(dir, command, { BOKU_RUNLOG: "1", ...runsCli, ...env })
 }
 
 const root = resolve(import.meta.dir, "..")
