@@ -465,6 +465,10 @@ nvim-mason-restore:
 cbm-reindex *ARGS:
   @bun run cbm/reindex.ts --run {{ARGS}}
 
+# Build Codebase Memory from the fork's ud/main and install it (--run applies; --rollback restores).
+cbm-install *ARGS:
+  @bun run cbm/install.ts {{ARGS}}
+
 # Print the last cbm-reindex run's result, or that one is running.
 cbm-status:
   @bun run cbm/reindex.ts --status
