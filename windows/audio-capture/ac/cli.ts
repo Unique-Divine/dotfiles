@@ -10,6 +10,8 @@
  */
 import { Command } from "commander"
 import { existsSync } from "node:fs"
+import { join } from "node:path"
+import { indexEntry, updateIndex } from "./catalog"
 import {
   colorEnabled, formatDetail, formatRow, painter, type Paint,
 } from "./format"
@@ -172,6 +174,28 @@ export const main = async (argv: string[], deps: Deps): Promise<number> => {
         { note: text, addTags: tags, addLinks: opts.link }, io.now())
       writeSidecar(recording.path, next)
       io.out(`💚 ${paint("Saved", "success")} ${sidecarPath(recording.path)}`)
+      // Keep an existing index current; never create one as a side effect.
+      const indexPath = join(context().stateDir, "index.jsonl")
+      if (existsSync(indexPath)) {
+        state.recordings = null
+        updateIndex(indexPath, recordings().map(indexEntry), false)
+      }
+    })
+
+  program.command("index")
+    .description("write the derived index.jsonl in %USERPROFILE%\\.audio-capture")
+    .option("--rebuild", "ignore the old index and write it from scratch")
+    .action((opts: { rebuild?: boolean }) => {
+      const ctx = context()
+      if (!existsSync(ctx.stateDir)) {
+        throw new Error(`no audio-capture folder at ${ctx.stateDir}`)
+      }
+      const path = join(ctx.stateDir, "index.jsonl")
+      const plan = updateIndex(path, recordings().map(indexEntry),
+        opts.rebuild === true)
+      io.out(`💚 ${paint("Indexed", "success")} ${path}: ` +
+        `${plan.added} added, ${plan.updated} updated, ${plan.removed} removed, ` +
+        `${plan.unchanged} unchanged`)
     })
 
   try {

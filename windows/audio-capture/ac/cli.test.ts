@@ -364,3 +364,63 @@ describe("ac note", () => {
     expect(out.stderr).toContain("nothing to change")
   })
 })
+
+describe("ac index", () => {
+  const indexFile = (fake: FakeWindows) => join(fake.stateDir, "index.jsonl")
+
+  test("writes one entry per recording, newest first", () => {
+    const fake = fixture()
+    const out = fake.run(["index"])
+    expect(out.stdout).toBe(`💚 Indexed ${indexFile(fake)}: 5 added, ` +
+      "0 updated, 0 removed, 0 unchanged\n")
+    const entries = readFileSync(indexFile(fake), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line))
+    expect(entries.map((e) => e.recording)).toEqual([
+      "26-11-18__215216-audio.mp3", "26-11-18__113755-audio.mp3",
+      "26-11-18__113708-audio.mp3", "26-10-30__090000-audio.mp3",
+      "26-10-29__080000-audio.mp3",
+    ])
+    expect(Object.keys(entries[0])).toEqual([
+      "version", "recording", "path", "wsl_path", "time", "size_bytes",
+      "modified", "duration_s", "session", "segments", "mics", "note", "tags",
+      "links", "sidecar_updated",
+    ])
+    expect(entries[0].path).toBe("C:\\Users\\test\\Documents\\ShareX\\" +
+      "Screenshots\\2026-11\\26-11-18__215216-audio.mp3")
+  })
+
+  test("incremental updates equal a rebuild from scratch", () => {
+    const fake = fixture()
+    fake.run(["index"])
+    // Change the world: a note (which updates the index), a new
+    // recording, a deleted one, and a corrupt line in the old index.
+    fake.run(["note", "26-11-18__11370", "Infra call", "--tag", "call"])
+    expect(readFileSync(indexFile(fake), "utf8")).toContain('"note":"Infra call"')
+    fake.addRecording("2026-11", "26-11-19__080000-audio.mp3")
+    rmSync(join(fake.screenshots, "2026-10", "26-10-29__080000-audio.mp3"))
+    writeFileSync(indexFile(fake), readFileSync(indexFile(fake), "utf8") + "{bad\n")
+    const incremental = fake.run(["index"])
+    expect(incremental.stdout).toContain("1 added, 0 updated, 2 removed, 4 unchanged")
+    const afterIncremental = readFileSync(indexFile(fake), "utf8")
+    rmSync(indexFile(fake))
+    fake.run(["index", "--rebuild"])
+    expect(readFileSync(indexFile(fake), "utf8")).toBe(afterIncremental)
+    const again = fake.run(["index", "--rebuild"])
+    expect(again.stdout).toContain("0 added, 0 updated, 0 removed, 5 unchanged")
+    expect(readdirSync(fake.stateDir).filter((n) => n.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("note does not create an index", () => {
+    const fake = fixture()
+    fake.run(["note", "last", "x"])
+    expect(readdirSync(fake.stateDir)).not.toContain("index.jsonl")
+  })
+
+  test("errors without the audio-capture folder", () => {
+    const fake = fixture()
+    rmSync(fake.stateDir, { recursive: true })
+    const out = fake.run(["index"])
+    expect(out.code).toBe(1)
+    expect(out.stderr).toContain(`ac: no audio-capture folder at ${fake.stateDir}`)
+  })
+})
