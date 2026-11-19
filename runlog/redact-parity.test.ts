@@ -590,4 +590,17 @@ describe("redact-patterns.json", () => {
     }
     expect(failed).toEqual([])
   })
+
+  test("the event path redacts every kind, through the one-test gate",
+    async () => {
+      // The writer tests one alternation of all patterns before the
+      // per-pattern pass; a kind missing here would mean the gate hides it.
+      const patterns = JSON.parse(await readFile(
+        join(import.meta.dir, "redact-patterns.json"), "utf8",
+      )) as { kind: string }[]
+      const seen = jq.events.join("\n")
+      const missing = [...new Set(patterns.map((p) => p.kind))]
+        .filter((kind) => !seen.includes(`[redacted:${kind}]`))
+      expect(missing).toEqual([])
+    })
 })
