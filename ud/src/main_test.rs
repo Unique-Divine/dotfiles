@@ -97,6 +97,7 @@ fn zsh_completions_cover_the_clap_command_tree() {
     assert!(completion.starts_with("#compdef ud\n"));
     assert!(completion.contains("(nibi)"));
     assert!(completion.contains("(completions)"));
+    assert!(completion.contains("(wispr-reset)"));
     assert!(completion.contains("--archive["));
 }
 
@@ -192,6 +193,7 @@ fn every_command_has_clap_help() {
         vec!["lint", "just", "--help"],
         vec!["plugin", "--help"],
         vec!["quick", "--help"],
+        vec!["quick", "wispr-reset", "--help"],
         vec!["q", "--help"],
         vec!["cfg", "--help"],
     ] {
@@ -280,6 +282,18 @@ fn health_gpg_forwards_fix_to_the_doctor() {
         .unwrap();
     assert_success(&output);
     assert_eq!(stdout(&output), "<--fix>");
+}
+
+#[test]
+fn wispr_reset_reports_missing_windows_powershell() {
+    let temp = TempDir::new().unwrap();
+    let output = ud()
+        .env("PATH", temp.path())
+        .args(["quick", "wispr-reset"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires Windows PowerShell"));
 }
 
 /// Relative symlink targets must retain destination-relative semantics.

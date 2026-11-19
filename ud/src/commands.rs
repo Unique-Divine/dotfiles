@@ -234,7 +234,21 @@ pub fn run_quick(command: QuickCommand) -> Result<i32> {
             quick_helper("skills", "skills", preview)
         }
         QuickCommand::Todos(preview) => quick_helper("todos", "todos", preview),
+        QuickCommand::WisprReset => quick_wispr_reset(),
     }
+}
+
+fn quick_wispr_reset() -> Result<i32> {
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        include_str!("wispr-reset.ps1"),
+    ]);
+    process::run_quiet(command).context(
+        "Wispr reset requires Windows PowerShell on PATH via WSL interop",
+    )
 }
 
 fn quick_helper(
