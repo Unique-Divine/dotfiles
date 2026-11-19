@@ -59,6 +59,12 @@ if [[ ! -r "$ud_completion" ]]; then
   failed=1
 fi
 
+# Recipe docs must be one comment line, or `just --list` truncates them.
+if [[ -x "$ud_binary" ]] && ! "$ud_binary" lint just --hide-info "$PWD"; then
+  log_error "justfile recipe docs span several lines (repair: join each into one line; details: ud lint just)"
+  failed=1
+fi
+
 for file in "${zsh_files[@]}"; do
   if ! zsh -n "$file"; then
     failed=1

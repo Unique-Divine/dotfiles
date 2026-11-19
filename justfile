@@ -404,8 +404,7 @@ bun-health:
 bun-lock:
   bun --no-install bun/sync.ts --lock
 
-# Use this, never `bun add -g`, which writes ranges and paths into git.
-# Pin an exact registry release in the global manifest and refresh the lock.
+# Pin an exact registry release globally and refresh the lock (use this, never `bun add -g`).
 bun-add SPEC:
   bun --no-install bun/sync.ts --add {{quote(SPEC)}}
 
@@ -470,8 +469,7 @@ cbm-reindex *ARGS:
 cbm-status:
   @bun run cbm/reindex.ts --status
 
-# Preview or apply the MCP union; --from selects directional correction.
-# --export and --import move Codex servers between machines.
+# Preview or apply the MCP union (--from picks direction; --export/--import move Codex servers).
 mcp-sync *ARGS:
   #!/usr/bin/env bash
   set -Eeuo pipefail

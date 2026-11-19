@@ -19,12 +19,13 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 pub const BUILT_INS: &[&str] = &[
-    "go", "rs", "md", "nibi", "docker", "health", "quick", "plugin", "fs",
+    "go", "rs", "md", "nibi", "docker", "health", "lint", "quick", "plugin",
+    "fs",
 ];
 
 const RESERVED_NAMES: &[&str] = &[
-    "go", "rs", "md", "nibi", "docker", "health", "quick", "q", "cfg", "plugin",
-    "help", "h", "fs",
+    "go", "rs", "md", "nibi", "docker", "health", "lint", "quick", "q", "cfg",
+    "plugin", "help", "h", "fs",
 ];
 
 /// Bound `--plugin-info` so one broken plugin cannot hang help or doctor.
