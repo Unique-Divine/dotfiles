@@ -1,5 +1,27 @@
 // Real temporary Git repositories for the git helper tests: a bare remote
 // and a clone with one commit on main.
+//
+// Testing Notes
+//
+// - Run log off by default. The shared env sets BOKU_RUNLOG=0, because the
+//   writer in runlog/runlog.sh ran jq at about 15 ms per event even after
+//   the redaction fast path, and most git_mf tests never read the log. A
+//   suite that asserts on the log passes BOKU_RUNLOG: "1" in the env
+//   argument of `sh`, as bin/git_mf.runlog.test.ts does in its own wrapper.
+// - Fixtures. `repoPair` builds a fresh bare remote, clone, and peer in
+//   about 125 ms, so it is not cached; a copy would not beat it.
+//   `machinePair` in bin/git_mf.test.ts (two machines plus a submodule)
+//   takes about 740 ms to build, so the test file builds each variant once
+//   and `copyFixture` gives each test a `cp -a` copy, on /dev/shm when it
+//   is writable. The copy's .git/config files are retargeted to the copy;
+//   a guard test checks that the template's refs never move.
+// - Temp dirs. `testBokuHome` is removed in an afterAll hook, and folders
+//   made by `repoPair`, `copyFixture`, and `tempDir` are removed by
+//   `cleanup`, which each file runs in afterEach, so a failing test leaks
+//   nothing. Make new temp folders with these helpers, not bare mkdtemp.
+// - Timeouts. Keep Bun's 5 s default for scenario tests. Give a test a
+//   longer limit only when it needs one, with a comment saying why (the
+//   nine-run --subs test has 15 s).
 import { afterAll } from "bun:test"
 import { accessSync, constants, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
