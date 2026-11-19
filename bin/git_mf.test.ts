@@ -788,7 +788,10 @@ describe("git_mf --subs", () => {
     expect(dirty.code).toBe(2)
     expect(dirty.stderr).toContain("uncommitted changes in submodule other")
     expect(await ok(join(homebox, "sub"), "git rev-parse HEAD")).toBe(subBefore)
-  }, 30_000)
+    // This test runs git_mf nine times (about 0.3 s each with the run log
+    // off) next to fixture setup, so it gets 15 s; the default 5 s fits the
+    // others.
+  }, 15_000)
 
   test("a staged change stops the run before any submodule moves", async () => {
     const { homebox } = await machinePair()
