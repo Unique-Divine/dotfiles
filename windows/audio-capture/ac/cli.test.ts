@@ -1,10 +1,12 @@
 import {
   afterEach, describe, expect, setDefaultTimeout, test,
 } from "bun:test"
-import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  readdirSync, readFileSync, rmSync, utimesSync, writeFileSync,
+} from "node:fs"
 import { join } from "node:path"
 import {
-  makeFakeWindows, standardFixture, type FakeWindows,
+  makeFakeWindows, sessionEvents, standardFixture, type FakeWindows,
 } from "./testkit/testkit"
 
 // Each case runs the CLI and stub programs as real subprocesses.
@@ -200,6 +202,46 @@ describe("ac ls", () => {
     expect(new Date(rows[3].time).getHours()).toBe(9)
     expect(new Date(rows[3].time).getMinutes()).toBe(30)
     expect(fake.calls().some((c) => c.name === "powershell.exe")).toBe(false)
+  })
+})
+
+describe("time-only name templates", () => {
+  test("take the time from the log, else the file, for order and --since", () => {
+    const fake = makeFakeWindows()
+    fakes.push(fake)
+    writeFileSync(join(fake.stateDir, "config.toml"),
+      '[output]\ndir = "{documents}/rec/{yyyy-MM-dd}"\nname = "{HHmmss}.mp3"\n')
+    const rec = join(fake.profile, "Documents", "rec")
+    const add = (day: string, name: string) =>
+      fake.addRecording(`../../rec/${day}`, name)
+    add("2026-11-17", "230000.mp3")
+    add("2026-11-18", "090000.mp3")
+    const noLog = add("2026-11-19", "080000.mp3")
+    utimesSync(noLog, new Date("2026-11-19T08:00:00Z"),
+      new Date("2026-11-19T08:00:00Z"))
+    const win = (day: string, name: string) =>
+      `C:\\Users\\test\\Documents\\rec\\${day}\\${name}`
+    fake.addLog([
+      ...sessionEvents({ session: "a", started: "2026-11-17T23:00:00",
+        output: win("2026-11-17", "230000.mp3"), seconds: 3, mics: [] }),
+      ...sessionEvents({ session: "b", started: "2026-11-18T09:00:00",
+        output: win("2026-11-18", "090000.mp3"), seconds: 4, mics: [] }),
+    ])
+    const rows = JSON.parse(fake.run(["ls", "--json"]).stdout) as
+      { path: string; time: string }[]
+    expect(rows.map((r) => r.path)).toEqual([
+      join(rec, "2026-11-19", "080000.mp3"),
+      join(rec, "2026-11-18", "090000.mp3"),
+      join(rec, "2026-11-17", "230000.mp3"),
+    ])
+    expect(rows.map((r) => r.time)).toEqual([
+      "2026-11-19T08:00:00.000Z",
+      "2026-11-18T02:00:00.000Z",
+      "2026-11-17T16:00:00.000Z",
+    ])
+    const since = JSON.parse(
+      fake.run(["ls", "--json", "--since", "2026-11-18"]).stdout)
+    expect(since).toHaveLength(2)
   })
 })
 

@@ -146,12 +146,16 @@ export const templateMatcher = (
 
 /**
  * The local time a name encodes, or null when it doesn't fit the template.
- * A collision suffix (`-2`) keeps the original name's time.
+ * A collision suffix (`-2`) keeps the original name's time. A template
+ * without a year, month, and day (`{HHmmss}.mp3`) gives null, so callers
+ * fall back to the log or the file time rather than inventing a date.
  */
 export const parseNameTime = (name: string, template: string): Date | null => {
   const { regex, fields } = templateMatcher(template, { collisionSuffix: true })
   const match = regex.exec(name)
   if (!match) return null
+  const letters = new Set(fields.map((field) => field.letter))
+  if (!letters.has("y") || !letters.has("M") || !letters.has("d")) return null
   const parts = { y: 2000, M: 1, d: 1, H: 0, m: 0, s: 0, f: 0 }
   fields.forEach((field, i) => {
     const value = Number(match[i + 1])

@@ -52,6 +52,9 @@ describe("templates", () => {
     expect(parseNameTime("26-11-18__113708-audio.mp3",
       "{yy-MM-dd}__{HHmmss}-audio.mp3")).toEqual(new Date(2026, 10, 18, 11, 37, 8))
     expect(parseNameTime("nope.mp3", "{yy-MM-dd}.mp3")).toBeNull()
+    // No calendar date in the name: no time from the name at all.
+    expect(parseNameTime("113708.mp3", "{HHmmss}.mp3")).toBeNull()
+    expect(parseNameTime("11-18_1137.mp3", "{MM-dd}_{HHmm}.mp3")).toBeNull()
   })
 })
 
