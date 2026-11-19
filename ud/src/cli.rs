@@ -248,4 +248,6 @@ pub enum QuickCommand {
     Skills(CommandPreview),
     /// Edit the text TODO list.
     Todos(CommandPreview),
+    /// Force-quit and reopen Windows Wispr Flow from WSL.
+    WisprReset,
 }
