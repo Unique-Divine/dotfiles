@@ -22,17 +22,10 @@ import {
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { Command as Program } from "commander"
+import { manifestDirs } from "./repos"
 
-export const defaultRepos = [
-  "boku",
-  "nibi-chain",
-  "sai-perps",
-  "sai-keeper",
-  "sai-web",
-  "nibi-web",
-  "nibi-go-hm",
-  "open-sai",
-]
+/** Repos to index, from the manifest that `cbm/repos.ts` manages. */
+export const defaultRepos = manifestDirs()
 
 export interface Command {
   kind: "index" | "link"
