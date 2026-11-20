@@ -64,7 +64,7 @@ bash grok/native.sh --check
 
 `just sync` runs the installer and then `grok/config.ts --run`. `just health`
 runs both checks. `zsh/managed-links.txt` links `AGENTS.md` to
-`$HOME/.grok/AGENTS.md`. That file is only the unslop instruction. Grok already
+`$HOME/.grok/AGENTS.md`. That file holds the unslop and lexicon skill instructions. Grok already
 loads `$HOME/.claude/CLAUDE.md`, so those rules are not copied here.
 
 `just herdr-integrations` then runs `herdr integration install grok` when that
