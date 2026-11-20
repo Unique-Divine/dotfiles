@@ -476,6 +476,24 @@ A missing patterns file turns the writer off, so nothing is written
 unredacted. `runlog_artifact` uses `"$runs_cli" redact-file` when it
 works, else the jq fallback. Every internal command ends in `|| true`.
 
+#### Redaction Fast Path
+
+jq compiles a regex on every call, so applying 43 patterns to the nine or
+so strings of an event cost about 55 of the 60 ms that each `runlog_event`
+call took. The jq function `clean` now builds one alternation of all
+patterns (it drops the `(?<keep>...)` names) and tests the event's strings
+against it in a single call, each string ended by a newline. When nothing
+matches, no pattern would change any string, so `clean` only runs `cut`.
+When something matches, or a PEM private key header appears, every string
+takes the full per-pattern pass, as before. The output is byte-identical;
+the jq and JS parity corpus in `runlog/redact-parity.test.ts` checks it,
+and a test there requires every pattern kind to appear in event output.
+
+Measured on the laptop under a load average near 3, with 10 interleaved
+runs each: five `runlog_event` calls take 289 ms before and 73 ms after
+(about 58 ms and 15 ms per event), and `git_mf main --dry-run` with the
+run log on has a median of 510 ms before and 199 ms after.
+
 ### TypeScript: `runlog/runlog.ts`
 
 ```ts

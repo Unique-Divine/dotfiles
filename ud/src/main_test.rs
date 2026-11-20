@@ -97,7 +97,73 @@ fn zsh_completions_cover_the_clap_command_tree() {
     assert!(completion.starts_with("#compdef ud\n"));
     assert!(completion.contains("(nibi)"));
     assert!(completion.contains("(completions)"));
+    assert!(completion.contains("(wispr-reset)"));
     assert!(completion.contains("--archive["));
+}
+
+/// `ud lint just` finds nested justfiles, skips gitignored ones, and uses
+/// exit codes 0 (clean or info), 1 (errors), and 2 (bad input).
+#[test]
+fn lint_just_reports_findings_and_exit_codes() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("justfile", "# Build it\nbuild:\n  echo\n");
+    write(
+        "tools/dev.just",
+        "# One\n# Two\nrun:\n  echo\n\ntest:\n  echo\n",
+    );
+    write("ignored/justfile", "# A\n# B\nx:\n  echo\n");
+    write(".gitignore", "ignored/\n");
+    let git = std::process::Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .arg(root)
+        .status()
+        .unwrap();
+    assert!(git.success());
+
+    let output = ud().args(["lint", "just"]).arg(root).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let out = stdout(&output);
+    let dev = root.join("tools/dev.just");
+    let dev = dev.display();
+    assert!(out.contains(&format!(
+        "{dev}:1: error[doc-comment-lines]: recipe \"run\" has 2"
+    )));
+    assert!(out.contains(&format!("{dev}:6: info[missing-doc]")));
+    assert!(!out.contains("ignored"));
+    assert!(out.ends_with("2 justfiles, 1 error, 1 info"));
+
+    let hidden = ud()
+        .args(["lint", "just", "--hide-info"])
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(!stdout(&hidden).contains("info[missing-doc]"));
+
+    let clean = ud()
+        .args(["lint", "just"])
+        .arg(root.join("justfile"))
+        .output();
+    let clean = clean.unwrap();
+    assert_success(&clean);
+    assert_eq!(stdout(&clean), "💚 clean 1 justfile");
+
+    let glob = format!("{}/**/*.just", root.display());
+    let globbed = ud().args(["lint", "just", &glob]).output().unwrap();
+    assert_eq!(globbed.status.code(), Some(1));
+
+    let missing = ud()
+        .args(["lint", "just"])
+        .arg(root.join("missing"))
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
 }
 
 /// Every command branch must expose help without invoking workstation tools.
@@ -123,8 +189,11 @@ fn every_command_has_clap_help() {
         vec!["nibi", "keys", "--help"],
         vec!["docker", "--help"],
         vec!["health", "--help"],
+        vec!["lint", "--help"],
+        vec!["lint", "just", "--help"],
         vec!["plugin", "--help"],
         vec!["quick", "--help"],
+        vec!["quick", "wispr-reset", "--help"],
         vec!["q", "--help"],
         vec!["cfg", "--help"],
     ] {
@@ -213,6 +282,18 @@ fn health_gpg_forwards_fix_to_the_doctor() {
         .unwrap();
     assert_success(&output);
     assert_eq!(stdout(&output), "<--fix>");
+}
+
+#[test]
+fn wispr_reset_reports_missing_windows_powershell() {
+    let temp = TempDir::new().unwrap();
+    let output = ud()
+        .env("PATH", temp.path())
+        .args(["quick", "wispr-reset"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires Windows PowerShell"));
 }
 
 /// Relative symlink targets must retain destination-relative semantics.

@@ -41,16 +41,6 @@ notes() {
   cd "$before" || return 1
 }
 
-# todos: Opens NeoVim with your notes workspace as the working directory with
-# your text-based TODO-list open.
-epics() {
-  (
-    # subshell retains path from prior to the edit
-    cd "$REPO/boku"
-    nvim "$REPO/boku/epics"
-  )
-}
-
 # music: Opens the Windows file explorer to your music files.
 music() {
   local before="$(pwd)"

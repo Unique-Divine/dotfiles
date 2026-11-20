@@ -203,6 +203,30 @@ local directory, which tests use. The
 [operations guide](/home/realu/gh-io-ud/docs/file-hosting.md) describes
 storage, deployment, and recovery.
 
+## Lint
+
+`ud lint` holds file linters. Each prints one finding per line as
+`path:line: severity[code]: message`, then a summary, and exits 0 when clean or
+info only, 1 on errors, and 2 on bad input.
+
+```bash
+ud lint just                       # every justfile under the current directory
+ud lint just ~/nibiru ~/boku       # several trees
+ud lint just 'bft/**/*.just'       # a quoted glob
+ud lint just --hide-info justfile  # errors only; info still counted
+```
+
+`ud lint just` finds files named `justfile`, `Justfile`, `.justfile`, or ending
+in `.just`, skipping `.git`, `node_modules`, `target`, `vendor`, and gitignored
+files.
+
+- **Error `doc-comment-lines`:** two or more `#` lines directly above a recipe.
+  `just --list` shows only the last one. A blank line ends the block, so section
+  comments stay legal.
+- **Info `missing-doc`:** a public recipe with no doc comment or `[doc(...)]`.
+
+`just health` runs it on dotfiles.
+
 ## Local health checks
 
 ```bash

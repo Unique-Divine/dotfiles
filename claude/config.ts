@@ -308,7 +308,6 @@ export const applySettings = async ({
 // Authentication, MCPs, project trust, and machine identity stay host-local.
 export const dotfileState = {
   editorMode: "vim",
-  showExpandedTodos: true,
   hasCompletedOnboarding: true,
 } as const
 

@@ -93,7 +93,6 @@ an `env` block never print.
 ```json
 {
   "editorMode": "vim",
-  "showExpandedTodos": true,
   "hasCompletedOnboarding": true
 }
 ```

@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod fs;
+mod lint;
 mod plugin;
 mod process;
 
@@ -73,6 +74,10 @@ fn run() -> Result<i32> {
         Some(Command::Health(args)) => match args.command {
             Some(command) => commands::run_health(command),
             None => print_nested_help(clap_command, &["health"]),
+        },
+        Some(Command::Lint(args)) => match args.command {
+            Some(command) => lint::run(command),
+            None => print_nested_help(clap_command, &["lint"]),
         },
         Some(Command::Plugin(args)) => match args.command {
             Some(crate::cli::PluginCommand::List) => {

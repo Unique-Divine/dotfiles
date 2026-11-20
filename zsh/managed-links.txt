@@ -20,3 +20,4 @@ cursor/hooks .config/git/hooks
 claude/CLAUDE.md .claude/CLAUDE.md
 codex/AGENTS.md .codex/AGENTS.md
 grok/AGENTS.md .grok/AGENTS.md
+windows/audio-capture/ac/cli.ts .local/bin/ac

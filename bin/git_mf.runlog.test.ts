@@ -2,17 +2,20 @@
 // change a real repository and print real-shaped stream fixtures, which go
 // through the real `ud boku runs tap`. Checks what lands in BOKU_HOME.
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { cleanup, jqDir, ok, repoPair, sh as baseSh } from "./git-test-repo"
+import { cleanup, jqDir, ok, repoPair, sh as baseSh, tempDir } from "./git-test-repo"
 
-/** baseSh, with BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents. */
+/**
+ * baseSh with the run log on, which the shared helper turns off, and
+ * BOKU_RUNS_CLI pointing at the runs-cli beside the fake agents.
+ */
 const sh = (dir: string, command: string, env: Record<string, string> = {}) => {
   const fakeBin = env.PATH?.split(":")[0]
   const runsCli: Record<string, string> =
     fakeBin ? { BOKU_RUNS_CLI: join(fakeBin, "runs-cli") } : {}
-  return baseSh(dir, command, { ...runsCli, ...env })
+  return baseSh(dir, command, { BOKU_RUNLOG: "1", ...runsCli, ...env })
 }
 
 const root = resolve(import.meta.dir, "..")
@@ -106,7 +109,7 @@ const resolveTheirs =
 describe("git_mf --agent run log", () => {
   test("a merged conflict leaves the stream, report, diffs, and a verified outcome", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", resolveTheirs)
 
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -150,7 +153,7 @@ describe("git_mf --agent run log", () => {
 
   test("an agent that stops mid-merge exits 5 and saves the conflict", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "git merge -q origin/main >/dev/null 2>&1 || true")
 
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -164,7 +167,7 @@ describe("git_mf --agent run log", () => {
 
   test("codex: the -o report is redacted and the thread id is recorded", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "codex", resolveTheirs)
 
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -183,7 +186,7 @@ describe("git_mf --agent run log", () => {
 
   test("a tap that dies at startup costs a warning, not the merge", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", resolveTheirs, "dies")
 
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -196,11 +199,11 @@ describe("git_mf --agent run log", () => {
 
   test("with logging off the agent runs as before and nothing is written", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", resolveTheirs)
 
     // A fresh TMPDIR must end up empty: the temp prompt is cleaned up.
-    const tmp = await mkdtemp(join(tmpdir(), "git-mf-tmp-"))
+    const tmp = await tempDir("git-mf-tmp-")
     const res = await sh(r.clone, `${gitMf} main --agent`, {
       PATH, BOKU_HOME: home, BOKU_RUNLOG: "0", TMPDIR: tmp,
     })
@@ -213,7 +216,7 @@ describe("git_mf --agent run log", () => {
   test("--json prints the run's events on stdout", async () => {
     const r = await repoPair()
     await r.pushUpstream("two")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} main --json`, { BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
     const out = res.stdout.trim().split("\n").map((l) => JSON.parse(l))
@@ -223,7 +226,7 @@ describe("git_mf --agent run log", () => {
   })
 
   test("--help writes no run", async () => {
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const r = await repoPair()
     await sh(r.clone, `${gitMf} --help`, { BOKU_HOME: home })
     expect(await readdir(home)).toEqual([])
@@ -244,7 +247,7 @@ async function runFile(home: string, name: string): Promise<string> {
 describe("git_mf --agent verify rows", () => {
   test("an agent that moves HEAD without the upstream is failed", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude",
       "printf x > other.txt && git add other.txt && git commit -qm other")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -256,7 +259,7 @@ describe("git_mf --agent verify rows", () => {
 
   test("a non-zero agent exit after a landed merge is merged, with a warning", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", resolveTheirs)
     // Make the fake agent exit 2 after printing its stream.
     const fake = join(r.root, "fake-bin", "claude")
@@ -271,7 +274,7 @@ describe("git_mf --agent verify rows", () => {
   test("a dirty tree already up to date is no-change, exit 0", async () => {
     const r = await repoPair()
     await ok(r.clone, "printf local > file.txt")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "true")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
@@ -283,7 +286,7 @@ describe("git_mf --agent verify rows", () => {
   test("with no upstream commit to check, verify says so", async () => {
     const r = await repoPair()
     await ok(r.clone, "printf local > file.txt")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "true")
     const res = await sh(r.clone, `${gitMf} nope --agent`, { PATH, BOKU_HOME: home })
     const events = await runEvents(home)
@@ -294,7 +297,7 @@ describe("git_mf --agent verify rows", () => {
 
   test("origin moving during the run doesn't fail a good merge", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude",
       `${resolveTheirs}; (cd ${r.peer} && printf later > later.txt && git add . && git commit -qm later && git push -q); git fetch -q`)
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -305,7 +308,7 @@ describe("git_mf --agent verify rows", () => {
 
   test("--dry-run --agent names the agent and runs nothing", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "touch AGENT_RAN")
     const res = await sh(r.clone, `${gitMf} main --agent --dry-run`, { PATH, BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
@@ -325,7 +328,7 @@ describe("git_mf --agent verify rows", () => {
     await r.pushUpstream("DB_PASSWORD=theirs-0002", ".env")
     await r.pushUpstream("export K=theirs-0004", ".envrc")
     await r.pushUpstream("theirs")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude",
       "git merge -q origin/main >/dev/null 2>&1; git checkout -q --theirs .env .envrc file.txt && git add .env .envrc file.txt && git commit -q --no-edit")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -350,7 +353,7 @@ describe("git_mf fail-open", () => {
   }
 
   test("an unwritable BOKU_HOME matches BOKU_RUNLOG=0", async () => {
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     await Bun.$`chmod 500 ${home}`
     const off = await handOff({ BOKU_RUNLOG: "0" })
     const broken = await handOff({ BOKU_HOME: home })
@@ -363,7 +366,7 @@ describe("git_mf fail-open", () => {
     const r = await conflict()
     const PATH = await agentPath(r.root, "claude", resolveTheirs)
     await writeFile(join(r.root, "fake-bin", "jq"), "#!/bin/sh\nexit 127\n", { mode: 0o755 })
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
     expect({ code: res.code, stdout: res.stdout, files: await ok(r.clone, "git ls-files; git status --porcelain") })
       .toEqual(off)
@@ -373,7 +376,7 @@ describe("git_mf fail-open", () => {
 describe("git_mf signals", () => {
   test("a run killed with TERM ends with exit 143, not ok", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "sleep 1")
     const proc = Bun.spawn(["bash", "-c", `exec ${gitMf} main --agent`], {
       cwd: r.clone,
@@ -393,7 +396,7 @@ describe("git_mf signals", () => {
 describe("git_mf --json", () => {
   test("the plain agent path keeps stdout pure JSONL", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     // No runs CLI: the agent runs in plain mode and prints text.
     const PATH = await agentPath(r.root, "claude", `${resolveTheirs}; echo agent says hi`)
     await Bun.$`rm ${join(r.root, "fake-bin", "runs-cli")}`
@@ -408,7 +411,7 @@ describe("git_mf --json", () => {
   test("the no-target path keeps stdout pure JSONL", async () => {
     const r = await repoPair()
     await r.pushUpstream("two")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} --json`, { BOKU_HOME: home })
     expect(res.code, res.stderr).toBe(0)
     const lines = res.stdout.trim().split("\n")
@@ -423,7 +426,7 @@ describe("git_mf round-2 review fixes", () => {
     await ok(r.clone, "git switch -q -c feature")
     await ok(r.clone, "printf mine > 'sk-learn-feature-extractor-module.py' && git add . && git commit -qm mine")
     await r.pushUpstream("theirs", "sk-learn-feature-extractor-module.py")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", "cat > /dev/null; true")
     // Capture what the fake agent reads on stdin.
     const fake = join(r.root, "fake-bin", "claude")
@@ -438,7 +441,7 @@ describe("git_mf round-2 review fixes", () => {
 
   test("codex's report never sits unredacted in the run folder", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "codex", resolveTheirs)
     // Both redactors fail: the CLI, and jq for -Rsj (the file filter).
     const realJq = Bun.which("jq")!
@@ -464,7 +467,7 @@ describe("git_mf round-2 review fixes", () => {
     await ok(r.clone, "printf mine > 'my notes.txt' && printf mine > '*' && git add . && git commit -qm mine")
     await r.pushUpstream("theirs", "'my notes.txt'")
     await r.pushUpstream("theirs", "'*'")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} main`, { BOKU_HOME: home })
     expect(res.code).toBe(3)
     const plan = (await runEvents(home)).find((e) => e.name === "plan")!
@@ -475,7 +478,7 @@ describe("git_mf round-2 review fixes", () => {
   test("steps record their real argv, and start records the repo", async () => {
     const r = await repoPair()
     await r.pushUpstream("two")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     await sh(r.clone, `${gitMf} main`, { BOKU_HOME: home })
     const events = await runEvents(home)
     const fetch = events.find((e) => e.name === "fetch-target")!
@@ -486,7 +489,7 @@ describe("git_mf round-2 review fixes", () => {
 
   test("agent mode still logs needs-judgment", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude", resolveTheirs)
     await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
     expect((await runEvents(home)).some((e) => e.code === "needs-judgment")).toBe(true)
@@ -500,7 +503,7 @@ describe("git_mf round-2 review fixes", () => {
     await writeFile(join(bin, "date"),
       `#!/bin/bash\n[[ "$*" =~ %[0-9]*N ]] && { echo 'value too great'; exit 1; }\nexec /bin/date "$@"\n`,
       { mode: 0o755 })
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} main`, {
       BOKU_HOME: home, PATH: `${bin}:${process.env.PATH}`,
     })
@@ -511,7 +514,7 @@ describe("git_mf round-2 review fixes", () => {
 
   test("the printed report has no terminal control characters", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "codex", resolveTheirs)
     const fake = join(r.root, "fake-bin", "codex")
     await writeFile(fake, (await readFile(fake, "utf8"))
@@ -528,7 +531,7 @@ describe("git_mf round-2 review fixes", () => {
     await ok(r.clone, "printf 'KEYBODY-mine-0005\\n' > deploy.pem && printf mine > file.txt && git commit -qam mine")
     await r.pushUpstream("KEYBODY-theirs-0006", "deploy.pem")
     await r.pushUpstream("theirs")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "claude",
       "git merge -q origin/main >/dev/null 2>&1; git checkout -q --theirs deploy.pem file.txt && git add . && git commit -q --no-edit")
     const res = await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
@@ -544,7 +547,7 @@ describe("git_mf round-3 review fixes", () => {
     const r = await repoPair()
     await ok(r.peer, "git switch -q --orphan other && printf x > o.txt && git add . && git commit -qm other && git push -q origin other")
     await ok(r.clone, "git switch -q -c feature")
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const res = await sh(r.clone, `${gitMf} other`, { BOKU_HOME: home })
     expect(res.code).toBe(1)
     expect(res.stderr).toContain("unrelated histories")
@@ -554,7 +557,7 @@ describe("git_mf round-3 review fixes", () => {
 
   test("codex's report is one artifact, and no report-missing warning", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const PATH = await agentPath(r.root, "codex", resolveTheirs)
     await sh(r.clone, `${gitMf} main --agent`, { PATH, BOKU_HOME: home })
     const events = await runEvents(home)
@@ -564,7 +567,7 @@ describe("git_mf round-3 review fixes", () => {
 
   test("the agent inherits no descriptor beyond stdin, stdout, and stderr", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     const fds = join(r.root, "agent-fds")
     const PATH = await agentPath(r.root, "claude",
       `[[ " $* " == *" --version "* ]] || ls /proc/$$/fd > ${fds}`)
@@ -576,7 +579,7 @@ describe("git_mf round-3 review fixes", () => {
 
   test("a background child can't hold a --json reader open", async () => {
     const r = await conflict()
-    const home = await mkdtemp(join(tmpdir(), "boku-home-"))
+    const home = await tempDir("boku-home-")
     // The fake agent leaves a 15 s sleeper behind, as a real agent's
     // server or git's gc --auto might.
     const PATH = await agentPath(r.root, "claude", `${resolveTheirs}; (sleep 15 >/dev/null 2>&1 &)`)

@@ -131,6 +131,87 @@ To follow the log from WSL:
 tail -f "$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' | tr -d '\r')")/.audio-capture/logs/audio-capture.jsonl" | jq -c '{ts, event, msg}'
 ```
 
+## Terminal Access
+
+`ac` finds, opens, and annotates recordings from WSL, for people and
+agents. `just sync` links it as `~/.local/bin/ac`; `just ac ...` runs it
+from a checkout. The source is in `ac/`.
+
+| Command | Effect |
+| --- | --- |
+| `ac last [--win] [--copy] [--json]` | Path of the newest recording (`--win` for the Windows path, `--copy` puts it on the clipboard) |
+| `ac ls [--since 2d] [--limit N] [--json]` | Recordings, newest first: time, length, size, mics, segments, note, tags |
+| `ac show <id> [--json]` | Everything known: file, log facts (session, start, stop, mics, segments), sidecar |
+| `ac open [id]` | Select the recording in Explorer; with no id, open this month's folder |
+| `ac note <id> [text] [--tag a,b] [--link URL]` | Write or update the sidecar; `""` clears the note |
+| `ac pick` | fzf with an `ac show` preview; Enter prints the path, ctrl-o opens, ctrl-y copies, ctrl-n adds a note |
+| `ac index [--rebuild]` | Write `%USERPROFILE%\.audio-capture\index.jsonl` |
+
+An `id` is `last`, a file name or its prefix (`26-11-18__1137`), or a path
+in either style. A prefix that fits more than one recording is an error
+that lists them. `--since` takes `30m`, `12h`, `2d`, `1w`, a date
+(`2026-11-01`), or a date and time (`2026-11-01T09:30`), in local time.
+`--dry-run`, before or after the command, prints the `explorer.exe` and
+`clip.exe` commands instead of running them.
+
+`ac` finds recordings in two places: files under `[output] dir` whose
+names fit `[output] name`, and files that `mix.done` log events name. It
+reads the log's rotated copies too. Without the log, it still lists the
+files and warns that lengths and mics are unknown.
+
+### Sidecar Format
+
+A recording's note lives in a JSON file next to it with the same name and
+a `.json` extension, such as `26-11-18__113708-audio.json`:
+
+```json
+{
+  "version": 1,
+  "recording": "26-11-18__113708-audio.mp3",
+  "note": "Call with the infra team",
+  "tags": ["call", "infra"],
+  "links": ["https://github.com/Unique-Divine/dotfiles/issues/155"],
+  "updated": "2026-11-18T04:40:02.123Z"
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | `1` | Format version; readers refuse versions they don't know |
+| `recording` | string | The recording's file name, without a folder |
+| `note` | string or `null` | Free text |
+| `tags` | string array | No duplicates, in the order added |
+| `links` | string array | URLs, no duplicates |
+| `updated` | string | ISO 8601 time of the last write |
+
+Rules for any writer, `ac` now and the app's tray later:
+
+- Write a temp file in the same folder and rename it over the sidecar, so
+  a reader never sees half a file.
+- Write 2-space JSON with a trailing newline.
+- Keep fields you don't know, so two writers don't erase each other's
+  data.
+
+`ac/sidecar.ts` holds the TypeScript types and the validator.
+
+### Index
+
+`index.jsonl` has one line per recording, newest first: the Windows and
+WSL paths, time, size, length, session, segments, mics, and the sidecar's
+note, tags, and links. It is derived from the files, the log, and the
+sidecars and is never the source of truth. `ac index` updates it, and
+`ac note` keeps an existing index current. `--rebuild` rewrites it from
+scratch and always gives the same file as an update.
+
+### Tests
+
+`bun test windows/audio-capture/ac` builds a fake profile and recordings
+folder in a temp folder and puts stub `wslpath`, `cmd.exe`,
+`powershell.exe`, `explorer.exe`, `clip.exe`, and `fzf` first on PATH.
+The stubs record their arguments and stdin. The tests never reach real
+Windows paths or programs. In `ac`, only `ac/system.ts` starts other
+programs.
+
 ## Command Line
 
 The first launch stays resident and owns the hotkey. Later launches pass

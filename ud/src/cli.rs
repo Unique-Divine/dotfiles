@@ -31,6 +31,8 @@ pub enum Command {
     Docker(Nested<DockerCommand>),
     /// Diagnose local workstation tools.
     Health(Nested<HealthCommand>),
+    /// Lint files and report findings as path:line.
+    Lint(Nested<LintCommand>),
     /// Inspect executable ud plugins.
     Plugin(Nested<PluginCommand>),
     /// Generate shell completion definitions.
@@ -213,6 +215,21 @@ pub enum HealthCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum LintCommand {
+    /// Check that each recipe has exactly one doc comment line.
+    ///
+    /// Finds files named justfile, Justfile, .justfile, or ending in .just
+    /// under each directory, skipping gitignored files. Exits 1 on errors.
+    Just {
+        /// Files, directories, or quoted globs (default: current directory).
+        paths: Vec<PathBuf>,
+        /// Print only errors; info still counts in the summary.
+        #[arg(long)]
+        hide_info: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum PluginCommand {
     /// List built-in commands and installed plugins.
     List,
@@ -248,4 +265,6 @@ pub enum QuickCommand {
     Skills(CommandPreview),
     /// Edit the text TODO list.
     Todos(CommandPreview),
+    /// Force-quit and reopen Windows Wispr Flow from WSL.
+    WisprReset,
 }
