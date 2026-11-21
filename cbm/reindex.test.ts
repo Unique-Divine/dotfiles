@@ -174,21 +174,23 @@ describe("runPlan", () => {
 })
 
 /**
- * A real `--run` against a fake `codebase-memory-mcp` on PATH that records
+ * A real `--run` against a fake graph executable on PATH that records
  * each call and sleeps for FAKE_SLEEP seconds.
  */
-function sandbox() {
+function sandbox(binaries = ["mori"]) {
   const root = mkdtempSync(join(tmpdir(), "cbm-reindex-run-"))
   mkdirSync(join(root, "home/x/.git"), { recursive: true })
   mkdirSync(join(root, "bin"))
-  const fake = join(root, "bin/codebase-memory-mcp")
-  writeFileSync(fake, [
-    "#!/bin/sh",
-    `echo call >> '${root}/calls'`,
-    "sleep \"${FAKE_SLEEP:-0}\"",
-    `echo '{"structuredContent":{"status":"indexed","nodes":1,"edges":1}}'`,
-  ].join("\n") + "\n")
-  chmodSync(fake, 0o755)
+  for (const binary of binaries) {
+    const fake = join(root, "bin", binary)
+    writeFileSync(fake, [
+      "#!/bin/sh",
+      `echo call >> '${root}/calls'`,
+      "sleep \"${FAKE_SLEEP:-0}\"",
+      `echo '{"structuredContent":{"status":"indexed","nodes":1,"edges":1}}'`,
+    ].join("\n") + "\n")
+    chmodSync(fake, 0o755)
+  }
   const { CBM_REINDEX_LOCKED: _locked, ...base } = process.env
   const env = (sleep: number) => ({
     ...base,
@@ -204,6 +206,25 @@ function sandbox() {
     : 0
   return { root, env, argv, calls, dir: join(root, "cache/cbm-reindex") }
 }
+
+describe("reindex executable selection", () => {
+  test.each([
+    [["codebase-memory-mcp", "mori"], "mori"],
+    [["codebase-memory-mcp"], "codebase-memory-mcp"],
+  ] as const)("uses the expected executable with %j", async (binaries, want) => {
+    const box = sandbox([...binaries])
+    const path = join(box.root, "bin")
+    const run = Bun.spawn([...box.argv, "--plan"], {
+      env: { ...box.env(0), PATH: path },
+      stdout: "pipe",
+    })
+    expect(await run.exited).toBe(0)
+    expect(await new Response(run.stdout).text()).toBe(
+      `${join(path, want)} cli --quiet --json index_repository <<< '` +
+      JSON.stringify({ repo_path: join(box.root, "home/x") }) + "'\n",
+    )
+  })
+})
 
 describe("the run lock", () => {
   test("of two runs started at once, exactly one runs", async () => {

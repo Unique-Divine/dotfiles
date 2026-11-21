@@ -408,9 +408,9 @@ export function createProgram(): Program {
         console.log(formatStatus(readStatus(dir), isLocked(dir)))
         return
       }
-      const bin = Bun.which("codebase-memory-mcp")
+      const bin = Bun.which("mori") ?? Bun.which("codebase-memory-mcp")
       if (!bin) {
-        console.log("codebase-memory-mcp is not installed; skipping")
+        console.log("Mori is not installed; skipping")
         return
       }
       const plan = planReindex({
