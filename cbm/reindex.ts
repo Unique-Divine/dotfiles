@@ -20,7 +20,7 @@ import {
   readlinkSync, realpathSync, renameSync, writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
-import { basename, join } from "node:path"
+import { basename, delimiter, join } from "node:path"
 import { Command as Program } from "commander"
 
 export const defaultRepos = [
@@ -387,6 +387,25 @@ interface CliOptions {
   quiet?: boolean
 }
 
+function findGraphExecutable(name: string): string | null {
+  const mise = Bun.which("mise")
+  const misePath = mise ? realpathSync(mise) : null
+  for (const directory of process.env.PATH?.split(delimiter) ?? [undefined]) {
+    const bin = Bun.which(name, { PATH: directory === "" ? "." : directory })
+    if (!bin) continue
+    const dispatcher = realpathSync(bin)
+    if (basename(dispatcher) !== "mise" && dispatcher !== misePath) return bin
+
+    // A shim can remain on PATH after rollback. Probe the selected version
+    // before accepting the shim, then keep searching for the same name.
+    const selection = Bun.spawnSync([dispatcher, "which", name], {
+      stdout: "ignore", stderr: "ignore",
+    })
+    if (selection.success) return bin
+  }
+  return null
+}
+
 export function createProgram(): Program {
   return new Program()
     .name("cbm-reindex")
@@ -408,9 +427,10 @@ export function createProgram(): Program {
         console.log(formatStatus(readStatus(dir), isLocked(dir)))
         return
       }
-      const bin = Bun.which("codebase-memory-mcp")
+      const bin = findGraphExecutable("mori") ??
+        findGraphExecutable("codebase-memory-mcp")
       if (!bin) {
-        console.log("codebase-memory-mcp is not installed; skipping")
+        console.log("Mori is not installed; skipping")
         return
       }
       const plan = planReindex({
