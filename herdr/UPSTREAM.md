@@ -17,7 +17,8 @@ The previous snapshot came from fork commit
   their current position as the prefix and keep the remaining text exactly.
   Closing or moving tabs updates these labels, including names such as
   `3-nibi-web`. Stored custom names and stable public API IDs stay unchanged.
-  API labels use one-based positions; the client applies its configured base.
+  API labels use the server's shortcut base. Each TUI applies the base from
+  its effective shortcuts, including when a remote TUI uses local shortcuts.
   Multi-digit prefixes such as `2026-notes` stay unchanged, as do names
   beginning with whitespace, a sign, or non-ASCII digits. The client snapshot
   retains original custom names so each client can apply its display base.

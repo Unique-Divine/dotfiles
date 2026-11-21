@@ -3300,6 +3300,9 @@ action = "missing"
     #[test]
     fn manifest_action_invoke_builds_default_workspace_context() {
         let mut app = test_app();
+        let config: crate::config::Config =
+            toml::from_str("[keys]\nswitch_tab = \"prefix+0..8\"\n").unwrap();
+        app.state.keybinds = config.keybinds();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
         app.state.workspaces[0].identity_cwd = "/tmp/issue".into();
         app.state.ensure_test_terminals();
@@ -3372,7 +3375,7 @@ command = ["show-ctx"]
         assert_eq!(context.workspace_label.as_deref(), Some("Plugin Work"));
         assert_eq!(context.workspace_cwd.as_deref(), Some("/tmp/issue"));
         assert_eq!(context.tab_id.as_deref(), Some(tab_public.as_str()));
-        assert_eq!(context.tab_label.as_deref(), Some("1"));
+        assert_eq!(context.tab_label.as_deref(), Some("0"));
         assert_eq!(
             context.focused_pane_id.as_deref(),
             Some(pane_public.as_str())

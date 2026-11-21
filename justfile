@@ -467,7 +467,7 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
-# Reindex the Codebase Memory graphs and relink them (--plan prints only).
+# Reindex the Mori code graphs and relink them (--plan prints only).
 cbm-reindex *ARGS:
   @bun run cbm/reindex.ts --run {{ARGS}}
 
