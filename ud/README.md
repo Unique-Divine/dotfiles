@@ -200,7 +200,7 @@ Variables `UD_FS_BASE_URL`, `UD_FS_BUCKET`, `UD_FS_META_BUCKET`, and
 `UD_FS_REF_ROOTS` override settings; the previous `pub` config and `PUB_*`
 variables remain fallbacks. `UD_FS_INDEX_DIR` replaces the meta bucket with a
 local directory, which tests use. The
-[operations guide](/home/realu/gh-io-ud/docs/file-hosting.md) describes
+[operations guide](/home/realu/ud-web/docs/file-hosting.md) describes
 storage, deployment, and recovery.
 
 ## Local health checks
