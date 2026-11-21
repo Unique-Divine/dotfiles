@@ -387,6 +387,22 @@ interface CliOptions {
   quiet?: boolean
 }
 
+function findGraphExecutable(name: string): string | null {
+  const bin = Bun.which(name)
+  if (!bin) return null
+
+  const mise = Bun.which("mise")
+  if (mise && realpathSync(bin) === realpathSync(mise)) {
+    // A shim can remain on PATH after switching to a version that lacks
+    // the command. Probe mise's selection without launching that command.
+    const selection = Bun.spawnSync([mise, "which", name], {
+      stdout: "ignore", stderr: "ignore",
+    })
+    if (!selection.success) return null
+  }
+  return bin
+}
+
 export function createProgram(): Program {
   return new Program()
     .name("cbm-reindex")
@@ -408,7 +424,8 @@ export function createProgram(): Program {
         console.log(formatStatus(readStatus(dir), isLocked(dir)))
         return
       }
-      const bin = Bun.which("mori") ?? Bun.which("codebase-memory-mcp")
+      const bin = findGraphExecutable("mori") ??
+        findGraphExecutable("codebase-memory-mcp")
       if (!bin) {
         console.log("Mori is not installed; skipping")
         return

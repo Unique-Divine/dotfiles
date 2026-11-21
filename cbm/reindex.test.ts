@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync,
 } from "node:fs"
 import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
@@ -208,11 +208,7 @@ function sandbox(binaries = ["mori"]) {
 }
 
 describe("reindex executable selection", () => {
-  test.each([
-    [["codebase-memory-mcp", "mori"], "mori"],
-    [["codebase-memory-mcp"], "codebase-memory-mcp"],
-  ] as const)("uses the expected executable with %j", async (binaries, want) => {
-    const box = sandbox([...binaries])
+  async function expectPlan(box: ReturnType<typeof sandbox>, want: string) {
     const path = join(box.root, "bin")
     const run = Bun.spawn([...box.argv, "--plan"], {
       env: { ...box.env(0), PATH: path },
@@ -223,6 +219,23 @@ describe("reindex executable selection", () => {
       `${join(path, want)} cli --quiet --json index_repository <<< '` +
       JSON.stringify({ repo_path: join(box.root, "home/x") }) + "'\n",
     )
+  }
+
+  test.each([
+    [["codebase-memory-mcp", "mori"], "mori"],
+    [["codebase-memory-mcp"], "codebase-memory-mcp"],
+  ] as const)("uses the expected executable with %j", async (binaries, want) => {
+    await expectPlan(sandbox([...binaries]), want)
+  })
+
+  test("uses the previous executable after mise rollback leaves an inactive shim", async () => {
+    const box = sandbox(["codebase-memory-mcp"])
+    const path = join(box.root, "bin")
+    const mise = join(path, "mise")
+    writeFileSync(mise, "#!/bin/sh\nexit 1\n")
+    chmodSync(mise, 0o755)
+    symlinkSync(mise, join(path, "mori"))
+    await expectPlan(box, "codebase-memory-mcp")
   })
 })
 
