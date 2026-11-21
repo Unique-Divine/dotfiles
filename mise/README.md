@@ -55,10 +55,20 @@ which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 Mori, the code graph behind MCP server `mori-graph`, installs from Jiyuu
 releases tagged `mori/v*` (`version_prefix` in `config.toml`). Its binary is
 still named `codebase-memory-mcp`, so the MCP entry and the Claude Code hooks
-run `~/.local/bin/codebase-memory-mcp`, the link to the mise shim. A
-hand-built binary at that path is a real file, which the link step leaves
-alone, so the MCP entry and hooks would keep running it: remove it before
-`just mise-install`.
+run `~/.local/bin/codebase-memory-mcp`, the link to the mise shim. If a
+hand-built binary already sits at that path, the link step refuses to replace
+it and exits 1, which stops `just mise-install` and `just sync`. Remove it
+first:
+
+```sh
+codebase-memory-mcp daemon stop
+/bin/rm ~/.local/bin/codebase-memory-mcp
+```
+
+The shim only runs in directories whose `mise.toml` mise trusts; in an
+untrusted project directory it fails. Trust the project
+(`mise trust`) or point the MCP entry at the installed binary from
+`mise which codebase-memory-mcp` if that happens.
 
 To upgrade, bump `version`, run `mise lock` as above, then
 `just mise-install`. Run `codebase-memory-mcp daemon stop` afterward, since
