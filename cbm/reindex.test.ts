@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync,
 } from "node:fs"
 import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 
 import {
   type Command, execute, isLocked, launchBackground, lockPath, planReindex, readOutcome,
@@ -174,21 +174,23 @@ describe("runPlan", () => {
 })
 
 /**
- * A real `--run` against a fake `codebase-memory-mcp` on PATH that records
+ * A real `--run` against a fake graph executable on PATH that records
  * each call and sleeps for FAKE_SLEEP seconds.
  */
-function sandbox() {
+function sandbox(binaries = ["mori"]) {
   const root = mkdtempSync(join(tmpdir(), "cbm-reindex-run-"))
   mkdirSync(join(root, "home/x/.git"), { recursive: true })
   mkdirSync(join(root, "bin"))
-  const fake = join(root, "bin/codebase-memory-mcp")
-  writeFileSync(fake, [
-    "#!/bin/sh",
-    `echo call >> '${root}/calls'`,
-    "sleep \"${FAKE_SLEEP:-0}\"",
-    `echo '{"structuredContent":{"status":"indexed","nodes":1,"edges":1}}'`,
-  ].join("\n") + "\n")
-  chmodSync(fake, 0o755)
+  for (const binary of binaries) {
+    const fake = join(root, "bin", binary)
+    writeFileSync(fake, [
+      "#!/bin/sh",
+      `echo call >> '${root}/calls'`,
+      "sleep \"${FAKE_SLEEP:-0}\"",
+      `echo '{"structuredContent":{"status":"indexed","nodes":1,"edges":1}}'`,
+    ].join("\n") + "\n")
+    chmodSync(fake, 0o755)
+  }
   const { CBM_REINDEX_LOCKED: _locked, ...base } = process.env
   const env = (sleep: number) => ({
     ...base,
@@ -204,6 +206,53 @@ function sandbox() {
     : 0
   return { root, env, argv, calls, dir: join(root, "cache/cbm-reindex") }
 }
+
+describe("reindex executable selection", () => {
+  async function expectPlan(
+    box: ReturnType<typeof sandbox>, want: string, path = join(box.root, "bin"),
+  ) {
+    const run = Bun.spawn([...box.argv, "--plan"], {
+      env: { ...box.env(0), PATH: path },
+      stdout: "pipe",
+    })
+    expect(await run.exited).toBe(0)
+    expect(await new Response(run.stdout).text()).toBe(
+      `${want} cli --quiet --json index_repository <<< '` +
+      JSON.stringify({ repo_path: join(box.root, "home/x") }) + "'\n",
+    )
+  }
+
+  test.each([
+    [["codebase-memory-mcp", "mori"], "mori"],
+    [["codebase-memory-mcp"], "codebase-memory-mcp"],
+  ] as const)("uses the expected executable with %j", async (binaries, want) => {
+    const box = sandbox([...binaries])
+    await expectPlan(box, join(box.root, "bin", want))
+  })
+
+  test.each([true, false])("ignores an inactive shim with mise on PATH = %s", async (miseOnPath) => {
+    const box = sandbox(["codebase-memory-mcp"])
+    const path = join(box.root, "bin")
+    const mise = join(miseOnPath ? path : box.root, "mise")
+    writeFileSync(mise, "#!/bin/sh\nexit 1\n")
+    chmodSync(mise, 0o755)
+    symlinkSync(mise, join(path, "mori"))
+    await expectPlan(box, join(path, "codebase-memory-mcp"))
+  })
+
+  test("keeps searching for Mori after rejecting an inactive shim", async () => {
+    const box = sandbox(["codebase-memory-mcp"])
+    const shims = join(box.root, "shims")
+    const bin = join(box.root, "bin")
+    const mise = join(box.root, "mise")
+    const standalone = join(bin, "mori")
+    mkdirSync(shims)
+    writeFileSync(mise, "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    symlinkSync(mise, join(shims, "mori"))
+    writeFileSync(standalone, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    await expectPlan(box, standalone, [shims, bin].join(delimiter))
+  })
+})
 
 describe("the run lock", () => {
   test("of two runs started at once, exactly one runs", async () => {
