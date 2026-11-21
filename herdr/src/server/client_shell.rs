@@ -24,7 +24,9 @@ pub(super) fn snapshot_with_completions(
     protocol::ClientShellSnapshot,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    let snapshot = app.session_snapshot();
+    // Auto-named tabs carry one-based positions on the wire. The TUI applies
+    // its own keybindings to those positions and to the raw custom names below.
+    let snapshot = app.session_snapshot_with_tab_index_base(1);
     let completions = protocol::endpoint::EndpointAgentCompletions {
         boot_id: boot_id.to_owned(),
         revision,
@@ -632,10 +634,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_keeps_original_numbered_names_for_client_display_bases() {
+    fn snapshot_keeps_raw_names_and_one_based_auto_labels_with_zero_based_shortcuts() {
+        let config = toml::from_str("[keys]\nswitch_tab = \"prefix+0..8\"\n").unwrap();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(
-            &crate::config::Config::default(),
+            &config,
             crate::app::AppPolicy::TEST,
             None,
             api_rx,
@@ -648,15 +651,24 @@ mod tests {
         workspace.test_add_tab(Some("2026-notes"));
         assert!(workspace.close_tab(1));
         assert!(workspace.close_tab(0));
-        assert_eq!(workspace.tab_display_name(0).as_deref(), Some("1-nibi-web"));
-        app.state.workspaces = vec![workspace];
+        workspace.test_add_tab(None);
+        app.state.workspaces = vec![workspace, crate::workspace::Workspace::test_new("second")];
         app.state.active = Some(0);
+
+        let api_snapshot = app.session_snapshot();
+        assert_eq!(api_snapshot.tabs[0].label, "0-nibi-web");
+        assert_eq!(api_snapshot.tabs[2].label, "2");
+        assert_eq!(api_snapshot.tabs[3].label, "0");
 
         let snapshot = snapshot(&app, "boot", 1, None, None);
         assert_eq!(snapshot.tabs[0].label, "2-nibi-web");
         assert!(snapshot.tabs[0].custom_label);
         assert_eq!(snapshot.tabs[0].number, 3);
         assert_eq!(snapshot.tabs[1].label, "2026-notes");
+        assert_eq!(snapshot.tabs[2].label, "3");
+        assert!(!snapshot.tabs[2].custom_label);
+        assert_eq!(snapshot.tabs[3].label, "1");
+        assert!(!snapshot.tabs[3].custom_label);
     }
 
     #[test]

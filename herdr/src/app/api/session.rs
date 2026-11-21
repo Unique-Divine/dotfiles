@@ -14,6 +14,13 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
+        self.session_snapshot_with_tab_index_base(self.state.keybinds.tab_display_index_base())
+    }
+
+    pub(crate) fn session_snapshot_with_tab_index_base(
+        &self,
+        index_base: usize,
+    ) -> SessionSnapshot {
         let focused_workspace_id = self
             .state
             .active
@@ -33,7 +40,7 @@ impl App {
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.push(self.workspace_info(ws_idx));
             for tab_idx in 0..ws.tabs.len() {
-                if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
+                if let Some(tab) = self.tab_info_with_index_base(ws_idx, tab_idx, index_base) {
                     tabs.push(tab);
                 }
                 if let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) {
