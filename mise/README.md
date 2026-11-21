@@ -52,27 +52,25 @@ which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 
 ## Mori
 
-Mori, the code graph behind MCP server `mori-graph`, installs from Jiyuu
-releases tagged `mori/v*` (`version_prefix` in `config.toml`). Its binary is
-still named `codebase-memory-mcp`, so the MCP entry and the Claude Code hooks
-run `~/.local/bin/codebase-memory-mcp`, the link to the mise shim. If a
-hand-built binary already sits at that path, the link step refuses to replace
-it and exits 1, which stops `just mise-install` and `just sync`. Remove it
-first:
+Jiyuu publishes the `mori` CLI in releases tagged `mori/v*`. Keep the MCP
+server key `mori-graph` in Codex and Claude. From a trusted directory, run
+`mise which mori` and use the printed path in each MCP registration and
+Claude hook. A mise shim can fail to start in a project with an untrusted
+`mise.toml`.
 
-```sh
-codebase-memory-mcp daemon stop
-/bin/rm ~/.local/bin/codebase-memory-mcp
-```
+The 0.14.0 rollout uses `~/.cache/mori-0140/cache` and
+`~/.cache/mori-0140/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
+to those paths for CLI queries against the same graph. After checking MCP,
+hooks, and watcher links, create `~/.cache/mori-0140/accepted` to enable
+scheduled indexing against those directories. Reindexing uses each client's
+saved targets. If `index_status` reports `stale`, rerun the link command
+with the client's saved targets.
 
-The shim only runs in directories whose `mise.toml` mise trusts; in an
-untrusted project directory it fails. Trust the project
-(`mise trust`) or point the MCP entry at the installed binary from
-`mise which codebase-memory-mcp` if that happens.
+For future upgrades, bump the version, refresh the four platform locks for
+Mori, and run `just mise-install`. Update the absolute executable path in
+the MCP registrations and hooks.
 
-To upgrade, bump `version`, run `mise lock` as above, then
-`just mise-install`. Run `codebase-memory-mcp daemon stop` afterward, since
-the running daemon keeps the old binary until it restarts.
+[Release installation and rollback](https://github.com/Unique-Divine/jiyuu/blob/main/mori/README.md#install)
 
 ## Fresh machine
 
