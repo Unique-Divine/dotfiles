@@ -11,7 +11,7 @@ export const NVMRC_SET_ALLOW = [
   "sai-perps",
   "nibi-ts-sdk",
   "nibi-ui-nibi",
-  "gh-io-ud",
+  "ud-web",
   "coded-estate-evm",
 ] as const
 
