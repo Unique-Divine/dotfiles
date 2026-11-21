@@ -272,13 +272,16 @@ sync:
   # Mori replays each client's saved targets during reindexing. Run an explicit
   # link command with those targets when index_status reports a stale client.
   mori_state="$HOME/.cache/mori-0140"
-  if [[ -f "$mori_state/accepted" && -d "$mori_state/cache" &&
-        -d "$mori_state/runtime" ]] && mori_bin=$(mise which mori 2>/dev/null); then
-    runlog_step cbm-reindex env "PATH=${mori_bin%/*}:$PATH" \
-      "CBM_CACHE_DIR=$mori_state/cache" "CBM_RUNTIME_DIR=$mori_state/runtime" \
-      just cbm-reindex --background --no-link || true
+  if mori_bin=$(mise which mori 2>/dev/null); then
+    if [[ -f "$mori_state/accepted" && -d "$mori_state/cache" &&
+          -d "$mori_state/runtime" ]]; then
+      runlog_step cbm-reindex env "PATH=${mori_bin%/*}:$PATH" \
+        "CBM_CACHE_DIR=$mori_state/cache" "CBM_RUNTIME_DIR=$mori_state/runtime" \
+        just cbm-reindex --background --no-link || true
+    fi
   else
-    runlog_step cbm-reindex just cbm-reindex --background || true
+    runlog_step cbm-reindex env -u CBM_CACHE_DIR -u CBM_RUNTIME_DIR \
+      just cbm-reindex --background || true
   fi
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
