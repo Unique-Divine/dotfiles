@@ -268,10 +268,21 @@ sync:
   runlog_step herdr-integrations just herdr-integrations
   runlog_step skills-sync bun run skillsSync.ts --run
   runlog_step email-sync just email-sync
-  # The MCP server refreshes only the active session's repo; this keeps the
-  # other code graphs and their cross-repo links current. It takes minutes,
-  # so it starts in the background (just cbm-status) and never fails sync.
-  runlog_step cbm-reindex just cbm-reindex --background || true
+  # Refresh inactive repositories in the same cache used by Mori's MCP server.
+  # Mori replays each client's saved targets during reindexing. Run an explicit
+  # link command with those targets when index_status reports a stale client.
+  mori_state="$HOME/.cache/mori-0140"
+  if mori_bin=$(mise which mori 2>/dev/null); then
+    if [[ -f "$mori_state/accepted" && -d "$mori_state/cache" &&
+          -d "$mori_state/runtime" ]]; then
+      runlog_step cbm-reindex env "PATH=${mori_bin%/*}:$PATH" \
+        "CBM_CACHE_DIR=$mori_state/cache" "CBM_RUNTIME_DIR=$mori_state/runtime" \
+        just cbm-reindex --background --no-link || true
+    fi
+  else
+    runlog_step cbm-reindex env -u CBM_CACHE_DIR -u CBM_RUNTIME_DIR \
+      just cbm-reindex --background || true
+  fi
   # Pruning old runs must never fail the sync.
   runlog_step prune bun run runlog/cli.ts prune || true
 
@@ -467,7 +478,7 @@ nvim-mason-restore:
   export GOROOT="$go_root"
   nvim --headless "+MasonRestore" +qa
 
-# Reindex the Codebase Memory graphs and relink them (--plan prints only).
+# Reindex the Mori code graphs and relink them (--plan prints only).
 cbm-reindex *ARGS:
   @bun run cbm/reindex.ts --run {{ARGS}}
 

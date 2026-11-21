@@ -50,6 +50,28 @@ just mise-install
 Check the backend first with `mise tool <name>`. Prefer `aqua:` backends,
 which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 
+## Mori
+
+Jiyuu publishes the `mori` CLI in releases tagged `mori/v*`. Keep the MCP
+server key `mori-graph` in Codex and Claude. From a trusted directory, run
+`mise which mori` and use the printed path in each MCP registration and
+Claude hook. A mise shim can fail to start in a project with an untrusted
+`mise.toml`.
+
+The 0.14.0 rollout uses `~/.cache/mori-0140/cache` and
+`~/.cache/mori-0140/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
+to those paths for CLI queries against the same graph. After checking MCP,
+hooks, and watcher links, create `~/.cache/mori-0140/accepted` to enable
+scheduled indexing against those directories. Reindexing uses each client's
+saved targets. If `index_status` reports `stale`, rerun the link command
+with the client's saved targets.
+
+For future upgrades, bump the version, refresh the four platform locks for
+Mori, and run `just mise-install`. Update the absolute executable path in
+the MCP registrations and hooks.
+
+[Release installation and rollback](https://github.com/Unique-Divine/jiyuu/blob/main/mori/README.md#install)
+
 ## Fresh machine
 
 `just` itself comes from mise, so bootstrap before running `just sync`:
