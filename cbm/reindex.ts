@@ -391,11 +391,13 @@ function findGraphExecutable(name: string): string | null {
   const bin = Bun.which(name)
   if (!bin) return null
 
+  const dispatcher = realpathSync(bin)
   const mise = Bun.which("mise")
-  if (mise && realpathSync(bin) === realpathSync(mise)) {
+  if (basename(dispatcher) === "mise" ||
+    (mise && dispatcher === realpathSync(mise))) {
     // A shim can remain on PATH after switching to a version that lacks
     // the command. Probe mise's selection without launching that command.
-    const selection = Bun.spawnSync([mise, "which", name], {
+    const selection = Bun.spawnSync([dispatcher, "which", name], {
       stdout: "ignore", stderr: "ignore",
     })
     if (!selection.success) return null

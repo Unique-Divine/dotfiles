@@ -228,10 +228,10 @@ describe("reindex executable selection", () => {
     await expectPlan(sandbox([...binaries]), want)
   })
 
-  test("uses the previous executable after mise rollback leaves an inactive shim", async () => {
+  test.each([true, false])("ignores an inactive shim with mise on PATH = %s", async (miseOnPath) => {
     const box = sandbox(["codebase-memory-mcp"])
     const path = join(box.root, "bin")
-    const mise = join(path, "mise")
+    const mise = join(miseOnPath ? path : box.root, "mise")
     writeFileSync(mise, "#!/bin/sh\nexit 1\n")
     chmodSync(mise, 0o755)
     symlinkSync(mise, join(path, "mori"))
