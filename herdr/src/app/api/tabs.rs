@@ -323,6 +323,72 @@ mod tests {
     };
 
     #[test]
+    fn api_tab_labels_follow_shortcuts_and_keep_identity_after_move_and_close() {
+        for (config, expected) in [
+            (Config::default(), ["1", "3-deals", "2-deals", "1-deals"]),
+            (
+                toml::from_str("[keys]\nswitch_tab = \"prefix+0..8\"\n").unwrap(),
+                ["0", "2-deals", "1-deals", "0-deals"],
+            ),
+        ] {
+            let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut app = App::new(
+                &config,
+                crate::app::AppPolicy::TEST,
+                None,
+                api_rx,
+                crate::api::EventHub::default(),
+            );
+            let mut workspace = Workspace::test_new("tabs");
+            workspace.test_add_tab(Some("2026-notes"));
+            let deals = workspace.test_add_tab(Some("7-deals"));
+            app.state.workspaces = vec![workspace];
+            let workspace_id = app.public_workspace_id(0);
+            let tab_id = app.public_tab_id(0, deals).unwrap();
+
+            let response = app.handle_tab_list(
+                "list".into(),
+                TabListParams {
+                    workspace_id: Some(workspace_id),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabList { tabs } = success.result else {
+                panic!("expected tab list");
+            };
+            assert_eq!(tabs[0].label, expected[0]);
+            assert_eq!(tabs[1].label, "2026-notes");
+            assert_eq!(tabs[deals].label, expected[1]);
+            assert_eq!(tabs[deals].tab_id, tab_id);
+
+            assert!(app.state.workspaces[0].move_tab(deals, 1));
+            let response = app.handle_tab_get(
+                "get".into(),
+                TabTarget {
+                    tab_id: tab_id.clone(),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabInfo { tab } = success.result else {
+                panic!("expected tab info");
+            };
+            assert_eq!(tab.label, expected[2]);
+            assert_eq!(tab.tab_id, tab_id);
+            assert_eq!(tab.number, 3);
+
+            assert!(app.state.workspaces[0].close_tab(0));
+            let snapshot = app.session_snapshot();
+            assert_eq!(snapshot.tabs[0].label, expected[3]);
+            assert_eq!(snapshot.tabs[0].tab_id, tab_id);
+            assert_eq!(snapshot.tabs[0].number, 3);
+            assert_eq!(
+                app.state.workspaces[0].tabs[0].custom_name.as_deref(),
+                Some("7-deals")
+            );
+        }
+    }
+
+    #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
