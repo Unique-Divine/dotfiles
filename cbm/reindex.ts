@@ -20,7 +20,7 @@ import {
   readlinkSync, realpathSync, renameSync, writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
-import { basename, join } from "node:path"
+import { basename, delimiter, join } from "node:path"
 import { Command as Program } from "commander"
 
 export const defaultRepos = [
@@ -388,21 +388,22 @@ interface CliOptions {
 }
 
 function findGraphExecutable(name: string): string | null {
-  const bin = Bun.which(name)
-  if (!bin) return null
-
-  const dispatcher = realpathSync(bin)
   const mise = Bun.which("mise")
-  if (basename(dispatcher) === "mise" ||
-    (mise && dispatcher === realpathSync(mise))) {
-    // A shim can remain on PATH after switching to a version that lacks
-    // the command. Probe mise's selection without launching that command.
+  const misePath = mise ? realpathSync(mise) : null
+  for (const directory of process.env.PATH?.split(delimiter) ?? [undefined]) {
+    const bin = Bun.which(name, { PATH: directory === "" ? "." : directory })
+    if (!bin) continue
+    const dispatcher = realpathSync(bin)
+    if (basename(dispatcher) !== "mise" && dispatcher !== misePath) return bin
+
+    // A shim can remain on PATH after rollback. Probe the selected version
+    // before accepting the shim, then keep searching for the same name.
     const selection = Bun.spawnSync([dispatcher, "which", name], {
       stdout: "ignore", stderr: "ignore",
     })
-    if (!selection.success) return null
+    if (selection.success) return bin
   }
-  return bin
+  return null
 }
 
 export function createProgram(): Program {

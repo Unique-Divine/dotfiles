@@ -4,7 +4,7 @@ import {
 } from "node:fs"
 import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 
 import {
   type Command, execute, isLocked, launchBackground, lockPath, planReindex, readOutcome,
@@ -208,15 +208,16 @@ function sandbox(binaries = ["mori"]) {
 }
 
 describe("reindex executable selection", () => {
-  async function expectPlan(box: ReturnType<typeof sandbox>, want: string) {
-    const path = join(box.root, "bin")
+  async function expectPlan(
+    box: ReturnType<typeof sandbox>, want: string, path = join(box.root, "bin"),
+  ) {
     const run = Bun.spawn([...box.argv, "--plan"], {
       env: { ...box.env(0), PATH: path },
       stdout: "pipe",
     })
     expect(await run.exited).toBe(0)
     expect(await new Response(run.stdout).text()).toBe(
-      `${join(path, want)} cli --quiet --json index_repository <<< '` +
+      `${want} cli --quiet --json index_repository <<< '` +
       JSON.stringify({ repo_path: join(box.root, "home/x") }) + "'\n",
     )
   }
@@ -225,7 +226,8 @@ describe("reindex executable selection", () => {
     [["codebase-memory-mcp", "mori"], "mori"],
     [["codebase-memory-mcp"], "codebase-memory-mcp"],
   ] as const)("uses the expected executable with %j", async (binaries, want) => {
-    await expectPlan(sandbox([...binaries]), want)
+    const box = sandbox([...binaries])
+    await expectPlan(box, join(box.root, "bin", want))
   })
 
   test.each([true, false])("ignores an inactive shim with mise on PATH = %s", async (miseOnPath) => {
@@ -235,7 +237,20 @@ describe("reindex executable selection", () => {
     writeFileSync(mise, "#!/bin/sh\nexit 1\n")
     chmodSync(mise, 0o755)
     symlinkSync(mise, join(path, "mori"))
-    await expectPlan(box, "codebase-memory-mcp")
+    await expectPlan(box, join(path, "codebase-memory-mcp"))
+  })
+
+  test("keeps searching for Mori after rejecting an inactive shim", async () => {
+    const box = sandbox(["codebase-memory-mcp"])
+    const shims = join(box.root, "shims")
+    const bin = join(box.root, "bin")
+    const mise = join(box.root, "mise")
+    const standalone = join(bin, "mori")
+    mkdirSync(shims)
+    writeFileSync(mise, "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    symlinkSync(mise, join(shims, "mori"))
+    writeFileSync(standalone, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    await expectPlan(box, standalone, [shims, bin].join(delimiter))
   })
 })
 
