@@ -31,6 +31,10 @@ eza = { version = "0.23.5", os = ["linux"] }
 # The registry default for neovim is a vfox plugin; aqua verifies sha256.
 "aqua:neovim/neovim" = "0.12.6"
 "github:mbrt/gmailctl" = "0.13.0"
+# Mori, the code graph behind MCP server `mori-graph`. Its releases are tagged
+# mori/v* in Jiyuu, and the binary keeps the name codebase-memory-mcp until
+# the Rust `mori` binary ships. Bump `version` to upgrade.
+"github:Unique-Divine/jiyuu" = { version = "0.13.0", version_prefix = "mori/v" }
 grok = "1.0.77"
 # uvx runs the Telegram MCP server (uniquedivine-telegram-mcp) from PyPI.
 uv = "0.13.7"

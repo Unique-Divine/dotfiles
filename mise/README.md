@@ -50,6 +50,20 @@ just mise-install
 Check the backend first with `mise tool <name>`. Prefer `aqua:` backends,
 which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 
+## Mori
+
+Mori, the code graph behind MCP server `mori-graph`, installs from Jiyuu
+releases tagged `mori/v*` (`version_prefix` in `config.toml`). Its binary is
+still named `codebase-memory-mcp`, so the MCP entry and the Claude Code hooks
+run `~/.local/bin/codebase-memory-mcp`, the link to the mise shim. A
+hand-built binary at that path is a real file, which the link step leaves
+alone, so the MCP entry and hooks would keep running it: remove it before
+`just mise-install`.
+
+To upgrade, bump `version`, run `mise lock` as above, then
+`just mise-install`. Run `codebase-memory-mcp daemon stop` afterward, since
+the running daemon keeps the old binary until it restarts.
+
 ## Fresh machine
 
 `just` itself comes from mise, so bootstrap before running `just sync`:

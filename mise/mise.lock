@@ -134,6 +134,32 @@ url = "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_ar
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/679195704"
 provenance = "github-attestations"
 
+[[tools."github:Unique-Divine/jiyuu"]]
+version = "0.13.0"
+backend = "github:Unique-Divine/jiyuu"
+specifiers = ["0.13.0"]
+
+[tools."github:Unique-Divine/jiyuu".options]
+version_prefix = "mori/v"
+
+[tools."github:Unique-Divine/jiyuu"."platforms.linux-arm64"]
+checksum = "sha256:f81bc1dabc23371db2d8061a8d2d917e1bebe06b4024ec0852881cafaf7983d3"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.13.0/codebase-memory-mcp-0.13.0-linux-arm64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/774481114"
+provenance = "github-attestations"
+
+[tools."github:Unique-Divine/jiyuu"."platforms.linux-x64"]
+checksum = "sha256:ba3f1afcf4925af1f9961acdb52d5ce41b88f62c10ff4b930dbdf2107e0bc3ae"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.13.0/codebase-memory-mcp-0.13.0-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/774481112"
+provenance = "github-attestations"
+
+[tools."github:Unique-Divine/jiyuu"."platforms.macos-arm64"]
+checksum = "sha256:a63ca7cc3241dcdc9a104737ef536d2c9b49299fdab9c2919e629de0e6535d85"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.13.0/codebase-memory-mcp-0.13.0-darwin-arm64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/774481115"
+provenance = "github-attestations"
+
 [[tools."github:mbrt/gmailctl"]]
 version = "0.13.0"
 backend = "github:mbrt/gmailctl"
