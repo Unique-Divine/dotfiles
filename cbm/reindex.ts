@@ -1,5 +1,5 @@
 /**
- * Reindex the Codebase Memory MCP projects and rebuild cross-repo links.
+ * Reindex the Mori code graph projects and rebuild cross-repo links.
  *
  * The MCP server watches only the repo of the active session, so the other
  * projects go stale until something reindexes them. A full reindex also
@@ -391,7 +391,7 @@ export function createProgram(): Program {
   return new Program()
     .name("cbm-reindex")
     .description(
-      "Reindex Codebase Memory projects, then rerun cross-repo linking.",
+      "Reindex Mori code graph projects, then rerun cross-repo linking.",
     )
     .option("--run", "run the plan in the foreground")
     .option("--plan", "print the plan, even with --run")

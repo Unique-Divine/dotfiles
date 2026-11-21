@@ -91,7 +91,8 @@ sudo apt install build-essential wslu
 
 # Install mise and the CLI tools pinned in mise/mise.lock: gh, ripgrep, jq,
 # just, bat, sd, tree-sitter (for nvim-treesitter's `main` branch), buf,
-# lychee, gmailctl, fzf, eza and Neovim. See mise/README.md.
+# lychee, gmailctl, fzf, eza, Neovim and Mori (codebase-memory-mcp). See
+# mise/README.md.
 curl -fsSL https://mise.run | MISE_VERSION=v2026.11.5 sh
 mkdir -p ~/.config && ln -sfn "$PWD/mise" ~/.config/mise
 ~/.local/bin/mise install --locked
@@ -167,7 +168,7 @@ Cursor CLI, or skills-sync drift with a nonzero exit status. Mason package
 installation remains an explicit action.
 
 `just sync` also starts `just cbm-reindex` in the background. It reindexes
-the [Codebase Memory](https://github.com/DeusData/codebase-memory-mcp) code
+the [Mori](https://github.com/Unique-Divine/jiyuu/tree/main/mori) code
 graphs for Boku and the repos it links to, then reruns cross-repo linking,
 Boku last. The MCP server refreshes only the repo of the active session, and
 every refresh drops a project's cross-repo links. A run takes about 4.5
