@@ -70,6 +70,35 @@ For future upgrades, bump the version, refresh the four platform locks for
 Mori, and run `just mise-install`. Update the absolute executable path in
 the MCP registrations and hooks.
 
+### Recover an Existing Mori Setup
+
+From the dotfiles checkout, with its mise configuration linked, install the
+locked prebuilt Mori release and reconcile existing MCP registrations.
+
+```bash
+mise install --locked github:Unique-Divine/jiyuu
+mori_bin="$(mise which mori)"
+"$mori_bin" --version
+just mcp-sync --run
+```
+
+Repeating these commands reuses the installed release. The MCP sync fills
+missing client entries from an existing registration and preserves differences
+between configured clients. It leaves existing hook commands, hook trust, and
+the graph cache in place. Use the same executable and cache paths to check the
+projects already indexed.
+
+```bash
+CBM_CACHE_DIR="$HOME/.cache/mori-0140/cache" \
+  CBM_RUNTIME_DIR="$HOME/.cache/mori-0140/runtime" \
+  "$mori_bin" cli list_projects --format json
+```
+
+On a fresh machine, register `mori-graph` in one client before running MCP sync.
+Add hooks and approve them in each client that requires trust. Create the
+first project indexes and any cross-repository links against the selected
+cache.
+
 [Release installation and rollback](https://github.com/Unique-Divine/jiyuu/blob/main/mori/README.md#install)
 
 ## Fresh machine
