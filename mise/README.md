@@ -99,6 +99,13 @@ Add hooks and approve them in each client that requires trust. Create the
 first project indexes and any cross-repository links against the selected
 cache.
 
+Run `just mori-recovery-smoke` to check the interruption point after the
+release installs and before registering a client. The probe downloads the
+locked archive into a temporary home, reruns recovery before registration,
+then checks two runs with an existing graph, hooks, and trust entries.
+It uses Python 3.11+, mise, and the installed Bun and Claude CLI. Run
+`bun install --frozen-lockfile` in the dotfiles checkout first.
+
 [Release installation and rollback](https://github.com/Unique-Divine/jiyuu/blob/main/mori/README.md#install)
 
 ## Fresh machine
