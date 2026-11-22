@@ -300,6 +300,10 @@ mise-install:
   # Link shims into ~/.local/bin for bash, sh, and agents with an older PATH.
   bun mise/links.ts --run
 
+# Test interrupted and repeated Mori recovery in a temporary home.
+mori-recovery-smoke:
+  python3 -I mise/mori-recovery-smoke.py
+
 # Render private gmailctl configs from Boku TypeScript into ~/.config.
 email-sync:
   #!/usr/bin/env bash
