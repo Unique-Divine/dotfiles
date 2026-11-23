@@ -34,6 +34,37 @@ Open File Explorer, go to `%USERPROFILE%\.files\windows`, and double-click the
   completion, and editing keys. Run `terminal-profile\sync.cmd` to preview.
   See its [README](terminal-profile/README.md).
 
+## Native Windows Codex
+
+Run `just windows-codex-sync` in WSL to see what would change. Add `--apply`
+to sync once, or use `just windows-codex-sync --install-timer` to sync now and
+every six hours while WSL is running. Run the install command again after a
+dotfiles update to refresh the installed program. Windows Codex can read its
+local copies while WSL is down.
+
+Skills are copied from `~/.agents/skills` to
+`%USERPROFILE%\.agents\skills\wsl-synced`. The sync follows top-level
+skill links, skips known credential and cache files, and skips skills
+containing nested links. It preserves Windows skill directories with the
+same name and leaves locally edited copies alone. Copies of skills removed
+from WSL stay on Windows until removed by hand.
+
+The sync adds reviewed HTTP entries to the Windows `CODEX_HOME\config.toml`
+and keeps existing Windows definitions. The default entries are OpenAI
+Developer Docs and Superhuman Mail, if present in WSL. Sign in directly from
+Windows Codex for servers that use OAuth. The sync leaves Linux credentials,
+OAuth sessions, and server headers on the Linux side.
+
+Use `just windows-codex-sync --wsl-servers NAME` to preview an optional
+bridge for a named WSL stdio server. Add `--apply` to install the bridge.
+These entries can start WSL when Windows Codex starts. Keep them out of the
+Windows config if you need Codex to stay open during Cross Hub compaction.
+The periodic job only copies skills and adds native HTTP entries.
+
+Check sync runs with
+`journalctl --user -u dotfiles-windows-codex-sync.service`. To pause the
+timer, run `systemctl --user disable --now dotfiles-windows-codex-sync.timer`.
+
 ## Conventions for agents
 
 - Windows-only or WSL-independent tooling goes here as PowerShell 5.1, with

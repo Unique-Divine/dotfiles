@@ -359,6 +359,10 @@ win-sync:
     windows/ "$dest/"
   echo "synced windows/ -> $win_home\\.files\\windows"
 
+# Preview or sync WSL skills and portable MCP entries to native Windows Codex.
+windows-codex-sync *ARGS:
+  bun run windows/codex-sync.ts {{ARGS}}
+
 # Build audio-capture on Windows into %LOCALAPPDATA%\Programs\audio-capture.
 audio-capture-build: win-sync
   cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\build.cmd'
