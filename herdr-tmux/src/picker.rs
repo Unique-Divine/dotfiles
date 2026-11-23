@@ -20,6 +20,7 @@ pub(crate) struct Row {
     pub cells: [String; 5],
     pub status: String,
     pub focused: bool,
+    pub can_jump: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,7 +234,7 @@ pub(crate) fn matched_rows(rows: &[Row], matches: &[usize]) -> MatchedRows {
         .map(|(filtered_index, index)| {
             let mut row = rows[*index].clone();
             let mut digit = ' ';
-            if digit_rows.len() < 10 {
+            if row.can_jump && digit_rows.len() < 10 {
                 digit = char::from(b'0' + digit_rows.len() as u8);
                 digit_rows.push(filtered_index);
             }
@@ -582,6 +583,7 @@ mod tests {
                 ],
                 status: "idle".into(),
                 focused: false,
+                can_jump: true,
             })
             .collect()
     }
@@ -834,6 +836,82 @@ mod tests {
         let frame = render_frame(&filtered.rows, &mut state, 72, 10);
         assert!(frame.contains("↑6-11/11"));
         assert_eq!(filtered.rows[9].cells[0], "9  ");
+    }
+
+    #[test]
+    fn skips_ineligible_rows_when_numbering_filtered_matches() {
+        let mut rows = rows_with_count(24);
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.can_jump = index % 2 == 1;
+            if index != 1 {
+                row.cells[4].push_str(" match");
+            }
+        }
+        let mut state = State {
+            selected: 22,
+            query: "match".into(),
+            ..State::default()
+        };
+        let matches = state.matches(&rows);
+        let filtered = matched_rows(&rows, &matches);
+        render_frame(&filtered.rows, &mut state, 72, 10);
+        assert!(state.offset > 0);
+        assert_eq!(filtered.rows.len(), 23);
+
+        assert_eq!(filtered.rows[0].cells[0], "   ");
+        assert_eq!(filtered.rows[2].cells[0], "0  ");
+        assert_eq!(filtered.rows[20].cells[0], "9  ");
+        assert_eq!(filtered.rows[22].cells[0], "   ");
+        assert_eq!(
+            state.handle(
+                key(KeyCode::Char('9')),
+                matches.len(),
+                &filtered.digit_rows
+            ),
+            Some(Choice::Select(20))
+        );
+        assert_eq!(matches[20], 21);
+    }
+
+    #[test]
+    fn refresh_reassigns_digits_without_changing_the_highlighted_row() {
+        let mut rows = rows_with_count(2);
+        rows[1].can_jump = false;
+        rows[1].status = "working".into();
+        rows[1].cells[2] = "working".into();
+        let mut state = State::default();
+        let matches = state.matches(&rows);
+        let before = matched_rows(&rows, &matches);
+        assert_eq!(before.digit_rows, [0]);
+
+        let mut updated = rows.clone();
+        updated[0].can_jump = false;
+        updated[0].status = "working".into();
+        updated[0].cells[2] = "working".into();
+        state.replace_rows(&rows, &updated);
+        let no_shortcuts = matched_rows(&updated, &state.matches(&updated));
+        assert_eq!(no_shortcuts.rows.len(), 2);
+        assert_eq!(
+            state.handle(key(KeyCode::Char('0')), 2, &no_shortcuts.digit_rows),
+            None
+        );
+        assert_eq!(
+            state.handle(key(KeyCode::Enter), 2, &no_shortcuts.digit_rows),
+            Some(Choice::Select(0))
+        );
+
+        let mut completed = updated.clone();
+        completed[1].can_jump = true;
+        completed[1].status = "done".into();
+        completed[1].cells[2] = "done".into();
+        state.replace_rows(&updated, &completed);
+        let after = matched_rows(&completed, &state.matches(&completed));
+        assert_eq!(state.selected, 0);
+        assert_eq!(after.rows[1].cells[0], "0  ");
+        assert_eq!(
+            state.handle(key(KeyCode::Char('0')), 2, &after.digit_rows),
+            Some(Choice::Select(1))
+        );
     }
 
     #[test]
