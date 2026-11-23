@@ -214,13 +214,16 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
             }
             foreach ($item in $items) {
                 if ($item.Name -ieq 'desktop.ini') { continue }
+                # FileSystem can expand an 8.3 path in FullName. Use the same
+                # spelling as sourceRoot when constructing descendant paths.
+                $itemPath = Join-Path $directory $item.Name
                 $reparse = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
                 if ($item.PSIsContainer -and !$reparse) {
-                    $pending.Enqueue($item.FullName)
+                    $pending.Enqueue($itemPath)
                     continue
                 }
-                if ($reparse -and ($item.PSIsContainer -or ![DotfilesKnownFolders]::IsCloudFile($item.FullName))) {
-                    [pscustomobject]@{ Kind = 'Retain'; Source = $item.FullName; Destination = $null }
+                if ($reparse -and ($item.PSIsContainer -or ![DotfilesKnownFolders]::IsCloudFile($itemPath))) {
+                    [pscustomobject]@{ Kind = 'Retain'; Source = $itemPath; Destination = $null }
                     continue
                 }
 
@@ -233,7 +236,7 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
                 $duplicateOf = $null
                 if ($folder.Name -eq 'Pictures' -and !$reparse -and [IO.File]::Exists($destination) -and
                     !(Test-ReparsePoint $destination) -and [IO.FileInfo]::new($destination).Length -eq $item.Length -and
-                    [DotfilesKnownFolders]::Hash($destination) -ceq [DotfilesKnownFolders]::Hash($item.FullName)) {
+                    [DotfilesKnownFolders]::Hash($destination) -ceq [DotfilesKnownFolders]::Hash($itemPath)) {
                     $duplicateOf = $destination
                     $destinationDirectory = Join-Path (Join-Path $ArchiveRoot 'picture-duplicates') $relative
                     $destination = Join-Path $destinationDirectory $name
@@ -246,7 +249,7 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
                 }
                 [pscustomobject]@{
                     Kind = if ($reparse) { 'CopyCloud' } else { 'Move' }
-                    Source = $item.FullName
+                    Source = $itemPath
                     Destination = $destination
                     Length = $item.Length
                     LastWrite = $item.LastWriteTimeUtc.Ticks
@@ -468,16 +471,18 @@ function Move-PictureMetadata([string]$Original, [string]$Archive, [switch]$Rest
     $metadata = [Collections.Generic.List[string]]::new()
     $directories.Add($source)
     for ($index = 0; $index -lt $directories.Count; $index++) {
-        foreach ($item in Get-ChildItem -LiteralPath $directories[$index] -Force) {
+        $directory = $directories[$index]
+        foreach ($item in Get-ChildItem -LiteralPath $directory -Force) {
+            $itemPath = Join-Path $directory $item.Name
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                throw "The old Pictures folder contains a reparse point at $($item.FullName)."
+                throw "The old Pictures folder contains a reparse point at $itemPath."
             }
             if ($item.PSIsContainer) {
-                $directories.Add($item.FullName)
+                $directories.Add($itemPath)
             } elseif ($item.Name -ine 'desktop.ini') {
-                throw "Files still remain in the old Pictures folder, including $($item.FullName)."
+                throw "Files still remain in the old Pictures folder, including $itemPath."
             } else {
-                $metadata.Add($item.FullName)
+                $metadata.Add($itemPath)
             }
         }
     }

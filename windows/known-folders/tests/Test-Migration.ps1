@@ -3,6 +3,12 @@ $script = Join-Path (Split-Path -Parent $PSScriptRoot) 'sync.ps1'
 $source = [IO.File]::ReadAllText($script)
 . ([scriptblock]::Create($source.Substring(0, $source.IndexOf('$stateRoot ='))))
 
+function Assert-PlanDestination($Entry, [string]$Source, [string]$Destination) {
+    if (@($Entry).Count -ne 1 -or !$Entry -or $Entry.Destination -ne $Destination) {
+        throw "Expected '$Source' to map to '$Destination'. Actual destinations: $($Entry.Destination -join ', ')"
+    }
+}
+
 $root = Join-Path $env:TEMP ('known-folders-test-' + [guid]::NewGuid())
 $profileBefore = $env:USERPROFILE
 try {
@@ -39,15 +45,15 @@ try {
     [void][IO.Directory]::CreateDirectory($backup)
     $entries = @(Get-FileMigration $mappings $backup)
     $planned = $entries | Where-Object Source -eq $photo
-    $nestedFile = $entries | Where-Object Source -eq (Join-Path $nested 'first.png')
+    $nestedSource = Join-Path $nested 'first.png'
+    $nestedFile = $entries | Where-Object Source -eq $nestedSource
     $plannedDuplicate = $entries | Where-Object Source -eq $duplicate
-    if ($planned.Destination -ne (Join-Path $pictures.After 'photo (3).jpg') -or
-        $nestedFile.Destination -ne (Join-Path $pictures.After 'Screenshots\first.png') -or
-        ($entries.Source -match 'desktop.ini$') -or
-        $plannedDuplicate.Destination -ne (Join-Path $backup 'picture-duplicates\same.jpg') -or
-        ($entries | Where-Object Source -eq $document).Destination -ne (Join-Path $documents.After '25-04-03-notes.txt')) {
-        throw 'Preview did not preserve folder names, metadata, and the existing photo.'
-    }
+    $plannedDocument = $entries | Where-Object Source -eq $document
+    Assert-PlanDestination $planned $photo (Join-Path $pictures.After 'photo (3).jpg')
+    Assert-PlanDestination $nestedFile $nestedSource (Join-Path $pictures.After 'Screenshots\first.png')
+    Assert-PlanDestination $plannedDuplicate $duplicate (Join-Path $backup 'picture-duplicates\same.jpg')
+    Assert-PlanDestination $plannedDocument $document (Join-Path $documents.After '25-04-03-notes.txt')
+    if ($entries.Source -match 'desktop.ini$') { throw 'Preview included desktop.ini in the file migration.' }
 
     $journalPath = Join-Path $root 'journal.jsonl'
     if (Test-FileMigrationComplete $entries $journalPath) {
