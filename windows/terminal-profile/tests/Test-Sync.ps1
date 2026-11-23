@@ -4,6 +4,7 @@ $sync = Join-Path (Split-Path -Parent $PSScriptRoot) 'sync.ps1'
 $root = Join-Path $env:TEMP ('terminal-dotfiles-' + [guid]::NewGuid())
 [void][IO.Directory]::CreateDirectory($root)
 try {
+    $userPolicy = Get-ExecutionPolicy -Scope CurrentUser
     $paths = @{
         SettingsPath = Join-Path $root 'settings.json'
         ProfilePath = Join-Path $root 'profile.ps1'
@@ -40,7 +41,7 @@ try {
     if ($updated.defaultProfile -ne '{00000000-0000-0000-0000-000000000001}' -or
         $updated.profiles.defaults.font.face -ne 'Consolas' -or
         ($profiles | Where-Object name -eq Work).commandline -ne 'cmd.exe /k' -or
-        ($profiles | Where-Object name -eq 'Windows PowerShell').commandline -ne 'powershell.exe -ExecutionPolicy RemoteSigned' -or
+        ($profiles | Where-Object name -eq 'Windows PowerShell').commandline -ne 'powershell.exe' -or
         ($profiles | Where-Object name -eq Ubuntu-24.04).hidden -ne $false -or
         $profiles.name -contains 'Ubuntu 22.04.5 LTS') {
         throw 'Terminal profiles did not update as expected.'
@@ -64,6 +65,9 @@ try {
     $after = Get-ChildItem $root | Get-FileHash | Sort-Object Path
     if (Compare-Object $before $after -Property Path, Hash) {
         throw 'A second sync changed files.'
+    }
+    if ((Get-ExecutionPolicy -Scope CurrentUser) -ne $userPolicy) {
+        throw 'A fixture profile changed the current user execution policy.'
     }
     Write-Host 'Terminal profile sync checks passed.'
 } finally {

@@ -23,10 +23,12 @@ command history across tabs and restarts.
 
 The setup adds a loader to your existing Windows PowerShell profile and copies
 the keybindings to `%LOCALAPPDATA%\Dotfiles\PowerShell\interactive.ps1`.
-The profile works from the native Windows filesystem when WSL is down. The
-stock Windows PowerShell profile in Terminal launches with the process-level
-`RemoteSigned` policy. Custom launch commands keep their existing policy.
-On a managed Windows system, a higher-priority policy can still block loading.
+The profile works from the native Windows filesystem when WSL is down. If
+Windows PowerShell has no persistent execution policy, the setup sets
+`RemoteSigned` for the current Windows user. This lets direct PowerShell
+launches and elevated tabs under the same account load the profile, too.
+The setup respects existing user, machine, and Group Policy settings and
+keeps the Windows PowerShell launch command in Terminal as configured.
 
 The sync makes `Ubuntu-24.04` visible if registered and removes or hides
 generated Ubuntu 22.04 profiles once that distro is unregistered. It keeps

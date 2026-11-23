@@ -86,12 +86,6 @@ function Update-Terminal($Settings, [string[]]$Distros, [string[]]$Packages) {
                 $changes.Add("Show $ubuntuName")
             }
         }
-        if ($entry.name -eq 'Windows PowerShell' -and
-            (!$entry.commandline -or $entry.commandline -match '^(powershell(?:\.exe)?|%SystemRoot%\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe)$')) {
-            $command = if ($entry.commandline) { $entry.commandline } else { 'powershell.exe' }
-            Set-Property $entry 'commandline' "$command -ExecutionPolicy RemoteSigned"
-            $changes.Add('Enable the interactive profile for Windows Terminal PowerShell')
-        }
         $profiles.Add($entry)
     }
     if (!$target) {
@@ -137,6 +131,13 @@ $ManagedProfilePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderP
 if ($ProfilePath -eq $ManagedProfilePath -or $SettingsPath -in @($ProfilePath, $ManagedProfilePath)) {
     throw 'Terminal settings, user profile, and managed profile must use distinct paths.'
 }
+$configuredPolicies = @(Get-ExecutionPolicy -List | Where-Object {
+    $_.Scope -ne 'Process' -and $_.ExecutionPolicy -ne 'Undefined'
+})
+# The launcher sets a process policy. Check persistent scopes so this also
+# covers PowerShell started directly or from an elevated Terminal window.
+$enableUserPolicy = $ProfilePath -eq $PROFILE.CurrentUserAllHosts -and
+    $configuredPolicies.Count -eq 0
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 $terminal = Read-Text $SettingsPath $utf8
 if (!$terminal.Text) { throw 'Windows Terminal settings are missing or empty.' }
@@ -191,6 +192,7 @@ $parseErrors = $null
 if ($parseErrors.Count) { throw 'The merged PowerShell profile does not parse.' }
 
 foreach ($change in $changes) { Write-Host $change }
+if ($enableUserPolicy) { Write-Host 'Set the Windows PowerShell execution policy to RemoteSigned for the current user' }
 if (!$existingLoader) { Write-Host "Add a loader to $ProfilePath" }
 if ($managed.Text -cne $source.Text) { Write-Host "Install $ManagedProfilePath" }
 if (!$Apply) {
@@ -198,6 +200,15 @@ if (!$Apply) {
     return
 }
 
+if ($enableUserPolicy) {
+    try {
+        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+    } catch {
+        # The installer's process policy still takes precedence until it exits.
+        if ($_.FullyQualifiedErrorId -notlike 'ExecutionPolicyOverride,*' -or
+            (Get-ExecutionPolicy -Scope CurrentUser) -ne 'RemoteSigned') { throw }
+    }
+}
 if ($managed.Text -cne $source.Text) { Write-Text $ManagedProfilePath $source.Text $utf8 }
 if (!$existingLoader) { Write-Text $ProfilePath $profileText $profile.Encoding }
 if ($changes.Count) {
