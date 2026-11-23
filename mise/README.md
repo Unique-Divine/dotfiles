@@ -58,10 +58,10 @@ server key `mori-graph` in Codex and Claude. From a trusted directory, run
 Claude hook. A mise shim can fail to start in a project with an untrusted
 `mise.toml`.
 
-The 0.14.0 rollout uses `~/.cache/mori-0140/cache` and
-`~/.cache/mori-0140/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
+The 0.14.1 rollout uses `~/.cache/mori-0141/cache` and
+`~/.cache/mori-0141/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
 to those paths for CLI queries against the same graph. After checking MCP,
-hooks, and watcher links, create `~/.cache/mori-0140/accepted` to enable
+hooks, and watcher links, create `~/.cache/mori-0141/accepted` to enable
 scheduled indexing against those directories. Reindexing uses each client's
 saved targets. If `index_status` reports `stale`, rerun the link command
 with the client's saved targets.
