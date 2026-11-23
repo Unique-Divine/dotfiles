@@ -54,3 +54,8 @@ herdr_tmux:
   - 'herdr-tmux/{README.md,LICENSE,CHANGELOG.md,RELEASING.md,herdr-plugin.toml,justfile}'
   - '.github/filters.yml'
   - '.github/workflows/ci.yml'
+windows_setup:
+  - 'windows/known-folders/**'
+  - 'windows/terminal-profile/**'
+  - '.github/filters.yml'
+  - '.github/workflows/ci.yml'

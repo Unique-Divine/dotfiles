@@ -27,7 +27,7 @@ just audio-capture-uninstall   # win-sync, then uninstall.cmd on Windows
 ```
 
 On Windows without WSL, double-click `install.cmd` or `uninstall.cmd` in
-`%USERPROFILE%\.files\windows\audio-capture`. Both routes run the same
+`%USERPROFILE%\dotfiles\windows\audio-capture`. Both routes run the same
 scripts.
 
 `install.cmd` does the following:
