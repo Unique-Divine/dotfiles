@@ -8,6 +8,13 @@ import { parse, stringify, type TomlTable } from "smol-toml"
 type Files = Map<string, Buffer>
 type Definitions = Record<string, TomlTable>
 interface SkillPlan { name: string; files: Files; previous?: string }
+interface SkillUpdate {
+  id: string
+  name: string
+  previous: string | null
+  registered: string | null
+  next: string
+}
 export interface Bridge {
   distro: string
   user: string
@@ -19,8 +26,10 @@ export interface Bridge {
 
 const managedGroup = "wsl-synced"
 const manifestName = ".dotfiles-skill-hashes.json"
+const updateName = ".dotfiles-wsl-skill-update"
 const home = homedir()
 const safeName = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+const skillHash = /^[0-9a-f]{64}$/
 
 // Exact endpoints intentionally exclude URLs that can carry credentials in a
 // path, query, or userinfo. Other remote servers can be set up in Windows.
@@ -92,19 +101,91 @@ async function readManifest(path: string): Promise<Record<string, string>> {
   const manifest: unknown = JSON.parse(await readFile(path, "utf8"))
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) ||
     Object.entries(manifest).some(([name, value]) => !safeName.test(name) ||
-      typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))) {
+      typeof value !== "string" || !skillHash.test(value))) {
     throw new Error("Invalid skill manifest")
   }
   return manifest as Record<string, string>
+}
+
+async function readSkillUpdate(path: string): Promise<SkillUpdate | undefined> {
+  const stat = await fileType(path)
+  if (!stat) return undefined
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Invalid skill update record at ${path}`)
+  const record = JSON.parse(await readFile(path, "utf8")) as Partial<SkillUpdate> | null
+  if (!record || typeof record.id !== "string" || !/^[0-9a-f-]{36}$/.test(record.id) ||
+    typeof record.name !== "string" || !safeName.test(record.name) ||
+    typeof record.next !== "string" || !skillHash.test(record.next) ||
+    ![record.previous, record.registered].every((hash) =>
+      hash === null || (typeof hash === "string" && skillHash.test(hash)))) {
+    throw new Error(`Invalid skill update record at ${path}`)
+  }
+  return record as SkillUpdate
+}
+
+async function skillDigest(path: string): Promise<string | null> {
+  return await regularDirectory(path) ? digest(await readSkill(path, false)) : null
+}
+
+async function recoverSkillUpdate(
+  record: SkillUpdate,
+  recordPath: string,
+  managed: string,
+  manifestPath: string,
+  manifest: Record<string, string>,
+) {
+  // Keep temporary copies outside the directories Codex scans for skills.
+  const work = join(dirname(recordPath), `${updateName}-${record.id}`)
+  const staging = join(work, "staging")
+  const backup = join(work, "backup")
+  const target = join(managed, record.name)
+  const workExists = await regularDirectory(work)
+  const [targetHash, stagedHash, backupHash] = await Promise.all([
+    skillDigest(target),
+    workExists ? skillDigest(staging) : null,
+    workExists ? skillDigest(backup) : null,
+  ])
+  const registered = Object.hasOwn(manifest, record.name) ? manifest[record.name] : null
+  const conflict = () => new Error(`Interrupted Windows skill ${record.name} changed. Review ${target} and ${work} before retrying.`)
+  if ((registered !== record.registered && registered !== record.next) ||
+    (stagedHash !== null && stagedHash !== record.next) ||
+    (backupHash !== null && backupHash !== record.previous) ||
+    (workExists && (await readdir(work)).some((name) => name !== "staging" && name !== "backup"))) throw conflict()
+
+  if (targetHash === record.next) {
+    if (registered !== record.next) {
+      await replaceFile(manifestPath, JSON.stringify({ ...manifest, [record.name]: record.next }) + "\n")
+      manifest[record.name] = record.next
+    }
+  } else if (registered !== record.registered) {
+    throw conflict()
+  } else if (targetHash === null && backupHash !== null) {
+    await rename(backup, target)
+  } else if (targetHash !== record.previous || backupHash !== null) {
+    throw conflict()
+  }
+
+  // Retire the entire verified work directory before deleting its files.
+  // An interruption during removal cannot turn a partial deletion into a
+  // conflicting backup on the next run.
+  const discard = `${work}.discarded`
+  if (workExists) await rename(work, discard)
+  await rm(recordPath)
+  if (workExists) await rm(discard, { recursive: true })
 }
 
 export async function syncSkills(source: string, roots: string[], apply: boolean) {
   const targetRoot = roots[0]!
   const managed = join(targetRoot, managedGroup)
   const manifestPath = join(managed, manifestName)
+  const recordPath = join(dirname(targetRoot), updateName + ".json")
   if (await regularDirectory(dirname(targetRoot))) await regularDirectory(targetRoot)
   const managedExists = await regularDirectory(managed)
   const manifest = await readManifest(manifestPath)
+  const pending = await readSkillUpdate(recordPath)
+  if (pending) {
+    if (!apply) throw new Error(`Interrupted Windows skill update for ${pending.name}. Run sync with --apply to recover.`)
+    await recoverSkillUpdate(pending, recordPath, managed, manifestPath, manifest)
+  }
   const occupied = new Set<string>()
   for (const root of new Set(roots)) {
     if (!await regularDirectory(root)) continue
@@ -151,11 +232,18 @@ export async function syncSkills(source: string, roots: string[], apply: boolean
     await mkdir(managed, { recursive: true })
     for (const { name, files, previous } of plans) {
       const target = join(managed, name)
-      // Stage beside the target so NTFS renames never cross a volume.
-      const staging = join(managed, `.${name}.${crypto.randomUUID()}`)
-      const backup = staging + ".previous"
-      await mkdir(staging)
+      const record: SkillUpdate = {
+        id: crypto.randomUUID(), name, previous: previous ?? null,
+        registered: Object.hasOwn(manifest, name) ? manifest[name]! : null,
+        next: digest(files),
+      }
+      const work = join(dirname(recordPath), `${updateName}-${record.id}`)
+      const staging = join(work, "staging")
+      const backup = join(work, "backup")
+      let recorded = false
+      await mkdir(work)
       try {
+        await mkdir(staging)
         for (const [relative, body] of files) {
           const path = join(staging, relative)
           await mkdir(dirname(path), { recursive: true })
@@ -165,25 +253,21 @@ export async function syncSkills(source: string, roots: string[], apply: boolean
           if (!await regularDirectory(target) ||
             digest(await readSkill(target, false)) !== previous)
             throw new Error(`Windows skill ${name} changed during sync`)
-          await rename(target, backup)
         } else if (await fileType(target)) {
           throw new Error(`Windows skill ${name} appeared during sync`)
         }
+        await replaceFile(recordPath, JSON.stringify(record) + "\n")
+        recorded = true
         try {
+          if (previous) await rename(target, backup)
           await rename(staging, target)
-          await replaceFile(manifestPath, JSON.stringify({
-            ...manifest, [name]: digest(files),
-          }) + "\n")
-          manifest[name] = digest(files)
         } catch (error) {
-          if (await fileType(target) && !await fileType(staging))
-            await rename(target, staging)
-          if (previous) await rename(backup, target)
+          await recoverSkillUpdate(record, recordPath, managed, manifestPath, manifest)
           throw error
         }
-        if (previous) await rm(backup, { recursive: true })
+        await recoverSkillUpdate(record, recordPath, managed, manifestPath, manifest)
       } finally {
-        await rm(staging, { recursive: true, force: true })
+        if (!recorded) await rm(work, { recursive: true, force: true })
       }
     }
   }
@@ -246,7 +330,11 @@ export function planMcp(source: string, destination: string, selected: Set<strin
   // Preserve all native comments, tables, and entries byte-for-byte.
   // In particular, avoid expanding the native node_repl definition.
   const next = destination + "\n" + stringify({ mcp_servers: additions }) + "\n"
-  readToml(next, "merged Windows")
+  try {
+    readToml(next, "merged Windows")
+  } catch {
+    throw new Error("Cannot append MCP entries to the Windows Codex config without rewriting it. Use [mcp_servers.NAME] tables for existing entries.")
+  }
   return { lines, next }
 }
 
@@ -258,6 +346,7 @@ function run(args: string[]): string {
 
 function windowsPaths() {
   const discovered = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `
+    [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     $p=[Environment]::GetEnvironmentVariable('CODEX_HOME','User')
     if (!$p) {$p=$env:CODEX_HOME}
     if (!$p) {$p=Join-Path $env:USERPROFILE '.codex'}
@@ -274,6 +363,29 @@ async function readConfig(path: string, required: boolean) {
   if (!stat?.isFile() || stat.isSymbolicLink())
     throw new Error(`Expected a regular config file at ${path}`)
   return readFile(path, "utf8")
+}
+
+interface SyncPaths {
+  sourceSkills: string
+  skillRoots: string[]
+  sourceConfig: string
+  windowsConfig: string
+}
+
+export async function syncCodex(paths: SyncPaths, apply: boolean, selected: Set<string>, bridge?: Bridge) {
+  const skills = await syncSkills(paths.sourceSkills, paths.skillRoots, apply)
+  console.log(skills.join("\n"))
+
+  const [source, destination] = await Promise.all([
+    readConfig(paths.sourceConfig, true), readConfig(paths.windowsConfig, false),
+  ])
+  const mcp = planMcp(source, destination, selected, bridge)
+  if (apply && mcp.next !== destination) {
+    if (await readConfig(paths.windowsConfig, false) !== destination)
+      throw new Error("Windows Codex configuration changed during sync")
+    await replaceFile(paths.windowsConfig, mcp.next)
+  }
+  if (mcp.lines.length) console.log(mcp.lines.join("\n"))
 }
 
 interface Options {
@@ -352,10 +464,6 @@ async function main(options: Options) {
       throw new Error("Install the timer separately from manual sync or WSL bridge setup")
     return installTimer(windowsHome, windowsCodexHome, sourcePath)
   }
-  const configPath = join(windowsCodexHome, "config.toml")
-  const [source, destination] = await Promise.all([
-    readConfig(sourcePath, true), readConfig(configPath, false),
-  ])
   const selected = new Set(options.wslServers.flatMap((name) => name.split(",")))
   let bridge: Bridge | undefined
   if (selected.size) {
@@ -371,16 +479,12 @@ async function main(options: Options) {
         .filter((part) => part.startsWith("/") && !part.startsWith("/mnt/")).join(":"),
     }
   }
-  const mcp = planMcp(source, destination, selected, bridge)
-  const skills = await syncSkills(join(home, ".agents/skills"), [
-    join(windowsHome, ".agents/skills"), join(windowsCodexHome, "skills"),
-  ], options.apply ?? false)
-  if (options.apply && mcp.next !== destination) {
-    if (await readConfig(configPath, false) !== destination)
-      throw new Error("Windows Codex configuration changed during sync")
-    await replaceFile(configPath, mcp.next)
-  }
-  console.log([...skills, ...mcp.lines].join("\n"))
+  await syncCodex({
+    sourceSkills: join(home, ".agents/skills"),
+    skillRoots: [join(windowsHome, ".agents/skills"), join(windowsCodexHome, "skills")],
+    sourceConfig: sourcePath,
+    windowsConfig: join(windowsCodexHome, "config.toml"),
+  }, options.apply ?? false, selected, bridge)
 }
 
 async function runSync(options: Options) {
