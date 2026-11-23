@@ -4,7 +4,9 @@ param(
     [switch]$InstallZoxide,
     [string[]]$SettingsPath,
     [string]$ProfilePath = $PROFILE.CurrentUserAllHosts,
-    [string]$ManagedProfilePath = (Join-Path $env:LOCALAPPDATA 'Dotfiles\PowerShell\interactive.ps1')
+    [string]$ManagedProfilePath = (Join-Path $env:LOCALAPPDATA 'Dotfiles\PowerShell\interactive.ps1'),
+    [Parameter(DontShow)][string[]]$WslDistributions,
+    [Parameter(DontShow)][string[]]$UbuntuPackageFamilies
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +27,6 @@ function Find-TerminalSettings {
     if ($found) { return $found }
     $path = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
     if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
-    throw 'Open Windows Terminal once or supply its settings path with -SettingsPath.'
 }
 
 function Read-Text($Path, [Text.Encoding]$Encoding) {
@@ -90,24 +91,29 @@ function Update-PowerShellProfiles($Settings, $Profiles) {
 }
 
 function Update-Terminal($Settings, [string[]]$Distros, [string[]]$Packages) {
-    if ($Distros -notcontains $ubuntuName) {
-        throw "The registered WSL distributions do not include $ubuntuName."
+    $changes = [Collections.Generic.List[string]]::new()
+    if ($Settings.profiles -is [System.Array]) {
+        Set-Property $Settings 'profiles' ([pscustomobject]@{ list = $Settings.profiles })
+        $changes.Add('Convert the legacy Terminal profile list to the current layout')
+    } elseif ($Settings.profiles -is [pscustomobject] -and
+        !$Settings.profiles.PSObject.Properties['list']) {
+        Set-Property $Settings.profiles 'list' @()
+        $changes.Add('Add the Terminal profile list')
     }
-    if ($null -eq $Settings.profiles -or
-        $Settings.profiles.list -isnot [System.Array]) {
+    if ($Settings.profiles.list -isnot [System.Array]) {
         throw 'Expected a profiles.list array in Windows Terminal settings.'
     }
 
-    $changes = [Collections.Generic.List[string]]::new()
     $profiles = [Collections.Generic.List[object]]::new()
     $target = $null
     $replaceDefault = $false
+    $manageUbuntu = $Distros -contains $ubuntuName
     $legacyRegistered = [bool]($Distros -match '^Ubuntu[- ]22\.04(?:\.\d+)?(?: LTS)?$')
     foreach ($entry in $Settings.profiles.list) {
         if (!$entry -or !$entry.name) { throw 'Terminal contains an invalid profile.' }
         $legacyProfile = $entry.name -match '^Ubuntu[- ]22\.04(?:\.\d+)?(?: LTS)?$' -and
             $entry.source -match '^(Windows\.Terminal\.Wsl|Microsoft\.WSL|CanonicalGroupLimited\.Ubuntu22\.04.*)$'
-        if ($legacyProfile -and !$legacyRegistered) {
+        if ($manageUbuntu -and $legacyProfile -and !$legacyRegistered) {
             if ($Settings.defaultProfile -and
                 $Settings.defaultProfile -in @($entry.guid, $entry.name)) {
                 $replaceDefault = $true
@@ -122,7 +128,7 @@ function Update-Terminal($Settings, [string[]]$Distros, [string[]]$Packages) {
                 continue
             }
         }
-        if ($entry.name -eq $ubuntuName) {
+        if ($manageUbuntu -and $entry.name -eq $ubuntuName) {
             if ($target) { throw "More than one profile is named $ubuntuName." }
             $target = $entry
             if ($entry.hidden -eq $true) {
@@ -132,7 +138,7 @@ function Update-Terminal($Settings, [string[]]$Distros, [string[]]$Packages) {
         }
         $profiles.Add($entry)
     }
-    if (!$target) {
+    if ($manageUbuntu -and !$target) {
         $target = [pscustomobject]@{
             guid = $ubuntuGuid
             name = $ubuntuName
@@ -174,10 +180,13 @@ function Write-Text($Path, $Contents, $Encoding) {
     }
 }
 
-$SettingsPath = if ($SettingsPath) { $SettingsPath } else { Find-TerminalSettings }
-$SettingsPath = @($SettingsPath | ForEach-Object {
+if (!$PSBoundParameters.ContainsKey('SettingsPath')) { $SettingsPath = @(Find-TerminalSettings) }
+$SettingsPath = @($SettingsPath | Where-Object { $_ } | ForEach-Object {
     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_)
 } | Select-Object -Unique)
+if (!$SettingsPath.Count) {
+    Write-Host 'No Windows Terminal settings found. Open Windows Terminal and rerun to configure its profiles.'
+}
 $ProfilePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProfilePath)
 $ManagedProfilePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ManagedProfilePath)
 if ($ProfilePath -eq $ManagedProfilePath -or $ProfilePath -in $SettingsPath -or $ManagedProfilePath -in $SettingsPath) {
@@ -191,11 +200,17 @@ $configuredPolicies = @(Get-ExecutionPolicy -List | Where-Object {
 $enableUserPolicy = $ProfilePath -eq $PROFILE.CurrentUserAllHosts -and
     $configuredPolicies.Count -eq 0
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
-$registered = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' |
-    ForEach-Object { (Get-ItemProperty $_.PSPath).DistributionName } |
-    Where-Object { $_ })
-$packages = @(Get-AppxPackage -Name 'CanonicalGroupLimited.Ubuntu*' |
-    Select-Object -ExpandProperty PackageFamilyName)
+$wslRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+if ($SettingsPath.Count -and !$PSBoundParameters.ContainsKey('WslDistributions') -and
+    (Test-Path -LiteralPath $wslRoot)) {
+    $WslDistributions = @(Get-ChildItem -LiteralPath $wslRoot |
+        ForEach-Object { (Get-ItemProperty $_.PSPath).DistributionName } |
+        Where-Object { $_ })
+}
+if ($WslDistributions -contains $ubuntuName -and !$PSBoundParameters.ContainsKey('UbuntuPackageFamilies')) {
+    $UbuntuPackageFamilies = @(Get-AppxPackage -Name 'CanonicalGroupLimited.Ubuntu*' |
+        Select-Object -ExpandProperty PackageFamilyName)
+}
 $terminalUpdates = foreach ($path in $SettingsPath) {
     $terminal = Read-Text $path $utf8
     if (!$terminal.Text) { throw "Windows Terminal settings are missing or empty at $path." }
@@ -205,7 +220,7 @@ $terminalUpdates = foreach ($path in $SettingsPath) {
     } catch {
         throw "Could not parse the Terminal settings at $path. Review the file in Terminal settings first."
     }
-    $changes = @(Update-Terminal $settings $registered $packages)
+    $changes = @(Update-Terminal $settings $WslDistributions $UbuntuPackageFamilies)
     if ($changes.Count) {
         Write-Host $path
         foreach ($change in $changes) { Write-Host "  $change" }
@@ -223,6 +238,9 @@ $managed = Read-Text $ManagedProfilePath $utf8
 $source = Read-Text (Join-Path $PSScriptRoot 'interactive.ps1') $utf8
 if (!$source.Text) { throw 'The dotfiles interactive.ps1 is missing or empty.' }
 $existingLoader = $profile.Text.Contains($loaderMarker)
+if (!$existingLoader -and $profile.Text -match '(?m)^# SIG # Begin signature block\r?$') {
+    throw "Cannot add the dotfiles loader to signed profile $ProfilePath. Add the loader and re-sign the profile separately."
+}
 $loader = @'
 # dotfiles: load interactive PowerShell settings
 if ($Host.Name -eq 'ConsoleHost' -and ![Console]::IsInputRedirected) {

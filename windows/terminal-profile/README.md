@@ -46,10 +46,13 @@ Windows PowerShell has no persistent execution policy, the setup sets
 `RemoteSigned` for the current Windows user. This lets direct PowerShell
 launches and elevated tabs under the same account load the profile, too.
 The setup respects existing user, machine, and Group Policy settings and
-keeps the Windows PowerShell launch command in Terminal as configured.
+keeps the Windows PowerShell launch command in Terminal as configured. If
+the startup file is signed, add the loader and re-sign the file separately.
 
-The sync makes `Ubuntu-24.04` visible if registered and removes or hides
-generated Ubuntu 22.04 profiles once that distro is unregistered. It keeps
+PowerShell setup works before Windows Terminal has created a settings file.
+Open Windows Terminal once and rerun sync to manage its profiles. When
+`Ubuntu-24.04` is registered, sync makes it visible and removes or hides
+generated Ubuntu 22.04 profiles if that distro is unregistered. It keeps
 the current default unless that default points to a stale profile it removes
 or hides. It formats the settings as JSON when updating them and stops if
 the Windows PowerShell JSON parser cannot read them. Changed settings and
