@@ -7,7 +7,9 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::app::{Client, HerdrError, Target};
+use crate::app::{
+    configured_tab_display_index_base, Client, HerdrError, Target,
+};
 
 #[derive(Serialize, Deserialize)]
 struct Tab {
@@ -46,7 +48,11 @@ pub(crate) fn edit(target: &Target) -> Result<(), HerdrError> {
         .env("HERDR_TMUX_BIN", env::current_exe()?)
         .env("HERDR_TMUX_SOCKET", &target.socket_path)
         .env("HERDR_TMUX_TAB", &target.tab_id)
-        .env("HERDR_TMUX_PANE", &target.pane_id);
+        .env("HERDR_TMUX_PANE", &target.pane_id)
+        .env(
+            "HERDR_TMUX_TAB_BASE",
+            configured_tab_display_index_base().to_string(),
+        );
     Err(HerdrError::Target(format!(
         "could not start nvim for the tab editor: {}",
         editor.exec()

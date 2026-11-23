@@ -95,7 +95,7 @@ next_workspace = "prefix+N"
 # focus_agent = ""        # optional indexed binding, e.g. "prefix+alt+1..9"
 # remote_image_paste = "ctrl+v" # only active in herdr --remote; empty disables raw-key image paste
 # new_tab = "prefix+c"
-# rename_tab = "prefix+shift+t"
+rename_tab = "prefix+shift+t"
 # previous_tab = "prefix+p"
 # next_tab = "prefix+n"
 # Native zero-indexed tab shortcuts: `prefix+0` selects the first tab and
@@ -170,6 +170,12 @@ key = "prefix+a"
 type = "plugin_action"
 command = "unique-divine.herdr-tmux.focus-agent"
 description = "select agent by number"
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "unique-divine.herdr-tmux.reorder-tabs"
+description = "reorder tabs"
 
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.

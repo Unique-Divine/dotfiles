@@ -42,8 +42,11 @@ vim.wo.wrap = false
 vim.wo.cursorline = true
 vim.wo.number = true
 vim.wo.numberwidth = 4
+if vim.env.HERDR_TMUX_TAB_BASE == "0" then
+    vim.wo.statuscolumn = "%=%{v:lnum-1} "
+end
 vim.opt.fillchars:append({ eob = " " })
-vim.wo.winbar = "  Reorder tabs  ·  / search%=" .. #tabs .. " tabs  "
+vim.wo.winbar = "  / search%=" .. #tabs .. (#tabs == 1 and " tab  " or " tabs  ")
 vim.o.laststatus = 2
 vim.wo.statusline = "  V select  ·  J/K move  ·  :w apply  ·  :q! cancel%=%m  "
 vim.api.nvim_set_hl(0, "HerdrTabId", { ctermfg = 8, fg = "#808080" })

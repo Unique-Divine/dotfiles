@@ -69,6 +69,7 @@ herdr-tmux layout even-vertical
 herdr-tmux layout even-horizontal
 herdr-tmux focus-pane
 herdr-tmux focus-agent
+herdr-tmux edit-tabs
 ```
 
 `even-vertical` stacks panes top-to-bottom. `even-horizontal` spreads panes
@@ -137,6 +138,16 @@ Unicode symbols without requiring an icon font.
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
+Command `herdr-tmux edit-tabs` opens the active workspace's tabs in Neovim.
+Press `V` to select whole rows and `J` or `K` to move them down or up. Use `/` to
+search, `:w` to apply, `:wq` to apply and close, or `:q!` to discard.
+Keep every original row exactly once. If the workspace's order changed while
+you were editing, reopen the popup to get the current order.
+The prototype applies one tab move at a time. A concurrent edit during the
+save can leave some moves applied.
+From a Herdr pane, run `cargo run -- edit-tabs` in this checkout to try the
+editor directly. The popup binding requires `nvim` on the Herdr server's path.
+
 ## Plugin bindings
 
 Add these commands to Herdr's `config.toml`, then reload the configuration:
@@ -165,6 +176,12 @@ key = "prefix+a"
 type = "plugin_action"
 command = "unique-divine.herdr-tmux.focus-agent"
 description = "select agent by number"
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "unique-divine.herdr-tmux.reorder-tabs"
+description = "reorder tabs"
 ```
 
 Plugin actions open pickers over the active pane. Plugin context identifies the

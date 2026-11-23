@@ -2,7 +2,7 @@ id = "unique-divine.herdr-tmux"
 name = "Herdr tmux tools"
 version = "0.1.0"
 min_herdr_version = "0.9.5"
-description = "Even pane layouts and numbered pane and agent pickers"
+description = "Even pane layouts, numbered pickers, and a tab order editor"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -32,6 +32,12 @@ title = "Select agent by number"
 contexts = ["pane"]
 command = ["./target/release/herdr-tmux", "plugin", "open", "agent"]
 
+[[actions]]
+id = "reorder-tabs"
+title = "Reorder tabs"
+contexts = ["pane"]
+command = ["./target/release/herdr-tmux", "plugin", "open", "tabs"]
+
 [[panes]]
 id = "pane-picker"
 title = "Panes"
@@ -47,3 +53,11 @@ placement = "popup"
 width = 116
 height = 42
 command = ["./target/release/herdr-tmux", "focus-agent"]
+
+[[panes]]
+id = "tab-editor"
+title = "Reorder tabs"
+placement = "popup"
+width = 116
+height = 42
+command = ["./target/release/herdr-tmux", "edit-tabs"]

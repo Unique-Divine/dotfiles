@@ -1040,7 +1040,7 @@ enum OneOrManyStrings {
     Many(Vec<String>),
 }
 
-fn configured_tab_display_index_base() -> usize {
+pub(crate) fn configured_tab_display_index_base() -> usize {
     let path = herdr_config_path();
     let Ok(content) = std::fs::read_to_string(path) else {
         return 1;

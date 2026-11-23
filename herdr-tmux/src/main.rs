@@ -34,7 +34,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Register the installed binary or open a plugin picker.
+    /// Register the installed binary or open a plugin popup.
     Plugin {
         #[command(subcommand)]
         command: plugin::PluginCommand,
