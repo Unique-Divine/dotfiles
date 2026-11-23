@@ -106,9 +106,10 @@ try {
     }
 
     $compatPaths = $nativePaths.Clone()
-    foreach ($layout in @('legacy-list', 'defaults-only')) {
+    foreach ($layout in @('legacy-list', 'defaults-only', 'no-profiles')) {
         $fixture = ConvertFrom-Json $settings
         if ($layout -eq 'legacy-list') { $fixture.profiles = $fixture.profiles.list }
+        elseif ($layout -eq 'no-profiles') { $fixture.PSObject.Properties.Remove('profiles') }
         else { $fixture.profiles.PSObject.Properties.Remove('list') }
         $compatPaths.SettingsPath = Join-Path $root "$layout.json"
         [IO.File]::WriteAllText($compatPaths.SettingsPath, ($fixture | ConvertTo-Json -Depth 10))

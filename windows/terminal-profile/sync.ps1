@@ -91,8 +91,14 @@ function Update-PowerShellProfiles($Settings, $Profiles) {
 }
 
 function Update-Terminal($Settings, [string[]]$Distros, [string[]]$Packages) {
+    if ($Settings -isnot [pscustomobject]) {
+        throw 'Expected a Windows Terminal settings object.'
+    }
     $changes = [Collections.Generic.List[string]]::new()
-    if ($Settings.profiles -is [System.Array]) {
+    if (!$Settings.PSObject.Properties['profiles']) {
+        Set-Property $Settings 'profiles' ([pscustomobject]@{ list = @() })
+        $changes.Add('Add Terminal profiles')
+    } elseif ($Settings.profiles -is [System.Array]) {
         Set-Property $Settings 'profiles' ([pscustomobject]@{ list = $Settings.profiles })
         $changes.Add('Convert the legacy Terminal profile list to the current layout')
     } elseif ($Settings.profiles -is [pscustomobject] -and
