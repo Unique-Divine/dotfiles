@@ -1,5 +1,9 @@
 # Windows Terminal and PowerShell
 
+Run `just win-sync` in WSL to stage the dotfiles under
+`%USERPROFILE%\.files\windows`. The installer updates the live settings of
+Terminal Stable and Preview if they have both been opened on this account.
+
 From Windows PowerShell, preview the changes, then apply them after reviewing
 the output.
 
@@ -7,6 +11,12 @@ the output.
 & "$env:USERPROFILE\.files\windows\terminal-profile\sync.cmd"
 & "$env:USERPROFILE\.files\windows\terminal-profile\sync.cmd" -Apply
 ```
+
+From a regular Terminal window, `Ctrl+Shift+3` opens Windows PowerShell 5.1,
+and `Ctrl+Shift+4` opens Windows PowerShell (Admin). The latter opens a separate
+administrator window and may show a UAC prompt. Use a regular Terminal window
+for the regular shortcut because tabs in an administrator window inherit its
+privileges. The shortcuts use profile GUIDs and work after rearranging the menu.
 
 Open a new Windows PowerShell tab to pick up the profile. The setup uses the
 PSReadLine module included with Windows PowerShell on Windows 11. It saves
