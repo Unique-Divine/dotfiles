@@ -1,15 +1,15 @@
 # Windows Terminal and PowerShell
 
 Run `just win-sync` in WSL to stage the dotfiles under
-`%USERPROFILE%\.files\windows`. The installer updates the live settings of
+`%USERPROFILE%\dotfiles\windows`. The installer updates the live settings of
 Terminal Stable and Preview if they have both been opened on this account.
 
 From Windows PowerShell, preview the changes, then apply them after reviewing
 the output.
 
 ```powershell
-& "$env:USERPROFILE\.files\windows\terminal-profile\sync.cmd"
-& "$env:USERPROFILE\.files\windows\terminal-profile\sync.cmd" -Apply
+& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd"
+& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd" -Apply
 ```
 
 From a regular Terminal window, `Ctrl+Shift+3` opens Windows PowerShell 5.1,
