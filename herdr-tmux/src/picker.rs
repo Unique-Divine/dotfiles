@@ -20,6 +20,7 @@ pub(crate) struct Row {
     pub cells: [String; 5],
     pub status: String,
     pub focused: bool,
+    pub can_jump: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +38,12 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub fn handle(&mut self, event: Event, count: usize) -> Option<Choice> {
+    pub fn handle(
+        &mut self,
+        event: Event,
+        count: usize,
+        digit_rows: &[usize],
+    ) -> Option<Choice> {
         let Event::Key(key) = event else { return None };
         if key.kind != KeyEventKind::Press {
             return None;
@@ -80,8 +86,8 @@ impl State {
                 return Some(Choice::Select(self.selected.min(count - 1)))
             }
             KeyCode::Char(digit) if digit.is_ascii_digit() => {
-                let index = digit as usize - '0' as usize;
-                if index < count {
+                let digit = digit as usize - '0' as usize;
+                if let Some(&index) = digit_rows.get(digit) {
                     return Some(Choice::Select(index));
                 }
             }
@@ -188,7 +194,7 @@ where
         let filtered = matched_rows(&rows, &matches);
         render(
             &mut io::stdout().lock(),
-            &filtered,
+            &filtered.rows,
             headings,
             &mut state,
             width,
@@ -199,12 +205,14 @@ where
         )? {
             continue;
         }
-        let selectable = if width == 0 || height == 0 {
-            0
+        let (selectable, digit_rows) = if width == 0 || height == 0 {
+            (0, &[][..])
         } else {
-            matches.len()
+            (matches.len(), filtered.digit_rows.as_slice())
         };
-        if let Some(choice) = state.handle(event::read()?, selectable) {
+        if let Some(choice) =
+            state.handle(event::read()?, selectable, digit_rows)
+        {
             return Ok(match choice {
                 Choice::Select(index) => Choice::Select(matches[index]),
                 Choice::Cancel => Choice::Cancel,
@@ -213,24 +221,29 @@ where
     }
 }
 
-fn matched_rows(rows: &[Row], matches: &[usize]) -> Vec<Row> {
-    matches
+pub(crate) struct MatchedRows {
+    pub rows: Vec<Row>,
+    pub digit_rows: Vec<usize>,
+}
+
+pub(crate) fn matched_rows(rows: &[Row], matches: &[usize]) -> MatchedRows {
+    let mut digit_rows = Vec::with_capacity(matches.len().min(10));
+    let rows = matches
         .iter()
         .enumerate()
-        .map(|(shortcut, index)| {
+        .map(|(filtered_index, index)| {
             let mut row = rows[*index].clone();
-            row.cells[0] = format!(
-                "{} {}",
-                if shortcut < 10 {
-                    shortcut.to_string()
-                } else {
-                    " ".into()
-                },
-                if row.focused { "*" } else { " " }
-            );
+            let mut digit = ' ';
+            if row.can_jump && digit_rows.len() < 10 {
+                digit = char::from(b'0' + digit_rows.len() as u8);
+                digit_rows.push(filtered_index);
+            }
+            let marker = if row.focused { '*' } else { ' ' };
+            row.cells[0] = format!("{digit} {marker}");
             row
         })
-        .collect()
+        .collect();
+    MatchedRows { rows, digit_rows }
 }
 
 pub(crate) fn render<W: Write>(
@@ -514,19 +527,23 @@ mod tests {
     fn navigates_beyond_digits_and_keeps_selection_visible() {
         let mut state = State::default();
         for _ in 0..14 {
-            assert_eq!(state.handle(key(KeyCode::Char('j')), 15), None);
+            assert_eq!(state.handle(key(KeyCode::Char('j')), 15, &[]), None);
         }
         state.scroll(15, 3);
         assert_eq!((state.selected, state.offset), (14, 12));
         assert_eq!(
-            state.handle(key(KeyCode::Enter), 15),
+            state.handle(key(KeyCode::Enter), 15, &[]),
             Some(Choice::Select(14))
         );
         assert_eq!(
-            state.handle(key(KeyCode::Char('9')), 15),
+            state.handle(
+                key(KeyCode::Char('9')),
+                15,
+                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+            ),
             Some(Choice::Select(9))
         );
-        state.handle(key(KeyCode::Char('k')), 15);
+        state.handle(key(KeyCode::Char('k')), 15, &[]);
         state.scroll(15, 0);
         assert_eq!(state.selected, 13);
     }
@@ -534,9 +551,12 @@ mod tests {
     #[test]
     fn empty_list_ignores_selection_and_escape_cancels() {
         let mut state = State::default();
-        assert_eq!(state.handle(key(KeyCode::Enter), 0), None);
-        assert_eq!(state.handle(key(KeyCode::Char('9')), 1), None);
-        assert_eq!(state.handle(key(KeyCode::Esc), 0), Some(Choice::Cancel));
+        assert_eq!(state.handle(key(KeyCode::Enter), 0, &[]), None);
+        assert_eq!(state.handle(key(KeyCode::Char('9')), 1, &[]), None);
+        assert_eq!(
+            state.handle(key(KeyCode::Esc), 0, &[]),
+            Some(Choice::Cancel)
+        );
     }
 
     #[test]
@@ -563,6 +583,7 @@ mod tests {
                 ],
                 status: "idle".into(),
                 focused: false,
+                can_jump: true,
             })
             .collect()
     }
@@ -594,21 +615,22 @@ mod tests {
     fn search_digits_are_text_and_navigation_digits_use_filtered_indices() {
         let rows = rows();
         let mut state = State::default();
-        state.handle(key(KeyCode::Char('/')), rows.len());
+        state.handle(key(KeyCode::Char('/')), rows.len(), &[]);
         for character in "TASK 14".chars() {
             assert_eq!(
-                state.handle(key(KeyCode::Char(character)), rows.len()),
+                state.handle(key(KeyCode::Char(character)), rows.len(), &[]),
                 None
             );
         }
         assert_eq!(state.matches(&rows), [14]);
+        let filtered = matched_rows(&rows, &state.matches(&rows));
+        assert_eq!(filtered.rows[0].cells[0], "0  ");
         assert_eq!(
-            matched_rows(&rows, &state.matches(&rows))[0].cells[0],
-            "0  "
+            state.handle(key(KeyCode::Enter), 1, &filtered.digit_rows),
+            None
         );
-        assert_eq!(state.handle(key(KeyCode::Enter), 1), None);
         let Some(Choice::Select(index)) =
-            state.handle(key(KeyCode::Char('0')), 1)
+            state.handle(key(KeyCode::Char('0')), 1, &filtered.digit_rows)
         else {
             panic!("expected shortcut")
         };
@@ -618,13 +640,16 @@ mod tests {
     #[test]
     fn search_exit_does_not_close_and_backspace_handles_unicode() {
         let mut state = State::default();
-        state.handle(key(KeyCode::Char('/')), 0);
-        state.handle(key(KeyCode::Char('界')), 0);
+        state.handle(key(KeyCode::Char('/')), 0, &[]);
+        state.handle(key(KeyCode::Char('界')), 0, &[]);
         assert_eq!(state.query, "界");
-        state.handle(key(KeyCode::Backspace), 0);
+        state.handle(key(KeyCode::Backspace), 0, &[]);
         assert!(state.query.is_empty());
-        assert_eq!(state.handle(key(KeyCode::Esc), 0), None);
-        assert_eq!(state.handle(key(KeyCode::Esc), 0), Some(Choice::Cancel));
+        assert_eq!(state.handle(key(KeyCode::Esc), 0, &[]), None);
+        assert_eq!(
+            state.handle(key(KeyCode::Esc), 0, &[]),
+            Some(Choice::Cancel)
+        );
     }
 
     #[test]
@@ -719,7 +744,7 @@ mod tests {
     fn large_popup_shows_every_agent_in_a_fourteen_row_session() {
         let rows = rows_with_count(14);
         let frame = render_frame(
-            &matched_rows(&rows, &State::default().matches(&rows)),
+            &matched_rows(&rows, &State::default().matches(&rows)).rows,
             &mut State::default(),
             116,
             42,
@@ -787,26 +812,106 @@ mod tests {
         };
         render_frame(&rows, &mut state, 72, 10);
         assert_eq!(state.offset, 44);
-        state.handle(key(KeyCode::Char('/')), 50);
+        state.handle(key(KeyCode::Char('/')), 50, &[]);
         for character in "Task 4".chars() {
-            state.handle(key(KeyCode::Char(character)), 50);
+            state.handle(key(KeyCode::Char(character)), 50, &[]);
         }
         assert_eq!((state.selected, state.offset), (0, 0));
         let matches = state.matches(&rows);
         let filtered = matched_rows(&rows, &matches);
         assert_eq!(matches.len(), 11);
-        assert_eq!(filtered[9].cells[0], "9  ");
-        assert_eq!(filtered[10].cells[0], "   ");
-        state.handle(key(KeyCode::Enter), matches.len());
+        assert_eq!(filtered.rows[9].cells[0], "9  ");
+        assert_eq!(filtered.rows[10].cells[0], "   ");
+        state.handle(key(KeyCode::Enter), matches.len(), &filtered.digit_rows);
         assert_eq!(
-            state.handle(key(KeyCode::Char('9')), matches.len()),
+            state.handle(
+                key(KeyCode::Char('9')),
+                matches.len(),
+                &filtered.digit_rows
+            ),
             Some(Choice::Select(9))
         );
         assert_eq!(matches[9], 48);
         state.selected = 10;
-        let frame = render_frame(&filtered, &mut state, 72, 10);
+        let frame = render_frame(&filtered.rows, &mut state, 72, 10);
         assert!(frame.contains("↑6-11/11"));
-        assert_eq!(filtered[9].cells[0], "9  ");
+        assert_eq!(filtered.rows[9].cells[0], "9  ");
+    }
+
+    #[test]
+    fn skips_ineligible_rows_when_numbering_filtered_matches() {
+        let mut rows = rows_with_count(24);
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.can_jump = index % 2 == 1;
+            if index != 1 {
+                row.cells[4].push_str(" match");
+            }
+        }
+        let mut state = State {
+            selected: 22,
+            query: "match".into(),
+            ..State::default()
+        };
+        let matches = state.matches(&rows);
+        let filtered = matched_rows(&rows, &matches);
+        render_frame(&filtered.rows, &mut state, 72, 10);
+        assert!(state.offset > 0);
+        assert_eq!(filtered.rows.len(), 23);
+
+        assert_eq!(filtered.rows[0].cells[0], "   ");
+        assert_eq!(filtered.rows[2].cells[0], "0  ");
+        assert_eq!(filtered.rows[20].cells[0], "9  ");
+        assert_eq!(filtered.rows[22].cells[0], "   ");
+        assert_eq!(
+            state.handle(
+                key(KeyCode::Char('9')),
+                matches.len(),
+                &filtered.digit_rows
+            ),
+            Some(Choice::Select(20))
+        );
+        assert_eq!(matches[20], 21);
+    }
+
+    #[test]
+    fn refresh_reassigns_digits_without_changing_the_highlighted_row() {
+        let mut rows = rows_with_count(2);
+        rows[1].can_jump = false;
+        rows[1].status = "working".into();
+        rows[1].cells[2] = "working".into();
+        let mut state = State::default();
+        let matches = state.matches(&rows);
+        let before = matched_rows(&rows, &matches);
+        assert_eq!(before.digit_rows, [0]);
+
+        let mut updated = rows.clone();
+        updated[0].can_jump = false;
+        updated[0].status = "working".into();
+        updated[0].cells[2] = "working".into();
+        state.replace_rows(&rows, &updated);
+        let no_shortcuts = matched_rows(&updated, &state.matches(&updated));
+        assert_eq!(no_shortcuts.rows.len(), 2);
+        assert_eq!(
+            state.handle(key(KeyCode::Char('0')), 2, &no_shortcuts.digit_rows),
+            None
+        );
+        assert_eq!(
+            state.handle(key(KeyCode::Enter), 2, &no_shortcuts.digit_rows),
+            Some(Choice::Select(0))
+        );
+
+        let mut completed = updated.clone();
+        completed[1].can_jump = true;
+        completed[1].status = "done".into();
+        completed[1].cells[2] = "done".into();
+        state.replace_rows(&updated, &completed);
+        let after = matched_rows(&completed, &state.matches(&completed));
+        assert_eq!(state.selected, 0);
+        assert_eq!(after.rows[1].cells[0], "0  ");
+        assert_eq!(
+            state.handle(key(KeyCode::Char('0')), 2, &after.digit_rows),
+            Some(Choice::Select(1))
+        );
     }
 
     #[test]
@@ -841,7 +946,7 @@ mod tests {
                 ..State::default()
             };
             let frame = render_frame(
-                &matched_rows(&rows, &(0..count).collect::<Vec<_>>()),
+                &matched_rows(&rows, &(0..count).collect::<Vec<_>>()).rows,
                 &mut state,
                 width,
                 height,
@@ -876,7 +981,7 @@ mod tests {
                     let filtered = matched_rows(&rows, &matches);
                     render(
                         &mut io::sink(),
-                        &filtered,
+                        &filtered.rows,
                         headings,
                         &mut state,
                         100,

@@ -271,7 +271,7 @@ sync:
   # Refresh inactive repositories in the same cache used by Mori's MCP server.
   # Mori replays each client's saved targets during reindexing. Run an explicit
   # link command with those targets when index_status reports a stale client.
-  mori_state="$HOME/.cache/mori-0142"
+  mori_state="$HOME/.cache/mori-0143"
   if mori_bin=$(mise which mori 2>/dev/null); then
     if [[ -f "$mori_state/accepted" && -d "$mori_state/cache" &&
           -d "$mori_state/runtime" ]]; then
@@ -335,41 +335,61 @@ mail-state-sync *ARGS:
   # Dry run unless --run is given.
   bun run email/mail-state-sync.ts {{ARGS}}
 
-# Copy windows/ to %USERPROFILE%\.files\windows (WSL only).
+# Copy windows/ to %USERPROFILE%\dotfiles\windows (WSL only).
 win-sync:
   #!/usr/bin/env bash
   # The copy keeps the Windows tools working while WSL is down.
   set -Eeuo pipefail
-  bun run windows/sharex/managed-hotkeys.ts --write
-  for tool in cmd.exe wslpath rsync; do
+  for tool in wslpath rsync; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "win-sync: $tool is unavailable; skipping" >&2
       exit 0
     fi
   done
-  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  cmd_exe="$(command -v cmd.exe || true)"
+  cmd_exe="${cmd_exe:-/mnt/c/Windows/System32/cmd.exe}"
+  if [[ ! -x "$cmd_exe" ]]; then
+    echo "win-sync: Windows cmd.exe is unavailable; skipping" >&2
+    exit 0
+  fi
+  win_home="$("$cmd_exe" /d /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
   if [[ -z "$win_home" || "$win_home" == "%USERPROFILE%" ]]; then
     echo "win-sync: could not read %USERPROFILE%; skipping" >&2
     exit 0
   fi
-  dest="$(wslpath -u "$win_home")/.files/windows"
+  win_home_path="$(wslpath -u "$win_home")"
+  if [[ ! -d "$win_home_path" ]]; then
+    echo "win-sync: Windows user profile is unavailable at $win_home_path" >&2
+    exit 1
+  fi
+  dotfiles_root="$win_home_path/dotfiles"
+  dest="$dotfiles_root/windows"
+  if [[ -e "$dotfiles_root/.git" || -e "$dest/.git" ]]; then
+    echo "win-sync: refusing to stage into a Git checkout at $dotfiles_root or $dest" >&2
+    exit 1
+  fi
+  bun run windows/sharex/managed-hotkeys.ts --write
   mkdir -p "$dest"
-  # ac is a WSL CLI; Windows never runs it.
-  rsync -rt --delete --exclude '*.test.ts' --exclude 'audio-capture/ac/' \
+  # Preserve tools staged from other branches. The ac CLI is WSL-only.
+  rsync -rt --exclude '*.test.ts' --exclude 'audio-capture/ac/' \
     windows/ "$dest/"
-  echo "synced windows/ -> $win_home\\.files\\windows"
+  echo "synced windows/ -> $win_home\\dotfiles\\windows"
+
+# Preview or sync WSL skills and portable MCP entries to native Windows Codex.
+windows-codex-sync *ARGS:
+  bun run windows/codex-sync.ts {{ARGS}}
 
 # Build audio-capture on Windows into %LOCALAPPDATA%\Programs\audio-capture.
 audio-capture-build: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\build.cmd'
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\audio-capture\build.cmd'
 
 # Install audio-capture: build, Start Menu shortcut, Start with Windows.
 audio-capture-install: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\install.cmd --no-pause'
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\audio-capture\install.cmd --no-pause'
 
 # Remove audio-capture's shortcuts and exe; keeps %USERPROFILE%\.audio-capture.
 audio-capture-uninstall: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\audio-capture\uninstall.cmd --no-pause'
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\audio-capture\uninstall.cmd --no-pause'
 
 # Run ac, the WSL CLI for audio-capture recordings (linked as ~/.local/bin/ac).
 ac *ARGS:

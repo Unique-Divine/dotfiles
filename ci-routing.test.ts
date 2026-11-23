@@ -37,6 +37,8 @@ const cases: [string, string[], string[]][] = [
   ["embedded skill", ["herdr/skills/herdr/SKILL.md"], ["herdr_native"]],
   ["embedded schema", ["herdr/docs/next/api/herdr-api.schema.json"], ["herdr_native"]],
   ["Windows packaging", ["herdr/scripts/package_windows_conpty.ps1"], ["herdr_native"]],
+  ["Windows Known Folders", ["windows/known-folders/sync.ps1"], ["windows_setup"]],
+  ["Windows PowerShell profile", ["windows/terminal-profile/interactive.ps1"], ["windows_setup"]],
   ["hidden native config", ["herdr/.cargo/config.toml"], ["herdr_native"]],
   ["plugin source", ["herdr-tmux/src/main.rs"], ["herdr_tmux"]],
   ["plugin metadata", ["herdr-tmux/herdr-plugin.toml"], ["herdr_tmux"]],
@@ -103,7 +105,7 @@ async function decide(
 
 const off = {
   bun: "false", rust: "false", herdr_native: "false", herdr_tmux: "false",
-  validate: "false", publish: "false",
+  windows_setup: "false", validate: "false", publish: "false",
 }
 
 test("PRs and main pushes use component decisions and cross-dependencies", async () => {
@@ -111,6 +113,8 @@ test("PRs and main pushes use component decisions and cross-dependencies", async
     .toEqual({ ...off, bun: "true", validate: "true" })
   expect(await decide("push", "refs/heads/main", affected(["herdr/src/main.rs"])))
     .toEqual({ ...off, herdr_native: "true", validate: "true" })
+  expect(await decide("pull_request", "refs/pull/186/merge", affected(["windows/known-folders/sync.ps1"])))
+    .toEqual({ ...off, windows_setup: "true" })
   expect(await decide("pull_request", "refs/pull/65/merge", affected(["README.md"])))
     .toEqual(off)
 })
@@ -139,6 +143,7 @@ test("the legacy plugin branch selects only affected plugin checks", async () =>
 
 const selectors: Record<string, keyof typeof off> = {
   bun: "bun", "rust-test": "rust", clippy: "rust", tmux: "herdr_tmux",
+  "windows-setup": "windows_setup",
   validate: "validate", build: "herdr_native", prepare: "herdr_native", publish: "publish",
 }
 function results(selected: Record<string, string>) {
@@ -151,6 +156,7 @@ function results(selected: Record<string, string>) {
 }
 
 for (const selected of [off, { ...off, bun: "true", validate: "true" },
+  { ...off, windows_setup: "true" },
   Object.fromEntries(Object.keys(off).map((key) => [key, "true"]))]) {
   test(`aggregate accepts successful selections ${JSON.stringify(selected)}`, async () => {
     const result = await runStep(gate.run, { NEEDS: JSON.stringify(results(selected)) })
@@ -163,6 +169,8 @@ for (const [job, status, selected] of [
   ["changes", "failure", off],
   ["changes", "cancelled", off],
   ["bun", "failure", { ...off, bun: "true" }],
+  ["windows-setup", "failure", { ...off, windows_setup: "true" }],
+  ["windows-setup", "skipped", { ...off, windows_setup: "true" }],
   ["build", "cancelled", { ...off, herdr_native: "true" }],
   ["prepare", "skipped", { ...off, herdr_native: "true" }],
   ["publish", "skipped", off],

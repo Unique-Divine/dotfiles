@@ -107,20 +107,19 @@ The tmux layout bindings are available in Herdr too:
   reading order. Press `0`–`9` without Enter to focus a pane.
 - `prefix a` opens a popup that lists all live agents across the session.
   Each row shows the agent kind, colored state and icon, tab position, and
-  terminal title. Workspace IDs appear only when the list spans workspaces. Press `0`–`9` without Enter to focus an agent.
+  terminal title. Workspace IDs appear when the list spans workspaces.
+  Press `0` through `9` to focus one of the first ten matching idle, done, or
+  blocked agents. Use arrows or `j`/`k` and Enter to focus any row.
 
-The layout commands preserve existing pane processes and scrollback. The pane
-focus command supports up to ten panes, marks the active pane, cancels after five
-seconds or on invalid input, and validates the selected pane before focusing
-it. The agent focus command supports the same number of rows and cancellation
-behavior, and validates the selected agent before focusing it. Build and link the
-`herdr-tmux` plugin from its sibling source directory:
+The layout commands preserve existing pane processes and scrollback. Both
+pickers support search with `/` and cancel with Escape from navigation mode.
+They validate the selected pane or agent before focusing it. Build and link
+the `herdr-tmux` plugin from its sibling source directory:
 
 ```bash
 cd "$DOTFILES/herdr-tmux"
-just install
+just plugin-link
 ```
 
-This installs `~/.local/bin/herdr-tmux`, which the managed configuration calls
-directly. For local development, `--socket-path`, `--tab-id`, and `--pane-id`
-override Herdr's injected environment.
+For local development, `--socket-path`, `--tab-id`, and `--pane-id` override
+Herdr's injected environment.
