@@ -8,7 +8,7 @@ $profileBefore = $env:USERPROFILE
 try {
     $env:USERPROFILE = $root
     $mappings = foreach ($folder in $folders) {
-        $before = Join-Path $root $folder.Name
+        $before = Join-Path $root $(if ($folder.MigrateFrom) { $folder.MigrateFrom } else { $folder.Target })
         $after = Join-Path $root $folder.Target
         [void][IO.Directory]::CreateDirectory($before)
         [void][IO.Directory]::CreateDirectory($after)
@@ -18,19 +18,30 @@ try {
     $photo = Join-Path $pictures.Before 'photo.jpg'
     [IO.File]::WriteAllText($photo, 'incoming')
     [IO.File]::SetLastWriteTime($photo, [datetime]'2025-03-02')
-    $collision = Join-Path $pictures.After '25-03-02-photo.jpg'
+    $collision = Join-Path $pictures.After 'photo.jpg'
     [IO.File]::WriteAllText($collision, 'existing')
     [IO.File]::WriteAllText((Join-Path $pictures.Before 'desktop.ini'), 'metadata')
     $nested = Join-Path $pictures.Before 'Screenshots'
     [void][IO.Directory]::CreateDirectory($nested)
     [IO.File]::WriteAllText((Join-Path $nested 'first.png'), 'nested')
+    $duplicate = Join-Path $pictures.Before 'same.jpg'
+    [IO.File]::WriteAllText($duplicate, 'same on both sides')
+    [IO.File]::WriteAllText((Join-Path $pictures.After 'same.jpg'), 'same on both sides')
+    $documents = $mappings | Where-Object Id -eq $folders[1].Id
+    $document = Join-Path $documents.Before 'notes.txt'
+    [IO.File]::WriteAllText($document, 'notes')
+    [IO.File]::SetLastWriteTime($document, [datetime]'2025-04-03')
 
-    $entries = @(Get-FileMigration $mappings)
+    $backup = Join-Path $root 'backup'
+    [void][IO.Directory]::CreateDirectory($backup)
+    $entries = @(Get-FileMigration $mappings $backup)
     $planned = $entries | Where-Object Source -eq $photo
-    $nestedFile = $entries | Where-Object Kind -eq 'Move' | Where-Object Source -ne $photo
-    if ($planned.Destination -ne (Join-Path $pictures.After '25-03-02-photo (2).jpg') -or
+    $nestedFile = $entries | Where-Object Source -eq (Join-Path $nested 'first.png')
+    if ($planned.Destination -ne (Join-Path $pictures.After 'photo (2).jpg') -or
         $nestedFile.Destination -ne (Join-Path $pictures.After 'Screenshots\first.png') -or
-        ($entries.Source -match 'desktop.ini$')) {
+        ($entries.Source -match 'desktop.ini$') -or
+        ($entries | Where-Object Source -eq $duplicate).Destination -ne (Join-Path $backup 'picture-duplicates\same.jpg') -or
+        ($entries | Where-Object Source -eq $document).Destination -ne (Join-Path $documents.After '25-04-03-notes.txt')) {
         throw 'Preview did not preserve folder names, metadata, and the existing photo.'
     }
 
@@ -51,14 +62,31 @@ try {
     if (@(Invoke-FileMigration $entries $journalPath 'fixture').Count) {
         throw 'A repeated migration failed.'
     }
+    $pictureArchive = Join-Path $backup 'Pictures-real-metadata'
+    [void][IO.Directory]::CreateDirectory($pictureArchive)
+    $attributes = [IO.File]::GetAttributes($pictures.Before) -bor [IO.FileAttributes]::ReadOnly
+    [IO.File]::SetAttributes($pictures.Before, $attributes)
+    Move-PictureMetadata $pictures.Before $pictureArchive
+    if ([IO.Directory]::Exists($pictures.Before) -or
+        ![IO.File]::Exists((Join-Path $pictureArchive 'desktop.ini')) -or
+        [IO.File]::GetAttributes($pictureArchive) -ne $attributes) {
+        throw 'The legacy Pictures folder was not archived with its metadata.'
+    }
+    Move-PictureMetadata $pictures.Before $pictureArchive -Restore
     if (@(Invoke-FileMigration $entries $journalPath 'fixture' -Restore).Count -or
         [IO.File]::ReadAllText($photo) -ne 'incoming' -or
         [IO.File]::ReadAllText($nestedFile.Source) -ne 'nested' -or
+        [IO.File]::ReadAllText($duplicate) -ne 'same on both sides' -or
+        [IO.File]::ReadAllText($document) -ne 'notes' -or
         [IO.File]::ReadAllText($collision) -ne 'existing') {
         throw 'Rollback did not restore the original paths.'
     }
     Write-Host 'Known-folder migration fixture passed.'
 } finally {
     $env:USERPROFILE = $profileBefore
+    $fixturePictures = Join-Path $root 'Pictures-real'
+    if ([IO.Directory]::Exists($fixturePictures)) {
+        [IO.File]::SetAttributes($fixturePictures, [IO.FileAttributes]::Directory)
+    }
     if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
 }

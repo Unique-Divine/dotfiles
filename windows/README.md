@@ -28,8 +28,8 @@ Open File Explorer, go to `%USERPROFILE%\dotfiles\windows`, and double-click the
   `-IncludeDocker`, `-Distro <name>`, `-SkipTrim`, `-Yes`.
 - `explorer.ps1`: Explorer preferences (classic context menu). Run from WSL
   with `windows/cfg.sh`.
-- `known-folders/`: Set the Windows Pictures and Documents locations and
-  optionally migrate existing files. See its [README](known-folders/README.md).
+- `known-folders/`: Set your Windows Known Folder paths, block OneDrive folder
+  backup, and optionally migrate existing files. See its [README](known-folders/README.md).
 - `audio-capture/`: hotkey recorder for system audio plus the mic, saved as
   MP3, that survives a mic unplug. Install with
   `just audio-capture-install`. See its README.

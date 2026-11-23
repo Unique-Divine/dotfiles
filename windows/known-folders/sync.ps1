@@ -1,18 +1,26 @@
 [CmdletBinding(DefaultParameterSetName = 'Sync')]
 param(
-    [Parameter(ParameterSetName = 'Sync')][switch]$Apply,
+    [Parameter(ParameterSetName = 'Sync')]
+    [Parameter(ParameterSetName = 'Policy')][switch]$Apply,
     [Parameter(ParameterSetName = 'Sync')][switch]$MoveFiles,
+    [Parameter(Mandatory, ParameterSetName = 'Policy')][switch]$BlockOneDrive,
     [Parameter(Mandatory, ParameterSetName = 'Rollback')][switch]$Rollback
 )
 
 $ErrorActionPreference = 'Stop'
 
 $folders = @(
-    @{ Name = 'Pictures'; LocalName = 'Local Pictures'; Target = 'Pictures-real'
+    @{ Name = 'Pictures'; LocalName = 'Local Pictures'; Target = 'Pictures'; MigrateFrom = 'Pictures-real'
        Id = '33E28130-4E1E-4676-835A-98395C3BC3BB'; LocalId = '0DDD015D-B06C-45D5-8C4C-F59713854639' }
-    @{ Name = 'Documents'; LocalName = 'Local Documents'; Target = 'desk-drawer'
+    @{ Name = 'Documents'; LocalName = 'Local Documents'; Target = 'desk-drawer'; MigrateFrom = 'Documents'; DateLooseFiles = $true
        Id = 'FDD39AD0-238F-46AF-ADB4-6C85480369C7'; LocalId = 'F42EE2D3-909F-4907-8871-4C22FC0BF756' }
+    @{ Name = 'Desktop'; Target = 'Desktop'; Id = 'B4BFCC3A-DB2C-424C-B029-7FE99A87C641' }
+    @{ Name = 'Downloads'; LocalName = 'Local Downloads'; Target = 'Downloads'
+       Id = '374DE290-123F-4565-9164-39C4925E467B'; LocalId = '7D83EE9B-2244-4E70-B1F5-5393042AF1E4' }
+    @{ Name = 'Music'; LocalName = 'Local Music'; Target = 'Music'
+       Id = '4BD8D571-6D19-48D3-BE97-422220080E43'; LocalId = 'A0C69A99-21C8-4671-8703-7934162FCF1D' }
 )
+$oneDrivePolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive'
 
 Add-Type -TypeDefinition @'
 using System;
@@ -87,12 +95,9 @@ public static class DotfilesKnownFolders
 function Get-Redirections {
     foreach ($folder in $folders) {
         $target = Join-Path $env:USERPROFILE $folder.Target
-        $item = Get-Item -LiteralPath $target -Force
-        if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Expected a local directory at $target."
-        }
         foreach ($entry in @(@{ Id = $folder.Id; Name = $folder.Name },
                              @{ Id = $folder.LocalId; Name = $folder.LocalName })) {
+            if (!$entry.Id) { continue }
             [pscustomobject]@{
                 Id = $entry.Id
                 Name = $entry.Name
@@ -103,6 +108,37 @@ function Get-Redirections {
     }
 }
 
+function Assert-LocalDirectory([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($item -and (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+        throw "Expected a local directory at $Path."
+    }
+}
+
+function Test-OneDriveProtection($Mappings) {
+    $policy = Get-ItemProperty -LiteralPath $oneDrivePolicy -ErrorAction SilentlyContinue
+    if ($policy.KFMOptInWithWizard -or $policy.KFMSilentOptIn -or $policy.KFMBlockOptOut -eq 1 -or
+        ($null -ne $policy.KFMBlockOptIn -and $policy.KFMBlockOptIn -notin @(0, 1))) {
+        throw 'Conflicting machine policy for OneDrive Known Folder Move. Review it before applying dotfiles.'
+    }
+    $cloudRoots = @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)
+    $cloudRoots += @(Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\OneDrive\Accounts' -ErrorAction SilentlyContinue |
+        ForEach-Object { (Get-ItemProperty -LiteralPath $_.PSPath).UserFolder })
+    foreach ($entry in $Mappings) {
+        $path = $entry.Before
+        $inCloud = $path -match '(?i)(^|\\)OneDrive(?: - [^\\]+)?(\\|$)'
+        foreach ($root in $cloudRoots | Where-Object { $_ }) {
+            $prefix = $root.TrimEnd('\')
+            if ($path -eq $prefix -or $path.StartsWith($prefix + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                $inCloud = $true
+            }
+        }
+        if ($inCloud) { throw "OneDrive owns $($entry.Name) at $path. Stop its folder backup before applying dotfiles." }
+    }
+    return ($policy.KFMBlockOptIn -eq 1 -and
+        (Get-Item -LiteralPath $oneDrivePolicy).GetValueKind('KFMBlockOptIn') -eq [Microsoft.Win32.RegistryValueKind]::DWord)
+}
+
 function Set-Redirections($Redirections, [switch]$Restore) {
     $changed = [Collections.Generic.List[object]]::new()
     try {
@@ -110,7 +146,7 @@ function Set-Redirections($Redirections, [switch]$Restore) {
             $expected = if ($Restore) { $entry.Before } else { $entry.After }
             $current = [DotfilesKnownFolders]::Get([guid]$entry.Id)
             if ($current -eq $expected) { continue }
-            if ($current -notin @($entry.Before, $entry.After)) {
+            if ($Restore -and $current -notin @($entry.Before, $entry.After)) {
                 throw "$($entry.Name) was changed separately to $current."
             }
             [DotfilesKnownFolders]::Set([guid]$entry.Id, $expected)
@@ -131,16 +167,18 @@ function Set-Redirections($Redirections, [switch]$Restore) {
     }
 }
 
-function Get-FileMigration($Mappings) {
+function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
     $reserved = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($folder in $folders) {
+        if (!$folder.MigrateFrom) { continue }
         $mapping = $Mappings | Where-Object Id -eq $folder.Id
-        $sourceRoot = $mapping.Before
+        $sourceRoot = Join-Path $env:USERPROFILE $folder.MigrateFrom
         $targetRoot = $mapping.After
-        if ($sourceRoot -eq $targetRoot) { continue }
-        $expected = Join-Path $env:USERPROFILE $folder.Name
-        if ($sourceRoot -ne $expected) {
-            throw "The existing $($folder.Name) path is $sourceRoot. Expected $expected for the file migration."
+        if ($folder.Name -eq 'Documents' -and $mapping.Before -ne $sourceRoot) { continue }
+        Assert-LocalDirectory $sourceRoot
+        if (![IO.Directory]::Exists($sourceRoot)) { continue }
+        if ($mapping.Before -notin @($sourceRoot, $targetRoot)) {
+            throw "Review the current $($folder.Name) path $($mapping.Before) before moving files."
         }
         $source = Get-Item -LiteralPath $sourceRoot -Force
         if (!$source.PSIsContainer -or ($source.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -171,14 +209,21 @@ function Get-FileMigration($Mappings) {
                 }
 
                 $name = $item.Name
-                if (!$relative -and $name -notmatch '^\d{2}-\d{2}-\d{2}(?=$|[- ._])') {
+                if ($folder.DateLooseFiles -and !$relative -and $name -notmatch '^\d{2}-\d{2}-\d{2}(?=$|[- ._])') {
                     $name = $item.LastWriteTime.ToString('yy-MM-dd') + '-' + $name
                 }
-                $destination = Join-Path $target $name
+                $destinationDirectory = $target
+                $destination = Join-Path $destinationDirectory $name
+                if ($folder.Name -eq 'Pictures' -and !$reparse -and [IO.File]::Exists($destination) -and
+                    !(Test-ReparsePoint $destination) -and [IO.FileInfo]::new($destination).Length -eq $item.Length -and
+                    [DotfilesKnownFolders]::Hash($destination) -ceq [DotfilesKnownFolders]::Hash($item.FullName)) {
+                    $destinationDirectory = Join-Path (Join-Path $ArchiveRoot 'picture-duplicates') $relative
+                    $destination = Join-Path $destinationDirectory $name
+                }
                 $number = 2
                 while (!$reserved.Add($destination) -or (Test-Path -LiteralPath $destination) -or (Test-ReparsePoint $destination)) {
                     $stem = [IO.Path]::GetFileNameWithoutExtension($name)
-                    $destination = Join-Path $target ($stem + " ($number)" + [IO.Path]::GetExtension($name))
+                    $destination = Join-Path $destinationDirectory ($stem + " ($number)" + [IO.Path]::GetExtension($name))
                     $number++
                 }
                 [pscustomobject]@{
@@ -339,7 +384,105 @@ function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore
     return $failures.ToArray()
 }
 
-$stateRoot = Join-Path $env:LOCALAPPDATA 'Dotfiles\KnownFolders'
+function Move-ShellDirectory([string]$Source, [string]$Destination) {
+    $attributes = [IO.File]::GetAttributes($Source)
+    $readOnly = $attributes -band [IO.FileAttributes]::ReadOnly
+    if ($readOnly) { [IO.File]::SetAttributes($Source, $attributes -bxor $readOnly) }
+    $path = $Source
+    try {
+        [IO.Directory]::Move($Source, $Destination)
+        $path = $Destination
+    } finally {
+        if ($readOnly) { [IO.File]::SetAttributes($path, $attributes) }
+    }
+}
+
+function Move-PictureMetadata([string]$Original, [string]$Archive, [switch]$Restore) {
+    $source, $target = if ($Restore) { $Archive, $Original } else { $Original, $Archive }
+    Assert-LocalDirectory $source
+    Assert-LocalDirectory $target
+    if (![IO.Directory]::Exists($source)) { return }
+    $directories = [Collections.Generic.List[string]]::new()
+    $metadata = [Collections.Generic.List[string]]::new()
+    $directories.Add($source)
+    for ($index = 0; $index -lt $directories.Count; $index++) {
+        foreach ($item in Get-ChildItem -LiteralPath $directories[$index] -Force) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "The old Pictures folder contains a reparse point at $($item.FullName)."
+            }
+            if ($item.PSIsContainer) {
+                $directories.Add($item.FullName)
+            } elseif ($item.Name -ine 'desktop.ini') {
+                throw "Files still remain in the old Pictures folder, including $($item.FullName)."
+            } else {
+                $metadata.Add($item.FullName)
+            }
+        }
+    }
+
+    if (![IO.Directory]::Exists($target)) {
+        try {
+            Move-ShellDirectory $source $target
+            Write-Host "Saved the Pictures directory structure at $target."
+            return
+        } catch {
+            if (![IO.Directory]::Exists($source) -or [IO.Directory]::Exists($target)) { throw }
+        }
+    }
+
+    # Explorer or Windows may keep a handle open on the old folder. Archive
+    # only the inspected metadata and remove directories only if empty.
+    $attributes = @{}
+    foreach ($directory in $directories) {
+        $destination = $target + $directory.Substring($source.Length)
+        Assert-LocalDirectory $destination
+        $attributes[$destination] = [IO.File]::GetAttributes($directory)
+        [void][IO.Directory]::CreateDirectory($destination)
+    }
+    foreach ($file in $metadata) { [IO.File]::Move($file, $target + $file.Substring($source.Length)) }
+    foreach ($destination in $attributes.Keys) { [IO.File]::SetAttributes($destination, $attributes[$destination]) }
+    for ($index = $directories.Count - 1; $index -ge 0; $index--) {
+        $directory = $directories[$index]
+        $flags = [IO.File]::GetAttributes($directory)
+        $readOnly = $flags -band [IO.FileAttributes]::ReadOnly
+        if ($readOnly) { [IO.File]::SetAttributes($directory, $flags -bxor $readOnly) }
+        try { [IO.Directory]::Delete($directory) }
+        catch {
+            if ($readOnly) { [IO.File]::SetAttributes($directory, $flags) }
+            throw
+        }
+    }
+    Write-Host "Saved the Pictures directory structure at $target."
+}
+
+$stateRoot = Join-Path $env:LOCALAPPDATA 'Dotfiles\KnownFolders\profile-v2'
+$currentMappings = @(Get-Redirections)
+if (!$Rollback) {
+    $protected = Test-OneDriveProtection $currentMappings
+    if ($BlockOneDrive) {
+        if ($protected) {
+            Write-Host 'OneDrive Known Folder Move is already blocked by machine policy.'
+        } elseif (!$Apply) {
+            Write-Host 'Preview: set the machine OneDrive policy KFMBlockOptIn to DWORD 1.'
+        } else {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+            if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                throw 'Run -BlockOneDrive -Apply as administrator.'
+            }
+            if (!(Test-Path -LiteralPath $oneDrivePolicy)) { New-Item -Path $oneDrivePolicy -Force | Out-Null }
+            New-ItemProperty -LiteralPath $oneDrivePolicy -Name 'KFMBlockOptIn' -PropertyType DWord -Value 1 -Force | Out-Null
+            if (!(Test-OneDriveProtection $currentMappings)) { throw 'Could not verify the OneDrive machine policy.' }
+            Write-Host 'Blocked OneDrive Known Folder Move by machine policy.'
+        }
+        return
+    }
+    if (!$protected) {
+        if ($Apply) { throw 'Set the OneDrive protection first with -BlockOneDrive -Apply as administrator.' }
+        Write-Host 'OneDrive protection is missing. Preview the machine policy with -BlockOneDrive.'
+    }
+}
+
 $manifestPath = Join-Path $stateRoot 'migration.json'
 $journalPath = Join-Path $stateRoot 'journal.jsonl'
 $manifestText = if (Test-Path -LiteralPath $manifestPath) {
@@ -348,15 +491,18 @@ $manifestText = if (Test-Path -LiteralPath $manifestPath) {
 $manifest = if ($manifestText) { $manifestText | ConvertFrom-Json }
 if ($Rollback -and !$manifest) { throw 'There is no migration manifest to roll back.' }
 
-$mappings = if ($manifest) { $manifest.Mappings } else { @(Get-Redirections) }
+$mappings = if ($manifest) { $manifest.Mappings } else { $currentMappings }
+foreach ($entry in $mappings) { Assert-LocalDirectory $entry.After }
+$legacyPictures = Join-Path $env:USERPROFILE 'Pictures-real'
+$pictureArchive = Join-Path $stateRoot 'Pictures-real-metadata'
 $entries = if ($manifest -and $manifest.WithFiles) {
     $manifest.Entries
 } elseif ($MoveFiles) {
-    @(Get-FileMigration $mappings)
+    @(Get-FileMigration $mappings $stateRoot)
 }
 
-foreach ($entry in $mappings) {
-    Write-Host "$($entry.Name) -> $($entry.After) (previously $($entry.Before))"
+foreach ($entry in $currentMappings) {
+    Write-Host "$($entry.Name) -> $($entry.After) (currently $($entry.Before))"
 }
 
 if (!$Apply -and !$Rollback) {
@@ -378,7 +524,7 @@ try {
     if ($latestManifest -cne $manifestText) { throw 'The migration plan changed. Run the command again.' }
     foreach ($entry in $mappings) {
         $current = [DotfilesKnownFolders]::Get([guid]$entry.Id)
-        if ($current -notin @($entry.Before, $entry.After)) {
+        if (($MoveFiles -or $Rollback) -and $current -notin @($entry.Before, $entry.After)) {
             throw "$($entry.Name) was changed separately to $current."
         }
     }
@@ -399,11 +545,23 @@ try {
     }
 
     if ($Rollback) {
-        if ($manifest.WithFiles) { $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id -Restore) }
+        if ($manifest.WithFiles) {
+            Move-PictureMetadata $legacyPictures $pictureArchive -Restore
+            $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id -Restore)
+        }
         Set-Redirections $mappings -Restore
     } else {
+        foreach ($target in $mappings.After | Select-Object -Unique) { [void][IO.Directory]::CreateDirectory($target) }
         if ($MoveFiles) { $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id) }
-        Set-Redirections $mappings
+        if ($MoveFiles -and @($failures | Where-Object { $_.StartsWith($legacyPictures + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            Write-Warning 'Pictures migration is incomplete. Folder mappings have not been changed.'
+        } else {
+            Set-Redirections $mappings
+            if ($MoveFiles) {
+                try { Move-PictureMetadata $legacyPictures $pictureArchive }
+                catch { $failures = @($failures) + $_.Exception.Message }
+            }
+        }
     }
     Write-Host "Manifest: $manifestPath"
     $report = Join-Path $stateRoot 'failures.txt'
