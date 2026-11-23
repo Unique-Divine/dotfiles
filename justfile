@@ -271,7 +271,7 @@ sync:
   # Refresh inactive repositories in the same cache used by Mori's MCP server.
   # Mori replays each client's saved targets during reindexing. Run an explicit
   # link command with those targets when index_status reports a stale client.
-  mori_state="$HOME/.cache/mori-0140"
+  mori_state="$HOME/.cache/mori-0141"
   if mori_bin=$(mise which mori 2>/dev/null); then
     if [[ -f "$mori_state/accepted" && -d "$mori_state/cache" &&
           -d "$mori_state/runtime" ]]; then
