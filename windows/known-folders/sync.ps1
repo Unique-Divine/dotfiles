@@ -167,6 +167,15 @@ function Set-Redirections($Redirections, [switch]$Restore) {
     }
 }
 
+function Complete-MigrationRedirections($Mappings, $Failures, [switch]$Restore) {
+    if ($Failures.Count) {
+        Write-Warning 'File migration is incomplete. Known Folder mappings have not been changed.'
+        return $false
+    }
+    Set-Redirections $Mappings -Restore:$Restore
+    return $true
+}
+
 function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
     $reserved = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($folder in $folders) {
@@ -196,7 +205,14 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
                 }
                 [pscustomobject]@{ Kind = 'Directory'; Source = $directory; Destination = $target }
             }
-            foreach ($item in Get-ChildItem -LiteralPath $directory -Force | Sort-Object Name) {
+            $items = @(Get-ChildItem -LiteralPath $directory -Force | Sort-Object Name)
+            foreach ($item in $items) {
+                if ($item.PSIsContainer -and $item.Name -ine 'desktop.ini' -and
+                    !($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    [void]$reserved.Add((Join-Path $target $item.Name))
+                }
+            }
+            foreach ($item in $items) {
                 if ($item.Name -ieq 'desktop.ini') { continue }
                 $reparse = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
                 if ($item.PSIsContainer -and !$reparse) {
@@ -214,9 +230,11 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
                 }
                 $destinationDirectory = $target
                 $destination = Join-Path $destinationDirectory $name
+                $duplicateOf = $null
                 if ($folder.Name -eq 'Pictures' -and !$reparse -and [IO.File]::Exists($destination) -and
                     !(Test-ReparsePoint $destination) -and [IO.FileInfo]::new($destination).Length -eq $item.Length -and
                     [DotfilesKnownFolders]::Hash($destination) -ceq [DotfilesKnownFolders]::Hash($item.FullName)) {
+                    $duplicateOf = $destination
                     $destinationDirectory = Join-Path (Join-Path $ArchiveRoot 'picture-duplicates') $relative
                     $destination = Join-Path $destinationDirectory $name
                 }
@@ -232,6 +250,7 @@ function Get-FileMigration($Mappings, [string]$ArchiveRoot) {
                     Destination = $destination
                     Length = $item.Length
                     LastWrite = $item.LastWriteTimeUtc.Ticks
+                    DuplicateOf = $duplicateOf
                 }
             }
         }
@@ -280,7 +299,44 @@ function Write-Event($Writer, $Item, $State, $Hash) {
     $Writer.WriteLine((@{ Source = $Item.Source; State = $State; Hash = $Hash } | ConvertTo-Json -Compress))
 }
 
-function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore) {
+function Assert-PictureDuplicate($Entry, [string]$Hash) {
+    if (!$Entry.DuplicateOf) { return }
+    if (![IO.File]::Exists($Entry.DuplicateOf) -or (Test-ReparsePoint $Entry.DuplicateOf) -or
+        [DotfilesKnownFolders]::Hash($Entry.DuplicateOf) -cne $Hash) {
+        throw "The matching picture changed at $($Entry.DuplicateOf). Review it before archiving this file."
+    }
+}
+
+function Assert-CompletedMigrationFile($Entry, $Record) {
+    if (![IO.File]::Exists($Entry.Destination) -or (Test-ReparsePoint $Entry.Destination) -or
+        [DotfilesKnownFolders]::Hash($Entry.Destination) -cne $Record.Hash) {
+        throw "The recorded destination is missing or changed at $($Entry.Destination). Review it before retrying."
+    }
+    Assert-PictureDuplicate $Entry $Record.Hash
+}
+
+function Test-FileMigrationComplete($Items, $JournalPath) {
+    $journal = Read-Journal $JournalPath
+    foreach ($entry in $Items) {
+        if ($entry.Kind -eq 'Directory') {
+            if (![IO.Directory]::Exists($entry.Destination) -or (Test-ReparsePoint $entry.Destination)) {
+                return $false
+            }
+        } elseif ($entry.Kind -eq 'Retain') {
+            if ((Test-Path -LiteralPath $entry.Source) -or (Test-ReparsePoint $entry.Source)) {
+                return $false
+            }
+        } else {
+            $record = $journal[$entry.Source]
+            if ($record.State -ne 'Done') { return $false }
+            try { Assert-CompletedMigrationFile $entry $record }
+            catch { return $false }
+        }
+    }
+    return $true
+}
+
+function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore, [switch]$VerifyCompleted) {
     $journal = Read-Journal $JournalPath
     $writer = [IO.StreamWriter]::new($JournalPath, $true, [Text.UTF8Encoding]::new($false))
     $writer.AutoFlush = $true
@@ -291,7 +347,10 @@ function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore
         foreach ($entry in $Items) {
             try {
                 if ($entry.Kind -eq 'Retain') {
-                    $retained++
+                    if (!$Restore -and ((Test-Path -LiteralPath $entry.Source) -or (Test-ReparsePoint $entry.Source))) {
+                        $retained++
+                        throw 'Retained a reparse point that cannot be migrated safely. Resolve this item before retrying.'
+                    }
                     continue
                 }
                 if ($entry.Kind -eq 'Directory') {
@@ -328,6 +387,7 @@ function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore
                 }
 
                 if ($record.State -eq 'Done') {
+                    if ($VerifyCompleted) { Assert-CompletedMigrationFile $entry $record }
                     if ($entry.Kind -eq 'Move') { $moved++ } else { $copied++ }
                     continue
                 }
@@ -340,6 +400,7 @@ function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore
                         [DotfilesKnownFolders]::Hash($entry.Destination) -cne $hash) {
                         throw 'Destination is occupied or changed.'
                     }
+                    Assert-PictureDuplicate $entry $hash
                 } else {
                     $file = Get-Item -LiteralPath $entry.Source -Force
                     if ($file.PSIsContainer -or $file.Length -ne $entry.Length -or
@@ -351,6 +412,7 @@ function Invoke-FileMigration($Items, $JournalPath, $SessionId, [switch]$Restore
                     $actualHash = [DotfilesKnownFolders]::Hash($entry.Source)
                     if ($record -and $actualHash -cne $hash) { throw 'Source contents changed.' }
                     $hash = $actualHash
+                    Assert-PictureDuplicate $entry $hash
                     if (!$record) { Write-Event $writer $entry 'Prepared' $hash }
                     if ($entry.Kind -eq 'Move') {
                         [IO.File]::Move($entry.Source, $entry.Destination)
@@ -522,8 +584,13 @@ $lockFile = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
 try {
     $latestManifest = if ([IO.File]::Exists($manifestPath)) { [IO.File]::ReadAllText($manifestPath) }
     if ($latestManifest -cne $manifestText) { throw 'The migration plan changed. Run the command again.' }
+    $migrationCutoverPending = $false
     foreach ($entry in $mappings) {
         $current = [DotfilesKnownFolders]::Get([guid]$entry.Id)
+        if ($entry.Name -in @('Pictures', 'Local Pictures', 'Documents', 'Local Documents') -and
+            $current -ne $entry.After) {
+            $migrationCutoverPending = $true
+        }
         if (($MoveFiles -or $Rollback) -and $current -notin @($entry.Before, $entry.After)) {
             throw "$($entry.Name) was changed separately to $current."
         }
@@ -549,18 +616,19 @@ try {
             Move-PictureMetadata $legacyPictures $pictureArchive -Restore
             $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id -Restore)
         }
-        Set-Redirections $mappings -Restore
+        [void](Complete-MigrationRedirections $mappings $failures -Restore)
     } else {
+        if (!$MoveFiles -and $manifest.WithFiles -and $migrationCutoverPending -and
+            !(Test-FileMigrationComplete $entries $journalPath)) {
+            throw 'The recorded migration is incomplete. Rerun with -MoveFiles before changing the Known Folder mappings.'
+        }
         foreach ($target in $mappings.After | Select-Object -Unique) { [void][IO.Directory]::CreateDirectory($target) }
-        if ($MoveFiles) { $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id) }
-        if ($MoveFiles -and @($failures | Where-Object { $_.StartsWith($legacyPictures + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
-            Write-Warning 'Pictures migration is incomplete. Folder mappings have not been changed.'
-        } else {
-            Set-Redirections $mappings
-            if ($MoveFiles) {
-                try { Move-PictureMetadata $legacyPictures $pictureArchive }
-                catch { $failures = @($failures) + $_.Exception.Message }
-            }
+        if ($MoveFiles) {
+            $failures = @(Invoke-FileMigration $entries $journalPath $manifest.Id -VerifyCompleted:$migrationCutoverPending)
+        }
+        if ((Complete-MigrationRedirections $mappings $failures) -and $MoveFiles) {
+            try { Move-PictureMetadata $legacyPictures $pictureArchive }
+            catch { $failures = @($failures) + $_.Exception.Message }
         }
     }
     Write-Host "Manifest: $manifestPath"

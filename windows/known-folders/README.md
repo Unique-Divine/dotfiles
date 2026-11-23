@@ -53,12 +53,17 @@ If Windows still points Documents at its original local directory, the
 migration moves eligible local files to desk-drawer. It adds a last-modified
 date prefix to loose filenames that do not already have one. For both
 migrations, readable cloud placeholders are copied and verified, and their
-originals stay in place. Other reparse points stay in place.
+originals stay in place. Other reparse points stay in place and block the
+mapping change until you resolve those items and retry.
 
 The current manifest and journal live in `%LOCALAPPDATA%\Dotfiles\KnownFolders\profile-v2`.
 The previous Pictures and Documents migration records remain in the parent
 directory. Rerun `-Apply -MoveFiles` to resume a file migration. Blocked file paths
-appear in `failures.txt`. Rollback verifies hashes and preserves cloud copies.
+appear in `failures.txt`. Before switching Pictures or Documents, a resumed
+migration verifies the recorded destination files. After switching, reapplying
+the setup leaves later edits alone. The script changes the Known Folder paths
+only after the requested file move or restore completes. Rollback verifies hashes
+and preserves cloud copies.
 The OneDrive machine policy stays enabled after rolling back folder mappings.
 
 Windows PowerShell reads its user profile from Documents. After redirecting

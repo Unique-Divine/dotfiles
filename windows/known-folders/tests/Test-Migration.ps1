@@ -20,6 +20,9 @@ try {
     [IO.File]::SetLastWriteTime($photo, [datetime]'2025-03-02')
     $collision = Join-Path $pictures.After 'photo.jpg'
     [IO.File]::WriteAllText($collision, 'existing')
+    $reservedFolder = Join-Path $pictures.Before 'photo (2).jpg'
+    [void][IO.Directory]::CreateDirectory($reservedFolder)
+    [IO.File]::WriteAllText((Join-Path $reservedFolder 'preserve.txt'), 'folder contents')
     [IO.File]::WriteAllText((Join-Path $pictures.Before 'desktop.ini'), 'metadata')
     $nested = Join-Path $pictures.Before 'Screenshots'
     [void][IO.Directory]::CreateDirectory($nested)
@@ -37,15 +40,26 @@ try {
     $entries = @(Get-FileMigration $mappings $backup)
     $planned = $entries | Where-Object Source -eq $photo
     $nestedFile = $entries | Where-Object Source -eq (Join-Path $nested 'first.png')
-    if ($planned.Destination -ne (Join-Path $pictures.After 'photo (2).jpg') -or
+    $plannedDuplicate = $entries | Where-Object Source -eq $duplicate
+    if ($planned.Destination -ne (Join-Path $pictures.After 'photo (3).jpg') -or
         $nestedFile.Destination -ne (Join-Path $pictures.After 'Screenshots\first.png') -or
         ($entries.Source -match 'desktop.ini$') -or
-        ($entries | Where-Object Source -eq $duplicate).Destination -ne (Join-Path $backup 'picture-duplicates\same.jpg') -or
+        $plannedDuplicate.Destination -ne (Join-Path $backup 'picture-duplicates\same.jpg') -or
         ($entries | Where-Object Source -eq $document).Destination -ne (Join-Path $documents.After '25-04-03-notes.txt')) {
         throw 'Preview did not preserve folder names, metadata, and the existing photo.'
     }
 
     $journalPath = Join-Path $root 'journal.jsonl'
+    if (Test-FileMigrationComplete $entries $journalPath) {
+        throw 'An unstarted migration was reported complete.'
+    }
+    [IO.File]::WriteAllText($plannedDuplicate.DuplicateOf, 'the existing file changed')
+    $failures = @(Invoke-FileMigration @($plannedDuplicate) $journalPath 'fixture')
+    if ($failures.Count -ne 1 -or $failures[0] -notmatch 'matching picture changed' -or
+        ![IO.File]::Exists($duplicate) -or [IO.File]::Exists($plannedDuplicate.Destination)) {
+        throw 'A stale duplicate plan archived the only active copy.'
+    }
+    [IO.File]::WriteAllText($plannedDuplicate.DuplicateOf, 'same on both sides')
     $writer = [IO.StreamWriter]::new($journalPath)
     try { Write-Event $writer $planned 'Prepared' ([DotfilesKnownFolders]::Hash($photo)) }
     finally { $writer.Dispose() }
@@ -55,13 +69,38 @@ try {
 
     $failures = @(Invoke-FileMigration $entries $journalPath 'fixture')
     if ($failures.Count -or [IO.File]::Exists($nestedFile.Source) -or
+        !(Test-FileMigrationComplete $entries $journalPath) -or
         [IO.File]::ReadAllText($planned.Destination) -ne 'incoming' -or
-        [IO.File]::ReadAllText($collision) -ne 'existing') {
+        [IO.File]::ReadAllText($collision) -ne 'existing' -or
+        [IO.File]::ReadAllText((Join-Path $pictures.After 'photo (2).jpg\preserve.txt')) -ne 'folder contents') {
         throw "Migration did not resume safely: $failures"
     }
     if (@(Invoke-FileMigration $entries $journalPath 'fixture').Count) {
         throw 'A repeated migration failed.'
     }
+
+    $renamed = Join-Path $pictures.After 'renamed photo.jpg'
+    [IO.File]::Move($planned.Destination, $renamed)
+    $failures = @(Invoke-FileMigration $entries $journalPath 'fixture' -VerifyCompleted)
+    if ($failures.Count -ne 1 -or $failures[0] -notmatch 'recorded destination is missing or changed' -or
+        (Test-FileMigrationComplete $entries $journalPath)) {
+        throw 'A missing destination passed the resumed cutover check.'
+    }
+
+    [IO.File]::WriteAllText($planned.Destination, 'changed!')
+    $failures = @(Invoke-FileMigration $entries $journalPath 'fixture' -VerifyCompleted)
+    if ($failures.Count -ne 1 -or $failures[0] -notmatch 'recorded destination is missing or changed' -or
+        (Test-FileMigrationComplete $entries $journalPath)) {
+        throw 'A replaced destination passed the resumed cutover check.'
+    }
+    if (@(Invoke-FileMigration $entries $journalPath 'fixture').Count -or
+        [IO.File]::ReadAllText($planned.Destination) -ne 'changed!' -or
+        [IO.File]::ReadAllText($renamed) -ne 'incoming') {
+        throw 'Reapplying after cutover should leave renamed or edited files alone.'
+    }
+    [IO.File]::Delete($planned.Destination)
+    [IO.File]::Move($renamed, $planned.Destination)
+
     $pictureArchive = Join-Path $backup 'Pictures-real-metadata'
     [void][IO.Directory]::CreateDirectory($pictureArchive)
     $attributes = [IO.File]::GetAttributes($pictures.Before) -bor [IO.FileAttributes]::ReadOnly
@@ -80,6 +119,22 @@ try {
         [IO.File]::ReadAllText($document) -ne 'notes' -or
         [IO.File]::ReadAllText($collision) -ne 'existing') {
         throw 'Rollback did not restore the original paths.'
+    }
+    $retained = [pscustomobject]@{ Kind = 'Retain'; Source = $document }
+    $failures = @(Invoke-FileMigration @($retained) $journalPath 'fixture')
+    if ($failures.Count -ne 1 -or $failures[0] -notmatch 'Retained a reparse point' -or
+        [IO.File]::ReadAllText($document) -ne 'notes') {
+        throw 'An unmigrated item was not reported as an incomplete migration.'
+    }
+    function Set-Redirections { throw 'The Known Folder mapping changed despite failed file work.' }
+    if ((Complete-MigrationRedirections $mappings $failures) -or
+        (Complete-MigrationRedirections $mappings $failures -Restore)) {
+        throw 'Failed file work did not block the mapping change.'
+    }
+    [IO.File]::Move($document, (Join-Path $root 'resolved-retained.txt'))
+    if (@(Invoke-FileMigration @($retained) $journalPath 'fixture').Count -or
+        !(Test-FileMigrationComplete @($retained) $journalPath)) {
+        throw 'A resolved reparse point still blocks migration.'
     }
     Write-Host 'Known-folder migration fixture passed.'
 } finally {
