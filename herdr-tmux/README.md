@@ -91,20 +91,20 @@ Command `herdr-tmux focus-agent` lists every live agent in the session.
 The columns are Agent, Harness, Status, Tab, and Title. Agent shows the jump
 number and an asterisk for the focused agent; Harness shows its detected kind.
 Titles fit the popup width and end with an ellipsis when truncated.
-The tab position follows `keys.switch_tab`: `0..8`
-renders `t0` through `t8`, while `1..9` renders `t1` through `t9`. Press
-`0` through `9` without Enter to focus one of the first ten agents, even when
-it is in another workspace or tab. There is no agent count limit. Use `j`/`k`
-or the arrow keys to move the highlighted row, then Enter to focus it. The
-table scrolls to keep that row visible. Escape closes the picker; it stays
-open until selection or cancellation. Before focusing, the picker confirms
-the selected agent still occupies its pane.
+The tab position follows `keys.switch_tab`. Range `0..8` renders `t0` through
+`t8`, while `1..9` renders `t1` through `t9`. The first ten idle, done, or
+blocked agents in list order get jump numbers `0` through `9`. Press a
+number to focus that agent, including across workspaces or tabs. Use `j`/`k`
+or the arrow keys and Enter to focus any row, including working and unknown
+agents. The table scrolls to keep the highlighted row visible. Escape closes
+the picker. Before focusing, the picker confirms the selected agent still
+occupies its pane.
 
 Press `/` to search the title, harness, status, or tab label. Matching ignores
 case and includes title text beyond the popup width. While editing a query,
 digits are text. Enter or Escape returns to navigation; Escape in navigation
-closes the picker. Digit shortcuts refer to the first ten matching rows,
-independent of the scroll position.
+closes the picker. Digit assignments follow the matching rows and are
+independent of scroll position.
 
 Both popup pickers request 116 columns by 42 rows. Herdr clamps that size to
 the available terminal area. The search line reserves its right side for the
@@ -113,9 +113,9 @@ that more matching rows are above or below the viewport, even with a long
 query. Narrow layouts hide location and harness columns before clipping the
 destination title. Tiny layouts keep the selected row visible first.
 
-Agent metadata refreshes once per
-second while the popup is open, and the highlighted agent follows its pane
-and terminal identity when rows change. Filtering uses the local snapshot.
+Agent metadata refreshes once per second while the popup is open. Digits
+follow the refreshed statuses, and the highlight follows the selected
+agent's pane and terminal identity. Filtering uses the local snapshot.
 The plugin lists agents in the current session; the native Go To menu can
 also aggregate connected machines.
 
@@ -124,11 +124,11 @@ when agents span multiple workspaces. Status icons and colors are:
 
 | Status | Icon | Foreground | Jump number |
 | --- | --- | --- | --- |
-| Working | ↻ | Default terminal color | Normal |
+| Working | ↻ | Default terminal color | Blank |
 | Idle | . | Cyan | Bold |
 | Done | ✓ | Cyan | Bold |
 | Blocked | ! | Amber | Bold |
-| Unknown | ? | Cyan | Bold |
+| Unknown | ? | Cyan | Blank |
 
 Headings and status text are bold. Jump numbers match their status foreground.
 Redirected output has no ANSI styling. The picker uses simple

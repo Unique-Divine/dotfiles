@@ -753,6 +753,7 @@ fn pane_rows(panes: &[(PaneLayoutPane, PaneInfo)]) -> Vec<crate::picker::Row> {
                 ],
                 status: status.into(),
                 focused: pane.focused,
+                can_jump: true,
             }
         })
         .collect()
@@ -901,6 +902,10 @@ fn agent_rows(
                 ],
                 focused: agent.focused,
                 status: agent.agent_status.clone(),
+                can_jump: matches!(
+                    agent.agent_status.as_str(),
+                    "idle" | "done" | "blocked"
+                ),
             })
         })
         .collect()
@@ -1754,12 +1759,9 @@ mod tests {
         assert_eq!(lines[0], ["Agent", "Harness", "Status", "Tab", "Title"]);
         assert_eq!(
             lines[1],
-            ["0", "*", "cursor", "↻", "working", "t0", "current", "task"]
+            ["*", "cursor", "↻", "working", "t0", "current", "task"]
         );
-        assert_eq!(
-            lines[2],
-            ["1", "cursor", "↻", "working", "t1", "review", "task"]
-        );
+        assert_eq!(lines[2], ["cursor", "↻", "working", "t1", "review", "task"]);
     }
 
     fn strip_sgr(text: &str) -> String {
@@ -1803,7 +1805,7 @@ mod tests {
         write_agent_selector(&mut styled, &agents, &tabs, 70, true).unwrap();
         let styled = String::from_utf8(styled).unwrap();
         let lines: Vec<_> = styled.lines().collect();
-        assert!(lines[1].starts_with("0 *"));
+        assert!(lines[1].starts_with("  *"));
         assert!(lines[1].contains("\x1b[1m↻ working"));
         assert!(!lines[1].contains("\x1b[38;"));
         for (i, status) in statuses.iter().enumerate().skip(1) {
@@ -1813,7 +1815,14 @@ mod tests {
                 Color::Cyan
             };
             let foreground = SetForegroundColor(color).to_string();
-            assert!(lines[i + 1].starts_with(&format!("{foreground}\x1b[1m{i}")));
+            let digit = if *status == "unknown" {
+                " ".into()
+            } else {
+                (i - 1).to_string()
+            };
+            assert!(
+                lines[i + 1].starts_with(&format!("{foreground}\x1b[1m{digit}"))
+            );
             assert_eq!(lines[i + 1].matches(&foreground).count(), 2);
             let reset =
                 format!("{}{}", SetAttribute(Attribute::Reset), ResetColor);
@@ -2194,7 +2203,10 @@ mod tests {
         agent["pane"]["title"] =
             json!(format!("{} searchable-suffix 界", "long title ".repeat(12)));
         let shell = picker_pane("w1:p20", "w1:t1", true);
-        let panes = [agent, shell]
+        let mut working = picker_pane("w1:p30", "w1:t1", false);
+        working["pane"]["agent"] = json!("cursor");
+        working["pane"]["agent_status"] = json!("working");
+        let panes = [agent, shell, working]
             .into_iter()
             .enumerate()
             .map(|(index, value)| {
@@ -2217,6 +2229,11 @@ mod tests {
         assert_eq!(rows[0].cells[3], "w1:p10");
         assert_eq!(rows[1].status, "shell");
         assert_eq!(rows[0].status, "blocked");
+        assert_eq!(rows[2].status, "working");
+        let numbered = crate::picker::matched_rows(&rows, &[0, 1, 2]);
+        assert_eq!(numbered.digit_rows, [0, 1, 2]);
+        assert_eq!(numbered.rows[1].cells[0], "1 *");
+        assert_eq!(numbered.rows[2].cells[0], "2  ");
         for query in ["searchable-suffix", "codex", "blocked", "w1:p10", "界"] {
             let state = crate::picker::State {
                 query: query.into(),
