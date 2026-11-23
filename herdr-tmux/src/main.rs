@@ -1,6 +1,7 @@
 mod app;
 mod picker;
 mod plugin;
+mod tabs;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -46,6 +47,13 @@ enum Command {
     FocusPane,
     /// Search or navigate live agents in the session, with digit shortcuts.
     FocusAgent,
+    /// Edit the active workspace's tab order in Neovim.
+    EditTabs,
+    #[command(hide = true)]
+    TabOrder {
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,6 +102,13 @@ fn main() -> ExitCode {
         Command::Layout { layout } => arrange(&target, layout.into()),
         Command::FocusPane => pick_pane(&target),
         Command::FocusAgent => pick_agent(&target),
+        Command::EditTabs => tabs::edit(&target),
+        Command::TabOrder { apply } => {
+            return match tabs::tab_order(&target, apply) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => fail(None, error),
+            };
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

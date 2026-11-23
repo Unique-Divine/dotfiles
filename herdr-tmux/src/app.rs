@@ -365,18 +365,18 @@ impl Drop for SessionLock {
     }
 }
 
-struct Client {
+pub(crate) struct Client {
     socket_path: PathBuf,
     next_id: AtomicU64,
 }
 impl Client {
-    fn new(socket_path: PathBuf) -> Self {
+    pub(crate) fn new(socket_path: PathBuf) -> Self {
         Self {
             socket_path,
             next_id: AtomicU64::new(0),
         }
     }
-    fn request<T: for<'de> Deserialize<'de>>(
+    pub(crate) fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
