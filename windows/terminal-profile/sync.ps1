@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
+    [switch]$InstallZoxide,
     [string[]]$SettingsPath,
     [string]$ProfilePath = $PROFILE.CurrentUserAllHosts,
     [string]$ManagedProfilePath = (Join-Path $env:LOCALAPPDATA 'Dotfiles\PowerShell\interactive.ps1')
@@ -256,6 +257,17 @@ if ($parseErrors.Count) { throw 'The merged PowerShell profile does not parse.' 
 if ($enableUserPolicy) { Write-Host 'Set the Windows PowerShell execution policy to RemoteSigned for the current user' }
 if (!$existingLoader) { Write-Host "Add a loader to $ProfilePath" }
 if ($managed.Text -cne $source.Text) { Write-Host "Install $ManagedProfilePath" }
+$installZoxidePackage = $false
+if ($InstallZoxide) {
+    $zoxideLink = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\zoxide.exe'
+    if ((Get-Command zoxide.exe -CommandType Application -ErrorAction SilentlyContinue) -or
+        (Test-Path -LiteralPath $zoxideLink -PathType Leaf)) {
+        Write-Host 'zoxide is already installed.'
+    } else {
+        $installZoxidePackage = $true
+        Write-Host 'Install zoxide with WinGet for the current user.'
+    }
+}
 if (!$Apply) {
     Write-Host 'Preview only. Pass -Apply to write changes.'
     return
@@ -279,3 +291,9 @@ foreach ($update in $terminalUpdates) {
     Write-Text $update.Path $update.Text $update.Encoding
 }
 Write-Host 'Windows Terminal and PowerShell profile sync complete.'
+if ($installZoxidePackage) {
+    $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue
+    if (!$winget) { throw 'WinGet is unavailable. Install Windows App Installer to add zoxide.' }
+    & $winget.Source install --id ajeetdsouza.zoxide --exact --source winget --scope user --disable-interactivity
+    if ($LASTEXITCODE -ne 0) { throw "WinGet could not install zoxide (exit code $LASTEXITCODE)." }
+}

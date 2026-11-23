@@ -8,8 +8,8 @@ From Windows PowerShell, preview the changes, then apply them after reviewing
 the output.
 
 ```powershell
-& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd"
-& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd" -Apply
+& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd" -InstallZoxide
+& "$env:USERPROFILE\dotfiles\windows\terminal-profile\sync.cmd" -Apply -InstallZoxide
 ```
 
 From a regular Terminal window, `Ctrl+Shift+3` opens Windows PowerShell 5.1,
@@ -18,9 +18,10 @@ administrator window and may show a UAC prompt. Use a regular Terminal window
 for the regular shortcut because tabs in an administrator window inherit its
 privileges. The shortcuts use profile GUIDs and work after rearranging the menu.
 
-Open a new Windows PowerShell tab to pick up the profile. The setup uses the
-PSReadLine module included with Windows PowerShell on Windows 11. It saves
-command history across tabs and restarts.
+Open a new Windows PowerShell tab to pick up the profile. The bundled
+PSReadLine module starts in Vi insert mode and saves command history across tabs
+and restarts. Press `Esc` for command mode and `i` or `a` to return to insert mode.
+The cursor changes shape between modes. The following shortcuts work in insert mode.
 
 | Key | Action |
 | --- | --- |
@@ -31,8 +32,15 @@ command history across tabs and restarts.
 | Ctrl+W / Ctrl+U | Delete the previous word / text before the cursor. |
 | Ctrl+L | Clear the screen. |
 
-The setup adds a loader to your existing Windows PowerShell profile and copies
-the keybindings to `%LOCALAPPDATA%\Dotfiles\PowerShell\interactive.ps1`.
+Use `z <query>` to jump to directories you have visited, for example `z desk`
+after visiting `desk-drawer`. Zoxide learns Windows paths and keeps its history
+on the local machine. `cd` still performs ordinary directory changes. Omit
+`-InstallZoxide` to apply the profile without installing the WinGet package.
+
+`$PROFILE.CurrentUserAllHosts` shows your Windows PowerShell startup file. The
+setup adds a loader there and copies `interactive.ps1` from dotfiles to
+`%LOCALAPPDATA%\Dotfiles\PowerShell\interactive.ps1`. Edit the repository copy
+and rerun sync to update it.
 The profile works from the native Windows filesystem when WSL is down. If
 Windows PowerShell has no persistent execution policy, the setup sets
 `RemoteSigned` for the current Windows user. This lets direct PowerShell
