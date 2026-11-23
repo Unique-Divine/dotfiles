@@ -85,12 +85,13 @@ just mcp-sync --run
 Repeating these commands reuses the installed release. The MCP sync fills
 missing client entries from an existing registration and preserves differences
 between configured clients. It leaves existing hook commands, hook trust, and
-the graph cache in place. Use the same executable and cache paths to check the
-projects already indexed.
+the graph cache in place. To check projects from an older registration, use
+its executable, cache, and runtime together. For a client already on 0.14.1,
+use the installed binary and the 0.14.1 state paths.
 
 ```bash
-CBM_CACHE_DIR="$HOME/.cache/mori-0140/cache" \
-  CBM_RUNTIME_DIR="$HOME/.cache/mori-0140/runtime" \
+CBM_CACHE_DIR="$HOME/.cache/mori-0141/cache" \
+  CBM_RUNTIME_DIR="$HOME/.cache/mori-0141/runtime" \
   "$mori_bin" cli list_projects --format json
 ```
 
