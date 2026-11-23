@@ -766,43 +766,21 @@ fn write_agent_selector<W: Write>(
     width: usize,
     styled: bool,
 ) -> Result<(), HerdrError> {
-    let mut rows = Vec::new();
-    for (index, agent) in agents.iter().enumerate() {
-        let marker = if agent.focused { "*" } else { " " };
-        let kind = agent.agent.as_deref().unwrap_or("unknown");
-        let location = tab_labels.get(&agent.tab_id).ok_or_else(|| {
-            HerdrError::Protocol(format!(
-                "agent in pane {} refers to missing tab {}",
-                agent.pane_id, agent.tab_id
-            ))
-        })?;
-        let (icon, _, _) = agent_status_style(&agent.agent_status);
-        rows.push([
-            format!(
-                "{} {marker}",
-                if index < 10 {
-                    index.to_string()
-                } else {
-                    " ".into()
-                }
-            ),
-            sanitize_cell(kind),
-            format!("{icon} {}", sanitize_cell(&agent.agent_status)),
-            sanitize_cell(location),
-            agent_description(agent),
-        ]);
-    }
+    let rows = agent_rows(agents, tab_labels)?;
+    let matches: Vec<_> = (0..rows.len()).collect();
+    let rows = crate::picker::matched_rows(&rows, &matches).rows;
     let headings =
         ["Agent", "Harness", "Status", "Tab", "Title"].map(str::to_owned);
     let widths: [usize; 4] = std::array::from_fn(|col| {
         rows.iter()
-            .map(|row| row[col].width())
+            .map(|row| row.cells[col].width())
             .chain([headings[col].width()])
             .max()
             .unwrap()
     });
-    for (row_index, row) in
-        std::iter::once(&headings).chain(rows.iter()).enumerate()
+    for (row_index, row) in std::iter::once(&headings)
+        .chain(rows.iter().map(|row| &row.cells))
+        .enumerate()
     {
         let mut remaining = width;
         for (col, text) in row.iter().enumerate() {
@@ -904,8 +882,7 @@ fn agent_rows(
 ) -> Result<Vec<crate::picker::Row>, HerdrError> {
     agents
         .iter()
-        .enumerate()
-        .map(|(index, agent)| {
+        .map(|agent| {
             let location = labels.get(&agent.tab_id).ok_or_else(|| {
                 HerdrError::Protocol(format!(
                     "agent refers to missing tab {}",
@@ -916,15 +893,7 @@ fn agent_rows(
             Ok(crate::picker::Row {
                 identity: format!("{}:{}", agent.pane_id, agent.terminal_id),
                 cells: [
-                    format!(
-                        "{} {}",
-                        if index < 10 {
-                            index.to_string()
-                        } else {
-                            " ".into()
-                        },
-                        if agent.focused { "*" } else { " " }
-                    ),
+                    String::new(),
                     sanitize_cell(agent.agent.as_deref().unwrap_or("unknown")),
                     format!("{icon} {}", sanitize_cell(&agent.agent_status)),
                     location.clone(),
