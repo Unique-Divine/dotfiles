@@ -340,13 +340,19 @@ win-sync:
   #!/usr/bin/env bash
   # The copy keeps the Windows tools working while WSL is down.
   set -Eeuo pipefail
-  for tool in cmd.exe wslpath rsync; do
+  for tool in wslpath rsync; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "win-sync: $tool is unavailable; skipping" >&2
       exit 0
     fi
   done
-  win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  cmd_exe="$(command -v cmd.exe || true)"
+  cmd_exe="${cmd_exe:-/mnt/c/Windows/System32/cmd.exe}"
+  if [[ ! -x "$cmd_exe" ]]; then
+    echo "win-sync: Windows cmd.exe is unavailable; skipping" >&2
+    exit 0
+  fi
+  win_home="$("$cmd_exe" /d /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
   if [[ -z "$win_home" || "$win_home" == "%USERPROFILE%" ]]; then
     echo "win-sync: could not read %USERPROFILE%; skipping" >&2
     exit 0
