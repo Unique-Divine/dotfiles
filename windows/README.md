@@ -4,18 +4,20 @@ Scripts that run on the Windows side of the machine. Anything that must work
 while WSL is shut down or broken lives here, as Windows PowerShell 5.1 (ships
 with every Windows 10 and 11) with no other dependencies.
 
-`just win-sync` copies this folder to `%USERPROFILE%\.files\windows`, so a
-working copy exists on C: even when WSL is down. `just sync` runs it on WSL.
+`just win-sync` copies this folder to `%USERPROFILE%\dotfiles\windows`, so a
+working copy exists on Windows even when WSL is down. Edit the files in the
+dotfiles repository. Sync keeps files staged from other branches and refuses
+to copy into a Git checkout. `just sync` runs it on WSL.
 Don't run these scripts from `\\wsl.localhost\...`: shutting WSL down would
 remove the file the script is running from.
 
 ## When WSL is down
 
-Open File Explorer, go to `%USERPROFILE%\.files\windows`, and double-click the
+Open File Explorer, go to `%USERPROFILE%\dotfiles\windows`, and double-click the
 `.cmd` file you need. Or, from any PowerShell window:
 
 ```powershell
-& "$env:USERPROFILE\.files\windows\compact-wsl.cmd"
+& "$env:USERPROFILE\dotfiles\windows\compact-wsl.cmd"
 ```
 
 ## Scripts
