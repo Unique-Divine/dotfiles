@@ -20,6 +20,7 @@ jobs:
       rust: ${{ steps.decision.outputs.rust }}
       herdr_native: ${{ steps.decision.outputs.herdr_native }}
       herdr_tmux: ${{ steps.decision.outputs.herdr_tmux }}
+      windows_setup: ${{ steps.decision.outputs.windows_setup }}
       validate: ${{ steps.decision.outputs.validate }}
       publish: ${{ steps.decision.outputs.publish }}
     steps:
@@ -43,12 +44,14 @@ jobs:
           PATHS_RUST: ${{ steps.paths.outputs.rust }}
           PATHS_HERDR_NATIVE: ${{ steps.paths.outputs.herdr_native }}
           PATHS_HERDR_TMUX: ${{ steps.paths.outputs.herdr_tmux }}
+          PATHS_WINDOWS_SETUP: ${{ steps.paths.outputs.windows_setup }}
         run: |
           set -euo pipefail
           bun=false
           rust=false
           herdr_native=false
           herdr_tmux=false
+          windows_setup=false
           publish=false
           mode="Changed paths"
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
@@ -56,6 +59,7 @@ jobs:
             rust=true
             herdr_native=true
             herdr_tmux=true
+            windows_setup=true
             mode="Manual full verification"
           elif [[ "$EVENT_NAME" == push && "$REF" == refs/tags/herdr-ud/* ]]; then
             herdr_native=true
@@ -71,6 +75,7 @@ jobs:
             rust="$PATHS_RUST"
             herdr_native="$PATHS_HERDR_NATIVE"
             herdr_tmux="$PATHS_HERDR_TMUX"
+            windows_setup="$PATHS_WINDOWS_SETUP"
           fi
           validate=false
           if [[ "$bun" == true || "$herdr_native" == true ]]; then
@@ -85,7 +90,8 @@ jobs:
             echo '| --- | --- | --- |'
           } >> "$GITHUB_STEP_SUMMARY"
           for decision in "bun=$bun" "rust=$rust" "herdr_native=$herdr_native" \
-            "herdr_tmux=$herdr_tmux" "validate=$validate" "publish=$publish"; do
+            "herdr_tmux=$herdr_tmux" "windows_setup=$windows_setup" \
+            "validate=$validate" "publish=$publish"; do
             component="${decision%%=*}"
             value="${decision#*=}"
             [[ "$value" == true || "$value" == false ]]
@@ -181,6 +187,21 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Verify package
         run: cargo package --locked
+  windows-setup:
+    name: Windows PowerShell 5.1 fixtures
+    needs: changes
+    if: needs.changes.outputs.windows_setup == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify Terminal and PowerShell profile setup
+        shell: powershell
+        run: ./windows/terminal-profile/tests/Test-Sync.ps1
+      - name: Verify Known Folder file migration
+        shell: powershell
+        run: ./windows/known-folders/tests/Test-Migration.ps1
   validate:
     needs: changes
     if: needs.changes.outputs.validate == 'true'
@@ -277,7 +298,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [changes, bun, rust-test, clippy, tmux, validate, build, prepare, publish]
+    needs: [changes, bun, rust-test, clippy, tmux, windows-setup, validate, build, prepare, publish]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -313,6 +334,7 @@ jobs:
           rust-test rust
           clippy rust
           tmux herdr_tmux
+          windows-setup windows_setup
           validate validate
           build herdr_native
           prepare herdr_native
