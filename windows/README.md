@@ -30,6 +30,9 @@ Open File Explorer, go to `%USERPROFILE%\.files\windows`, and double-click the
   MP3, that survives a mic unplug. Install with
   `just audio-capture-install`. See its README.
 - `sharex/`: ShareX dual audio capture setup. See its README.
+- `terminal-profile/`: Ubuntu-24.04 in Windows Terminal and PowerShell history,
+  completion, and editing keys. Run `terminal-profile\sync.cmd` to preview.
+  See its [README](terminal-profile/README.md).
 
 ## Conventions for agents
 
