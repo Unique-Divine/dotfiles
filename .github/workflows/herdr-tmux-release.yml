@@ -17,20 +17,24 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     defaults:
       run:
         working-directory: herdr-tmux
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           fetch-depth: ${{ github.ref_type == 'tag' && '0' || '1' }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: 1.96.1
       - name: Confirm release tag is on main
         if: github.ref_type == 'tag'
-        run: git merge-base --is-ancestor HEAD origin/main
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          git merge-base --is-ancestor HEAD origin/main
       - name: Check crate and tag versions
         id: version
         env:
@@ -45,6 +49,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Check plugin manifest version and executable paths
         run: cargo test --locked plugin::tests::manifest_versions_and_paths_match
   build:
@@ -67,10 +72,11 @@ jobs:
       run:
         working-directory: herdr-tmux
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: 1.96.1
           targets: ${{ matrix.target }}
@@ -93,7 +99,7 @@ jobs:
           tar -xzf "$archive" -C "$smoke_dir"
           test "$("$smoke_dir/herdr-tmux" --version)" = "herdr-tmux $VERSION"
           "$smoke_dir/herdr-tmux" plugin register --help >/dev/null
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: herdr-tmux-target-${{ matrix.target }}
           path: ${{ runner.temp }}/herdr-tmux-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz
@@ -104,7 +110,7 @@ jobs:
     needs: [validate, build]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: herdr-tmux-target-*
           path: release-assets
@@ -125,7 +131,7 @@ jobs:
           test "${#files[@]}" -eq "${#archives[@]}"
           sha256sum "${archives[@]}" > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: herdr-tmux-release-bundle
           path: release-assets/
@@ -134,7 +140,7 @@ jobs:
   publish:
     name: Publish verified GitHub release
     if: github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-tmux/v')
-    needs: bundle
+    needs: [validate, bundle]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -143,39 +149,72 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
+      SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+      LC_ALL: C
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: herdr-tmux-release-bundle
           path: release-assets
       - name: Attest release archives
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: release-assets/*.tar.gz
-      - name: Upload and verify draft assets
+      - name: Upload, verify, and publish draft
         working-directory: release-assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          verify_live_tag() {
+            local ref="refs/tags/$RELEASE_TAG" refs sha
+            refs="$(git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$ref" "$ref^{}")"
+            sha="$(awk -v ref="$ref" '
+              $2 == ref { direct = $1 }
+              $2 == (ref "^{}") { peeled = $1 }
+              END { print (peeled ? peeled : direct) }
+            ' <<< "$refs")"
+            if [[ "$sha" != "$SOURCE_SHA" ]]; then
+              echo "::error::Tag $RELEASE_TAG now points to $sha. The bundle was built from $SOURCE_SHA."
+              return 1
+            fi
+          }
+          find_release() {
+            gh api "repos/$GH_REPO/releases" --paginate --slurp |
+              jq -ec --arg tag "$RELEASE_TAG" '
+                [.[][] | select(.tag_name == $tag)] |
+                if length > 1 then error("Multiple releases for this tag")
+                else .[0] // {}
+                end
+              '
+          }
+
           sha256sum --check SHA256SUMS
-          releases="$(gh api "repos/$GH_REPO/releases" --paginate --slurp)"
-          exists="$(jq -r --arg tag "$RELEASE_TAG" 'any(.[][]; .tag_name == $tag)' <<< "$releases")"
-          if [[ "$exists" == "true" ]]; then
-            echo "::error::Release $RELEASE_TAG already exists. Refusing to overwrite assets."
+          release="$(find_release)"
+          if [[ "$(jq -r '.draft' <<< "$release")" == "false" ]]; then
+            echo "::error::Release $RELEASE_TAG is already published."
             exit 1
           fi
-          gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false \
-            --title "herdr-tmux ${RELEASE_TAG#herdr-tmux/v}" --notes-from-tag \
-            ./*.tar.gz SHA256SUMS
-          releases="$(gh api "repos/$GH_REPO/releases" --paginate --slurp)"
-          draft_id="$(jq -er --arg tag "$RELEASE_TAG" \
-            '.[][] | select(.tag_name == $tag and .draft) | .id' <<< "$releases")"
+          notes="$(printf 'Built from [dotfiles commit %s](https://github.com/%s/commit/%s).' \
+            "$SOURCE_SHA" "$GH_REPO" "$SOURCE_SHA")"
+          if [[ "$release" == "{}" ]]; then
+            printf '%s\n' "$notes" > "$RUNNER_TEMP/release-notes.md"
+            verify_live_tag
+            gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false \
+              --title "herdr-tmux ${RELEASE_TAG#herdr-tmux/v}" --notes-file "$RUNNER_TEMP/release-notes.md" \
+              ./*.tar.gz SHA256SUMS
+            release="$(find_release)"
+          fi
+          draft_id="$(jq -er 'select(.draft == true) | .id | numbers' <<< "$release")"
           release="$(gh api "repos/$GH_REPO/releases/$draft_id")"
+          jq -e --arg tag "$RELEASE_TAG" '.draft == true and .tag_name == $tag' <<< "$release" >/dev/null
+          if [[ "$(jq -er '.body' <<< "$release")" != "$notes" ]]; then
+            echo "::error::Draft $draft_id does not record source commit $SOURCE_SHA."
+            exit 1
+          fi
           jq -er '.assets[] | "\(.name) \(.digest)"' <<< "$release" | sort > uploaded-digests
           sha256sum -- *.tar.gz SHA256SUMS | awk '{print $2, "sha256:" $1}' | sort > expected-digests
           diff -u expected-digests uploaded-digests
-      - name: Publish the verified draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          verify_live_tag
+          gh api --method PATCH "repos/$GH_REPO/releases/$draft_id" \
+            -F draft=false -f make_latest=false --jq .html_url

@@ -29,9 +29,10 @@ git push origin herdr-tmux/v0.2.0
 The tag rebuilds the archives in the [release workflow](../.github/workflows/herdr-tmux-release.yml).
 The workflow requires the tagged commit to be on `main` and the tag,
 crate, and plugin versions to match. It signs build provenance for the
-archives, uploads a draft, compares the uploaded asset digests, and publishes
-the verified draft. The release does not replace the repository's latest
-release for other tools.
+archives and records the source commit in the release notes. It checks
+the live tag immediately before creating the draft and again after
+comparing the uploaded asset digests, just before publication. The
+release does not replace the repository's latest release for other tools.
 
 A release contains four `herdr-tmux-vX.Y.Z-<target>.tar.gz` archives, each with
 one executable named `herdr-tmux`, and a `SHA256SUMS` file.
@@ -41,15 +42,20 @@ one executable named `herdr-tmux`, and a `SHA256SUMS` file.
 - macOS Intel and Apple Silicon use targets `x86_64-apple-darwin` and
   `aarch64-apple-darwin`.
 
-If a failed run leaves a draft, inspect the draft and delete it before
-rerunning the tag workflow. The workflow refuses to overwrite existing
-releases or drafts. Publish a new version to change published assets.
+If publication fails after upload, rerun the failed job to reuse its
+release bundle. The job resumes a draft only when its tag, source note,
+asset names, and digests all match the bundle. If an interrupted upload
+leaves a partial draft, review and remove only that draft before rerunning.
+The workflow never overwrites existing assets. Publish a new version to
+change published assets.
 
 ## Verify the Published Release
 
 Follow the [prebuilt installation instructions](README.md#prebuilt-release)
 in a clean directory. Verify the checksum and GitHub attestation, then
 verify the extracted binary's version.
+To check the exact commit in the release notes as well, pass its full SHA
+to the attestation verification command's `--source-digest` option.
 
 Use a fresh named Herdr session with an isolated configuration and data
 directory. Plugin registration is shared by sessions that use the same
