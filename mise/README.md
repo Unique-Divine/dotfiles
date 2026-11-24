@@ -79,10 +79,10 @@ server key `mori-graph` in Codex and Claude. From a trusted directory, run
 Claude hook. A mise shim can fail to start in a project with an untrusted
 `mise.toml`.
 
-The 0.14.3 rollout uses `~/.cache/mori-0143/cache` and
-`~/.cache/mori-0143/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
+Mori 0.14.4 uses `~/.cache/mori-0144/cache` and
+`~/.cache/mori-0144/runtime`. Set `CBM_CACHE_DIR` and `CBM_RUNTIME_DIR`
 to those paths for CLI queries against the same graph. After checking MCP,
-hooks, and watcher links, create `~/.cache/mori-0143/accepted` to enable
+hooks, and watcher links, create `~/.cache/mori-0144/accepted` to enable
 scheduled indexing against those directories. Reindexing uses each client's
 saved targets. If `index_status` reports `stale`, rerun the link command
 with the client's saved targets.
@@ -107,12 +107,12 @@ Repeating these commands reuses the installed release. The MCP sync fills
 missing client entries from an existing registration and preserves differences
 between configured clients. It leaves existing hook commands, hook trust, and
 the graph cache in place. To check projects from an older registration, use
-its executable, cache, and runtime together. For a client already on 0.14.3,
-use the installed binary and the 0.14.3 state paths.
+its executable, cache, and runtime together. For a client on 0.14.4,
+use the installed binary and the cache and runtime paths below.
 
 ```bash
-CBM_CACHE_DIR="$HOME/.cache/mori-0143/cache" \
-  CBM_RUNTIME_DIR="$HOME/.cache/mori-0143/runtime" \
+CBM_CACHE_DIR="$HOME/.cache/mori-0144/cache" \
+  CBM_RUNTIME_DIR="$HOME/.cache/mori-0144/runtime" \
   "$mori_bin" cli list_projects --format json
 ```
 
