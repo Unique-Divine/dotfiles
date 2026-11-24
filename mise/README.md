@@ -1,8 +1,8 @@
 # mise: pinned CLI tools
 
 `config.toml` pins CLI tools that install from upstream release binaries, and
-`mise.lock` records each version's download URL and checksum for
-linux-arm64, linux-x64 and macos-arm64. `just sync` links this directory to
+`mise.lock` records the download URL and checksum for each pinned version and
+platform. `just sync` links this directory to
 `~/.config/mise` and runs `just mise-install`.
 
 `just mise-install` installs a pinned mise to `~/.local/bin/mise` if it is
@@ -49,6 +49,25 @@ just mise-install
 
 Check the backend first with `mise tool <name>`. Prefer `aqua:` backends,
 which verify checksums; avoid `asdf:` plugins, which run shell scripts.
+
+## Herdr Tmux
+
+The GitHub backend installs the `herdr-tmux` executable from dotfiles
+releases tagged `herdr-tmux/v*`. The lockfile pins the archive checksums for
+Linux and macOS on both x86-64 and Arm64. If a standalone `herdr-tmux` binary
+occupies `~/.local/bin/herdr-tmux`, move it aside before running
+`just mise-install` so the recipe can link the mise shim.
+
+Inspect the installed executable and version with these commands.
+
+```bash
+herdr_tmux_bin="$(mise which herdr-tmux --tool github:Unique-Divine/dotfiles)"
+"$herdr_tmux_bin" --version
+```
+
+Herdr launches the executable recorded in its plugin manifest. Run recipe
+`just herdr-tmux-register` after installing a new pin to refresh the manifest.
+[Herdr registration and migration](../herdr-cfg/README.md#install-or-update-the-plugin)
 
 ## Mori
 

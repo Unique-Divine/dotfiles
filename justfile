@@ -239,14 +239,7 @@ sync:
   else
     runlog_event step name=herdr-install msg=skipped
   fi
-  if ! command -v herdr-tmux >/dev/null 2>&1; then
-    runlog_step herdr-tmux-install \
-      just --justfile herdr-tmux/justfile install
-  else
-    runlog_event step name=herdr-tmux-install msg=skipped
-  fi
-  runlog_step herdr-tmux-plugin-link \
-    just --justfile herdr-tmux/justfile plugin-link
+  runlog_step herdr-tmux-register just herdr-tmux-register
   runlog_step i-zinit just i-zinit
   runlog_step gh-rev-install just gh-rev-install
   if is_wsl >/dev/null; then
@@ -299,6 +292,27 @@ mise-install:
   "$mise_bin" install --locked
   # Link shims into ~/.local/bin for bash, sh, and agents with an older PATH.
   bun mise/links.ts --run
+
+# Register the pinned Herdr plugin binary with Herdr.
+herdr-tmux-register:
+  #!/usr/bin/env bash
+  set -Eeuo pipefail
+  plugin_id=unique-divine.herdr-tmux
+  plugin_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+  managed_root="${plugin_data%/}/herdr-tmux/plugin"
+  existing=$("${HERDR_BIN_PATH:-herdr}" plugin list --plugin "$plugin_id" \
+    --json | jq -ce '.result.plugins | arrays')
+  if jq -e --arg root "$managed_root" '
+    length == 0 or (length == 1 and
+      (.[0] | .plugin_root == $root and .source.kind == "local" and
+        .enabled == true))
+  ' <<<"$existing" >/dev/null; then
+    herdr_tmux=$("$HOME/.local/bin/mise" which herdr-tmux \
+      --tool github:Unique-Divine/dotfiles)
+    "$herdr_tmux" plugin register
+  else
+    printf '%s\n' "Keeping the existing $plugin_id registration."
+  fi
 
 # Test interrupted and repeated Mori recovery in a temporary home.
 mori-recovery-smoke:

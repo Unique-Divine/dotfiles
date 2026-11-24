@@ -102,6 +102,7 @@ async function isExecutableFile(path: string): Promise<boolean> {
 /** Describe how to restore a plugin's missing executables. */
 export function repairHint(
   plugin: HerdrPlugin, host: HerdrPlatform = herdrPlatform(),
+  env: Environment = process.env,
 ): string {
   const quote = (value: string): string =>
     /^[\w./=-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`
@@ -111,6 +112,12 @@ export function repairHint(
     return `cd ${quote(plugin.plugin_root)} && ${build.join(" && ")}`
   }
   if (plugin.source?.kind === "local") {
+    const dataDir = env.XDG_DATA_HOME ||
+      (env.HOME ? join(env.HOME, ".local/share") : undefined)
+    if (plugin.plugin_id === "unique-divine.herdr-tmux" && dataDir &&
+        plugin.plugin_root === join(dataDir, "herdr-tmux/plugin")) {
+      return "just mise-install && just herdr-tmux-register"
+    }
     return `rebuild the plugin in ${plugin.plugin_root}`
   }
   return `herdr plugin uninstall ${plugin.plugin_id}, then reinstall it`
@@ -155,7 +162,7 @@ export async function findMissingExecutables(
       if (resolved && await isExecutableFile(resolved)) continue
       missing.push({
         pluginId: plugin.plugin_id, kind, entryId,
-        executable: resolved ?? program, repair: repairHint(plugin, host),
+        executable: resolved ?? program, repair: repairHint(plugin, host, env),
       })
     }
   }

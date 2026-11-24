@@ -171,6 +171,15 @@ describe("findMissingExecutables", () => {
 })
 
 describe("repairHint and formatProblems", () => {
+  test("reinstall a missing binary from the pinned herdr-tmux release", () => {
+    const root = "/data/herdr-tmux/plugin"
+    const generated = plugin(root, { build: [] })
+    expect(repairHint(generated, "linux", { XDG_DATA_HOME: "/data" }))
+      .toBe("just mise-install && just herdr-tmux-register")
+    expect(repairHint(generated, "linux", { XDG_DATA_HOME: "/other" }))
+      .toBe(`rebuild the plugin in ${root}`)
+  })
+
   test("local plugins repair with their manifest build commands", () => {
     expect(repairHint(plugin("/dot files/herdr-tmux"))).toBe(
       "cd '/dot files/herdr-tmux' && " +
