@@ -154,6 +154,10 @@ if ! bun run mcp/sync.ts --check; then
   failed=1
 fi
 
+if ! bun run mcp/discord.ts; then
+  failed=1
+fi
+
 if ! bun run claude/config.ts --check; then
   failed=1
 fi

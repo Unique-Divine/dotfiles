@@ -107,6 +107,7 @@ export const writeCursorFile = async (
   before: CursorMcpFile,
   plan: McpPlan,
   codexServers: McpServers,
+  saveBackup = true,
 ): Promise<string | undefined> => {
   const latest = await readCursorMcpFile(path)
 
@@ -116,7 +117,7 @@ export const writeCursorFile = async (
 
   let backup: string | undefined
 
-  if (before.text &&
+  if (saveBackup && before.text &&
     entriesNeedingBackup(plan, before.servers, codexServers).length > 0) {
     // The old file can hold tokens, so the backup is private too.
     backup = `${path}.before-dotfiles-${Date.now()}`

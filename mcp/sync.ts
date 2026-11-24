@@ -4,11 +4,17 @@ import { Command } from "commander"
 import { parse, type TomlTable } from "smol-toml"
 
 import { serialize } from "../codex/config.ts"
+import { assertClaudeStopped } from "../claude/config.ts"
 import {
   applyClaudePlan, backupReplacedEntries, claudeConfigPath,
   readClaudeUserMcpServers,
 } from "../claude/mcp.ts"
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
+import {
+  discordClientTokens, discordDefinition, discordPaths, discordServer,
+  discordToken, lockDiscord, prepareDiscordCredential, rewriteDiscordToml,
+  startDiscord, stopDiscord, writeDiscordClaude, type DiscordMode,
+} from "./discord.ts"
 import {
   applyJiyuuPins, isLegacyJiyuuLaunch, jiyuuCheckoutDir, jiyuuMcpPins,
   localEnvVar, parseLocalNames, type JiyuuMcpPin,
@@ -36,6 +42,7 @@ export const planUnion = (
   definitions: Inventory,
   ctx: LauncherContext,
   from?: Platform,
+  selected?: string[],
 ): UnionPlan => {
   const codex: McpServers = { ...raw.codex } as McpServers
   const targets = {
@@ -43,7 +50,8 @@ export const planUnion = (
     cursor: { add: [], update: [], remove: [], skip: [] } as McpPlan,
   }
   const warnings: string[] = []
-  const names = [...new Set(platforms.flatMap(p => Object.keys(raw[p])))].sort()
+  const names = selected ??
+    [...new Set(platforms.flatMap(p => Object.keys(raw[p])))].sort()
   for (const name of names) {
     const available = platforms.filter(p => isRecord(definitions[p][name]))
     if (isRecord(raw.codex[name]) && raw.codex[name].enabled === false) {
@@ -387,8 +395,9 @@ export const createProgram = (): Command => new Command()
   .option("--launcher-path <file>", "stable launcher script for exported servers")
   .option("--export", "print Codex MCP servers as JSON on stdout")
   .option("--import <file>", "merge servers from an --export file, or - for stdin")
-  .option("--servers <names>", "comma-separated servers for --export or --import")
+  .option("--servers <names>", "comma-separated servers for --export, --import, or --from")
   .option("--overwrite", "with --import, replace servers that differ")
+  .option("--discord-mode <mode>", "switch Discord MCP to shared or stdio")
   .action(async options => {
     if (options.from && !platforms.includes(options.from)) throw new Error("Invalid --from platform")
     const exclusive = ["export", "import", "check", "from"].filter(key => options[key] !== undefined)
@@ -398,12 +407,20 @@ export const createProgram = (): Command => new Command()
     if (options.export && (options.run || options.dryRun)) {
       throw new Error("--export writes nothing; drop --run and --dry-run")
     }
-    if ((options.servers !== undefined || options.overwrite) &&
+    if (options.servers !== undefined && !options.from &&
       !options.export && options.import === undefined) {
-      throw new Error("--servers and --overwrite need --export or --import")
+      throw new Error("--servers needs --export, --import, or --from")
     }
-    if (options.overwrite && options.export) throw new Error("--overwrite needs --import")
+    if (options.overwrite && options.import === undefined) throw new Error("--overwrite needs --import")
     const serverNames = parseServerNames(options.servers)
+    const scoped = options.from ? serverNames : undefined
+    const mode: DiscordMode | undefined = options.discordMode
+    if (mode !== undefined && (
+      (mode !== "shared" && mode !== "stdio") || options.from !== "codex" ||
+      scoped?.length !== 1 || scoped[0] !== discordServer || options.check
+    )) {
+      throw new Error("--discord-mode needs shared or stdio and --from codex --servers discord-mcp")
+    }
     const paths: Record<Platform, string> = {
       codex: resolve(options.codexConfig), claude: resolve(options.claudeConfig),
       cursor: resolve(options.cursorConfig),
@@ -443,6 +460,16 @@ export const createProgram = (): Command => new Command()
     // Jiyuu pins rewrite Codex launch commands before the union, so Claude
     // and Cursor launchers, which read Codex, run the pinned releases too.
     const original = raw.codex
+    const discord = mode === undefined ? undefined : await discordPaths()
+    const sourceToken = discord ? discordToken(original[discordServer]) : undefined
+    const clientTokens = discord ? discordClientTokens(raw, paths.codex) : []
+    if (mode && discord) {
+      raw.codex = {
+        ...raw.codex,
+        [discordServer]: discordDefinition(original[discordServer], mode, discord.launcher),
+      }
+      console.log(`Discord MCP mode: ${mode}`)
+    }
     if (imported) {
       const merged = mergeImport(original, imported, options.overwrite)
       for (const line of merged.lines) console.log(line)
@@ -452,23 +479,47 @@ export const createProgram = (): Command => new Command()
       }
       raw.codex = merged.servers
     }
+    const pins = scoped
+      ? Object.fromEntries(Object.entries(jiyuuMcpPins).filter(([name]) => scoped.includes(name)))
+      : jiyuuMcpPins
     const pinOptions = {
       local: parseLocalNames(process.env[localEnvVar]),
       jiyuuDir: jiyuuCheckoutDir(process.env),
+      pins,
     }
     const pinned = applyJiyuuPins(raw.codex, pinOptions)
     raw.codex = pinned.servers
     for (const warning of pinned.warnings) console.log(`! warning ${warning}`)
     for (const change of pinned.changes) console.log(change)
-    const { definitions, warnings } = await resolveDefinitions(raw, paths.codex)
+    const inputs = scoped ? {
+      codex: raw.codex,
+      claude: Object.fromEntries(Object.entries(raw.claude).filter(([name]) => scoped.includes(name))),
+      cursor: Object.fromEntries(Object.entries(raw.cursor).filter(([name]) => scoped.includes(name))),
+    } : raw
+    const { definitions, warnings } = await resolveDefinitions(inputs, paths.codex)
+    if (scoped) selectServers(definitions[options.from as Platform], scoped)
+    if (discord && (["claude", "cursor"] as const).some(target =>
+      raw[target][discordServer] !== undefined && definitions[target][discordServer] === undefined
+    )) {
+      throw new Error("Review the unsupported Discord MCP client entry before switching")
+    }
     const ctx = defaultLauncherContext(paths.codex)
     if (options.launcherPath) ctx.launcherPath = resolve(options.launcherPath)
-    const plan = planUnion(raw, definitions, ctx, options.from)
+    const plan = planUnion(raw, definitions, ctx, options.from, scoped)
     // A directional source can carry an old launch command; pins still win.
     plan.codex = applyJiyuuPins(plan.codex, pinOptions).servers as McpServers
-    const migrated = migrateDirectPins(plan, raw, definitions, ctx)
+    const migrated = migrateDirectPins(plan, raw, definitions, ctx, pins)
     for (const warning of [...warnings, ...plan.warnings, ...migrated]) console.log(`! warning ${warning}`)
     const codexChanged = !sameEntry(original, plan.codex)
+    const nextCodex = { ...config, mcp_servers: plan.codex as TomlTable }
+    const codexText = codexChanged
+      ? discord
+        ? rewriteDiscordToml(before.codex, nextCodex, plan.codex[discordServer]!, sourceToken)
+        : serialize(nextCodex)
+      : undefined
+    const discordClaude = discord
+      ? (plan.targets.claude.add[0] ?? plan.targets.claude.update[0])?.entry
+      : undefined
     if (codexChanged) console.log("~ update codex MCP definitions")
     for (const target of ["claude", "cursor"] as const) {
       for (const line of describePlan(plan.targets[target], target)) console.log(`${target}: ${line}`)
@@ -491,38 +542,60 @@ export const createProgram = (): Command => new Command()
     const assertUnchanged = async (p: Platform) => {
       if (await readText(paths[p]) !== before[p]) throw new Error(`${p} config changed during sync; rerun it`)
     }
-    for (const p of platforms) await assertUnchanged(p)
-    if (codexChanged) {
-      const next = serialize({ ...config, mcp_servers: plan.codex as TomlTable })
-      // The rewrite drops comments and formatting, so keep the original.
-      if (before.codex && next !== before.codex) {
-        const backup = `${paths.codex}.before-mcp-sync-${Date.now()}`
-        await writePrivateFile(backup, before.codex)
-        console.log(`Saved previous Codex config to ${backup}`)
-        if (hasTomlComments(before.codex)) {
-          console.log(`! warning codex: comments in ${paths.codex} were not ` +
-            `preserved; they remain in ${backup}`)
-        }
+    const assertDiscordClaudeStopped = () => assertClaudeStopped(
+      `Claude is running. Exit Claude sessions and rerun just discord-mcp ${mode} --run.`,
+    )
+    if (discordClaude) await assertDiscordClaudeStopped()
+    const unlock = discord ? await lockDiscord(discord) : undefined
+    try {
+      for (const p of platforms) await assertUnchanged(p)
+      if (discord) {
+        await prepareDiscordCredential(discord, sourceToken, clientTokens)
+        if (mode === "shared") await startDiscord()
+        for (const p of platforms) await assertUnchanged(p)
       }
-      await writePrivateFile(paths.codex, next)
-    }
-    if (hasChanges(plan.targets.cursor)) {
-      await assertUnchanged("cursor")
-      const backup = await writeCursorFile(paths.cursor, cursor, plan.targets.cursor, plan.codex)
-      if (backup) console.log(`Saved previous Cursor file to ${backup}`)
-    }
-    if (hasChanges(plan.targets.claude)) {
-      await assertUnchanged("claude")
-      const backup = await backupReplacedEntries(plan.targets.claude, raw.claude, plan.codex, paths.claude, resolve(paths.claude, "../mcp-sync-state.json"))
-      if (backup) console.log(`Saved previous Claude entries to ${backup}`)
-      await applyClaudePlan(plan.targets.claude, raw.claude, "claude",
-        async (name, expected) => {
-          const latest = await readClaudeUserMcpServers(paths.claude)
-          if (expected === undefined ? latest[name] !== undefined :
-            !isRecord(expected) || !sameEntry(latest[name], expected)) {
-            throw new Error(`claude/${name} changed during sync; rerun it`)
+      if (codexText !== undefined) {
+        // Discord mode changes have a vault-backed fallback. A copy of the
+        // previous config could retain the credential we just migrated.
+        if (!discord && before.codex && codexText !== before.codex) {
+          const backup = `${paths.codex}.before-mcp-sync-${Date.now()}`
+          await writePrivateFile(backup, before.codex)
+          console.log(`Saved previous Codex config to ${backup}`)
+          if (hasTomlComments(before.codex)) {
+            console.log(`! warning codex: comments in ${paths.codex} were not ` +
+              `preserved; they remain in ${backup}`)
           }
-        })
+        }
+        await writePrivateFile(paths.codex, codexText, discord
+          ? () => assertUnchanged("codex") : undefined)
+      }
+      if (hasChanges(plan.targets.cursor)) {
+        await assertUnchanged("cursor")
+        const backup = await writeCursorFile(paths.cursor, cursor, plan.targets.cursor, plan.codex, !discord)
+        if (backup) console.log(`Saved previous Cursor file to ${backup}`)
+      }
+      if (discordClaude) {
+        await assertDiscordClaudeStopped()
+        await writeDiscordClaude(paths.claude, before.claude, discordClaude)
+      } else if (hasChanges(plan.targets.claude)) {
+        await assertUnchanged("claude")
+        const backup = await backupReplacedEntries(
+          plan.targets.claude, raw.claude, plan.codex, paths.claude,
+          resolve(paths.claude, "../mcp-sync-state.json"),
+        )
+        if (backup) console.log(`Saved previous Claude entries to ${backup}`)
+        await applyClaudePlan(plan.targets.claude, raw.claude, "claude",
+          async (name, expected) => {
+            const latest = await readClaudeUserMcpServers(paths.claude)
+            if (expected === undefined ? latest[name] !== undefined :
+              !isRecord(expected) || !sameEntry(latest[name], expected)) {
+              throw new Error(`claude/${name} changed during sync; rerun it`)
+            }
+          })
+      }
+      if (mode === "stdio") await stopDiscord()
+    } finally {
+      await unlock?.()
     }
   })
 

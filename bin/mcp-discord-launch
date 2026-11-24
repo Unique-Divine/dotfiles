@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+set +x
+
+case "${1:-}" in
+  shared) args=(--transport http --shared --host 127.0.0.1 --port 8123) ;;
+  stdio) args=(--transport stdio) ;;
+  *) echo 'Usage: mcp-discord-launch shared|stdio' >&2; exit 2 ;;
+esac
+
+boku_home="${BOKU_HOME:-$HOME/.boku}"
+if [[ -f "$HOME/.config/mcp-discord/boku-home" ]]; then
+  IFS= read -r boku_home < "$HOME/.config/mcp-discord/boku-home"
+fi
+repo_bin="$(dirname "$(readlink -f "$0")")"
+IFS= read -r version < "$repo_bin/../mcp/discord-pin.txt"
+
+unset DISCORD_TOKEN
+DISCORD_TOKEN="$("$HOME/.local/bin/local-secret-store" \
+  --store "$boku_home/discord-mcp/secrets" get discord-token)"
+if [[ -z "$DISCORD_TOKEN" || "$DISCORD_TOKEN" = *[[:space:]]* ]]; then
+  echo 'mcp-discord-launch: encrypted Discord token is invalid' >&2
+  exit 1
+fi
+export DISCORD_TOKEN
+
+cd /
+exec "$HOME/.bun/bin/bun" --no-env-file x --bun \
+  "@uniquedivine/mcp-discord@$version" "${args[@]}"

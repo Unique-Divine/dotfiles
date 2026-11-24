@@ -544,6 +544,10 @@ mcp-sync *ARGS:
 mcp-ingest FROM="claude" *ARGS="":
   just mcp-sync --from "{{FROM}}" --run {{ARGS}}
 
+# Migrate Discord MCP to shared or stdio mode. Add --run to apply.
+discord-mcp MODE *ARGS:
+  just mcp-sync --from codex --servers discord-mcp --discord-mode "{{MODE}}" {{ARGS}}
+
 # Manage Claude configuration or MCPs, e.g. just claude config --check.
 claude TOOL *ARGS:
   bun run claude/{{TOOL}}.ts {{ARGS}}
