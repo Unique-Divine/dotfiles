@@ -113,8 +113,9 @@ The tmux layout bindings are available in Herdr too:
 
 The layout commands preserve existing pane processes and scrollback. Both
 pickers support search with `/` and cancel with Escape from navigation mode.
-They validate the selected pane or agent before focusing it. Build and link
-the `herdr-tmux` plugin from its sibling source directory:
+They validate the selected pane or agent before focusing it. For daily use,
+see the [prebuilt release instructions](../herdr-tmux/README.md#prebuilt-release).
+To build and link the development checkout instead, run these commands:
 
 ```bash
 cd "$DOTFILES/herdr-tmux"
