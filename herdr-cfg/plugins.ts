@@ -116,7 +116,14 @@ export function repairHint(
       (env.HOME ? join(env.HOME, ".local/share") : undefined)
     if (plugin.plugin_id === "unique-divine.herdr-tmux" && dataDir &&
         plugin.plugin_root === join(dataDir, "herdr-tmux/plugin")) {
-      return "just mise-install && just herdr-tmux-register"
+      const miseDir = env.MISE_DATA_DIR || join(dataDir, "mise")
+      const installRoot = join(miseDir, "installs/github-unique-divine-dotfiles")
+      const entries = [...(plugin.actions ?? []), ...(plugin.panes ?? [])]
+      if (entries.length > 0 && entries.every(({ command: [executable] }) =>
+        executable?.startsWith(installRoot + "/"))) {
+        return "just mise-install && just herdr-tmux-register"
+      }
+      return "restore the herdr-tmux binary used by this registration"
     }
     return `rebuild the plugin in ${plugin.plugin_root}`
   }

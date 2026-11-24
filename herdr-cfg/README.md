@@ -111,10 +111,12 @@ just herdr-tmux-register
 See the [prebuilt release instructions](../herdr-tmux/README.md#prebuilt-release)
 for installation without a dotfiles checkout.
 
-Recipe `herdr-tmux-register` keeps existing source, GitHub, and disabled
-registrations. To move an enabled source registration to the prebuilt
-release, install the pinned release first. From a running Herdr session,
-check the binary version, unlink the source, and register the release.
+Recipe `herdr-tmux-register` creates a fresh registration or refreshes an
+enabled registration whose commands already use the mise release. Source,
+Cargo, manually installed, GitHub, and disabled registrations need an
+explicit switch. To move an enabled local registration to mise, install
+the pinned release first. From a running Herdr session, check the binary
+version, unlink the existing registration, and register the release.
 
 ```bash
 herdr_tmux_bin="$(mise which herdr-tmux --tool github:Unique-Divine/dotfiles)" &&

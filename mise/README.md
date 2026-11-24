@@ -55,8 +55,10 @@ which verify checksums; avoid `asdf:` plugins, which run shell scripts.
 The GitHub backend installs the `herdr-tmux` executable from dotfiles
 releases tagged `herdr-tmux/v*`. The lockfile pins the archive checksums for
 Linux and macOS on both x86-64 and Arm64. If a standalone `herdr-tmux` binary
-occupies `~/.local/bin/herdr-tmux`, move it aside before running
-`just mise-install` so the recipe can link the mise shim.
+occupies `~/.local/bin/herdr-tmux`, `just mise-install` keeps it and reports
+that it still occupies the shim path. To use the pinned CLI in every shell,
+move the standalone binary aside and rerun `just mise-install` to link the
+mise shim. The health check reports the conflict until you move the file.
 
 Inspect the installed executable and version with these commands.
 

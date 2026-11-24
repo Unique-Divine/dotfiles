@@ -173,11 +173,25 @@ describe("findMissingExecutables", () => {
 describe("repairHint and formatProblems", () => {
   test("reinstall a missing binary from the pinned herdr-tmux release", () => {
     const root = "/data/herdr-tmux/plugin"
-    const generated = plugin(root, { build: [] })
+    const executable = "/data/mise/installs/github-unique-divine-dotfiles/" +
+      "0.2.0/herdr-tmux"
+    const generated = plugin(root, {
+      build: [],
+      actions: [{ id: "focus-agent", command: [executable] }],
+      panes: [{ id: "agent-picker", command: [executable] }],
+    })
     expect(repairHint(generated, "linux", { XDG_DATA_HOME: "/data" }))
       .toBe("just mise-install && just herdr-tmux-register")
     expect(repairHint(generated, "linux", { XDG_DATA_HOME: "/other" }))
       .toBe(`rebuild the plugin in ${root}`)
+
+    const manual = plugin(root, {
+      build: [],
+      actions: [{ id: "focus-agent", command: ["/home/u/.cargo/bin/herdr-tmux"] }],
+      panes: [],
+    })
+    expect(repairHint(manual, "linux", { XDG_DATA_HOME: "/data" }))
+      .toBe("restore the herdr-tmux binary used by this registration")
   })
 
   test("local plugins repair with their manifest build commands", () => {

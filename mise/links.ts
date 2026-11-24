@@ -27,6 +27,7 @@ export type Entry =
   | { kind: "missing" }
   | { kind: "link"; target: string }
   | { kind: "file" }
+  | { kind: "other" }
 
 export interface LinkPlan {
   /** Shim names to link (missing, or a stale link into the shims dir). */
@@ -78,7 +79,7 @@ async function readEntry(path: string): Promise<Entry> {
   try {
     const stats = await lstat(path)
     if (stats.isSymbolicLink()) return { kind: "link", target: await readlink(path) }
-    return { kind: "file" }
+    return { kind: stats.isFile() ? "file" : "other" }
   } catch {
     return { kind: "missing" }
   }
@@ -106,7 +107,16 @@ export async function reconcileLinks(
   }
   const plan = planLinks(shimDir, shims, existing)
 
+  let blockingConflicts = 0
   for (const name of plan.conflicts) {
+    if (name === "herdr-tmux" && existing.get(name)?.kind === "file") {
+      console.error(
+        `mise: keeping the standalone ${join(binDir, name)}. Move it aside ` +
+          "and run `just mise-install` to use the pinned CLI in every shell.",
+      )
+      continue
+    }
+    blockingConflicts += 1
     console.error(
       `mise: ${join(binDir, name)} is not a mise shim link; remove it so ` +
         `\`${name}\` resolves to the pinned version in every shell`,
@@ -132,7 +142,7 @@ export async function reconcileLinks(
         `links in ${binDir}`,
     )
   }
-  return plan.conflicts.length > 0 ? 1 : 0
+  return blockingConflicts > 0 ? 1 : 0
 }
 
 if (import.meta.main) {

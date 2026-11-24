@@ -299,6 +299,14 @@ herdr-tmux-register:
   set -Eeuo pipefail
   plugin_id=unique-divine.herdr-tmux
   plugin_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+  if [[ "$plugin_data" != /* ]]; then
+    printf '%s\n' 'Herdr plugin data directory must be absolute.' >&2
+    exit 1
+  fi
+  # Herdr records canonical manifest paths in the registry.
+  if [[ -d "$plugin_data" ]]; then
+    plugin_data="$(cd -P -- "$plugin_data" && pwd -P)"
+  fi
   managed_root="${plugin_data%/}/herdr-tmux/plugin"
   existing=$("${HERDR_BIN_PATH:-herdr}" plugin list --plugin "$plugin_id" \
     --json | jq -ce '.result.plugins | arrays')
@@ -309,10 +317,20 @@ herdr-tmux-register:
   ' <<<"$existing" >/dev/null; then
     herdr_tmux=$("$HOME/.local/bin/mise" which herdr-tmux \
       --tool github:Unique-Divine/dotfiles)
-    "$herdr_tmux" plugin register
-  else
-    printf '%s\n' "Keeping the existing $plugin_id registration."
+    install_dir="$(dirname "$(dirname "$herdr_tmux")")"
+    install_root="$(cd -P -- "$install_dir" && pwd -P)/"
+    if jq -e --arg root "$install_root" '
+      length == 0 or (.[0]
+        | [(.actions // [])[], (.panes // [])[] | .command[0]]
+        | length > 0 and all(.[];
+          type == "string" and startswith($root) and
+          (ltrimstr($root) | test("^[^./][^/]*/herdr-tmux$"))))
+    ' <<<"$existing" >/dev/null; then
+      XDG_DATA_HOME="$plugin_data" "$herdr_tmux" plugin register
+      exit 0
+    fi
   fi
+  printf '%s\n' "Keeping the existing $plugin_id registration."
 
 # Test interrupted and repeated Mori recovery in a temporary home.
 mori-recovery-smoke:
