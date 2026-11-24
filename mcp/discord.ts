@@ -1,8 +1,10 @@
 import { access, mkdir } from "node:fs/promises"
 import { constants } from "node:fs"
-import { dirname, isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+import { parse, stringify, type TomlTable } from "smol-toml"
 
-import { writePrivateFile } from "./plan.ts"
+import { readJsonObject } from "../claude/config.ts"
+import { sameEntry, writePrivateFile } from "./plan.ts"
 import {
   classifyServer, codexConfigPath, isLauncherEntry, isRecord,
   readCodexMcpServers, transportFields, type McpServer,
@@ -94,11 +96,20 @@ export const discordDefinition = (
 }
 
 /** Legacy direct entries may hold a copy of the Codex token. */
-export const discordClientTokens = (raw: Inventory): string[] => {
+export const discordClientTokens = (raw: Inventory, codexPath: string): string[] => {
   const tokens: string[] = []
   for (const target of ["claude", "cursor"] as const) {
     const entry = raw[target][discordServer]
-    if (entry === undefined || isLauncherEntry(entry)) continue
+    if (entry === undefined) continue
+    if (isLauncherEntry(entry) && isRecord(entry) && Array.isArray(entry.args)) {
+      const [, flag, source, name] = entry.args
+      if (entry.args.length !== 4 || flag !== "--source" ||
+        typeof source !== "string" || !isAbsolute(source) ||
+        resolve(source) !== resolve(codexPath) || name !== discordServer) {
+        throw new Error(`The ${target} Discord MCP launcher uses a different source or server`)
+      }
+      continue
+    }
     if (!isRecord(entry) ||
       (classifyServer(entry) !== "stdio" && entry.url !== discordUrl)) {
       throw new Error(`Review the independent ${target} Discord MCP entry before switching`)
@@ -108,6 +119,73 @@ export const discordClientTokens = (raw: Inventory): string[] => {
     if (token !== undefined) tokens.push(token)
   }
   return tokens
+}
+
+/** Replace Discord's explicit table and descendants without reserializing TOML. */
+export const rewriteDiscordToml = (
+  before: string,
+  expected: TomlTable,
+  entry: McpServer,
+  sourceToken: string | undefined,
+): string => {
+  const tables = [...before.matchAll(/^[\t ]*\[.*\][\t ]*(?:#.*)?\r?$/gm)]
+    .flatMap(({ 0: line, index }) => {
+      try {
+        const { mcp_servers } = parse(line.trimEnd())
+        return [{ index, discord: isRecord(mcp_servers) && Object.hasOwn(mcp_servers, discordServer) }]
+      } catch {
+        return []
+      }
+    })
+  const newline = before.includes("\r\n") ? "\r\n" : "\n"
+  const table = stringify({ mcp_servers: { [discordServer]: entry } } as TomlTable)
+    .replace(/\n/g, newline)
+  let next = ""
+  let start = 0
+  let written = false
+  for (const [position, header] of tables.entries()) {
+    if (!header.discord) continue
+    const end = tables[position + 1]?.index ?? before.length
+    const previousTable = before.slice(header.index, end).split(/(?<=\n)/)
+    const trailing: string[] = []
+    while (previousTable.length &&
+      /^[\t ]*(?:#[^\r\n]*)?(?:\r?\n)?$/.test(previousTable.at(-1)!)) {
+      trailing.unshift(previousTable.pop()!)
+    }
+    next += before.slice(start, header.index) + (written ? "" : table) + trailing.join("")
+    start = end
+    written = true
+  }
+  next += before.slice(start)
+  if (!written) next += (next && !next.endsWith("\n") ? newline : "") + table
+  let matching = false
+  try { matching = sameEntry(parse(next), expected) }
+  catch { /* Parser diagnostics can include credentials. */ }
+  if (!matching) {
+    throw new Error("Move the Discord MCP entry to its own TOML table before switching; no configuration written")
+  }
+  if (sourceToken && next.includes(sourceToken)) {
+    throw new Error("The Codex config has another copy of DISCORD_TOKEN; remove it before switching")
+  }
+  return next
+}
+
+/** Atomically update only the user-scope Discord entry without Claude CLI backups. */
+export const writeDiscordClaude = async (
+  path: string,
+  before: string,
+  entry: McpServer,
+): Promise<void> => {
+  const verify = async () => {
+    const current = await readJsonObject(path)
+    if (current.text !== before) throw new Error("Claude state changed during Discord migration; rerun it")
+    return current
+  }
+  const { config } = await verify()
+  const mcpServers = config.mcpServers ?? {}
+  if (!isRecord(mcpServers)) throw new Error("Claude mcpServers must be an object")
+  const next = { ...config, mcpServers: { ...mcpServers, [discordServer]: entry } }
+  await writePrivateFile(path, `${JSON.stringify(next, null, 2)}\n`, async () => { await verify() })
 }
 
 const readToken = async (paths: DiscordPaths): Promise<string | undefined> => {
@@ -195,17 +273,37 @@ const systemctl = async (...args: string[]): Promise<boolean> => {
   return await child.exited === 0
 }
 
+const invocationId = async (): Promise<string | undefined> => {
+  const child = Bun.spawn([
+    "systemctl", "--user", "show", "-p", "InvocationID", "--value", unit,
+  ], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })
+  const [status, output] = await Promise.all([
+    child.exited, new Response(child.stdout).text(),
+  ])
+  const value = output.trim()
+  if (status === 0 && /^[0-9a-f]{32}$/.test(value) && /[1-9a-f]/.test(value)) return value
+  return undefined
+}
+
 const healthy = async (): Promise<boolean> => {
   if (!await systemctl("is-active", "--quiet", unit)) return false
+  const expectedInvocation = await invocationId()
+  if (!expectedInvocation) return false
+  let response: Response
   try {
-    const res = await fetch(healthUrl, {
+    response = await fetch(healthUrl, {
       redirect: "error", signal: AbortSignal.timeout(1_000),
     })
-    await res.body?.cancel()
-    return res.status === 200
+    await response.body?.cancel()
   } catch {
     return false
   }
+  if (response.status !== 200) return false
+  if (response.headers.get("X-Discord-MCP-Invocation-ID") !== expectedInvocation) {
+    throw new Error(`Discord MCP returned readiness from a different invocation at ${healthUrl}`)
+  }
+  return await invocationId() === expectedInvocation &&
+    await systemctl("is-active", "--quiet", unit)
 }
 
 export const startDiscord = async (): Promise<void> => {

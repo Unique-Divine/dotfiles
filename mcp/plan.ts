@@ -197,6 +197,7 @@ export const withManagedNames = (
 export const writePrivateFile = async (
   path: string,
   text: string,
+  beforeRename?: () => Promise<void>,
 ): Promise<boolean> => {
   const file = Bun.file(path)
 
@@ -209,6 +210,7 @@ export const writePrivateFile = async (
 
   try {
     await writeFile(temporary, text, { mode: 0o600, flag: "wx" })
+    await beforeRename?.()
     await rename(temporary, path)
   } finally {
     await rm(temporary, { force: true })

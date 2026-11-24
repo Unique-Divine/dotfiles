@@ -4,6 +4,7 @@ import { Command } from "commander"
 import { parse, type TomlTable } from "smol-toml"
 
 import { serialize } from "../codex/config.ts"
+import { assertClaudeStopped } from "../claude/config.ts"
 import {
   applyClaudePlan, backupReplacedEntries, claudeConfigPath,
   readClaudeUserMcpServers,
@@ -11,8 +12,8 @@ import {
 import { cursorMcpConfigPath, readCursorMcpFile, writeCursorFile } from "../cursor/mcp.ts"
 import {
   discordClientTokens, discordDefinition, discordPaths, discordServer,
-  discordToken, lockDiscord, prepareDiscordCredential, startDiscord, stopDiscord,
-  type DiscordMode,
+  discordToken, lockDiscord, prepareDiscordCredential, rewriteDiscordToml,
+  startDiscord, stopDiscord, writeDiscordClaude, type DiscordMode,
 } from "./discord.ts"
 import {
   applyJiyuuPins, isLegacyJiyuuLaunch, jiyuuCheckoutDir, jiyuuMcpPins,
@@ -461,7 +462,7 @@ export const createProgram = (): Command => new Command()
     const original = raw.codex
     const discord = mode === undefined ? undefined : await discordPaths()
     const sourceToken = discord ? discordToken(original[discordServer]) : undefined
-    const clientTokens = discord ? discordClientTokens(raw) : []
+    const clientTokens = discord ? discordClientTokens(raw, paths.codex) : []
     if (mode && discord) {
       raw.codex = {
         ...raw.codex,
@@ -510,6 +511,15 @@ export const createProgram = (): Command => new Command()
     const migrated = migrateDirectPins(plan, raw, definitions, ctx, pins)
     for (const warning of [...warnings, ...plan.warnings, ...migrated]) console.log(`! warning ${warning}`)
     const codexChanged = !sameEntry(original, plan.codex)
+    const nextCodex = { ...config, mcp_servers: plan.codex as TomlTable }
+    const codexText = codexChanged
+      ? discord
+        ? rewriteDiscordToml(before.codex, nextCodex, plan.codex[discordServer]!, sourceToken)
+        : serialize(nextCodex)
+      : undefined
+    const discordClaude = discord
+      ? (plan.targets.claude.add[0] ?? plan.targets.claude.update[0])?.entry
+      : undefined
     if (codexChanged) console.log("~ update codex MCP definitions")
     for (const target of ["claude", "cursor"] as const) {
       for (const line of describePlan(plan.targets[target], target)) console.log(`${target}: ${line}`)
@@ -536,15 +546,15 @@ export const createProgram = (): Command => new Command()
     try {
       for (const p of platforms) await assertUnchanged(p)
       if (discord) {
+        if (discordClaude) await assertClaudeStopped()
         await prepareDiscordCredential(discord, sourceToken, clientTokens)
         if (mode === "shared") await startDiscord()
         for (const p of platforms) await assertUnchanged(p)
       }
-      if (codexChanged) {
-        const next = serialize({ ...config, mcp_servers: plan.codex as TomlTable })
+      if (codexText !== undefined) {
         // Discord mode changes have a vault-backed fallback. A copy of the
         // previous config could retain the credential we just migrated.
-        if (!discord && before.codex && next !== before.codex) {
+        if (!discord && before.codex && codexText !== before.codex) {
           const backup = `${paths.codex}.before-mcp-sync-${Date.now()}`
           await writePrivateFile(backup, before.codex)
           console.log(`Saved previous Codex config to ${backup}`)
@@ -553,16 +563,20 @@ export const createProgram = (): Command => new Command()
               `preserved; they remain in ${backup}`)
           }
         }
-        await writePrivateFile(paths.codex, next)
+        await writePrivateFile(paths.codex, codexText, discord
+          ? () => assertUnchanged("codex") : undefined)
       }
       if (hasChanges(plan.targets.cursor)) {
         await assertUnchanged("cursor")
         const backup = await writeCursorFile(paths.cursor, cursor, plan.targets.cursor, plan.codex, !discord)
         if (backup) console.log(`Saved previous Cursor file to ${backup}`)
       }
-      if (hasChanges(plan.targets.claude)) {
+      if (discordClaude) {
+        await assertClaudeStopped()
+        await writeDiscordClaude(paths.claude, before.claude, discordClaude)
+      } else if (hasChanges(plan.targets.claude)) {
         await assertUnchanged("claude")
-        const backup = discord ? undefined : await backupReplacedEntries(
+        const backup = await backupReplacedEntries(
           plan.targets.claude, raw.claude, plan.codex, paths.claude,
           resolve(paths.claude, "../mcp-sync-state.json"),
         )
@@ -574,7 +588,7 @@ export const createProgram = (): Command => new Command()
               !isRecord(expected) || !sameEntry(latest[name], expected)) {
               throw new Error(`claude/${name} changed during sync; rerun it`)
             }
-          }, !discord)
+          })
       }
       if (mode === "stdio") await stopDiscord()
     } finally {

@@ -172,18 +172,20 @@ the name `discord-token`. It records the selected Boku path so a user service
 started outside an interactive shell and the stdio fallback read the same
 entry. Direct Claude or Cursor copies must use the same credential.
 
-The command enables the service after its Discord connection is ready and
-then sets the three clients to `http://127.0.0.1:8123/mcp`. Existing agent
-sessions need to be reopened to pick up the new transport. The HTTP endpoint
-is for the local machine and assumes local callers are trusted. `just health`
-checks the configured service and reports its endpoint.
+Exit Claude Code sessions before changing modes. The command enables the
+service after the health response reports the ready systemd invocation. It
+then sets the three clients to `http://127.0.0.1:8123/mcp`. Reopen existing
+agent sessions to pick up the new transport. The HTTP endpoint is for the
+local machine and assumes local callers are trusted. `just health` checks the
+configured service and reports its endpoint.
 
 Rerun the same command to finish an interrupted migration.
 Use `just discord-mcp stdio --run` to switch back with the same stored token
 and stop the service. Both modes use the same pinned Jiyuu version. The
-migration writes no backups of the client configurations because older
-entries can contain the token. Previously created backups still need
-separate review or credential rotation.
+migration updates Discord's own Codex TOML table and Claude user JSON entry
+without creating plaintext backups. If Discord is inside an inline TOML
+table, move it to its own `[mcp_servers.discord-mcp]` table first. Previously
+created backups still need separate review or credential rotation.
 
 ## Move Servers to Another Machine
 
