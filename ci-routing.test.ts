@@ -42,6 +42,8 @@ const cases: [string, string[], string[]][] = [
   ["hidden native config", ["herdr/.cargo/config.toml"], ["herdr_native"]],
   ["plugin source", ["herdr-tmux/src/main.rs"], ["herdr_tmux"]],
   ["plugin metadata", ["herdr-tmux/herdr-plugin.toml"], ["herdr_tmux"]],
+  ["plugin packaging workflow", [".github/workflows/herdr-tmux-package.yml"], ["bun", "herdr_tmux"]],
+  ["plugin release workflow", [".github/workflows/herdr-tmux-release.yml"], ["bun", "herdr_tmux"]],
   ["native workflow", [".github/workflows/herdr-native-build.yml"], ["herdr_native"]],
   ["Rust shell helper", ["zsh/bashlib.sh", "zsh/ud/shell.sh"], ["bun", "rust"]],
   ["legacy clipboard helper", ["bin/legacy-pbcopy"], ["bun", "rust"]],
@@ -143,6 +145,7 @@ test("the legacy plugin branch selects only affected plugin checks", async () =>
 
 const selectors: Record<string, keyof typeof off> = {
   bun: "bun", "rust-test": "rust", clippy: "rust", tmux: "herdr_tmux",
+  "tmux-release-build": "herdr_tmux",
   "windows-setup": "windows_setup",
   validate: "validate", build: "herdr_native", prepare: "herdr_native", publish: "publish",
 }
@@ -169,6 +172,8 @@ for (const [job, status, selected] of [
   ["changes", "failure", off],
   ["changes", "cancelled", off],
   ["bun", "failure", { ...off, bun: "true" }],
+  ["tmux-release-build", "failure", { ...off, herdr_tmux: "true" }],
+  ["tmux-release-build", "skipped", { ...off, herdr_tmux: "true" }],
   ["windows-setup", "failure", { ...off, windows_setup: "true" }],
   ["windows-setup", "skipped", { ...off, windows_setup: "true" }],
   ["build", "cancelled", { ...off, herdr_native: "true" }],
@@ -210,6 +215,24 @@ test("one event entry point owns path detection and the complete dependency grap
   expect(workflow.jobs.build.needs).toEqual(["changes", "validate"])
   expect(workflow.jobs.prepare.needs).toEqual(["validate", "build"])
   expect(workflow.jobs.prepare.if).toBeUndefined()
+})
+
+test("tmux package and native Herdr artifacts stay separate in shared CI", async () => {
+  const packageFile = ".github/workflows/herdr-tmux-package.yml"
+  const releaseFile = ".github/workflows/herdr-tmux-release.yml"
+  const [packaging, release] = await Promise.all([packageFile, releaseFile].map(async (file) =>
+    Bun.YAML.parse(await Bun.file(file).text()) as any,
+  ))
+  expect(workflow.jobs["tmux-release-build"].uses).toBe(`./${packageFile}`)
+  expect(release.jobs.package.uses).toBe(`./${packageFile}`)
+  expect(release.on.push.tags).toEqual(["herdr-tmux/v*"])
+  expect(packaging.permissions).toEqual({ contents: "read" })
+  const nativeDownload = workflow.jobs.prepare.steps.find((step: any) => step.with?.pattern)
+  const nativeArtifact = picomatch(nativeDownload.with.pattern)
+  for (const job of [packaging.jobs.build, packaging.jobs.bundle]) {
+    const upload = job.steps.find((step: any) => step.uses?.startsWith("actions/upload-artifact@"))
+    expect(nativeArtifact(upload.with.name)).toBe(false)
+  }
 })
 
 test("non-release publication passes with only its internal no-op step", async () => {

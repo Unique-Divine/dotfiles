@@ -18,6 +18,7 @@ bun:
   - 'symlinks.sh'
   - 'justfile'
   - 'herdr-release/**'
+  - '.github/workflows/herdr-tmux-{package,release}.yml'
   - '.github/filters.yml'
   - '.github/workflows/ci.yml'
 rust:
@@ -52,6 +53,7 @@ herdr_tmux:
   - 'herdr-tmux/{build.rs,rust-toolchain,rust-toolchain.toml}'
   - 'herdr-tmux/.cargo/**'
   - 'herdr-tmux/{README.md,LICENSE,CHANGELOG.md,RELEASING.md,herdr-plugin.toml,justfile}'
+  - '.github/workflows/herdr-tmux-{package,release}.yml'
   - '.github/filters.yml'
   - '.github/workflows/ci.yml'
 windows_setup:

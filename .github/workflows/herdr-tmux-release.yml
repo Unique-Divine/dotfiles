@@ -1,146 +1,18 @@
 name: Herdr tmux release
 on:
-  pull_request:
-    paths:
-      - herdr-tmux/**
-      - .github/workflows/herdr-tmux-release.yml
   push:
     tags: ["herdr-tmux/v*"]
 permissions:
   contents: read
 concurrency:
   group: herdr-tmux-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  validate:
-    name: Validate release version
-    runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      source_sha: ${{ steps.version.outputs.source_sha }}
-    defaults:
-      run:
-        working-directory: herdr-tmux
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-          fetch-depth: ${{ github.ref_type == 'tag' && '0' || '1' }}
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: 1.96.1
-      - name: Confirm release tag is on main
-        if: github.ref_type == 'tag'
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_SHA}^{commit}")"
-          git merge-base --is-ancestor HEAD origin/main
-      - name: Check crate and tag versions
-        id: version
-        env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: |
-          set -euo pipefail
-          version="$(cargo metadata --format-version 1 --no-deps --locked |
-            jq -er '.packages[] | select(.name == "herdr-tmux") | .version')"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          if [[ -n "$RELEASE_TAG" && "$RELEASE_TAG" != "herdr-tmux/v$version" ]]; then
-            echo "::error::Tag $RELEASE_TAG does not match herdr-tmux/v$version."
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Check plugin manifest version and executable paths
-        run: cargo test --locked plugin::tests::manifest_versions_and_paths_match
-  build:
-    name: Package Herdr tmux (${{ matrix.target }})
-    needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        working-directory: herdr-tmux
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-          ref: ${{ needs.validate.outputs.source_sha }}
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: 1.96.1
-          targets: ${{ matrix.target }}
-      - name: Install musl linker
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-      - name: Build, archive, and smoke-test the locked binary
-        env:
-          BUILD_TARGET: ${{ matrix.target }}
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo build --release --locked --target "$BUILD_TARGET"
-          archive="$RUNNER_TEMP/herdr-tmux-v$VERSION-$BUILD_TARGET.tar.gz"
-          tar -czf "$archive" -C "target/$BUILD_TARGET/release" herdr-tmux
-          test "$(tar -tzf "$archive")" = herdr-tmux
-          smoke_dir="$(mktemp -d)"
-          tar -xzf "$archive" -C "$smoke_dir"
-          test "$("$smoke_dir/herdr-tmux" --version)" = "herdr-tmux $VERSION"
-          "$smoke_dir/herdr-tmux" plugin register --help >/dev/null
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: herdr-tmux-target-${{ matrix.target }}
-          path: ${{ runner.temp }}/herdr-tmux-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz
-          if-no-files-found: error
-          overwrite: true
-  bundle:
-    name: Assemble release bundle
-    needs: [validate, build]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: herdr-tmux-target-*
-          path: release-assets
-          merge-multiple: true
-      - name: Verify archive names and write checksums
-        working-directory: release-assets
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          archives=(
-            "herdr-tmux-v$VERSION-aarch64-apple-darwin.tar.gz"
-            "herdr-tmux-v$VERSION-aarch64-unknown-linux-musl.tar.gz"
-            "herdr-tmux-v$VERSION-x86_64-apple-darwin.tar.gz"
-            "herdr-tmux-v$VERSION-x86_64-unknown-linux-musl.tar.gz"
-          )
-          files=(*)
-          test "${#files[@]}" -eq "${#archives[@]}"
-          sha256sum "${archives[@]}" > SHA256SUMS
-          sha256sum --check SHA256SUMS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: herdr-tmux-release-bundle
-          path: release-assets/
-          if-no-files-found: error
-          overwrite: true
+  package:
+    uses: ./.github/workflows/herdr-tmux-package.yml
   publish:
     name: Publish verified GitHub release
     if: github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-tmux/v')
-    needs: [validate, bundle]
+    needs: package
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -149,12 +21,12 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
-      SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+      SOURCE_SHA: ${{ needs.package.outputs.source_sha }}
       LC_ALL: C
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: herdr-tmux-release-bundle
+          name: tmux-plugin-release-bundle
           path: release-assets
       - name: Attest release archives
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
