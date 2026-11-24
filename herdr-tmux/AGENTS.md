@@ -1,7 +1,7 @@
 # herdr-tmux working guide
 
-Use the published GitHub plugin for daily use to exercise the same installation
-route as external users. Keep this directory as the development checkout.
+Use the versioned GitHub binary for daily use to exercise the prebuilt
+installation route. Keep this directory as the source development checkout.
 Do not switch the live registration unless the user requests it.
 
 ## Registration and bindings
@@ -16,16 +16,21 @@ Inspect `herdr plugin list --json` before switching. Remove the existing
 registration explicitly, using `plugin unlink` for a local link or
 `plugin uninstall` for a GitHub installation.
 
-Both installation routes build from source and require Rust and Cargo.
-Plugin installation requires Herdr 0.9.5 or later and supports Linux and macOS.
+Registration requires Herdr 0.9.5 or later. Prebuilt releases support x86-64
+and ARM64 on Linux and macOS. Source builds require Rust and Cargo.
 
-## Use the published plugin
+## Use a Published Release
 
-To switch from a local link to release 0.1.0:
+Follow the [prebuilt installation instructions](README.md#prebuilt-release).
+Verify the download before installing it and run the installed binary's
+`plugin register` command. The generated manifest points to that executable
+and has no build command.
+
+To install and build the source plugin instead, remove the existing
+registration and install a pinned tag:
 
 ```sh
-herdr plugin unlink unique-divine.herdr-tmux
-herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.1.0
+herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
 ```
 
 Herdr downloads a managed checkout, builds it with locked dependencies, and
@@ -33,12 +38,11 @@ registers its actions. Changes in this development checkout do not affect that
 installation. Update the pinned ref when intentionally adopting another
 release. Release tags use the convention `herdr-tmux/vX.Y.Z`.
 
-## Use the local checkout
+## Use the Local Checkout
 
-To switch from a GitHub installation to local development:
+After removing the current registration, build and link the local checkout:
 
 ```sh
-herdr plugin uninstall unique-divine.herdr-tmux
 cd "$DOTFILES/herdr-tmux"
 just plugin-link
 ```
@@ -54,9 +58,9 @@ installation with the commands above when development testing is finished.
 
 Recipe `just install` separately installs the standalone CLI under
 `~/.local/bin`; the local plugin uses the binary in this checkout instead.
-Command `herdr-tmux plugin register` is for Cargo installations and generates
-a manifest pointing to the installed executable. It refuses to replace a
-registration belonging to another installation.
+Command `herdr-tmux plugin register` accepts the prebuilt, Cargo-installed,
+or locally installed CLI. It refuses to replace a registration belonging to
+another installation.
 
 ## Verification
 
