@@ -542,11 +542,14 @@ export const createProgram = (): Command => new Command()
     const assertUnchanged = async (p: Platform) => {
       if (await readText(paths[p]) !== before[p]) throw new Error(`${p} config changed during sync; rerun it`)
     }
+    const assertDiscordClaudeStopped = () => assertClaudeStopped(
+      `Claude is running. Exit Claude sessions and rerun just discord-mcp ${mode} --run.`,
+    )
+    if (discordClaude) await assertDiscordClaudeStopped()
     const unlock = discord ? await lockDiscord(discord) : undefined
     try {
       for (const p of platforms) await assertUnchanged(p)
       if (discord) {
-        if (discordClaude) await assertClaudeStopped()
         await prepareDiscordCredential(discord, sourceToken, clientTokens)
         if (mode === "shared") await startDiscord()
         for (const p of platforms) await assertUnchanged(p)
@@ -572,7 +575,7 @@ export const createProgram = (): Command => new Command()
         if (backup) console.log(`Saved previous Cursor file to ${backup}`)
       }
       if (discordClaude) {
-        await assertClaudeStopped()
+        await assertDiscordClaudeStopped()
         await writeDiscordClaude(paths.claude, before.claude, discordClaude)
       } else if (hasChanges(plan.targets.claude)) {
         await assertUnchanged("claude")

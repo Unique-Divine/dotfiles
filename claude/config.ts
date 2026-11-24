@@ -329,13 +329,15 @@ export const ownedState = (state: JsonObject): JsonObject =>
 export const stateHasDrift = (state: JsonObject): boolean =>
   Object.entries(dotfileState).some(([key, value]) => state[key] !== value)
 
-export async function assertClaudeStopped(): Promise<void> {
+export async function assertClaudeStopped(
+  runningMessage = "Claude is running. Exit Claude sessions before repairing " +
+    "state with just claude config --run; existing sessions were left alone.",
+): Promise<void> {
   const uid = process.getuid?.()
   if (uid === undefined) throw new Error("Claude state sync requires Unix")
   const result = await bash(`pgrep -u ${uid} -x claude`)
   if (result.exitCode === 0) {
-    throw new Error("Claude is running. Exit Claude sessions before repairing " +
-      "state with just claude config --run; existing sessions were left alone.")
+    throw new Error(runningMessage)
   }
   if (result.exitCode !== 1) {
     throw new Error("Unable to check running Claude processes; no state written")

@@ -432,7 +432,7 @@ case "$2" in
 esac
 `)
     const pgrep = join(dir, "pgrep")
-    await Bun.write(pgrep, "#!/bin/sh\nexit 1\n")
+    await Bun.write(pgrep, "#!/bin/sh\nexit \"$FIXTURE_PGREP_EXIT\"\n")
     const claudeCommand = join(dir, "claude")
     await Bun.write(claudeCommand, `#!/usr/bin/env bash
 mkdir -p "$HOME/.claude/backups"
@@ -473,7 +473,7 @@ globalThis.fetch = async () => new Response(null, {
     await Bun.write(join(dir, "cursor.json"), JSON.stringify(clients))
     const env = {
       HOME: dir, BOKU_HOME: storeHome, FIXTURE_SYSTEMCTL: state,
-      FIXTURE_INVOCATION: invocation, FIXTURE_PRELOAD: preload,
+      FIXTURE_INVOCATION: invocation, FIXTURE_PRELOAD: preload, FIXTURE_PGREP_EXIT: "1",
     }
     const args = ["--from", "codex", "--servers", name, "--discord-mode"]
 
@@ -483,6 +483,19 @@ globalThis.fetch = async () => new Response(null, {
     expect(preview.output).not.toContain(secret)
     expect(await Bun.file(fixtureStore).exists()).toBe(false)
     expect(await Bun.file(join(dir, "config.toml")).text()).toBe(original)
+
+    const running = await invoke([...args, "shared", "--run"], {
+      ...env, FIXTURE_PGREP_EXIT: "0",
+    })
+    expect(running.code).toBe(1)
+    expect(running.stderr).toContain("Exit Claude sessions and rerun just discord-mcp shared --run")
+    expect(running.output).not.toContain(secret)
+    expect(await Bun.file(fixtureStore).exists()).toBe(false)
+    expect(await Bun.file(state).exists()).toBe(false)
+    expect(await Bun.file(join(dir, ".config/mcp-discord/migration.lock")).exists()).toBe(false)
+    expect(await Bun.file(join(dir, "config.toml")).text()).toBe(original)
+    expect(await Bun.file(join(dir, ".claude.json")).json()).toEqual(clients)
+    expect(await Bun.file(join(dir, "cursor.json")).json()).toEqual(clients)
 
     const wrong = await invoke([...args, "shared", "--run"], {
       ...env, FIXTURE_READY_ID: crypto.randomUUID().replaceAll("-", ""),
