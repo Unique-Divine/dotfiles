@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import {
+  chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import {
   findMissingExecutables, formatProblems, herdrPlatform, parsePluginList,
@@ -193,6 +195,50 @@ describe("repairHint and formatProblems", () => {
     expect(repairHint(manual, "linux", { XDG_DATA_HOME: "/data" }))
       .toBe("restore the herdr-tmux binary used by this registration")
   })
+
+  test("recognizes a mise registration through symlinked data and installs",
+    async () => {
+      const root = await realpath(await pluginRoot())
+      const dataDir = join(root, "data")
+      const dataAlias = join(root, "data-alias")
+      const backend = join(root, "backend")
+      const backendAlias = join(
+        dataDir, "mise/installs/github-unique-divine-dotfiles",
+      )
+      await mkdir(dirname(backendAlias), { recursive: true })
+      await mkdir(backend)
+      await symlink(dataDir, dataAlias)
+      await symlink(backend, backendAlias)
+      const executable = join(backend, "0.2.0/herdr-tmux")
+      const generated = plugin(join(dataDir, "herdr-tmux/plugin"), {
+        build: [],
+        actions: [{ id: "focus-agent", command: [executable] }],
+        panes: [{ id: "agent-picker", command: [executable] }],
+      })
+      expect(repairHint(generated, "linux", { XDG_DATA_HOME: dataAlias }))
+        .toBe("just mise-install && just herdr-tmux-register")
+    })
+
+  test("requires each command to name the binary directly in a version directory",
+    () => {
+      const installRoot = "/data/mise/installs/github-unique-divine-dotfiles"
+      for (const path of [
+        `${installRoot}/0.2.0/bin/herdr-tmux`,
+        `${installRoot}/0.2.0/wrapper`,
+        `${installRoot}/../herdr-tmux`,
+        `${installRoot}-sibling/0.2.0/herdr-tmux`,
+      ]) {
+        const generated = plugin("/data/herdr-tmux/plugin", {
+          build: [],
+          actions: [{
+            id: "focus-agent", command: [`${installRoot}/0.2.0/herdr-tmux`],
+          }],
+          panes: [{ id: "agent-picker", command: [path] }],
+        })
+        expect(repairHint(generated, "linux", { XDG_DATA_HOME: "/data" }))
+          .toBe("restore the herdr-tmux binary used by this registration")
+      }
+    })
 
   test("local plugins repair with their manifest build commands", () => {
     expect(repairHint(plugin("/dot files/herdr-tmux"))).toBe(

@@ -1,5 +1,5 @@
 import { bash } from "@uniquedivine/bash"
-import { constants } from "node:fs"
+import { constants, realpathSync } from "node:fs"
 import { access, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 
@@ -99,6 +99,14 @@ async function isExecutableFile(path: string): Promise<boolean> {
   }
 }
 
+function canonicalOrOriginal(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 /** Describe how to restore a plugin's missing executables. */
 export function repairHint(
   plugin: HerdrPlugin, host: HerdrPlatform = herdrPlatform(),
@@ -112,15 +120,20 @@ export function repairHint(
     return `cd ${quote(plugin.plugin_root)} && ${build.join(" && ")}`
   }
   if (plugin.source?.kind === "local") {
-    const dataDir = env.XDG_DATA_HOME ||
+    const dataPath = env.XDG_DATA_HOME ||
       (env.HOME ? join(env.HOME, ".local/share") : undefined)
+    const dataDir = dataPath && canonicalOrOriginal(dataPath)
     if (plugin.plugin_id === "unique-divine.herdr-tmux" && dataDir &&
         plugin.plugin_root === join(dataDir, "herdr-tmux/plugin")) {
-      const miseDir = env.MISE_DATA_DIR || join(dataDir, "mise")
-      const installRoot = join(miseDir, "installs/github-unique-divine-dotfiles")
+      const miseDir = canonicalOrOriginal(env.MISE_DATA_DIR ||
+        join(dataDir, "mise"))
+      const installRoot = canonicalOrOriginal(join(
+        miseDir, "installs/github-unique-divine-dotfiles",
+      )) + "/"
       const entries = [...(plugin.actions ?? []), ...(plugin.panes ?? [])]
       if (entries.length > 0 && entries.every(({ command: [executable] }) =>
-        executable?.startsWith(installRoot + "/"))) {
+        executable?.startsWith(installRoot) &&
+        /^[^./][^/]*\/herdr-tmux$/.test(executable.slice(installRoot.length)))) {
         return "just mise-install && just herdr-tmux-register"
       }
       return "restore the herdr-tmux binary used by this registration"
