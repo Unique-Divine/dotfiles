@@ -12,39 +12,90 @@ use cases become clearer.
 - A Unix environment with a running Herdr session.
 - Herdr 0.9.5 or later for plugin installation.
 - Linux or macOS. The binary uses Unix sockets; native Windows is unsupported.
-- Cargo and a Rust toolchain to build the plugin or install the crate.
 
 ## Install
 
-### Herdr plugin
+### Prebuilt Release
 
-Once version 0.1.0 is released and merged into the repository's default branch:
+Pick the target for your operating system and CPU. The Linux binaries also
+work in WSL.
+
+| Platform | Target |
+| --- | --- |
+| Linux x86-64 | `x86_64-unknown-linux-musl` |
+| Linux ARM64 | `aarch64-unknown-linux-musl` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+
+From an empty directory, download the archive and verify its SHA-256 checksum.
+Set the `target` variable to the value for your platform.
 
 ```bash
-herdr plugin install Unique-Divine/dotfiles/herdr-tmux
+version=0.2.0
+target=x86_64-unknown-linux-musl
+archive="herdr-tmux-v$version-$target.tar.gz"
+base="https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v$version"
+curl -fSLO "$base/$archive"
+curl -fSLO "$base/SHA256SUMS"
+awk -v name="$archive" '$2 == name { print }' SHA256SUMS |
+  shasum -a 256 -c -
 ```
 
-Herdr builds the plugin with locked dependencies and registers its actions.
-For a pinned release, add `--ref herdr-tmux/v0.1.0`. Installation does not add
-key bindings; copy the bindings below into your Herdr configuration.
-
-### Cargo binary
-
-Once version 0.1.0 is published:
+To verify that the release workflow built the archive from the release tag,
+use the GitHub CLI before extracting it.
 
 ```bash
-cargo install herdr-tmux --version 0.1.0 --locked
+gh attestation verify "$archive" --repo Unique-Divine/dotfiles \
+  --source-ref "refs/tags/herdr-tmux/v$version" \
+  --signer-workflow Unique-Divine/dotfiles/.github/workflows/herdr-tmux-release.yml
+```
+
+Extract and install the executable after verification succeeds.
+
+```bash
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 755 herdr-tmux "$HOME/.local/bin/herdr-tmux"
+"$HOME/.local/bin/herdr-tmux" --version
+"$HOME/.local/bin/herdr-tmux" plugin register
+```
+
+The archive and registration command require no Rust toolchain. Add
+`~/.local/bin` to `PATH` to invoke the CLI by name. Copy the plugin bindings
+below into your Herdr configuration to use the keyboard shortcuts.
+
+### Build from GitHub
+
+With Rust and Cargo installed, Herdr can build and register the source plugin
+at a pinned release tag.
+
+```bash
+herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
+```
+
+### Build from crates.io
+
+When the version is available on crates.io, use Cargo to build the executable.
+
+```bash
+cargo install herdr-tmux --version 0.2.0 --locked
 herdr-tmux plugin register
 ```
 
-The second command links a manifest pointing to the installed binary. It stores
-that manifest under `$XDG_DATA_HOME/herdr-tmux/plugin`, defaulting to
-`~/.local/share/herdr-tmux/plugin`. It refuses to replace a GitHub installation
-or a link to a different directory. Choose one registration route per user.
-Repeating registration refreshes the generated manifest after a binary update.
-The binary remains usable directly without registering it as a plugin.
+### Switch or Refresh Registration
 
-### Local development
+Command `herdr-tmux plugin register` writes a manifest pointing to the
+installed executable under `$XDG_DATA_HOME/herdr-tmux/plugin`, which defaults
+to `~/.local/share/herdr-tmux/plugin`. Run the command again after updating a
+prebuilt or Cargo-installed binary. Direct CLI commands also work without
+registration.
+
+Use `herdr plugin list --json` to inspect the registration before changing
+routes. Remove the GitHub-source installation with
+`herdr plugin uninstall unique-divine.herdr-tmux`, or remove a local
+registration with `herdr plugin unlink unique-divine.herdr-tmux`.
+
+### Local Development
 
 ```bash
 just plugin-link
@@ -52,13 +103,8 @@ just plugin-link
 
 This builds the release binary and links the source directory. Run the recipe
 from `herdr-tmux`. Herdr's `plugin link` command does not build source itself.
-Rebuild after editing Rust code; relink after editing the manifest.
-To switch installation routes, explicitly unlink the local registration or
-uninstall the GitHub registration first:
-
-```bash
-herdr plugin unlink unique-divine.herdr-tmux
-```
+After editing Rust code, run `just build`. After editing the manifest, run
+`just plugin-link` again.
 
 ## Usage
 

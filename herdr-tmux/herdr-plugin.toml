@@ -1,6 +1,6 @@
 id = "unique-divine.herdr-tmux"
 name = "Herdr tmux tools"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.5"
 description = "Even pane layouts, numbered pickers, and a tab order editor"
 platforms = ["linux", "macos"]

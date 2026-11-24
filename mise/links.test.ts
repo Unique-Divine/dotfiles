@@ -101,6 +101,43 @@ describe("active command filesystem reconciliation", () => {
     })
   })
 
+  test("preserves standalone herdr-tmux and continues installing links",
+    async () => {
+      await withFixture(async (root) => {
+        const shims = join(root, "shims")
+        const bin = join(root, "bin")
+        await mkdir(shims)
+        await mkdir(bin)
+        for (const name of ["herdr-tmux", "gh"]) {
+          await writeFile(join(shims, name), "shim")
+        }
+        await writeFile(join(bin, "herdr-tmux"), "standalone")
+        const active = ["herdr-tmux", "gh"]
+        expect(await reconcileLinks("--run", shims, bin, active)).toBe(0)
+        expect(await readFile(join(bin, "herdr-tmux"), "utf8")).toBe("standalone")
+        expect(await readlink(join(bin, "gh"))).toBe(join(shims, "gh"))
+        expect(await reconcileLinks("--check", shims, bin, active)).toBe(1)
+
+        await rm(join(bin, "gh"))
+        await writeFile(join(bin, "gh"), "standalone gh")
+        expect(await reconcileLinks("--run", shims, bin, active)).toBe(1)
+      })
+    })
+
+  test("an unmanaged herdr-tmux symlink remains a blocking conflict", async () => {
+    await withFixture(async (root) => {
+      const shims = join(root, "shims")
+      const bin = join(root, "bin")
+      await mkdir(shims)
+      await mkdir(bin)
+      await writeFile(join(shims, "herdr-tmux"), "shim")
+      const link = join(bin, "herdr-tmux")
+      await symlink("/opt/herdr-tmux", link)
+      expect(await reconcileLinks("--run", shims, bin, ["herdr-tmux"])).toBe(1)
+      expect(await readlink(link)).toBe("/opt/herdr-tmux")
+    })
+  })
+
   test("missing active shims fail before pruning existing links", async () => {
     await withFixture(async (root) => {
       const bin = join(root, "bin")

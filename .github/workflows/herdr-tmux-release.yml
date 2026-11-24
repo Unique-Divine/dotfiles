@@ -1,0 +1,92 @@
+name: Herdr tmux release
+on:
+  push:
+    tags: ["herdr-tmux/v*"]
+permissions:
+  contents: read
+concurrency:
+  group: herdr-tmux-release-${{ github.ref }}
+jobs:
+  package:
+    uses: ./.github/workflows/herdr-tmux-package.yml
+  publish:
+    name: Publish verified GitHub release
+    if: github.repository == 'Unique-Divine/dotfiles' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/herdr-tmux/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      SOURCE_SHA: ${{ needs.package.outputs.source_sha }}
+      LC_ALL: C
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: tmux-plugin-release-bundle
+          path: release-assets
+      - name: Attest release archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release-assets/*.tar.gz
+      - name: Upload, verify, and publish draft
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verify_live_tag() {
+            local ref="refs/tags/$RELEASE_TAG" refs sha
+            refs="$(git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$ref" "$ref^{}")"
+            sha="$(awk -v ref="$ref" '
+              $2 == ref { direct = $1 }
+              $2 == (ref "^{}") { peeled = $1 }
+              END { print (peeled ? peeled : direct) }
+            ' <<< "$refs")"
+            if [[ "$sha" != "$SOURCE_SHA" ]]; then
+              echo "::error::Tag $RELEASE_TAG now points to $sha. The bundle was built from $SOURCE_SHA."
+              return 1
+            fi
+          }
+          find_release() {
+            gh api "repos/$GH_REPO/releases" --paginate --slurp |
+              jq -ec --arg tag "$RELEASE_TAG" '
+                [.[][] | select(.tag_name == $tag)] |
+                if length > 1 then error("Multiple releases for this tag")
+                else .[0] // {}
+                end
+              '
+          }
+
+          sha256sum --check SHA256SUMS
+          release="$(find_release)"
+          if [[ "$(jq -r '.draft' <<< "$release")" == "false" ]]; then
+            echo "::error::Release $RELEASE_TAG is already published."
+            exit 1
+          fi
+          notes="$(printf 'Built from [dotfiles commit %s](https://github.com/%s/commit/%s).' \
+            "$SOURCE_SHA" "$GH_REPO" "$SOURCE_SHA")"
+          if [[ "$release" == "{}" ]]; then
+            printf '%s\n' "$notes" > "$RUNNER_TEMP/release-notes.md"
+            verify_live_tag
+            gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false \
+              --title "herdr-tmux ${RELEASE_TAG#herdr-tmux/v}" --notes-file "$RUNNER_TEMP/release-notes.md" \
+              ./*.tar.gz SHA256SUMS
+            release="$(find_release)"
+          fi
+          draft_id="$(jq -er 'select(.draft == true) | .id | numbers' <<< "$release")"
+          release="$(gh api "repos/$GH_REPO/releases/$draft_id")"
+          jq -e --arg tag "$RELEASE_TAG" '.draft == true and .tag_name == $tag' <<< "$release" >/dev/null
+          if [[ "$(jq -er '.body' <<< "$release")" != "$notes" ]]; then
+            echo "::error::Draft $draft_id does not record source commit $SOURCE_SHA."
+            exit 1
+          fi
+          jq -er '.assets[] | "\(.name) \(.digest)"' <<< "$release" | sort > uploaded-digests
+          sha256sum -- *.tar.gz SHA256SUMS | awk '{print $2, "sha256:" $1}' | sort > expected-digests
+          diff -u expected-digests uploaded-digests
+          verify_live_tag
+          gh api --method PATCH "repos/$GH_REPO/releases/$draft_id" \
+            -F draft=false -f make_latest=false --jq .html_url

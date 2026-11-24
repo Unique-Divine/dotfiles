@@ -142,8 +142,8 @@ split_horizontal = "prefix+shift+s"
 # width = "80%"
 # height = "80%"
 
-# The local herdr-tmux plugin owns these layout actions and picker popups.
-# Build and link it with: just --justfile herdr-tmux/justfile plugin-link
+# The herdr-tmux plugin owns these layout actions and picker popups.
+# Install the pinned binary with just mise-install and just herdr-tmux-register.
 # Match tmux's select-layout bindings while preserving the existing live panes.
 # `=` stacks panes evenly top-to-bottom; `_` spreads them evenly left-to-right.
 [[keys.command]]
