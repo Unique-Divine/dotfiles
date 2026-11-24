@@ -9,6 +9,8 @@ nvim .config/nvim
 mise .config/mise
 herdr-cfg/config.toml .config/herdr/config.toml
 systemd/ssh-agent.service .config/systemd/user/ssh-agent.service
+systemd/mcp-discord.service .config/systemd/user/mcp-discord.service
+bin/mcp-discord-launch .local/bin/mcp-discord-launch
 .config/yarn/global/package.json .config/yarn/global/package.json
 bin/node .local/bin/node
 bin/npm .local/bin/npm

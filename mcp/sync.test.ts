@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "smol-toml"
@@ -154,7 +154,6 @@ else if (args[1] === 'add-json') {
 } else process.exit(2)
 await Bun.write(file, JSON.stringify(config))
 `)
-    const { chmod } = await import("node:fs/promises")
     await chmod(join(dir, "claude"), 0o700)
     await Bun.write(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {}, unrelated: true }))
     const invoke: Invoke = async (args, extraEnv = {}, stdin) => {
@@ -297,6 +296,140 @@ test("CLI resumes a partial command-to-HTTP reconciliation", async () => {
     const after = await invoke(["--check"])
     expect(after.code).toBe(0)
     expect(after.output).not.toContain("launcher requires a command")
+  })
+})
+
+test("scoped directional sync changes only the selected server and pin", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const codex = [
+      '[mcp_servers.discord-mcp]',
+      'url = "http://127.0.0.1:8123/mcp"',
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+    ].join("\n")
+    await Bun.write(join(dir, "config.toml"), codex)
+    const claude = { mcpServers: { slack: url("independent") } }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify(claude))
+
+    const args = ["--from", "codex", "--servers", "discord-mcp", "--run"]
+    expect((await invoke(args)).code).toBe(0)
+    expect(await Bun.file(join(dir, "config.toml")).text()).toBe(codex)
+    const updated = await Bun.file(join(dir, ".claude.json")).json()
+    expect(updated.mcpServers).toEqual({
+      slack: claude.mcpServers.slack,
+      "discord-mcp": { type: "http", url: "http://127.0.0.1:8123/mcp" },
+    })
+    const cursor = await Bun.file(join(dir, "cursor.json")).json()
+    expect(Object.keys(cursor.mcpServers)).toEqual(["discord-mcp"])
+    expect((await invoke(["--from", "codex", "--servers", "unknown"])).code).toBe(1)
+  })
+})
+
+test("Discord vault migration retries without plaintext client backups", async () => {
+  await withCliFixture(async (dir, invoke) => {
+    const secret = crypto.randomUUID()
+    const name = "discord-mcp"
+    const launcher = join(dir, ".local/bin/mcp-discord-launch")
+    const helper = join(dir, ".local/bin/local-secret-store")
+    const bun = join(dir, ".bun/bin/bun")
+    const storeHome = join(dir, "custom boku")
+    const fixtureStore = join(storeHome, "discord-mcp/secrets/fixture")
+    const state = join(dir, "service.log")
+    await mkdir(join(dir, ".local/bin"), { recursive: true })
+    await mkdir(join(dir, ".bun/bin"), { recursive: true })
+    await symlink(join(import.meta.dir, "../bin/mcp-discord-launch"), launcher)
+    // The fixture covers the real helper's FIFO requirement and reports its
+    // credential-free errors. The payload is a synthetic test value.
+    await Bun.write(helper, `#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "$1" = --store && "$4" = discord-token ]]
+case "$3" in
+  get)
+    [[ -p /dev/stdout ]]
+    if [[ ! -f "$2/fixture" ]]; then
+      echo 'local-secret-store: encrypted entry does not exist' >&2
+      exit 1
+    fi
+    cat "$2/fixture" ;;
+  put)
+    [[ -p /dev/stdin ]]
+    mkdir -p "$2"
+    cat > "$2/fixture" ;;
+esac
+`)
+    await Bun.write(bun, `#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "$PWD" = / && "$DISCORD_TOKEN" = "$FIXTURE_TOKEN" ]]
+printf '%s\n' "$@"
+`)
+    const systemctl = join(dir, "systemctl")
+    await Bun.write(systemctl, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIXTURE_SYSTEMCTL"
+`)
+    for (const executable of [helper, bun, systemctl]) await chmod(executable, 0o700)
+
+    const original = [
+      '[mcp_servers.discord-mcp]',
+      'command = "mcp-discord"',
+      'startup_timeout_sec = 30',
+      `env = { DISCORD_TOKEN = "${secret}" }`,
+      '[mcp_servers.slack]',
+      'command = "slack-mcp"',
+    ].join("\n")
+    await Bun.write(join(dir, "config.toml"), original)
+    const clients = { mcpServers: {
+      [name]: { command: "mcp-discord", env: { DISCORD_TOKEN: secret } },
+      slack: url("independent"),
+    } }
+    await Bun.write(join(dir, ".claude.json"), JSON.stringify(clients))
+    await Bun.write(join(dir, "cursor.json"), JSON.stringify(clients))
+    const env = { HOME: dir, BOKU_HOME: storeHome, FIXTURE_SYSTEMCTL: state }
+    const args = ["--from", "codex", "--servers", name, "--discord-mode", "stdio"]
+
+    const preview = await invoke(args, env)
+    expect(preview.code).toBe(0)
+    expect(preview.output).not.toContain(secret)
+    expect(await Bun.file(fixtureStore).exists()).toBe(false)
+    expect(await Bun.file(join(dir, "config.toml")).text()).toBe(original)
+
+    const failed = await invoke([...args, "--run"], { ...env, FAIL_SERVER: name })
+    expect(failed.code).toBe(1)
+    expect(failed.output).not.toContain(secret)
+    expect(await Bun.file(state).exists()).toBe(false)
+    expect(await Bun.file(fixtureStore).text()).toBe(secret)
+    expect((await Bun.file(join(dir, ".claude.json")).json()).mcpServers[name]).toBeUndefined()
+
+    const retry = await invoke([...args, "--run"], { ...env, BOKU_HOME: "" })
+    expect(retry.code).toBe(0)
+    expect(retry.output).not.toContain(secret)
+    expect(await Bun.file(state).text()).toBe("--user disable --now mcp-discord.service\n")
+    expect((await readdir(dir)).filter(file => file.includes("before-"))).toEqual([])
+    const code = await Bun.file(join(dir, "config.toml")).text()
+    expect(code).not.toContain(secret)
+    expect(parse(code).mcp_servers).toEqual({
+      [name]: { command: launcher, args: ["stdio"], startup_timeout_sec: 30 },
+      slack: { command: "slack-mcp" },
+    })
+    for (const file of [".claude.json", "cursor.json"]) {
+      const text = await Bun.file(join(dir, file)).text()
+      expect(text).not.toContain(secret)
+      expect(JSON.parse(text).mcpServers.slack).toEqual(clients.mcpServers.slack)
+      expect(JSON.parse(text).mcpServers[name].args[3]).toBe(name)
+    }
+    const runtime = Bun.spawn([launcher, "stdio"], {
+      env: { ...process.env, HOME: dir, FIXTURE_TOKEN: secret },
+      stdout: "pipe", stderr: "pipe",
+    })
+    const [status, output, error] = await Promise.all([
+      runtime.exited, new Response(runtime.stdout).text(), new Response(runtime.stderr).text(),
+    ])
+    expect(status).toBe(0)
+    expect(error).toBe("")
+    const version = (await Bun.file(join(import.meta.dir, "discord-pin.txt")).text()).trim()
+    expect(output.split("\n")).toEqual([
+      "--no-env-file", "x", "--bun", `@uniquedivine/mcp-discord@${version}`,
+      "--transport", "stdio", "",
+    ])
   })
 })
 

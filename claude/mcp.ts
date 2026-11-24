@@ -54,7 +54,7 @@ export const readClaudeUserMcpServers = async (
 }
 
 /** Runs one `claude` command. Errors never include an add-json payload. */
-const runClaude = async (cmd: string[]): Promise<void> => {
+const runClaude = async (cmd: string[], reportDetail = true): Promise<void> => {
   // Argument vectors avoid shell quoting of the JSON payload.
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" })
   const [exitCode, stderr] = await Promise.all([
@@ -65,7 +65,7 @@ const runClaude = async (cmd: string[]): Promise<void> => {
   if (exitCode !== 0) {
     const label = `${cmd.slice(0, 3).join(" ")} ${cmd[5]}`
     // The CLI may echo an add-json payload, which can hold url headers.
-    const detail = cmd[2] === "add-json" ? "" : `: ${stderr.trim()}`
+    const detail = cmd[2] === "add-json" || !reportDetail ? "" : `: ${stderr.trim()}`
     throw new Error(`${label} failed (${exitCode})${detail}`)
   }
 }
@@ -106,7 +106,8 @@ export const backupReplacedEntries = async (
 
 /**
  * Applies a plan through the `claude` CLI. An update removes and re-adds the
- * entry; if the add fails, the previous entry is restored before throwing.
+ * entry; if the add fails, callers can restore the previous entry or retry
+ * without passing a legacy credential through the Claude command line.
  */
 export const applyClaudePlan = async (
   plan: McpPlan,
@@ -114,9 +115,10 @@ export const applyClaudePlan = async (
   claudeBin = "claude",
   beforeWrite: (name: string, expected: unknown) => Promise<void> =
     async () => {},
+  restorePrevious = true,
 ): Promise<void> => {
   const remove = (name: string) =>
-    runClaude([claudeBin, "mcp", "remove", "--scope", "user", name])
+    runClaude([claudeBin, "mcp", "remove", "--scope", "user", name], restorePrevious)
   const add = (name: string, entry: unknown) => runClaude([
     claudeBin, "mcp", "add-json", "--scope", "user", name,
     JSON.stringify(entry),
@@ -136,8 +138,10 @@ export const applyClaudePlan = async (
       await add(name, entry)
     } catch (error) {
       // Do not overwrite an external edit while attempting rollback.
-      await beforeWrite(name, undefined)
-        .then(() => add(name, current[name])).catch(() => undefined)
+      if (restorePrevious) {
+        await beforeWrite(name, undefined)
+          .then(() => add(name, current[name])).catch(() => undefined)
+      }
       throw error
     }
   }

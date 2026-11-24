@@ -13,14 +13,16 @@ just mcp-sync --check         # used by just health; fails on missing pins
 just mcp-sync --export        # servers as JSON, for --import elsewhere
 just mcp-sync --from claude --run  # explicitly prefer Claude settings
 just mcp-sync --from codex --run   # explicitly prefer Codex settings
+just mcp-sync --from codex --servers discord-mcp --run  # reconcile only Discord
 just mcp-sync --from cursor --run  # explicitly prefer Cursor settings
 ```
 
 ## Jiyuu Pins
 
 [`pins.ts`](pins.ts) pins the MCP servers published from
-[Jiyuu](https://github.com/Unique-Divine/jiyuu) to exact releases. It's the
-only place their versions live.
+[Jiyuu](https://github.com/Unique-Divine/jiyuu) to exact releases for existing
+stdio configurations. The shared Discord service and its encrypted stdio
+fallback share the release in [`discord-pin.txt`](discord-pin.txt).
 
 | Codex server   | Package                                  | Runner |
 | -------------- | ---------------------------------------- | ------ |
@@ -151,6 +153,37 @@ configs have no equivalent that keeps the secret out of the file. Each tool
 runs its own OAuth login for url servers that need it.
 
 A Codex server with `enabled = false` remains disabled and is not propagated.
+
+## Shared Discord Service
+
+On Linux with a working systemd user manager, Discord can run as one
+loopback HTTP service. Run `just sync` to link the user unit and launcher.
+Install the Boku credential helper once per host from your Boku checkout:
+
+```bash
+cargo install --locked --path crates/local-secret-store --root "$HOME/.local"
+```
+
+From dotfiles, run `just discord-mcp shared` to preview, then
+`just discord-mcp shared --run` to apply. The command accepts the current
+`DISCORD_TOKEN` from the Codex Discord entry or a pre-seeded encrypted entry.
+It verifies the token in `${BOKU_HOME:-$HOME/.boku}/discord-mcp/secrets` under
+the name `discord-token`. It records the selected Boku path so a user service
+started outside an interactive shell and the stdio fallback read the same
+entry. Direct Claude or Cursor copies must use the same credential.
+
+The command enables the service after its Discord connection is ready and
+then sets the three clients to `http://127.0.0.1:8123/mcp`. Existing agent
+sessions need to be reopened to pick up the new transport. The HTTP endpoint
+is for the local machine and assumes local callers are trusted. `just health`
+checks the configured service and reports its endpoint.
+
+Rerun the same command to finish an interrupted migration.
+Use `just discord-mcp stdio --run` to switch back with the same stored token
+and stop the service. Both modes use the same pinned Jiyuu version. The
+migration writes no backups of the client configurations because older
+entries can contain the token. Previously created backups still need
+separate review or credential rotation.
 
 ## Move Servers to Another Machine
 
