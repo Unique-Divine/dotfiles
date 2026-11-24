@@ -173,8 +173,15 @@ description = "select agent by number"
 
 [[keys.command]]
 key = "prefix+t"
-type = "plugin_action"
-command = "unique-divine.herdr-tmux.reorder-tabs"
+type = "popup"
+command = '''
+nvim_bin=$("$HOME/.local/bin/mise" --cd "$HOME" which nvim) &&
+  PATH="${nvim_bin%/*}:$PATH" exec \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tmux/local/tab-editor" \
+    --tab-id "$HERDR_ACTIVE_TAB_ID" --pane-id "$HERDR_ACTIVE_PANE_ID" edit-tabs
+'''
+width = 116
+height = 42
 description = "reorder tabs"
 
 # Legacy indexed shortcut config is still parsed for compatibility.
