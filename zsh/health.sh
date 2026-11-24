@@ -154,6 +154,10 @@ if ! bun run mcp/sync.ts --check; then
   failed=1
 fi
 
+if ! bun run mcp/discord.ts; then
+  failed=1
+fi
+
 if ! bun run claude/config.ts --check; then
   failed=1
 fi
@@ -185,14 +189,13 @@ if ! bun run grok/herdr.ts --check; then
   failed=1
 fi
 
-# Linked plugins run from their source directory, so a PATH copy of the
-# binary does not prove that Herdr key bindings can launch them.
+# Check the executable paths used by Herdr key bindings separately from PATH.
 if which_ok herdr && ! bun run herdr-cfg/plugins.ts --check; then
   failed=1
 fi
 
 if ! which_ok herdr-tmux; then
-  log_error "herdr-tmux is not installed; run: cd $PWD/herdr-tmux && just install"
+  log_error "herdr-tmux is not installed; run: just mise-install"
   failed=1
 fi
 

@@ -93,9 +93,48 @@ HERDR_CONFIG_PATH="$DOTFILES/herdr-cfg/config.toml" herdr config check
 herdr server reload-config
 ```
 
-The configuration key `keys.detach` uses `prefix+d`, matching tmux. Binding
-`prefix+q` and `prefix+a` invoke the pane and agent picker actions in the local
+The configuration key `keys.detach` uses `prefix+d`, matching tmux. Bindings
+`prefix+q` and `prefix+a` invoke the pane and agent picker actions in the
 `unique-divine.herdr-tmux` plugin.
+
+## Install or Update the Plugin
+
+The dotfiles sync installs the release pinned in `mise/mise.lock` and
+registers its executable with Herdr. To refresh the plugin from the checkout
+without a full sync, run these recipes from the dotfiles root.
+
+```bash
+just mise-install
+just herdr-tmux-register
+```
+
+See the [prebuilt release instructions](../herdr-tmux/README.md#prebuilt-release)
+for installation without a dotfiles checkout.
+
+Recipe `herdr-tmux-register` creates a fresh registration or refreshes an
+enabled registration whose commands already use the mise release. Source,
+Cargo, manually installed, GitHub, and disabled registrations need an
+explicit switch. To move an enabled local registration to mise, install
+the pinned release first. From a running Herdr session, check the binary
+version, unlink the existing registration, and register the release.
+
+```bash
+herdr_tmux_bin="$(mise which herdr-tmux --tool github:Unique-Divine/dotfiles)" &&
+  "$herdr_tmux_bin" --version &&
+  herdr plugin unlink unique-divine.herdr-tmux &&
+  just herdr-tmux-register
+```
+
+To return to the local build, unlink the release registration and run the
+source build and link recipe from the dotfiles root.
+
+```bash
+herdr plugin unlink unique-divine.herdr-tmux
+just --justfile herdr-tmux/justfile plugin-link
+```
+
+If the release registration fails after unlinking the source, run the source
+build and link recipe to restore it.
 
 ## Pane layouts and focus commands
 
@@ -113,13 +152,7 @@ The tmux layout bindings are available in Herdr too:
 
 The layout commands preserve existing pane processes and scrollback. Both
 pickers support search with `/` and cancel with Escape from navigation mode.
-They validate the selected pane or agent before focusing it. Build and link
-the `herdr-tmux` plugin from its sibling source directory:
-
-```bash
-cd "$DOTFILES/herdr-tmux"
-just plugin-link
-```
+They validate the selected pane or agent before focusing it.
 
 For local development, `--socket-path`, `--tab-id`, and `--pane-id` override
 Herdr's injected environment.

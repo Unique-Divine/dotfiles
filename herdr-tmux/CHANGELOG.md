@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+- Publish prebuilt Linux and macOS archives for x86-64 and ARM64, with
+  SHA-256 checksums and GitHub build provenance.
+
+- Number idle, done, and blocked agents in the agent picker. Use arrows,
+  `j`/`k`, and Enter to open any agent.
 
 - Enlarge both popup pickers to 116 columns by 42 rows, with visible row
   ranges, overflow arrows, and title-first constrained layouts.
@@ -13,8 +19,7 @@
 
 - Search the agent table by title, harness, status, or location with `/`.
 
-- Remove the agent picker limit. Keep digits for the first ten agents and
-  navigate every row with Vim keys, arrows, and Enter.
+- Remove the agent picker row limit.
 - Keep the agent picker open until selection or cancellation.
 
 ## 0.1.0

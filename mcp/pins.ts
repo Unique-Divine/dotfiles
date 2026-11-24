@@ -237,6 +237,11 @@ export const applyJiyuuPins = (
     const label = useLocal ? "local Jiyuu checkout"
       : `${pin.package}@${pin.version}`
 
+    // The encrypted Discord fallback pins the package in its launcher.
+    if (name === "discord-mcp" && isRecord(server) &&
+      typeof server.command === "string" && basename(server.command) === "mcp-discord-launch" &&
+      sameArgs(server.args, ["stdio"])) continue
+
     if (server === undefined) {
       warnings.push(`${name}: not in the Codex config; add it with its env ` +
         `to run ${label}`)

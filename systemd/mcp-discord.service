@@ -1,0 +1,11 @@
+[Unit]
+Description=Shared Discord MCP server
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/mcp-discord-launch shared
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
