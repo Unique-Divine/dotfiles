@@ -11,9 +11,9 @@ is `herdr-tmux`, and the plugin ID is `unique-divine.herdr-tmux`.
 2. Run `just release-check` from this directory on committed changes. Use
    `cargo package --list --locked` to confirm the package includes the
    plugin manifest, source, license, docs, lockfile, and fixtures.
-3. In the PR, wait for the **Herdr tmux release** workflow and the regular CI
-   checks. The release workflow builds native binaries for all four targets,
-   validates their versions, and uploads the assembled bundle for inspection.
+3. In the PR, wait for the **CI result** check. The **tmux-release-build** job
+   builds native binaries for all four targets, validates their versions,
+   and uploads the assembled bundle for inspection.
 
 ## Publish to GitHub
 

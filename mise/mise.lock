@@ -134,6 +134,66 @@ url = "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_ar
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/679195704"
 provenance = "github-attestations"
 
+[[tools."github:Unique-Divine/dotfiles"]]
+version = "0.2.0"
+backend = "github:Unique-Divine/dotfiles"
+specifiers = ["0.2.0"]
+
+[tools."github:Unique-Divine/dotfiles".options]
+asset_pattern = "herdr-tmux-v{{ version }}-aarch64-unknown-linux-musl.tar.gz"
+version_prefix = "herdr-tmux/v"
+
+[tools."github:Unique-Divine/dotfiles"."platforms.linux-arm64"]
+checksum = "sha256:32390634ff1e6b0e0d02043e3db30fcab953a3f58b6444ea3c33a372a5e5c07f"
+url = "https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v0.2.0/herdr-tmux-v0.2.0-aarch64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/dotfiles/releases/assets/787907749"
+provenance = "github-attestations"
+
+[[tools."github:Unique-Divine/dotfiles"]]
+version = "0.2.0"
+backend = "github:Unique-Divine/dotfiles"
+specifiers = ["0.2.0"]
+
+[tools."github:Unique-Divine/dotfiles".options]
+asset_pattern = "herdr-tmux-v{{ version }}-x86_64-unknown-linux-musl.tar.gz"
+version_prefix = "herdr-tmux/v"
+
+[tools."github:Unique-Divine/dotfiles"."platforms.linux-x64"]
+checksum = "sha256:8aebf5725989f8d58fe5737609443527469852e4825316fd3b6ec519d071dd1f"
+url = "https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v0.2.0/herdr-tmux-v0.2.0-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/dotfiles/releases/assets/787907750"
+provenance = "github-attestations"
+
+[[tools."github:Unique-Divine/dotfiles"]]
+version = "0.2.0"
+backend = "github:Unique-Divine/dotfiles"
+specifiers = ["0.2.0"]
+
+[tools."github:Unique-Divine/dotfiles".options]
+asset_pattern = "herdr-tmux-v{{ version }}-aarch64-apple-darwin.tar.gz"
+version_prefix = "herdr-tmux/v"
+
+[tools."github:Unique-Divine/dotfiles"."platforms.macos-arm64"]
+checksum = "sha256:33c054f56003565317a49b9461e713bbe2caf29667836d9b1da355ec62159d4b"
+url = "https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v0.2.0/herdr-tmux-v0.2.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/dotfiles/releases/assets/787907747"
+provenance = "github-attestations"
+
+[[tools."github:Unique-Divine/dotfiles"]]
+version = "0.2.0"
+backend = "github:Unique-Divine/dotfiles"
+specifiers = ["0.2.0"]
+
+[tools."github:Unique-Divine/dotfiles".options]
+asset_pattern = "herdr-tmux-v{{ version }}-x86_64-apple-darwin.tar.gz"
+version_prefix = "herdr-tmux/v"
+
+[tools."github:Unique-Divine/dotfiles"."platforms.macos-x64"]
+checksum = "sha256:b5c687d1c7a91c8703a227409e5e42122403967d7d22b099efd57d46f148f370"
+url = "https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v0.2.0/herdr-tmux-v0.2.0-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/dotfiles/releases/assets/787907746"
+provenance = "github-attestations"
+
 [[tools."github:Unique-Divine/jiyuu"]]
 version = "0.14.3"
 backend = "github:Unique-Divine/jiyuu"
