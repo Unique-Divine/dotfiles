@@ -144,12 +144,13 @@ fn run_build_info_command(args: &[String]) -> i32 {
             println!("herdr {} ({})", info.version, info.source);
             println!("Source commit: {}", info.commit.unwrap_or("unknown"));
             println!("Upstream base: {}", info.upstream_baseline);
-            println!("Update provider: {}", info.update_provider);
+            println!("Fork releases: {}", info.update_provider);
             if let Some(command) = info.update_command {
                 println!("From the dotfiles checkout, run `{command}`.");
             } else {
                 println!("Use the verified Windows ZIP from the dotfiles Herdr release.");
             }
+            println!("Built-in update notices and commands target upstream Herdr.");
             0
         }
         [flag] if flag == "--json" => {

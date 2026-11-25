@@ -34,6 +34,7 @@ const cases: [string, string[], string[]][] = [
   ["vendored native input", ["herdr/vendor/libghostty-vt/build.zig"], ["herdr_native"]],
   ["embedded TS", ["herdr/src/integration/assets/herdr-agent-state.ts"], ["bun", "herdr_native"]],
   ["native Cargo", ["herdr/Cargo.lock"], ["herdr_native"]],
+  ["native provenance", ["herdr/UPSTREAM.md"], ["herdr_native"]],
   ["embedded skill", ["herdr/skills/herdr/SKILL.md"], ["herdr_native"]],
   ["embedded schema", ["herdr/docs/next/api/herdr-api.schema.json"], ["herdr_native"]],
   ["Windows packaging", ["herdr/scripts/package_windows_conpty.ps1"], ["herdr_native"]],

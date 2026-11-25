@@ -18,6 +18,7 @@ include = [
     "README.md",
     "LICENSE",
     "Cargo.toml",
+    "UPSTREAM.md",
 ]
 
 [workspace]

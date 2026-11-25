@@ -4,8 +4,8 @@ use serde::Serialize;
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const SOURCE: &str = "Unique-Divine/dotfiles";
-const UPSTREAM_BASELINE: &str = "v0.9.3";
-const UPSTREAM_COMMIT: &str = "7b116c05bfda646af39d2524c54e70c751f57ee8";
+const UPSTREAM_BASELINE: &str = env!("HERDR_UPSTREAM_VERSION");
+const UPSTREAM_COMMIT: &str = env!("HERDR_UPSTREAM_COMMIT");
 
 #[derive(Serialize)]
 pub(crate) struct BuildInfo {
@@ -17,6 +17,7 @@ pub(crate) struct BuildInfo {
     pub upstream_commit: &'static str,
     pub update_provider: &'static str,
     pub update_command: Option<&'static str>,
+    pub upstream_update_commands: [&'static str; 2],
 }
 
 pub(crate) fn current() -> BuildInfo {
@@ -33,6 +34,7 @@ pub(crate) fn current() -> BuildInfo {
         } else {
             Some("just herdr-install")
         },
+        upstream_update_commands: ["herdr update", "herdr channel set <stable|preview>"],
     }
 }
 

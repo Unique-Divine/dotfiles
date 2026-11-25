@@ -1,9 +1,10 @@
 # Herdr Fork Provenance
 
-Unique Divine's Herdr fork uses Herdr v0.9.3 at upstream commit
-`7b116c05bfda646af39d2524c54e70c751f57ee8` from
-<https://github.com/herdrdev/herdr>. It is part of the dotfiles repository,
-not a Git submodule.
+This directory contains Unique Divine's fork of
+[upstream Herdr](https://github.com/herdrdev/herdr).
+
+- Upstream version: `v0.9.3`
+- Upstream commit: `7b116c05bfda646af39d2524c54e70c751f57ee8`
 
 The previous snapshot came from fork commit
 `5f6e4b222d32225e5c77a190064c61ff9549e6a0`, based on upstream commit
@@ -67,8 +68,9 @@ The version in `Cargo.toml` identifies the fork package. The upstream
 baseline and fork version progress independently. Run `herdr build-info
 --json` to see both, the source commit, and the update provider.
 The command describes the binary it runs. Use `herdr status` to check the
-running server's version and protocol. A source archive built without Git
-metadata reports a null commit unless the build sets `HERDR_BUILD_COMMIT`.
+running server's version and protocol. A build with changes to the source
+inputs reports a null commit. A source archive also reports a null commit
+unless the build sets `HERDR_BUILD_COMMIT` to its known source revision.
 Dotfiles builds and publishes the fork.
 See [Herdr releases](../herdr-release/README.md) for commands and checks.
 Windows packaging metadata and license notices are retained for release ZIPs.

@@ -167,9 +167,6 @@ They validate the selected pane or agent before focusing it.
 - Press `Ctrl-b 0` through `Ctrl-b 8` to select the first nine tabs in the
   workspace. The fork uses zero-based tab labels and adjusts single-digit
   prefixes after a move or close.
-- Press `Ctrl-b t` to open the tab order in Neovim. Use `J` and `K` to move
-  a tab down or up, and `:w` or `:wq` to apply. Quit with `:q!` to discard
-  edits since the last save. The binding uses the `herdr-tmux` tab editor.
 - Press `Ctrl-b Shift+t` to rename the focused tab. Use `herdr tab rename`
   and `herdr tab move` for scripts that operate on tab IDs.
 - Press `Ctrl-b Shift+a` for the fork's native agent-only navigator. The

@@ -149,7 +149,7 @@ fn config_command() -> Command {
 
 fn channel_command() -> Command {
     Command::new("channel")
-        .about("Manage stable and preview update channels")
+        .about("Manage upstream stable and preview update channels")
         .subcommand(Command::new("show").about("Print the configured update channel"))
         .subcommand(
             Command::new("set").about("Choose the update channel").arg(
