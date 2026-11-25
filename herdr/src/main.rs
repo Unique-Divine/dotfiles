@@ -606,6 +606,7 @@ fn main() -> io::Result<()> {
         println!("       herdr session attach <name>");
         println!("       herdr completion zsh");
         println!("       herdr update [--handoff]");
+        println!("       herdr build-info [--json]");
         println!("       herdr channel set <stable|preview>");
         println!("       herdr machine <subcommand> ...");
         println!("       herdr server stop");
@@ -630,7 +631,11 @@ fn main() -> io::Result<()> {
                 "herdr status [server|client]",
                 "Show local client and running server status",
             ),
-            ("herdr update", "Download and install the latest version"),
+            (
+                "herdr build-info",
+                "Show local binary source and fork update provider",
+            ),
+            ("herdr update", "Install an upstream release"),
             ("herdr completion zsh", "Generate shell completions for zsh"),
             (
                 "herdr server stop",

@@ -19,11 +19,11 @@ tab-creation dialogs. See [issue #57](https://github.com/Unique-Divine/dotfiles/
 ```bash
 just herdr-install                     # Build and install source
 just herdr-install --ver source        # Explicit source installation
-just herdr-install --get 0.9.7         # Cache a runnable release; print its path
-just herdr-install --ver 0.9.7         # Install a verified release
+just herdr-install --get 0.9.6         # Cache a runnable release; print its path
+just herdr-install --ver 0.9.6         # Install a verified release
 ```
 
-Release commands accept `0.9.7`, `v0.9.7`, or `herdr-ud/v0.9.7`. They require
+Release commands accept `0.9.6`, `v0.9.6`, or `herdr-ud/v0.9.6`. They require
 Bun and dependencies from `bun install`. Configured GitHub CLI authentication
 is used when available. Public releases also support downloads without login.
 Private repository access requires GitHub CLI and `gh auth login`. Cargo and
@@ -43,8 +43,20 @@ Installation checks the executable version and atomically replaces
 Put `~/.local/bin` early in `PATH`. Existing sessions keep their loaded binary;
 these commands do not restart them.
 
-Command `herdr update` still installs upstream releases. Use the versioned
-installation command for fork updates. Redirecting the updater is separate work.
+Run `herdr build-info --json` to identify the binary. Fields
+`update_provider` and `update_command` refer to updating the fork. The built-in
+update notice and command `herdr update` point to upstream Herdr. Changing the
+channel with `herdr channel set` can also invoke the upstream updater.
+Use the versioned installation command for fork updates on Unix.
+
+The latest published Windows fork package is 0.9.6. Download it from the
+[dotfiles release](https://github.com/Unique-Divine/dotfiles/releases/tag/herdr-ud/v0.9.6)
+and verify the
+`herdr-windows-x86_64.zip` SHA-256 against `checksums.txt` from the same
+dotfiles release. Keep `herdr.exe` and its bundled ConPTY files together.
+Extract to a separate directory before replacing an installed copy.
+Version 0.9.6 predates `herdr.exe build-info --json`. Use its published
+metadata and archive hash for provenance.
 
 ## Publish a release
 
