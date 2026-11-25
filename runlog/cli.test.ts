@@ -81,21 +81,25 @@ const plantRun = (
   home: string, runId: string, opts: {
     parent?: string | null; end?: { exit: number; status: string } | null
     pid?: number; pidStart?: number; ts?: Date
+    source?: string
     /** Also append the run's line to the day's index. */
     indexed?: boolean
   } = {},
 ): void => {
   const id: RunIdentity = {
-    source: "dotfiles", runId, parentRunId: opts.parent ?? null,
-    rootRunId: opts.parent ?? runId, tool: runId.split("-")[1]!,
+    source: opts.source ?? "dotfiles", runId,
+    parentRunId: opts.parent ?? null, rootRunId: opts.parent ?? runId,
+    tool: runId.split("-").slice(1, -1).join("-"),
   }
   const startTs = opts.ts ?? new Date(Date.UTC(
     2000 + Number(runId.slice(0, 2)), Number(runId.slice(2, 4)) - 1,
     Number(runId.slice(4, 6)), 12,
   ))
+  const writer = opts.source === "shepherd" ? {} : {
+    pid: opts.pid ?? 999999, pid_start: opts.pidStart ?? 1,
+  }
   const lines = [buildEvent(id, "start", {
-    argv: [], pid: opts.pid ?? 999999, pid_start: opts.pidStart ?? 1,
-    boot_id: "planted",
+    argv: [], boot_id: "planted", ...writer,
   }, startTs)]
   if (opts.end) {
     lines.push(buildEvent(id, "end", {
@@ -898,6 +902,35 @@ describe("reader", () => {
     expect(list.stdout).toMatch(/from-index .*git_mf-aaaa/)
     expect(list.stdout).toMatch(/incomplete .*sync-bbbb/)
   }))
+
+  test("open Shepherd runs stay managed until their journal records an end",
+    withHome(async (home) => {
+      const today = dayAgo(0)
+      const past = dayAgo(10)
+      const agent = `${stampFor(today)}-shepherd-agent-aaaa`
+      const job = `${stampFor(past)}-shepherd-job-bbbb`
+      const other = `${stampFor(past)}-shepherd-job-cccc`
+      plantRun(home, agent, { source: "shepherd" })
+      plantRun(home, job, { source: "shepherd", indexed: true })
+      plantRun(home, other)
+
+      const before = await runCli(["list"], baseEnv(home))
+      expect(before.stdout).toMatch(new RegExp(`managed .*${agent}`))
+      expect(before.stdout).toMatch(new RegExp(`managed .*${job}`))
+      expect(before.stdout).toMatch(new RegExp(`incomplete .*${other}`))
+
+      const rebuilt = await runCli(["reindex", past], baseEnv(home))
+      expect(rebuilt.exitCode).toBe(0)
+      expect(readEvents(indexPath(home, past)).find((e) => e.run_id === job)?.status)
+        .toBe("managed")
+
+      appendEvents(home, job, [{
+        event: "end", status: "failed", exit: 4, dur_ms: 5,
+      }])
+      const finished = await runCli(["list"], baseEnv(home))
+      expect(finished.stdout).toMatch(new RegExp(`failed .*${job}`))
+    }),
+  )
 
   test("a past day shows killed runs its index lacks, with children",
     withHome(async (home) => {
