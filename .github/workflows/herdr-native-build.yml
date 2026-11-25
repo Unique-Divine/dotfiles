@@ -38,6 +38,7 @@ jobs:
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
       LIBGHOSTTY_VT_SIMD: "true"
+      HERDR_BUILD_COMMIT: ${{ inputs.source_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -79,6 +80,7 @@ jobs:
           cp "target/$BUILD_TARGET/release/herdr" "$ASSET"
           expected="herdr ${RELEASE_TAG#herdr-ud/v}"
           test "$(./"$ASSET" --version)" = "$expected"
+          ./"$ASSET" build-info --json | python3 -c 'import json, os, sys; data = json.load(sys.stdin); assert data["source"] == "Unique-Divine/dotfiles"; assert data["commit"] == os.environ["HERDR_BUILD_COMMIT"]; assert data["update_provider"] == "dotfiles"'
           ./"$ASSET" --help >/dev/null
       - name: Package and smoke-test Windows binary
         if: runner.os == 'Windows'
@@ -98,6 +100,11 @@ jobs:
           $version = (& $exe --version | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $version -ne "herdr $($env:RELEASE_TAG -replace '^herdr-ud/v', '')") {
             throw "Unexpected executable version: $version"
+          }
+          $info = (& $exe build-info --json | Out-String) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $info.source -ne "Unique-Divine/dotfiles" -or
+              $info.commit -ne $env:HERDR_BUILD_COMMIT -or $info.update_provider -ne "dotfiles") {
+            throw "Windows binary did not identify the expected fork and build commit"
           }
           & $exe --help
           if ($LASTEXITCODE -ne 0) { throw "Windows help smoke test failed" }

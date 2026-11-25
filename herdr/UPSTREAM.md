@@ -1,6 +1,6 @@
-# Vendored Herdr source
+# Herdr Fork Provenance
 
-This directory vendors Herdr v0.9.3 at upstream commit
+Unique Divine's Herdr fork uses Herdr v0.9.3 at upstream commit
 `7b116c05bfda646af39d2524c54e70c751f57ee8` from
 <https://github.com/herdrdev/herdr>. It is part of the dotfiles repository,
 not a Git submodule.
@@ -61,9 +61,14 @@ env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH \
   -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID NEXTEST_TEST_THREADS=4 just ci
 ```
 
-## Fork releases
+## Fork Releases
 
-The fork package is version 0.9.6; the recorded upstream base stays v0.9.3.
-Dotfiles owns release builds and downloads.
+The version in `Cargo.toml` identifies the fork package. The upstream
+baseline and fork version progress independently. Run `herdr build-info
+--json` to see both, the source commit, and the update provider.
+The command describes the binary it runs. Use `herdr status` to check the
+running server's version and protocol. A source archive built without Git
+metadata reports a null commit unless the build sets `HERDR_BUILD_COMMIT`.
+Dotfiles builds and publishes the fork.
 See [Herdr releases](../herdr-release/README.md) for commands and checks.
 Windows packaging metadata and license notices are retained for release ZIPs.

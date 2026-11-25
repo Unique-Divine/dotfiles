@@ -4,6 +4,14 @@
 places it at `~/.config/herdr/config.toml`; Herdr session state and logs remain
 outside this directory.
 
+## Identify the Fork
+
+Run `herdr build-info` to identify the installed binary and its update
+provider. The dotfiles fork reports source `Unique-Divine/dotfiles`. For
+older binaries, a version alone cannot establish provenance. Check the
+release metadata and executable hash, or rebuild from the dotfiles checkout.
+Run `herdr status` to check the version of a live server separately.
+
 ## Codex history and restore
 
 The TypeScript defaults in `../codex/config.ts` set
@@ -23,7 +31,7 @@ inside Herdr. Explicit remote connections and the `codex agents` overview keep
 their required daemon behavior. A new chat gets its session ID when the first
 prompt starts; an untouched welcome screen has no conversation to restore.
 
-Build and install the vendored v0.9.7 fork with `just herdr-install` from the
+Build and install the vendored fork with `just herdr-install` from the
 dotfiles root. It requires Zig 0.16.0, available through `brew install zig@0.16`
 or the `ZIG` environment variable. Avoid `herdr update`, which replaces the
 custom binary with an upstream release.
@@ -153,6 +161,19 @@ The tmux layout bindings are available in Herdr too:
 The layout commands preserve existing pane processes and scrollback. Both
 pickers support search with `/` and cancel with Escape from navigation mode.
 They validate the selected pane or agent before focusing it.
+
+## Tabs and Agent Navigation
+
+- Press `Ctrl-b 0` through `Ctrl-b 8` to select the first nine tabs in the
+  workspace. The fork uses zero-based tab labels and adjusts single-digit
+  prefixes after a move or close.
+- Press `Ctrl-b t` to open the tab order in Neovim. Use `J` and `K` to move
+  a tab down or up, and `:w` or `:wq` to apply. Quit with `:q!` to discard
+  edits since the last save. The binding uses the `herdr-tmux` tab editor.
+- Press `Ctrl-b Shift+t` to rename the focused tab. Use `herdr tab rename`
+  and `herdr tab move` for scripts that operate on tab IDs.
+- Press `Ctrl-b Shift+a` for the fork's native agent-only navigator. The
+  unshifted `Ctrl-b a` opens the numbered plugin picker.
 
 For local development, `--socket-path`, `--tab-id`, and `--pane-id` override
 Herdr's injected environment.

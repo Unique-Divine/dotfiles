@@ -43,8 +43,14 @@ Installation checks the executable version and atomically replaces
 Put `~/.local/bin` early in `PATH`. Existing sessions keep their loaded binary;
 these commands do not restart them.
 
-Command `herdr update` still installs upstream releases. Use the versioned
-installation command for fork updates. Redirecting the updater is separate work.
+Run `herdr build-info --json` to identify the binary before choosing an
+update. Command `herdr update` installs upstream releases. Use the versioned
+installation command for fork updates on Unix. On native Windows, verify the
+`herdr-windows-x86_64.zip` SHA-256 against `checksums.txt` from the same
+dotfiles release. Keep `herdr.exe` and its bundled ConPTY files together.
+Extract to a separate directory and run `herdr.exe build-info --json`
+before replacing an installed copy. Older fork packages require checking the
+published metadata and archive hash for provenance.
 
 ## Publish a release
 

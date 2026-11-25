@@ -31,6 +31,11 @@ pub(super) fn command() -> Command {
         )
         .subcommand(completion::command())
         .subcommand(update_command())
+        .subcommand(
+            Command::new("build-info")
+                .about("Show local binary source and fork update provider")
+                .arg(json_flag()),
+        )
         .subcommand(status_command())
         .subcommand(config_command())
         .subcommand(channel_command())
@@ -115,7 +120,7 @@ fn write_requested_help(
 
 fn update_command() -> Command {
     Command::new("update")
-        .about("Download and install the latest version")
+        .about("Install an upstream release. Run `herdr build-info` for fork update guidance")
         .arg(flag("handoff").help("Try live handoff after installing"))
 }
 

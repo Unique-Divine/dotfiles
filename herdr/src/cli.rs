@@ -116,6 +116,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         }
         "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
+        "build-info" => run_build_info_command(&args[2..]),
         "completion" | "completions" => completion::run_completion_command(&args[2..])?,
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
@@ -134,6 +135,32 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
     };
 
     Ok(CommandOutcome::Handled(exit_code))
+}
+
+fn run_build_info_command(args: &[String]) -> i32 {
+    let info = crate::build_info::current();
+    match args {
+        [] => {
+            println!("herdr {} ({})", info.version, info.source);
+            println!("Source commit: {}", info.commit.unwrap_or("unknown"));
+            println!("Upstream base: {}", info.upstream_baseline);
+            println!("Update provider: {}", info.update_provider);
+            if let Some(command) = info.update_command {
+                println!("From the dotfiles checkout, run `{command}`.");
+            } else {
+                println!("Use the verified Windows ZIP from the dotfiles Herdr release.");
+            }
+            0
+        }
+        [flag] if flag == "--json" => {
+            _print_json(&info);
+            0
+        }
+        _ => {
+            eprintln!("usage: herdr build-info [--json]");
+            2
+        }
+    }
 }
 
 fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
