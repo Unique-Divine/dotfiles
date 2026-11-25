@@ -29,7 +29,8 @@ export const tapNotice =
   "ud boku runs tap: progress display stopped; output still saved"
 
 export type Event = Fields & { event?: string; ts?: string; run_id?: string }
-export type ListStatus = "ok" | "stopped" | "failed" | "running" | "incomplete"
+export type ListStatus =
+  | "ok" | "stopped" | "failed" | "running" | "incomplete" | "managed"
 
 export interface RunSummary {
   runId: string
@@ -154,6 +155,10 @@ const readJsonl = (file: string): Event[] => {
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null)
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null)
 
+const isShepherdRun = (event: Event): boolean =>
+  event.v === 1 && event.source === "shepherd"
+    && (event.tool === "shepherd-agent" || event.tool === "shepherd-job")
+
 /** Status of a run with no `end`: alive with the same start, or not. */
 export const liveStatus = (
   start: Event, probe: LiveProbe, now: Date,
@@ -193,7 +198,9 @@ export const summarizeEvents = (
     ts: str(start.ts) ?? "",
     durMs: end ? num(end.dur_ms) : null,
     exit: end ? num(end.exit) : null,
-    status: end ? str(end.status) ?? "ok" : noEnd(start),
+    status: end
+      ? str(end.status) ?? "ok"
+      : isShepherdRun(start) ? "managed" : noEnd(start),
     warns: num(end?.warns) ?? count("warn"),
     errors: num(end?.errors) ?? count("error"),
     agent,
@@ -239,9 +246,15 @@ export const scanDay = (
     runId, readJsonl(runFilePath(home, runId)), noEnd))
 
 /** A past day's index summaries, one per run id. */
-const indexSummaries = (home: string, day: string): RunSummary[] => {
+const indexSummaries = (
+  home: string, day: string, ignoreOpenManaged = false,
+): RunSummary[] => {
   const byId = new Map<string, RunSummary>()
   for (const line of readJsonl(indexPath(home, day))) {
+    // A reindexed Shepherd run may finish later. Prefer its journal to an
+    // index entry written before it ended, including entries by older readers.
+    if (ignoreOpenManaged && isShepherdRun(line)
+      && (line.status === "managed" || line.status === "incomplete")) continue
     const summary = summaryFromIndex(line)
     if (summary && !byId.has(summary.runId)) byId.set(summary.runId, summary)
   }
@@ -259,8 +272,8 @@ export const indexIncomplete = (home: string, day: string): boolean => {
 
 /**
  * Every run, oldest first. Today and yesterday are read from run files.
- * Older days come from their index, plus any run file the index lacks: a
- * killed run never writes its index line.
+ * Older days come from their index, with journals for missing runs and open
+ * Shepherd runs.
  */
 export const loadRuns = (
   home: string, now: Date = new Date(), probe: LiveProbe = systemProbe(),
@@ -273,7 +286,7 @@ export const loadRuns = (
       runs.push(...scanDay(home, day, live))
       continue
     }
-    const indexed = indexSummaries(home, day)
+    const indexed = indexSummaries(home, day, true)
     runs.push(...indexed)
     const skip = new Set(indexed.map((r) => r.runId))
     runs.push(...scanDay(home, day, () => "incomplete", skip))
@@ -1245,6 +1258,8 @@ const parseIntArg = (value: string, name: string): number => {
 export const createProgram = (env: Env = process.env): Command => {
   const program = new Command()
   const home = (): string => bokuHome(env)
+  const managedHelp = "\nA managed run is open in the journal. Check its state "
+    + "with shepherd agent status <run-id> or shepherd job status <job-id>."
   const listAction = (opts: { limit: string }) => guard(() => {
     const runs = loadRuns(home())
     if (!topLevelRuns(runs).length) {
@@ -1257,11 +1272,13 @@ export const createProgram = (env: Env = process.env): Command => {
   program
     .name("ud boku runs")
     .description("Read and maintain the Boku run log (~/.boku/runs)")
+    .addHelpText("after", managedHelp)
     .option("-n, --limit <n>", "how many top-level runs to list", "20")
     .action((opts: { limit: string }) => listAction(opts)())
 
   program.command("list")
     .description("the last top-level runs, newest first")
+    .addHelpText("after", managedHelp)
     .option("-n, --limit <n>", "how many runs", "20")
     .action((opts: { limit: string }) => listAction(opts)())
 
