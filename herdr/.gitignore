@@ -9,12 +9,8 @@ __pycache__/
 .DS_Store
 
 /docs/*
-!/docs/next/
-!/docs/next/**
-!/docs/preview/
-!/docs/preview/**
-!/docs/versions/
-!/docs/versions/**
+!/docs/api/
+!/docs/api/herdr-api.schema.json
 /.local/
 /backlog
 

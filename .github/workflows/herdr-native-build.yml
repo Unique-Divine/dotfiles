@@ -38,6 +38,7 @@ jobs:
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
       LIBGHOSTTY_VT_SIMD: "true"
+      HERDR_BUILD_COMMIT: ${{ inputs.source_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,10 +63,19 @@ jobs:
         with:
           workspaces: herdr
           key: herdr-release-${{ matrix.target }}
+      - name: Verify source provenance behavior
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: python3 -m unittest scripts.test_build_provenance
       - name: Build locked Rust source
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$BUILD_TARGET"
+        shell: bash
+      - name: Verify generated API schema
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo test --release --locked --target "$BUILD_TARGET" --bin herdr protocol_schema
         shell: bash
       - name: Package and smoke-test Unix binary
         if: runner.os != 'Windows'
@@ -79,6 +89,8 @@ jobs:
           cp "target/$BUILD_TARGET/release/herdr" "$ASSET"
           expected="herdr ${RELEASE_TAG#herdr-ud/v}"
           test "$(./"$ASSET" --version)" = "$expected"
+          python3 scripts/check_build_info.py ./"$ASSET"
+          ./"$ASSET" api schema --json | cmp docs/api/herdr-api.schema.json -
           ./"$ASSET" --help >/dev/null
       - name: Package and smoke-test Windows binary
         if: runner.os == 'Windows'
@@ -98,6 +110,13 @@ jobs:
           $version = (& $exe --version | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $version -ne "herdr $($env:RELEASE_TAG -replace '^herdr-ud/v', '')") {
             throw "Unexpected executable version: $version"
+          }
+          python scripts/check_build_info.py $exe
+          if ($LASTEXITCODE -ne 0) { throw "Windows provenance smoke test failed" }
+          $schema = Join-Path $env:RUNNER_TEMP "herdr-api.schema.json"
+          & $exe api schema --output $schema
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash $schema).Hash -ne (Get-FileHash docs/api/herdr-api.schema.json).Hash) {
+            throw "Embedded API schema differs from the checked-in bundle"
           }
           & $exe --help
           if ($LASTEXITCODE -ne 0) { throw "Windows help smoke test failed" }
