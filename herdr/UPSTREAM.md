@@ -34,9 +34,9 @@ The previous snapshot came from fork commit
 - The local `CLAUDE.md` convention is retained.
 
 The tree keeps the Rust application, workspace crates, tests, embedded assets,
-API schema, draft documentation, maintenance tools, and vendored terminal
+API schema, maintenance tools, and vendored terminal
 libraries. It excludes the Astro website, release CI, distribution installers,
-non-Windows packaging, Nix files, preview and published website docs, and the
+non-Windows packaging, Nix files, website drafts and snapshots, and the
 plugin-worker app.
 The embedded Windows installer and release metadata remain under `distribution/`
 because the application and its tests compile them into the binary. The local
@@ -48,7 +48,7 @@ Building v0.9.3 requires Zig 0.16.0.
 Clone upstream separately. Compare its desired tag, the recorded upstream
 commit, and this tree with a three-way merge. Port local behavior to renamed
 modules rather than restoring old modules. Keep the exclusions above, and run
-`just ci`, `just docs-contract-test`, and the local restart smoke test before
+`just ci` and the local restart smoke test before
 installing with `just herdr-install` from the dotfiles root. Do not run
 `herdr update`, which installs an upstream binary without the local changes.
 

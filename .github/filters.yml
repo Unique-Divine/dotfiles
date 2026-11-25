@@ -40,7 +40,7 @@ herdr_native:
   - 'herdr/UPSTREAM.md'
   - 'herdr/{src,crates,vendor}/**'
   - 'herdr/assets/**'
-  - 'herdr/docs/next/api/herdr-api.schema.json'
+  - 'herdr/docs/api/herdr-api.schema.json'
   - 'herdr/skills/herdr/SKILL.md'
   - 'herdr/distribution/install.ps1'
   - 'herdr/{README.md,LICENSE}'

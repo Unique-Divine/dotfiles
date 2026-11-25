@@ -71,6 +71,12 @@ jobs:
           BUILD_TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$BUILD_TARGET"
         shell: bash
+      - name: Verify generated API schema
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo test --release --locked --target "$BUILD_TARGET" --bin herdr protocol_schema
+        shell: bash
       - name: Package and smoke-test Unix binary
         if: runner.os != 'Windows'
         shell: bash
@@ -84,6 +90,7 @@ jobs:
           expected="herdr ${RELEASE_TAG#herdr-ud/v}"
           test "$(./"$ASSET" --version)" = "$expected"
           python3 scripts/check_build_info.py ./"$ASSET"
+          ./"$ASSET" api schema --json | cmp docs/api/herdr-api.schema.json -
           ./"$ASSET" --help >/dev/null
       - name: Package and smoke-test Windows binary
         if: runner.os == 'Windows'
@@ -106,6 +113,11 @@ jobs:
           }
           python scripts/check_build_info.py $exe
           if ($LASTEXITCODE -ne 0) { throw "Windows provenance smoke test failed" }
+          $schema = Join-Path $env:RUNNER_TEMP "herdr-api.schema.json"
+          & $exe api schema --output $schema
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash $schema).Hash -ne (Get-FileHash docs/api/herdr-api.schema.json).Hash) {
+            throw "Embedded API schema differs from the checked-in bundle"
+          }
           & $exe --help
           if ($LASTEXITCODE -ne 0) { throw "Windows help smoke test failed" }
       - uses: actions/upload-artifact@v7
