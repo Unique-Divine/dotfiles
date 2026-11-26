@@ -31,7 +31,7 @@ From an empty directory, download the archive and verify its SHA-256 checksum.
 Set the `target` variable to the value for your platform.
 
 ```bash
-version=0.2.0
+version=0.3.0
 target=x86_64-unknown-linux-musl
 archive="herdr-tmux-v$version-$target.tar.gz"
 base="https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v$version"
@@ -70,7 +70,7 @@ With Rust and Cargo installed, Herdr can build and register the source plugin
 at a pinned release tag.
 
 ```bash
-herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
+herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.3.0
 ```
 
 ### Build from crates.io
@@ -78,7 +78,7 @@ herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
 When the version is available on crates.io, use Cargo to build the executable.
 
 ```bash
-cargo install herdr-tmux --version 0.2.0 --locked
+cargo install herdr-tmux --version 0.3.0 --locked
 herdr-tmux plugin register
 ```
 
@@ -184,15 +184,21 @@ Unicode symbols without requiring an icon font.
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
-Command `herdr-tmux edit-tabs` opens the active workspace's tabs in Neovim.
-Press `V` to select whole rows and `J` or `K` to move them down or up. Use `/` to
+The `reorder-tabs` plugin action opens **Tabs · Neovim**. The buffer groups
+tabs by workspace and shows each tab's pane count and agent status. Run
+`herdr-tmux edit-tabs` to open the editor directly in a pane.
+
+Press `V` to select whole rows and `J` or `K` to move them down or up. Move
+rows under another workspace heading to transfer those tabs. Use `/` to
 search, `:w` to apply, `:wq` to apply and close, or `:q!` to discard.
-Keep every original row exactly once. If the workspace's order changed while
-you were editing, reopen the popup to get the current order.
-The prototype applies one tab move at a time. A concurrent edit during the
-save can leave some moves applied.
-From a Herdr pane, run `cargo run -- edit-tabs` in this checkout to try the
-editor directly. The popup binding requires `nvim` on the Herdr server's path.
+Keep workspace headings in order, each tab row once, and one or more tabs in
+each workspace. Reopen the editor if the session's tabs changed before saving.
+
+Moving tabs between workspaces requires a Herdr server that supports API
+method `tab.reorder`. Older servers can reorder tabs within each workspace.
+The editor uses `nvim` from the server's
+`PATH`. When that points to a mise shim or `nvim` is missing, it tries the
+Neovim installation resolved by mise.
 
 ## Plugin bindings
 

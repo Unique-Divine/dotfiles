@@ -645,7 +645,9 @@ fn fit_cell(text: &str, width: usize) -> String {
     result
 }
 
-fn agent_status_style(status: &str) -> (&'static str, Option<Color>, bool) {
+pub(crate) fn agent_status_style(
+    status: &str,
+) -> (&'static str, Option<Color>, bool) {
     match status {
         "working" => ("↻", None, false),
         "idle" => (".", Some(Color::Cyan), true),
@@ -1048,7 +1050,7 @@ pub(crate) fn configured_tab_display_index_base() -> usize {
     tab_display_index_base_from_config(&content)
 }
 
-fn herdr_config_path() -> PathBuf {
+pub(crate) fn herdr_config_path() -> PathBuf {
     if let Some(path) = env_var_path("HERDR_CONFIG_PATH") {
         return path;
     }

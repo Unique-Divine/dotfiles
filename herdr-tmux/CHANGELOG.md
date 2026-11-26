@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Add a Neovim tab editor with workspace groups, agent status, and counts.
+- Move whole tabs between workspaces on Herdr servers that support `tab.reorder`.
+
 ## 0.2.0
 
 - Publish prebuilt Linux and macOS archives for x86-64 and ARM64, with

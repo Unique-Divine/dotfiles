@@ -1,6 +1,6 @@
 id = "unique-divine.herdr-tmux"
 name = "Herdr tmux tools"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.5"
 description = "Even pane layouts, numbered pickers, and a tab order editor"
 platforms = ["linux", "macos"]
@@ -56,7 +56,7 @@ command = ["./target/release/herdr-tmux", "focus-agent"]
 
 [[panes]]
 id = "tab-editor"
-title = "Reorder tabs"
+title = "Tabs · Neovim"
 placement = "popup"
 width = 116
 height = 42

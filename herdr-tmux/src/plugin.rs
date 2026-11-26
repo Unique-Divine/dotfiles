@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Subcommand, ValueEnum};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::app::CliTarget;
+use crate::app::{CliTarget, Client};
 
 pub const PLUGIN_ID: &str = "unique-divine.herdr-tmux";
 const MANIFEST: &str = include_str!("../herdr-plugin.toml");
@@ -46,6 +46,20 @@ pub fn run(command: &PluginCommand, target: CliTarget) -> Result<()> {
             register(Path::new(&herdr), &env::current_exe()?, &root)
         }
         PluginCommand::Open { popup } => {
+            if matches!(popup, Popup::Tabs) {
+                let socket = target.socket_path.clone().or_else(|| {
+                    env::var_os("HERDR_SOCKET_PATH")
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                });
+                if let Some(socket) = socket {
+                    Client::new(socket).request::<Value>(
+                        "plugin.pane.open",
+                        json!({"plugin_id": PLUGIN_ID, "entrypoint": popup.entrypoint(), "focus": true}),
+                    )?;
+                    return Ok(());
+                }
+            }
             let mut process = Command::new(herdr);
             if let Some(socket) = target.socket_path {
                 process.env("HERDR_SOCKET_PATH", socket);

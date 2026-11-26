@@ -4346,6 +4346,27 @@
           ],
           "type": "object"
         },
+        "TabReorderParams": {
+          "properties": {
+            "desired": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/WorkspaceTabOrder"
+              },
+              "type": "array"
+            },
+            "original": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/WorkspaceTabOrder"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "original",
+            "desired"
+          ],
+          "type": "object"
+        },
         "TabTarget": {
           "properties": {
             "tab_id": {
@@ -4509,6 +4530,24 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceTabOrder": {
+          "properties": {
+            "tab_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "tab_ids"
           ],
           "type": "object"
         },
@@ -5217,6 +5256,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.reorder",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabReorderParams"
             }
           },
           "required": [
@@ -9439,6 +9494,39 @@
             },
             {
               "properties": {
+                "order": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkspaceTabOrder"
+                  },
+                  "type": "array"
+                },
+                "pane_id_changes": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "tab_id_changes": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "type": {
+                  "const": "tab_reorder",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "order",
+                "tab_id_changes",
+                "pane_id_changes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
                 },
@@ -10635,6 +10723,24 @@
             "tab_count",
             "active_tab_id",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "WorkspaceTabOrder": {
+          "properties": {
+            "tab_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "tab_ids"
           ],
           "type": "object"
         },
