@@ -538,6 +538,14 @@ nvim-mason-restore:
 cbm-reindex *ARGS:
   @bun run cbm/reindex.ts --run {{ARGS}}
 
+# Serve the cross-repo map of Codebase Memory projects (default port 9750).
+cbm-map *ARGS:
+  @bun run cbm/xrepo.ts --serve {{ARGS}}
+
+# Manage the always-indexed repos and their .cbmignore files (cbm/repos.json; --capture, --add, --restore).
+cbm-repos *ARGS:
+  @bun run cbm/repos.ts {{ARGS}}
+
 # Build Codebase Memory from the fork's ud/main and install it (--run applies; --rollback restores).
 cbm-install *ARGS:
   @bun run cbm/install.ts {{ARGS}}
