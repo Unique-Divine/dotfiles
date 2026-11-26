@@ -195,35 +195,35 @@ url_api = "https://api.github.com/repos/Unique-Divine/dotfiles/releases/assets/7
 provenance = "github-attestations"
 
 [[tools."github:Unique-Divine/jiyuu"]]
-version = "0.14.4"
+version = "0.14.5"
 backend = "github:Unique-Divine/jiyuu"
-specifiers = ["0.14.4"]
+specifiers = ["0.14.5"]
 
 [tools."github:Unique-Divine/jiyuu".options]
 version_prefix = "mori/v"
 
 [tools."github:Unique-Divine/jiyuu"."platforms.linux-arm64"]
-checksum = "sha256:db5f8ff740bd7007bf7929fb56f760f673161cf8faae871b1d8f91a3c9ad8809"
-url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.4/mori-0.14.4-linux-arm64.tar.gz"
-url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/788126573"
+checksum = "sha256:75ef35f6d8749a47574cd17e00cfb9d6b5c169b9930defddffcfdad96701678c"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.5/mori-0.14.5-linux-arm64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/789295544"
 provenance = "github-attestations"
 
 [tools."github:Unique-Divine/jiyuu"."platforms.linux-x64"]
-checksum = "sha256:202b222eedcb7ffc96212167caaa8c3af21ff8c409543a27e8a0a101325be518"
-url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.4/mori-0.14.4-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/788126577"
+checksum = "sha256:613a0551519314d7bcc861d60f53173e6efed9a0037f13a284fdd0d2dfa179e5"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.5/mori-0.14.5-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/789295555"
 provenance = "github-attestations"
 
 [tools."github:Unique-Divine/jiyuu"."platforms.macos-arm64"]
-checksum = "sha256:8dba90e4fd0868e661fdf97d78cf1364444c9a0cad0dcce606cb4f1ff00524bd"
-url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.4/mori-0.14.4-darwin-arm64.tar.gz"
-url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/788126581"
+checksum = "sha256:8fc25b29f42beddb85ce082300664ab904ffc105f90baac5b435c49598968821"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.5/mori-0.14.5-darwin-arm64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/789295553"
 provenance = "github-attestations"
 
 [tools."github:Unique-Divine/jiyuu"."platforms.macos-x64"]
-checksum = "sha256:b34eebe3d821e37500f781ac0833ca36c8e8bb653edcd86700aa24c2e9574c89"
-url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.4/mori-0.14.4-darwin-x64.tar.gz"
-url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/788126589"
+checksum = "sha256:51c5ca66000d4f15d84eb54976003b254f57d85d6d33fcd797090bf8719800f1"
+url = "https://github.com/Unique-Divine/jiyuu/releases/download/mori/v0.14.5/mori-0.14.5-darwin-x64.tar.gz"
+url_api = "https://api.github.com/repos/Unique-Divine/jiyuu/releases/assets/789295546"
 provenance = "github-attestations"
 
 [[tools."github:mbrt/gmailctl"]]
