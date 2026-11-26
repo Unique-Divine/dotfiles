@@ -78,11 +78,11 @@ const runCli = async (
 
 describe("nvmrc lists and set decisions", () => {
   test("exported allow and deny lists cover first-party and upstream", () => {
-    expect(NVMRC_SET_ALLOW).toContain("nibi-chain")
+    expect(NVMRC_SET_ALLOW).toContain("nibiru")
     expect(NVMRC_SET_ALLOW).toContain("sai-perps")
     expect(NVMRC_SET_DENY).toContain("gmx-synthetics")
     expect(NVMRC_SET_DENY).toContain("nibi-z-archive")
-    expect(nvmrcSetDecision("/ki/nibi-chain/.nvmrc")).toBe("allow")
+    expect(nvmrcSetDecision("/ki/nibiru/.nvmrc")).toBe("allow")
     expect(nvmrcSetDecision("/ki/sai-web-docs/.nvmrc")).toBe("allow")
     expect(nvmrcSetDecision("/ki/metamask-core/.nvmrc")).toBe("deny")
     expect(nvmrcSetDecision("/ki/random-app/.nvmrc")).toBe("not-allowlisted")
@@ -110,14 +110,14 @@ describe("nvmrc lists and set decisions", () => {
 
   test("list CLI prints path and pin", async () => {
     const root = await makeRoot()
-    await writeNvmrc(join(root, "nibi-chain", ".nvmrc"), "lts/jod")
+    await writeNvmrc(join(root, "nibiru", ".nvmrc"), "lts/jod")
 
     const result = await runCli(["list", "--root", root, "-L", "2"])
 
     expect(result.exitCode).toBe(0)
     expect(result.stderr).toBe("")
     expect(result.stdout).toBe(
-      `${join(root, "nibi-chain", ".nvmrc")}  lts/jod\n`,
+      `${join(root, "nibiru", ".nvmrc")}  lts/jod\n`,
     )
   })
 
@@ -130,7 +130,7 @@ describe("nvmrc lists and set decisions", () => {
 
   test("set writes allowlisted pins and skips deny-listed files", async () => {
     const root = await makeRoot()
-    const allowed = join(root, "nibi-chain", ".nvmrc")
+    const allowed = join(root, "nibiru", ".nvmrc")
     const denied = join(root, "metamask-core", ".nvmrc")
     await writeNvmrc(allowed, "lts/jod")
     await writeNvmrc(denied, "v24.13")
