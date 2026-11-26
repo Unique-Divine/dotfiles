@@ -71,8 +71,8 @@ pub(super) fn tag_list(values: &[String]) -> Vec<String> {
 /// came from: relative to the home directory when the first component is a
 /// git repository (`boku/epics/x`).
 pub(super) fn source_label(cwd: &Path, home: Option<&Path>) -> String {
-    let Some((home, rest)) =
-        home.and_then(|home| cwd.strip_prefix(home).ok().map(|rest| (home, rest)))
+    let Some((home, rest)) = home
+        .and_then(|home| cwd.strip_prefix(home).ok().map(|rest| (home, rest)))
     else {
         return cwd.to_string_lossy().into_owned();
     };
