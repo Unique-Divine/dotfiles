@@ -24,7 +24,9 @@ alias vv="nvim -"
 alias jqvv="jq | nvim -"
 
 # Core Unix
-alias grep="rg --color=auto"
+# Function, not an alias. An alias named grep breaks shells that
+# define grep() (Grok's command wrapper does this).
+grep() { rg --color=auto "$@"; }
 alias diff="diff --color=auto"
 alias df="df -h"
 
