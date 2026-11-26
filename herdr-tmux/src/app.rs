@@ -365,18 +365,18 @@ impl Drop for SessionLock {
     }
 }
 
-struct Client {
+pub(crate) struct Client {
     socket_path: PathBuf,
     next_id: AtomicU64,
 }
 impl Client {
-    fn new(socket_path: PathBuf) -> Self {
+    pub(crate) fn new(socket_path: PathBuf) -> Self {
         Self {
             socket_path,
             next_id: AtomicU64::new(0),
         }
     }
-    fn request<T: for<'de> Deserialize<'de>>(
+    pub(crate) fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
@@ -645,7 +645,9 @@ fn fit_cell(text: &str, width: usize) -> String {
     result
 }
 
-fn agent_status_style(status: &str) -> (&'static str, Option<Color>, bool) {
+pub(crate) fn agent_status_style(
+    status: &str,
+) -> (&'static str, Option<Color>, bool) {
     match status {
         "working" => ("↻", None, false),
         "idle" => (".", Some(Color::Cyan), true),
@@ -1040,7 +1042,7 @@ enum OneOrManyStrings {
     Many(Vec<String>),
 }
 
-fn configured_tab_display_index_base() -> usize {
+pub(crate) fn configured_tab_display_index_base() -> usize {
     let path = herdr_config_path();
     let Ok(content) = std::fs::read_to_string(path) else {
         return 1;
@@ -1048,7 +1050,7 @@ fn configured_tab_display_index_base() -> usize {
     tab_display_index_base_from_config(&content)
 }
 
-fn herdr_config_path() -> PathBuf {
+pub(crate) fn herdr_config_path() -> PathBuf {
     if let Some(path) = env_var_path("HERDR_CONFIG_PATH") {
         return path;
     }

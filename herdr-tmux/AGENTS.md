@@ -30,7 +30,7 @@ To install and build the source plugin instead, remove the existing
 registration and install a pinned tag:
 
 ```sh
-herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
+herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.3.0
 ```
 
 Herdr downloads a managed checkout, builds it with locked dependencies, and

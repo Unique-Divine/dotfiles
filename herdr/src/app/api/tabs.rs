@@ -287,7 +287,7 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
-    fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
+    pub(super) fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
         self.state
             .workspaces
             .get(ws_idx)
