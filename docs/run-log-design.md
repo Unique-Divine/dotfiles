@@ -65,7 +65,8 @@ Why the index is per day: pruning deletes whole day folders and never
 edits a file, so today's and yesterday's files are append-only. A killed
 run never writes its index line, so run files are the truth. For today
 and yesterday, `ud boku runs` reads the run files directly; the index is a fast
-path for older days, and run files missing from it show as `incomplete`.
+path for older days. The reader opens the journal when an index entry is
+missing or describes an open Shepherd run.
 `ud boku runs reindex`, and prune for any kept past day, rebuild an index
 through a temp file and a rename.
 
@@ -75,7 +76,7 @@ through a temp file and a rename.
 | --- | --- | --- |
 | `v` | int | Schema version, `1` |
 | `ts` | string | UTC, ms, `2026-11-09T14:20:30.101Z` |
-| `source` | string | Producer: `dotfiles` for now |
+| `source` | string | Producer, such as `dotfiles` or `shepherd` |
 | `run_id` | string | This run |
 | `parent_run_id` | string or null | Run that launched this one |
 | `root_run_id` | string | Top of the tree |
@@ -374,6 +375,12 @@ Two more failures:
   `incomplete` after 24 hours.
 - `~/.boku` unwritable or `jq` missing: no events; plain agent mode. A
   fresh machine's first `sync` logs nothing until `i-bash` installs `jq`.
+
+A journal from Shepherd with tool `shepherd-agent` or `shepherd-job` shows
+`managed` until an `end` event appears. This status records that the run is
+managed by Shepherd. Check an agent with `shepherd agent status RUN_ID`. For
+a compute job, use the journal's `job_id` with `shepherd job status JOB_ID`
+on the environment that owns the job.
 
 ## Writer APIs
 

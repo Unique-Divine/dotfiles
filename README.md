@@ -303,9 +303,10 @@ commands. Print the installed binary's defaults with command:
 herdr --default-config
 ```
 
-Directory [`herdr`](herdr) contains the vendored v0.9.4 fork source and local
-changes. It has its own Cargo workspace and lockfile. Build and install it
-with command `just herdr-install`; no Herdr submodule initialization is needed.
+Directory [`herdr`](herdr) contains Unique Divine's Herdr fork, with its own
+Cargo workspace and lockfile. Build and install it with command
+`just herdr-install`. Command `herdr build-info --json` reports the installed
+fork's source, commit, upstream base, and update provider.
 See [Herdr releases](herdr-release/README.md) for downloads and release tags.
 See file [`herdr/UPSTREAM.md`](herdr/UPSTREAM.md) for provenance and upgrade
 instructions, and file [`herdr-cfg/README.md`](herdr-cfg/README.md) for the

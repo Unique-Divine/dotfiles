@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cross-Repo Map</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66;
+    --line: #e4e2dc; --accent: #2f5d8a;
+    --k-go: #2a7fa8; --k-npm: #c2701f; --k-crate: #8a4fb0;
+    --k-cbm: #2e8b57; --k-doc: #9a9a94; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616; --panel: #1f1f1f; --ink: #ecebe6; --muted: #a09f99;
+      --line: #34332f; --accent: #8db8e0;
+      --k-go: #5cb3dc; --k-npm: #e59a4d; --k-crate: #b98ad8;
+      --k-cbm: #5cc08a; --k-doc: #8a8a84; --bad: #f28b82;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px;
+    cursor: pointer; display: inline-flex; gap: 6px; align-items: center;
+  }
+  .chip[aria-pressed="false"] { opacity: .45; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  button.plain {
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 0; min-height: calc(100vh - 60px);
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { padding: 14px 20px; min-width: 0; }
+  section + section { border-left: 1px solid var(--line); }
+  @media (max-width: 900px) {
+    section + section { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button[aria-selected="true"] { border-color: var(--accent);
+    color: var(--accent); }
+  svg { width: 100%; height: auto; display: block; }
+  .repo circle { fill: var(--panel); stroke: var(--ink); stroke-width: 1.2;
+    cursor: pointer; }
+  .repo.focus circle { stroke: var(--accent); stroke-width: 3; }
+  .repo.dim { opacity: .25; }
+  .repo text { fill: var(--ink); font-size: 12px; pointer-events: none; }
+  .edge { fill: none; cursor: pointer; }
+  .edge.dim { opacity: .07; }
+  .edge.sel { filter: drop-shadow(0 0 3px var(--accent)); }
+  .elabel { font-size: 10px; fill: var(--muted); pointer-events: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 6px;
+    text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .matrix td.n { text-align: right; cursor: pointer;
+    font-variant-numeric: tabular-nums; }
+  .matrix td.n:hover { outline: 1px solid var(--accent); }
+  .matrix td.self { background: var(--line); }
+  .matrix th.row { white-space: nowrap; }
+  .matrix th.col { writing-mode: vertical-rl; transform: rotate(180deg);
+    white-space: nowrap; padding: 6px 2px; }
+  h2 { font-size: 15px; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .group { margin: 12px 0; }
+  .group h3 { font-size: 13px; margin: 0 0 4px; display: flex; gap: 8px;
+    align-items: center; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; overflow-wrap: anywhere; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  input[type="search"] { width: 100%; padding: 6px 8px; font: inherit;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+    color: var(--ink); margin-bottom: 8px; }
+  .empty { color: var(--muted); padding: 20px 0; }
+  .more { color: var(--muted); font-size: 12px; }
+  .bad { color: var(--bad); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cross-Repo Map</h1>
+  <div class="chips" id="kinds"></div>
+  <label class="meta"><input type="checkbox" id="weak"> weak graph
+    matches</label>
+  <label class="meta"><input type="checkbox" id="missing"> missing targets
+    only <span id="missing-n"></span></label>
+  <button class="plain" id="refresh">Rescan</button>
+  <span class="meta" id="meta">loading…</span>
+</header>
+<main>
+  <section>
+    <div class="tabs" role="tablist">
+      <button class="plain" role="tab" data-view="graph"
+        aria-selected="true">Graph</button>
+      <button class="plain" role="tab" data-view="matrix"
+        aria-selected="false">Matrix</button>
+    </div>
+    <div id="view"></div>
+    <p class="sub">Click a repo to focus it, an arrow or a matrix cell to
+      list its links. Arrows point from the repo that uses to the repo that
+      is used.</p>
+  </section>
+  <section id="detail">
+    <p class="empty">Pick a repo, an arrow, or a cell.</p>
+  </section>
+</main>
+<script>
+const LENS = "http://127.0.0.1:9749"
+const KINDS = {
+  "go-import": { label: "Go import", color: "--k-go" },
+  "npm-import": { label: "npm import", color: "--k-npm" },
+  "crate-dep": { label: "Rust crate", color: "--k-crate" },
+  "cbm-call": { label: "Graph call", color: "--k-cbm" },
+  "doc-ref": { label: "Doc reference", color: "--k-doc" },
+}
+const state = {
+  map: null, kinds: new Set(Object.keys(KINDS)), weak: false, missing: false,
+  view: "graph", focus: null, sel: null,
+}
+const $ = (s) => document.querySelector(s)
+const css = (v) => getComputedStyle(document.documentElement)
+  .getPropertyValue(v).trim()
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+    "'": "&#39;" })[c])
+
+const activeLinks = () => state.map.links.filter((l) =>
+  state.kinds.has(l.kind) && (state.weak || !l.weak) &&
+  (!state.missing || l.missing))
+
+async function load(refresh) {
+  $("#meta").textContent = refresh ? "rescanning…" : "loading…"
+  try {
+    const res = await fetch("/api/map" + (refresh ? "?refresh=1" : ""))
+    if (!res.ok) throw new Error(await res.text())
+    state.map = await res.json()
+    const t = new Date(state.map.generatedAt)
+    $("#meta").textContent = `${state.map.repos.length} repos · ` +
+      `${state.map.links.length} links · scanned ${t.toLocaleTimeString()}`
+    render()
+  } catch (err) {
+    $("#meta").textContent = "failed: " + err.message
+  }
+}
+
+function renderKinds() {
+  const missing = state.map.links.filter((l) => l.missing).length
+  $("#missing-n").textContent = `(${missing})`
+  const counts = {}
+  for (const l of state.map.links) {
+    if (state.weak || !l.weak) counts[l.kind] = (counts[l.kind] ?? 0) + 1
+  }
+  $("#kinds").innerHTML = Object.entries(KINDS).map(([k, v]) =>
+    `<button class="chip" data-kind="${k}"
+      aria-pressed="${state.kinds.has(k)}">
+      <span class="dot" style="background:var(${v.color})"></span>
+      ${v.label} <span class="meta">${counts[k] ?? 0}</span></button>`).join("")
+}
+
+/** Aggregate links into one arrow per (from, to, kind). */
+function aggregate(links) {
+  const m = new Map()
+  for (const l of links) {
+    const key = `${l.fromRepo}|${l.toRepo}|${l.kind}`
+    const e = m.get(key) ?? { from: l.fromRepo, to: l.toRepo, kind: l.kind,
+      n: 0, weak: true }
+    e.n++
+    e.weak = e.weak && !!l.weak
+    m.set(key, e)
+  }
+  return [...m.values()]
+}
+
+function layout(repos, edges) {
+  const degree = Object.fromEntries(repos.map((r) => [r.name, 0]))
+  for (const e of edges) {
+    if (e.from in degree) degree[e.from] += e.n
+    if (e.to in degree) degree[e.to] += e.n
+  }
+  const hub = [...repos].sort((a, b) => degree[b.name] - degree[a.name])[0]
+  const ring = repos.filter((r) => r !== hub)
+    .sort((a, b) => (a.remote.split("/")[0] + a.name)
+      .localeCompare(b.remote.split("/")[0] + b.name))
+  const W = 760, H = 640, cx = W / 2, cy = H / 2, R = 250
+  const pos = { [hub.name]: { x: cx, y: cy } }
+  ring.forEach((r, i) => {
+    const a = -Math.PI / 2 + (i / ring.length) * 2 * Math.PI
+    pos[r.name] = { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) }
+  })
+  return { W, H, pos, degree }
+}
+
+function renderGraph() {
+  const repos = state.map.repos
+  const edges = aggregate(activeLinks())
+  const { W, H, pos, degree } = layout(repos, edges)
+  const kindsOrder = Object.keys(KINDS)
+  const max = Math.max(1, ...edges.map((e) => e.n))
+  const radius = (name) => 18 + 16 * Math.sqrt((degree[name] ?? 0) /
+    Math.max(1, ...Object.values(degree)))
+  let paths = "", labels = ""
+  for (const e of edges) {
+    const a = pos[e.from], b = pos[e.to]
+    if (!a || !b) continue
+    const touches = !state.focus || e.from === state.focus ||
+      e.to === state.focus
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1
+    const ux = dx / d, uy = dy / d
+    const ra = radius(e.from) + 2, rb = radius(e.to) + 6
+    const sx = a.x + ux * ra, sy = a.y + uy * ra
+    const tx = b.x - ux * rb, ty = b.y - uy * rb
+    // Separate kinds and the two directions with different bends.
+    const bend = 18 + 14 * kindsOrder.indexOf(e.kind)
+    const mx = (sx + tx) / 2 - uy * bend, my = (sy + ty) / 2 + ux * bend
+    const w = 1 + 7 * Math.log1p(e.n) / Math.log1p(max)
+    const color = css(KINDS[e.kind].color)
+    const key = `${e.from}|${e.to}|${e.kind}`
+    const sel = state.sel?.type === "edge" && state.sel.key === key
+    paths += `<path class="edge${touches ? "" : " dim"}${sel ? " sel" : ""}"
+      data-key="${esc(key)}" d="M${sx},${sy} Q${mx},${my} ${tx},${ty}"
+      stroke="${color}" stroke-width="${w}"
+      ${e.weak ? 'stroke-dasharray="4 4"' : ""}
+      marker-end="url(#arrow-${e.kind})"><title>${esc(e.from)} → ${
+      esc(e.to)}: ${e.n} ${KINDS[e.kind].label}</title></path>`
+    if (touches) {
+      labels += `<text class="elabel" x="${(sx + 2 * mx + tx) / 4}"
+        y="${(sy + 2 * my + ty) / 4}" text-anchor="middle">${e.n}</text>`
+    }
+  }
+  const markers = kindsOrder.map((k) => `<marker id="arrow-${k}"
+    viewBox="0 0 10 10" refX="8" refY="5" markerWidth="10" markerHeight="10"
+    markerUnits="userSpaceOnUse"
+    orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"
+    fill="${css(KINDS[k].color)}"/></marker>`).join("")
+  const linked = new Set(edges.flatMap((e) =>
+    e.from === state.focus || e.to === state.focus ? [e.from, e.to] : []))
+  const nodes = repos.map((r) => {
+    const p = pos[r.name], rad = radius(r.name)
+    const cls = state.focus === r.name ? " focus"
+      : state.focus && !linked.has(r.name) ? " dim" : ""
+    return `<g class="repo${cls}" data-repo="${esc(r.name)}">
+      <circle cx="${p.x}" cy="${p.y}" r="${rad}"><title>${esc(r.name)} · ${
+      degree[r.name]} links</title></circle>
+      <text x="${p.x}" y="${p.y + rad + 14}" text-anchor="middle">${
+      esc(r.name)}</text></g>`
+  }).join("")
+  $("#view").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="Repos and the links between them"><defs>${markers}</defs>
+    ${paths}${labels}${nodes}</svg>`
+}
+
+function renderMatrix() {
+  const names = state.map.repos.map((r) => r.name)
+  const cell = {}
+  for (const l of activeLinks()) {
+    const k = `${l.fromRepo}|${l.toRepo}`
+    cell[k] = (cell[k] ?? 0) + 1
+  }
+  const head = names.map((n) => `<th class="col">${esc(n)}</th>`).join("")
+  const rows = names.map((from) => `<tr><th class="row">${esc(from)}</th>${
+    names.map((to) => from === to ? `<td class="self"></td>`
+      : cell[`${from}|${to}`] ? `<td class="n" data-from="${esc(from)}"
+        data-to="${esc(to)}">${cell[`${from}|${to}`]}</td>` : "<td></td>")
+      .join("")}</tr>`).join("")
+  $("#view").innerHTML = `<table class="matrix"><thead><tr>
+    <th class="meta">uses ↓ / used →</th>${head}</tr></thead>
+    <tbody>${rows}</tbody></table>`
+}
+
+function repoOf(name) {
+  return state.map.repos.find((r) => r.name === name)
+}
+
+function fileLink(repo, file, line) {
+  const r = repoOf(repo)
+  if (!r || !file) return `<span class="mono">${esc(file || "—")}</span>`
+  const abs = `${r.root}/${file}`
+  return `<a class="mono" href="vscode://file/${encodeURI(abs)}${
+    line ? ":" + line : ""}" title="${esc(abs)}">${esc(file)}${
+    line ? ":" + line : ""}</a>`
+}
+
+function lensLink(repo) {
+  const r = repoOf(repo)
+  return r ? `<a href="${LENS}/?project=${encodeURIComponent(r.project)}"
+    target="_blank" rel="noopener">open in Lens</a>` : ""
+}
+
+function renderDetail() {
+  const el = $("#detail")
+  const sel = state.sel
+  if (!sel) {
+    el.innerHTML = `<p class="empty">Pick a repo, an arrow, or a cell.</p>`
+    return
+  }
+  let links, title, sub
+  if (sel.type === "repo") {
+    links = activeLinks().filter((l) => l.fromRepo === sel.repo ||
+      l.toRepo === sel.repo)
+    const out = links.filter((l) => l.fromRepo === sel.repo).length
+    title = esc(sel.repo)
+    sub = `${out} links out, ${links.length - out} in · ${lensLink(sel.repo)}`
+  } else {
+    const [from, to, kind] = sel.key.split("|")
+    links = activeLinks().filter((l) => l.fromRepo === from &&
+      l.toRepo === to && (!kind || l.kind === kind))
+    title = `${esc(from)} → ${esc(to)}`
+    sub = `${links.length} ${kind ? KINDS[kind].label.toLowerCase() : ""}
+      links · ${lensLink(from)} · ${lensLink(to)}`
+  }
+  el.innerHTML = `<h2>${title}</h2><p class="sub">${sub}</p>
+    <input type="search" id="q" placeholder="Filter by file, path, or via"
+      value="${esc(sel.q ?? "")}"><div id="groups"></div>`
+  const q = $("#q")
+  q.addEventListener("input", () => { sel.q = q.value; renderGroups(links) })
+  renderGroups(links)
+}
+
+/** Group by target path, the question being "who uses this?". */
+function renderGroups(links) {
+  const q = (state.sel.q ?? "").toLowerCase()
+  const shown = q ? links.filter((l) => [l.fromFile, l.toPath, l.via,
+    l.fromRepo, l.toRepo].join(" ").toLowerCase().includes(q)) : links
+  const groups = new Map()
+  for (const l of shown) {
+    const key = `${l.kind}|${l.toRepo}|${l.toPath || l.via}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(l)
+  }
+  const sorted = [...groups].sort((a, b) => b[1].length - a[1].length)
+  const LIMIT = 60
+  $("#groups").innerHTML = sorted.length ? sorted.slice(0, LIMIT)
+    .map(([key, ls]) => {
+      const [kind, toRepo, target] = key.split("|")
+      const first = ls[0]
+      // One row per using file; its lines link individually.
+      const byFile = new Map()
+      for (const l of ls) {
+        const k = `${l.fromRepo}|${l.fromFile}`
+        if (!byFile.has(k)) byFile.set(k, [])
+        byFile.get(k).push(l)
+      }
+      const files = [...byFile.values()]
+      const users = files.slice(0, 12).map((fl) => {
+        const l = fl[0]
+        const lines = fl.length > 1 ? ` <span class="meta">lines ${
+          fl.slice(0, 8).map((x) => x.line).join(", ")}${
+          fl.length > 8 ? ", …" : ""}</span>` : ""
+        return `<tr><td>${esc(l.fromRepo)}</td><td>${fileLink(l.fromRepo,
+          l.fromFile, l.line)}${lines}</td><td class="mono">${
+          esc(l.via)}</td></tr>`
+      }).join("")
+      return `<div class="group"><h3><span class="dot"
+        style="background:var(${KINDS[kind].color})"></span>
+        ${esc(toRepo)} / ${first.toPath ? fileLink(toRepo, first.toPath)
+        : `<span class="mono">${esc(target)}</span>`}
+        <span class="meta">${ls.length}${first.weak ? " · weak" : ""}
+        </span>${first.missing ? `<span class="bad">missing</span>` : ""}
+        </h3><table>${users}</table>${files.length > 12
+        ? `<p class="more">and ${files.length - 12} more files</p>` : ""}</div>`
+    }).join("") + (sorted.length > LIMIT
+      ? `<p class="more">${sorted.length - LIMIT} more targets; filter to
+        narrow.</p>` : "")
+    : `<p class="empty">No links match.</p>`
+}
+
+function render() {
+  renderKinds()
+  state.view === "graph" ? renderGraph() : renderMatrix()
+  renderDetail()
+}
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target
+  const chip = t.closest?.(".chip")
+  if (chip) {
+    const k = chip.dataset.kind
+    state.kinds.has(k) ? state.kinds.delete(k) : state.kinds.add(k)
+    return render()
+  }
+  const tab = t.closest?.("[role=tab]")
+  if (tab) {
+    state.view = tab.dataset.view
+    document.querySelectorAll("[role=tab]").forEach((b) =>
+      b.setAttribute("aria-selected", String(b === tab)))
+    return render()
+  }
+  const repo = t.closest?.(".repo")
+  if (repo) {
+    const name = repo.dataset.repo
+    state.focus = state.focus === name ? null : name
+    state.sel = state.focus ? { type: "repo", repo: name } : null
+    return render()
+  }
+  if (t.classList?.contains("edge")) {
+    state.sel = { type: "edge", key: t.dataset.key }
+    return render()
+  }
+  if (t.matches?.(".matrix td.n")) {
+    state.sel = { type: "edge", key: `${t.dataset.from}|${t.dataset.to}|` }
+    return render()
+  }
+})
+$("#weak").addEventListener("change", (e) => {
+  state.weak = e.target.checked
+  render()
+})
+$("#missing").addEventListener("change", (e) => {
+  state.missing = e.target.checked
+  render()
+})
+$("#refresh").addEventListener("click", () => load(true))
+load(false)
+</script>
+</body>
+</html>

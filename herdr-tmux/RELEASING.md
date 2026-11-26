@@ -22,8 +22,8 @@ commit. Tag that commit and push the annotated tag when authorized to
 publish.
 
 ```bash
-git tag -a herdr-tmux/v0.2.0 <merged-commit> -m "herdr-tmux 0.2.0"
-git push origin herdr-tmux/v0.2.0
+git tag -a herdr-tmux/v0.3.0 <merged-commit> -m "herdr-tmux 0.3.0"
+git push origin herdr-tmux/v0.3.0
 ```
 
 The tag rebuilds the archives in the [release workflow](../.github/workflows/herdr-tmux-release.yml).

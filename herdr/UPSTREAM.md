@@ -1,9 +1,10 @@
-# Vendored Herdr source
+# Herdr Fork Provenance
 
-This directory vendors Herdr v0.9.3 at upstream commit
-`7b116c05bfda646af39d2524c54e70c751f57ee8` from
-<https://github.com/herdrdev/herdr>. It is part of the dotfiles repository,
-not a Git submodule.
+This directory contains Unique Divine's fork of
+[upstream Herdr](https://github.com/herdrdev/herdr).
+
+- Upstream version: `v0.9.3`
+- Upstream commit: `7b116c05bfda646af39d2524c54e70c751f57ee8`
 
 The previous snapshot came from fork commit
 `5f6e4b222d32225e5c77a190064c61ff9549e6a0`, based on upstream commit
@@ -33,9 +34,9 @@ The previous snapshot came from fork commit
 - The local `CLAUDE.md` convention is retained.
 
 The tree keeps the Rust application, workspace crates, tests, embedded assets,
-API schema, draft documentation, maintenance tools, and vendored terminal
+API schema, maintenance tools, and vendored terminal
 libraries. It excludes the Astro website, release CI, distribution installers,
-non-Windows packaging, Nix files, preview and published website docs, and the
+non-Windows packaging, Nix files, website drafts and snapshots, and the
 plugin-worker app.
 The embedded Windows installer and release metadata remain under `distribution/`
 because the application and its tests compile them into the binary. The local
@@ -47,7 +48,7 @@ Building v0.9.3 requires Zig 0.16.0.
 Clone upstream separately. Compare its desired tag, the recorded upstream
 commit, and this tree with a three-way merge. Port local behavior to renamed
 modules rather than restoring old modules. Keep the exclusions above, and run
-`just ci`, `just docs-contract-test`, and the local restart smoke test before
+`just ci` and the local restart smoke test before
 installing with `just herdr-install` from the dotfiles root. Do not run
 `herdr update`, which installs an upstream binary without the local changes.
 
@@ -61,9 +62,15 @@ env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH \
   -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID NEXTEST_TEST_THREADS=4 just ci
 ```
 
-## Fork releases
+## Fork Releases
 
-The fork package is version 0.9.6; the recorded upstream base stays v0.9.3.
-Dotfiles owns release builds and downloads.
+The version in `Cargo.toml` identifies the fork package. The upstream
+baseline and fork version progress independently. Run `herdr build-info
+--json` to see both, the source commit, and the update provider.
+The command describes the binary it runs. Use `herdr status` to check the
+running server's version and protocol. A build with changes to the source
+inputs reports a null commit. A source archive also reports a null commit
+unless the build sets `HERDR_BUILD_COMMIT` to its known source revision.
+Dotfiles builds and publishes the fork.
 See [Herdr releases](../herdr-release/README.md) for commands and checks.
 Windows packaging metadata and license notices are retained for release ZIPs.

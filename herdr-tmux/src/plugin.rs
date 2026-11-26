@@ -1,13 +1,13 @@
-//! Herdr registration and popup launchers; the picker stays a standalone CLI.
+//! Herdr registration and popup launchers.
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Subcommand, ValueEnum};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::app::CliTarget;
+use crate::app::{CliTarget, Client};
 
 pub const PLUGIN_ID: &str = "unique-divine.herdr-tmux";
 const MANIFEST: &str = include_str!("../herdr-plugin.toml");
@@ -17,21 +17,23 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub enum PluginCommand {
     /// Link the installed binary into Herdr. Does not change key bindings.
     Register,
-    /// Open a registered plugin picker over the active pane.
-    Open { picker: Picker },
+    /// Open a registered plugin popup over the active pane.
+    Open { popup: Popup },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Picker {
+pub enum Popup {
     Pane,
     Agent,
+    Tabs,
 }
 
-impl Picker {
+impl Popup {
     fn entrypoint(self) -> &'static str {
         match self {
             Self::Pane => "pane-picker",
             Self::Agent => "agent-picker",
+            Self::Tabs => "tab-editor",
         }
     }
 }
@@ -43,21 +45,35 @@ pub fn run(command: &PluginCommand, target: CliTarget) -> Result<()> {
             let root = registration_root()?;
             register(Path::new(&herdr), &env::current_exe()?, &root)
         }
-        PluginCommand::Open { picker } => {
+        PluginCommand::Open { popup } => {
+            if matches!(popup, Popup::Tabs) {
+                let socket = target.socket_path.clone().or_else(|| {
+                    env::var_os("HERDR_SOCKET_PATH")
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                });
+                if let Some(socket) = socket {
+                    Client::new(socket).request::<Value>(
+                        "plugin.pane.open",
+                        json!({"plugin_id": PLUGIN_ID, "entrypoint": popup.entrypoint(), "focus": true}),
+                    )?;
+                    return Ok(());
+                }
+            }
             let mut process = Command::new(herdr);
             if let Some(socket) = target.socket_path {
                 process.env("HERDR_SOCKET_PATH", socket);
             }
-            process.args(open_args(*picker));
+            process.args(open_args(*popup));
             if !process.status()?.success() {
-                return Err("Herdr could not open the plugin picker".into());
+                return Err("Herdr could not open the plugin popup".into());
             }
             Ok(())
         }
     }
 }
 
-fn open_args(picker: Picker) -> Vec<String> {
+fn open_args(popup: Popup) -> Vec<String> {
     [
         "plugin",
         "pane",
@@ -65,7 +81,7 @@ fn open_args(picker: Picker) -> Vec<String> {
         "--plugin",
         PLUGIN_ID,
         "--entrypoint",
-        picker.entrypoint(),
+        popup.entrypoint(),
     ]
     .into_iter()
     .map(str::to_owned)
@@ -211,10 +227,14 @@ mod tests {
 
     #[test]
     fn popup_arguments_use_registered_entrypoints() {
-        for picker in [Picker::Pane, Picker::Agent] {
-            let args = open_args(picker);
+        for (popup, entrypoint) in [
+            (Popup::Pane, "pane-picker"),
+            (Popup::Agent, "agent-picker"),
+            (Popup::Tabs, "tab-editor"),
+        ] {
+            let args = open_args(popup);
             assert_eq!(args[4], PLUGIN_ID);
-            assert_eq!(args[6], picker.entrypoint());
+            assert_eq!(args[6], entrypoint);
             assert_eq!(args.len(), 7);
         }
     }

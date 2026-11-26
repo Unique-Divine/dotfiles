@@ -992,6 +992,14 @@ impl Workspace {
         self.tabs.len() - 1
     }
 
+    pub(crate) fn register_transferred_tab(&mut self, tab: &mut Tab, panes: &[PaneId]) {
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        for &pane_id in panes {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+    }
+
     pub(crate) fn unregister_moved_pane(&mut self, pane_id: PaneId) {
         self.unregister_pane(pane_id);
     }

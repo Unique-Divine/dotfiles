@@ -1,0 +1,63 @@
+{
+  "repos": [
+    {
+      "dir": "nibiru",
+      "remote": "git@github.com:SaiDotFun/nibiru.git",
+      "note": "Nibiru chain (Go, EVM, Wasm contracts) and its docs"
+    },
+    {
+      "dir": "sai-perps",
+      "remote": "git@github.com:SaiDotFun/sai-perps.git",
+      "note": "Sai perps Wasm contracts"
+    },
+    {
+      "dir": "sai-keeper",
+      "remote": "git@github.com:SaiDotFun/sai-keeper.git",
+      "note": "Sai Keeper indexer and GraphQL API"
+    },
+    {
+      "dir": "sai-web",
+      "remote": "git@github.com:SaiDotFun/sai-web.git",
+      "note": "Sai webapp monorepo"
+    },
+    {
+      "dir": "nibi-web",
+      "remote": "git@github.com:SaiDotFun/nibi-web.git",
+      "note": "Nibiru web app and site"
+    },
+    {
+      "dir": "nibi-go-hm",
+      "remote": "git@github.com:NibiruChain/go-heartmonitor.git",
+      "note": "Heart Monitor indexer and GraphQL API"
+    },
+    {
+      "dir": "open-sai",
+      "remote": "git@github.com:SaiDotFun/open-sai.git",
+      "note": "Sai CLI and MCP (Python)"
+    },
+    {
+      "dir": "nibi-ts-sdk",
+      "remote": "git@github.com:SaiDotFun/ts-sdk.git",
+      "note": "@nibiruchain/nibijs"
+    },
+    {
+      "dir": "gh-io-ud",
+      "remote": "git@github.com:Unique-Divine/Unique-Divine.github.io.git",
+      "note": "Personal site (Astro)"
+    },
+    {
+      "dir": "nibi-iac",
+      "remote": "git@github.com:NibiruChain/iac.git",
+      "note": "Terraform and deployment config"
+    },
+    {
+      "dir": "gh",
+      "note": "gh-rev review ledgers (not a Git checkout; Markdown linking reviews to code)"
+    },
+    {
+      "dir": "boku",
+      "remote": "git@github.com:Unique-Divine/boku.git",
+      "note": "Epics, skills, and the dotfiles and jiyuu submodules; indexed last"
+    }
+  ]
+}
