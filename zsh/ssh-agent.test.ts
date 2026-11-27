@@ -162,16 +162,36 @@ describe("ssh_auto_setup", () => {
       `source ${modulePath}; ssh_auto_setup; echo AFTER-SETUP; ` +
       `zsh -f -c "zmodload zsh/system; ` +
       `zsystem flock -t 0 -f fd ${lock} && echo LOCK-FREE"`
-    const terminal =
-      `script -qec ${shellQuote(`zsh -f -i -c ${shellQuote(inner)}`)} ` +
-      "/dev/null"
-    // Wait for the passphrase prompt, then press Ctrl-C.
-    const r = await spawn(
-      ["bash", "-c", `(sleep 1; printf '\\003'; sleep 2) | ${terminal}`],
-      envFor(f),
+    const proc = Bun.spawn(
+      ["script", "-qec", `zsh -f -i -c ${shellQuote(inner)}`, "/dev/null"],
+      {
+        env: { PATH: process.env.PATH ?? "", ...envFor(f) },
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     )
-    expect(r.stdout).toContain("AFTER-SETUP")
-    expect(r.stdout).toContain("LOCK-FREE")
+    // Press Ctrl-C only once the prompt is on screen, and keep stdin open
+    // until the shell exits. End of input would also end ssh-add, so a
+    // closed stdin could let the test pass without Ctrl-C ever landing. If
+    // Ctrl-C is mishandled, the shell stays at the prompt and the test fails
+    // on its timeout instead.
+    const decoder = new TextDecoder()
+    let stdout = ""
+    let sentInterrupt = false
+    for await (const chunk of proc.stdout) {
+      stdout += decoder.decode(chunk, { stream: true })
+      if (!sentInterrupt && stdout.includes("Enter passphrase")) {
+        proc.stdin.write("\x03")
+        proc.stdin.flush()
+        sentInterrupt = true
+      }
+    }
+    await proc.exited
+    proc.stdin.end()
+    expect(sentInterrupt).toBe(true)
+    expect(stdout).toContain("AFTER-SETUP")
+    expect(stdout).toContain("LOCK-FREE")
     expect(await loadedComments(f)).toEqual([])
   })
 
