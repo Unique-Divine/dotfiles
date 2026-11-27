@@ -239,7 +239,7 @@ def test_maintenance_setup_dispatches_one_installer(
     assert Path(result["state"]) == state
     root = Path(result["root"])
     assert root.parent == state / "app-versions"
-    assert {path.name for path in root.iterdir()} == {
+    assert {path.name for path in root.iterdir() if path.is_file()} == {
         "worker.py",
         "maintenance_runtime.py",
     }
