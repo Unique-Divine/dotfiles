@@ -186,6 +186,7 @@ describe("ssh_auto_setup", () => {
         `zsh -f -i -c "source ${modulePath}; ssh_auto_setup"`,
     )
     expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain("SSH keys are loading in another terminal")
     expect(await loadedComments(f)).toEqual([])
   })
 })

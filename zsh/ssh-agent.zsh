@@ -59,7 +59,12 @@ ssh_auto_setup() {
   [[ -e "$lock_file" ]] || : >| "$lock_file" 2>/dev/null || return 0
   # The kernel releases the lock when this shell's descriptor closes, even if
   # the shell is killed at the passphrase prompt.
-  zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null || return 0
+  if ! zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null; then
+    # The prompt may sit in a pane you are not looking at.
+    print -u2 "SSH keys are loading in another terminal;" \
+      "run ssh_setup here to load them in this one."
+    return 0
+  fi
   local rc=0
   {
     ssh_setup || rc=$?
