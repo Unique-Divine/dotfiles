@@ -1,10 +1,11 @@
 # Exercise the real Windows shortcut and directory operations in a temp folder.
 
 $ErrorActionPreference = "Stop"
-$temp = Join-Path $env:TEMP ("cross hub packaging " + [Guid]::NewGuid().ToString("N"))
+$scratchBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+$temp = Join-Path $scratchBase ("cross hub packaging " + [Guid]::NewGuid().ToString("N"))
 $originalLocalAppData = $env:LOCALAPPDATA
 try {
-    $env:LOCALAPPDATA = $temp
+    $env:LOCALAPPDATA = Join-Path $temp "profile"
     . (Join-Path $PSScriptRoot "desktop-package.ps1")
     $package = Join-Path $temp "package"
     $install = Join-Path $temp "installed app"
@@ -38,7 +39,12 @@ public static class PackageTestApp
     & $installer -PackagePath $package -NoLaunch @options
     if (!(Test-Path -LiteralPath $exe) -or !(Test-DesktopShortcut $links[0] $exe) -or
         !(Test-DesktopShortcut $links[1] $exe)) {
-        throw "Initial install did not create the app and both owned shortcuts."
+        $paths = foreach ($link in $links) {
+            $target = $script:desktopShell.CreateShortcut($link.Path)
+            "$($link.Path) -> $($target.TargetPath) $($target.Arguments)"
+        }
+        throw ("Initial install did not create the app and both owned shortcuts for $exe. " +
+            ($paths -join "; "))
     }
 
     '{"startupEnabled":false}' | Set-Content -LiteralPath $settingsPath -Encoding ASCII

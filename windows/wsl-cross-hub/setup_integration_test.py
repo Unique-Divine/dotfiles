@@ -19,6 +19,21 @@ function global:Get-ScheduledTask {
     Write-Error "Task absent in isolated test" -Category ObjectNotFound -ErrorAction Stop
 }
 """
+MOCK_REGULAR_SESSION = r"""
+# Hosted Windows runners are elevated. Exercise the regular-user launcher
+# branch while retaining the production privilege check and mocking UAC.
+function global:New-Object {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string]$TypeName,
+        [Parameter(Position = 1)][object[]]$ArgumentList, [string]$ComObject)
+    if ($TypeName -eq "Security.Principal.WindowsPrincipal") {
+        $mock = [pscustomobject]@{}
+        $mock | Add-Member -MemberType ScriptMethod -Name IsInRole -Value { param($role) return $false }
+        return $mock
+    }
+    Microsoft.PowerShell.Utility\New-Object @PSBoundParameters
+}
+"""
 MOCK_UAC = r"""
 function global:Start-Process {
     param([string]$FilePath, [string]$Verb, [string[]]$ArgumentList,
@@ -80,6 +95,7 @@ def run_hub(
         "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
         f"$state = {ps_string(state)}",
         f"$expectUac = ${str(expect_uac).lower()}",
+        MOCK_REGULAR_SESSION,
         MOCK_UAC,
     ]
     if mock_task:
