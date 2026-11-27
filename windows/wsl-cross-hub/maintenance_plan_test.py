@@ -56,12 +56,12 @@ def test_running_target_shuts_down_before_compaction_and_restarts_after() -> Non
     ]
 
 
-def test_docker_blocks_even_without_running_docker_distro() -> None:
+def test_docker_shutdown_is_planned_even_without_running_docker_distro() -> None:
     snapshot = parse_snapshot(inventory("Ubuntu-24.04", docker=True))
     plan = plan_maintenance(snapshot, "Ubuntu-24.04")
-    assert plan["decision"] == "blocked"
-    assert [blocker["code"] for blocker in plan["blockers"]] == ["docker-running"]
-    assert plan["steps"] == []
+    assert plan["decision"] == "eligible"
+    assert plan["blockers"] == []
+    assert plan["steps"][0] == "stop-docker-desktop"
 
 
 def test_global_shutdown_impact_blocks() -> None:
@@ -149,7 +149,7 @@ def test_cli_reports_blocked_plan(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     snapshot = tmp_path / "snapshot.json"
-    snapshot.write_text(json.dumps(inventory(docker=True)), encoding="utf-8")
+    snapshot.write_text(json.dumps(inventory("Ubuntu-24.04", "Debian")), encoding="utf-8")
     assert main(["--distro", "Ubuntu-24.04", "--snapshot", str(snapshot)]) == 0
     assert json.loads(capsys.readouterr().out)["decision"] == "blocked"
 

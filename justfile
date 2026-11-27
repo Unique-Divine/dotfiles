@@ -436,16 +436,25 @@ audio-capture-test:
   cd /mnt/c && "$(wslpath -u "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/Programs/audio-capture/audio-capture.exe" --self-test
 
 # Build a self-contained WSL Cross Hub desktop package for this Windows host.
-wsl-cross-hub-desktop-build: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\build-desktop.cmd'
+wsl-cross-hub-desktop-build: (_wsl-cross-hub-desktop "build")
 
 # Install the WSL Cross Hub tray app with per-user Windows shortcuts.
-wsl-cross-hub-desktop-install: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\install-desktop.cmd'
+wsl-cross-hub-desktop-install: (_wsl-cross-hub-desktop "install")
+
+[private]
+_wsl-cross-hub-desktop operation: win-sync
+  #!/usr/bin/env bash
+  set -euo pipefail
+  revision="$(git rev-parse --short=12 HEAD)"
+  if [[ -n "$(git status --porcelain -- windows/wsl-cross-hub)" ]]; then
+    revision="$revision-dirty"
+  fi
+  cd /mnt/c
+  cmd.exe /c "%USERPROFILE%\dotfiles\windows\wsl-cross-hub\{{operation}}-desktop.cmd -SourceRevision $revision"
 
 # Remove the WSL Cross Hub tray app and its shortcuts while keeping state.
 wsl-cross-hub-desktop-uninstall: win-sync
-  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\uninstall-desktop.cmd'
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\wsl-cross-hub\uninstall-desktop.cmd'
 
 # Measure Linux storage from inside an already-running WSL distro.
 [positional-arguments]

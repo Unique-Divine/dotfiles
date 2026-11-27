@@ -1,0 +1,279 @@
+"""Exercise the native installer and NTFS identity guard without elevation."""
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent
+SYSTEM_POWERSHELL = Path("WindowsPowerShell/v1.0/powershell.exe")
+WSL_SYSTEM32 = Path("/mnt/c/Windows/System32")
+
+
+@pytest.fixture
+def windows_shell() -> tuple[Path, str, Path]:
+    if sys.platform == "win32":
+        powershell = Path(os.environ["SystemRoot"]) / "System32" / SYSTEM_POWERSHELL
+        root = str(ROOT)
+        cwd = powershell.parent
+    elif WSL_SYSTEM32.is_dir() and (wslpath := shutil.which("wslpath")):
+        powershell = WSL_SYSTEM32 / SYSTEM_POWERSHELL
+        root = subprocess.check_output([wslpath, "-w", str(ROOT)], text=True).strip()
+        cwd = WSL_SYSTEM32
+    else:
+        pytest.skip("requires Windows PowerShell, native or through WSL interop")
+    if not powershell.is_file():
+        pytest.skip("Windows PowerShell is unavailable")
+    return powershell, root.replace("'", "''"), cwd
+
+
+def run_script(
+    shell: tuple[Path, str, Path], source: str
+) -> subprocess.CompletedProcess[str]:
+    powershell, root, cwd = shell
+    script = f"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Set-Location -LiteralPath ([IO.Path]::GetTempPath())
+$sourceRoot = '{root}'
+{source}
+"""
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded,
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=30,
+        cwd=cwd,
+        check=False,
+    )
+
+
+def test_setup_preview_and_mocked_uac(windows_shell: tuple[Path, str, Path]) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-compaction.ps1'
+$helper = Join-Path $sourceRoot 'compact-vhdx.ps1'
+. $helper -DefineOnly
+try { $null = Get-CompactionRegistration 'Ubuntu-24.04' }
+catch { if ($_.Exception.Message -match 'no registered|exactly one') { exit 88 }; throw }
+
+$global:CrossHubTestApprovalRequests = 0
+function global:Start-Process {
+    param($FilePath, $Verb, $ArgumentList, [switch]$PassThru, [switch]$Wait)
+    if ($Verb -ne 'RunAs' -or $ArgumentList[-2] -ne '-EncodedCommand' -or !$Wait) {
+        throw 'Installer did not use one synchronous elevation request.'
+    }
+    $bootstrap = [Text.Encoding]::Unicode.GetString(
+        [Convert]::FromBase64String($ArgumentList[-1]))
+    $null = [scriptblock]::Create($bootstrap)
+    if ($bootstrap -notmatch "FromBase64String\('([A-Za-z0-9+/=]+)'\)") {
+        throw 'Installer did not pass a setup snapshot.'
+    }
+    $options = [Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String($Matches[1])) | ConvertFrom-Json
+    if ($options.distro -ne 'Ubuntu-24.04' -or !$options.helper_hash -or
+        !$options.setup_hash -or !$options.volume_serial -or !$options.file_id) {
+        throw 'The approval snapshot did not include installer hash and disk identity.'
+    }
+    $global:CrossHubTestApprovalRequests++
+    [pscustomobject]@{ ExitCode = 0 }
+}
+
+$preview = & $installer -Preview | ConvertFrom-Json
+if ($global:CrossHubTestApprovalRequests -ne 0) { throw 'Preview requested elevation.' }
+$applied = & $installer | ConvertFrom-Json
+if ($global:CrossHubTestApprovalRequests -ne 1) { throw 'Expected one approval.' }
+@{ preview = $preview; applied = $applied } | ConvertTo-Json -Depth 5
+""",
+    )
+    if result.returncode == 88:
+        pytest.skip("the designated Ubuntu-24.04 WSL 2 distro is not registered")
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    preview = report["preview"]
+    assert preview["distro"] == "Ubuntu-24.04"
+    assert preview["task"] == "Unique-WslCrossHub-Compact"
+    assert preview["privileges"] == "Highest"
+    assert preview["trigger"] == "On demand"
+    assert preview["registered"] is False
+    assert report["applied"]["registered"] is True
+    assert report["applied"]["file_id"] == preview["file_id"]
+
+
+def test_diskpart_alias_preserves_disk_identity(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+. (Join-Path $sourceRoot 'compact-vhdx.ps1') -DefineOnly
+Initialize-CompactionFileApi ([IO.Path]::GetTempPath())
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+$null = [IO.Directory]::CreateDirectory($scratch)
+try {
+    $source = Join-Path $scratch 'source.vhdx'
+    $alias = Join-Path $scratch 'alias.vhdx'
+    [IO.File]::WriteAllText($source, 'fixture')
+    $original = [WslCrossHub.FilePins]::new($source, $true)
+    try {
+        $renamed = $false
+        try {
+            [IO.File]::Move($source, ($source + '.moved'))
+            $renamed = $true
+        } catch [IO.IOException] {}
+        if ($renamed) { throw 'The source path was renamed despite the data handle.' }
+        [WslCrossHub.FilePins]::Link($alias, $source)
+        $serial = $original.VolumeSerial
+        $fileId = $original.FileId
+    } finally {
+        $original.Dispose()
+    }
+
+    $linked = [WslCrossHub.FilePins]::new($alias)
+    try {
+        if ($linked.VolumeSerial -cne $serial -or $linked.FileId -cne $fileId -or
+            $linked.Links -ne 2) { throw 'Hard link has a different identity.' }
+    } finally {
+        $linked.Dispose()
+    }
+    [IO.File]::Open($alias, 'Open', 'Read', 'None').Dispose()
+    [IO.File]::Delete($alias)
+    if ([IO.File]::ReadAllText($source) -cne 'fixture') {
+        throw 'Discarding the hard link changed the source.'
+    }
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_journal_failure_can_be_ignored_during_detach(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+. (Join-Path $sourceRoot 'compact-vhdx.ps1') -DefineOnly
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+$null = [IO.Directory]::CreateDirectory($scratch)
+try {
+    $runId = [guid]::NewGuid().ToString()
+    $journal = $scratch  # Opening a directory as a journal must fail.
+    $strictFailed = $false
+    try { Write-CompactionEvent 'diskpart-started' }
+    catch { $strictFailed = $true }
+    if (!$strictFailed) { throw 'Starting without a readable journal should fail.' }
+
+    Write-CompactionEvent 'detach-requested' -BestEffort
+    if (!$script:CompactionTelemetryError) {
+        throw 'Missing best-effort event should be recorded in memory.'
+    }
+    $journal = Join-Path $scratch 'diskpart.jsonl'
+    Write-CompactionEvent 'diskpart-result' @{ detach_verified = $true }
+    $row = [IO.File]::ReadAllText($journal) | ConvertFrom-Json
+    if ($row.stage -ne 'diskpart-result' -or $row.run_id -ne $runId -or
+        !$row.detach_verified) {
+        throw 'Terminal event was lost after the earlier journal failure.'
+    }
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_native_virtual_disk_detachment_query_on_linked_vhdx(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+. (Join-Path $sourceRoot 'compact-vhdx.ps1') -DefineOnly
+Initialize-CompactionFileApi ([IO.Path]::GetTempPath())
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class VhdxFixture {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StorageType { public uint Device; public Guid Vendor; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CreateParameters {
+        public uint Version;
+        public Guid UniqueId;
+        public ulong MaximumSize;
+        public uint BlockSize, SectorSize;
+        public IntPtr Parent, Source;
+    }
+
+    [DllImport("virtdisk.dll", ExactSpelling=true)]
+    private static extern uint CreateVirtualDisk(
+        ref StorageType storage, [MarshalAs(UnmanagedType.LPWStr)] string path,
+        uint access, IntPtr security, uint flags, uint providerFlags,
+        ref CreateParameters parameters, IntPtr overlapped, out SafeFileHandle handle);
+
+    public static void Create(string path) {
+        var storage = new StorageType {
+            Device = 3, Vendor = new Guid("ec984aec-a0f9-47e9-901f-71415a66345b")
+        };
+        var parameters = new CreateParameters {
+            Version = 1, MaximumSize = 64 * 1024 * 1024, SectorSize = 512
+        };
+        SafeFileHandle handle;
+        uint error = CreateVirtualDisk(ref storage, path, 0x003f0000,
+            IntPtr.Zero, 0, 0, ref parameters, IntPtr.Zero, out handle);
+        using (handle) {
+            if (error != 0) throw new Win32Exception((int)error, "CreateVirtualDisk: " + path);
+        }
+    }
+}
+'@
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+$null = [IO.Directory]::CreateDirectory($scratch)
+try {
+    $source = Join-Path $scratch 'source.vhdx'
+    $alias = Join-Path $scratch 'alias.vhdx'
+    [VhdxFixture]::Create($source)
+    [WslCrossHub.FilePins]::Link($alias, $source)
+    foreach ($path in @($source, $alias)) {
+        if (![WslCrossHub.VirtualDiskInfo]::IsDynamic($path)) {
+            throw 'Windows did not report a dynamically expandable VHDX.'
+        }
+        Assert-VhdxAvailable $path
+    }
+    $invalid = Join-Path $scratch 'invalid.vhdx'
+    [IO.File]::WriteAllText($invalid, 'not a virtual disk')
+    $rejected = $false
+    try { Assert-VhdxAvailable $invalid }
+    catch { $rejected = $true }
+    if (!$rejected) {
+        throw 'An exclusive file open should not establish detachment by itself.'
+    }
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr

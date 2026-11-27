@@ -10,7 +10,7 @@ from maintenance_rehearsal import parse_plan, rehearse
 DISTRO = "Ubuntu-24.04"
 
 
-def make_plan(*, running: bool = True, docker: bool = False) -> Plan:
+def make_plan(*, running: bool = True, docker: bool | None = False) -> Plan:
     return plan_maintenance(
         Snapshot(
             c_free_bytes=40_000_000_000,
@@ -45,10 +45,10 @@ def test_success_journals_each_planned_step_in_order() -> None:
 
 
 def test_blocked_plan_never_starts_a_step() -> None:
-    result = rehearse(parse_plan(make_plan(docker=True)), free_before=20, free_after=35)
+    result = rehearse(parse_plan(make_plan(docker=None)), free_before=20, free_after=35)
     assert result["state"] == "blocked"
     assert [event["state"] for event in result["journal"]] == ["accepted", "blocked"]
-    assert [blocker["code"] for blocker in result["blockers"]] == ["docker-running"]
+    assert [blocker["code"] for blocker in result["blockers"]] == ["unknown-docker-state"]
     assert all(value is None for value in result["windowsSpace"].values())
 
 

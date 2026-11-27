@@ -23,8 +23,14 @@ def matches_worker(path: Path, source: bytes) -> bool:
     return True
 
 
-def publish_worker(source: Path, install_root: Path) -> None:
-    contents = source.read_bytes()
+def publish_worker(
+    source: Path,
+    install_root: Path,
+    *,
+    companions: tuple[Path, ...] = (),
+) -> None:
+    modules = [(path.name, path.read_bytes()) for path in companions]
+    modules.append(("worker.py", source.read_bytes()))
     try:
         info = install_root.lstat()
     except FileNotFoundError:
@@ -35,14 +41,21 @@ def publish_worker(source: Path, install_root: Path) -> None:
             "The stable app directory must be a local directory, without a junction."
         )
 
-    destination = install_root / "worker.py"
-    if matches_worker(destination, contents):
-        return
+    # Check all paths before publishing and publish the entry point last.
+    pending = [
+        (install_root / name, contents)
+        for name, contents in modules
+        if not matches_worker(install_root / name, contents)
+    ]
+    for destination, contents in pending:
+        publish_file(install_root, destination, contents)
 
+
+def publish_file(install_root: Path, destination: Path, contents: bytes) -> None:
     staged_path = None
     try:
         with NamedTemporaryFile(
-            dir=install_root, prefix="worker.", suffix=".tmp", delete=False
+            dir=install_root, prefix=f"{destination.name}.", suffix=".tmp", delete=False
         ) as staged:
             staged_path = Path(staged.name)
             staged.write(contents)
@@ -69,7 +82,11 @@ def main() -> int:
     parser.add_argument("install_root", type=Path)
     options = parser.parse_args()
     try:
-        publish_worker(options.source, options.install_root)
+        publish_worker(
+            options.source,
+            options.install_root,
+            companions=(options.source.with_name("maintenance_runtime.py"),),
+        )
     except (OSError, ValueError) as error:
         # The launcher captures stdout and includes the error in its JSON result.
         print(error)

@@ -57,3 +57,13 @@ def test_refuse_linked_worker(worker_source: Path, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="A different worker is already installed"):
         publish_worker(worker_source, app)
     assert worker.is_symlink()
+
+
+def test_publish_worker_with_runtime(worker_source: Path, tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    runtime = tmp_path / "maintenance_runtime.py"
+    runtime.write_bytes(b"runtime contents\r\n")
+    publish_worker(worker_source, app, companions=(runtime,))
+    publish_worker(worker_source, app, companions=(runtime,))
+    assert {file.name for file in app.iterdir()} == {"worker.py", runtime.name}
+    assert (app / runtime.name).read_bytes() == runtime.read_bytes()

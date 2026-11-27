@@ -154,8 +154,9 @@ def distribution_blocker(
     return None
 
 
-def maintenance_steps(target_running: bool) -> list[str]:
-    steps = ["record-host-baseline", "recheck-docker-and-running-distros"]
+def maintenance_steps(target_running: bool, *, stop_docker: bool = False) -> list[str]:
+    steps = ["stop-docker-desktop"] if stop_docker else []
+    steps.extend(["record-host-baseline", "recheck-docker-and-running-distros"])
     if target_running:
         steps.append("shutdown-wsl")
     steps.extend(
@@ -189,13 +190,6 @@ def plan_maintenance(snapshot: Snapshot, distro: str) -> Plan:
             {"code": "unknown-host-space", "message": "C: free space is unknown."}
         )
     match snapshot.docker_desktop_running:
-        case True:
-            blockers.append(
-                {
-                    "code": "docker-running",
-                    "message": "Quit Docker Desktop so it cannot restart WSL.",
-                }
-            )
         case None:
             blockers.append(
                 {
@@ -214,7 +208,7 @@ def plan_maintenance(snapshot: Snapshot, distro: str) -> Plan:
         )
     else:
         target_running = any(name.casefold() == target for name in running)
-        other_running = sorted(name for name in running if name.casefold() != target)
+        other_running = sorted(name for name in running if name.casefold() not in {target, "docker-desktop", "docker-desktop-data"})
         if other_running:
             blockers.append(
                 {
@@ -230,7 +224,9 @@ def plan_maintenance(snapshot: Snapshot, distro: str) -> Plan:
         "decision": "blocked" if blockers else "eligible",
         "trim": "skip",
         "blockers": blockers,
-        "steps": [] if blockers else maintenance_steps(target_running),
+        "steps": [] if blockers else maintenance_steps(
+            target_running, stop_docker=snapshot.docker_desktop_running is True
+        ),
     }
 
 

@@ -67,7 +67,7 @@ def test_restart_preserves_interrupted_job_and_rejects_duplicate(
     inbox = tmp_path / "requests"
     path = inbox / f"{job_id}.json"
     db_path = tmp_path / "jobs.sqlite3"
-    request: worker.ProbeRequest = {"job_id": job_id, "operation": "probe"}
+    request: worker.Request = {"job_id": job_id, "operation": "probe"}
     worker.write_request(inbox, request)
 
     log_dir = tmp_path / "logs"
@@ -76,7 +76,7 @@ def test_restart_preserves_interrupted_job_and_rejects_duplicate(
         closing(worker.open_database(db_path)) as db,
     ):
         worker.initialize(db)
-        assert worker.claim_probe(db, path, log) == job_id
+        assert worker.claim_request(db, path, log) == request
     worker.write_request(inbox, request)
     worker.run_worker(tmp_path, once=True)
 
@@ -163,3 +163,119 @@ def test_offline_status_does_not_create_state(
 def test_rejects_noncanonical_id(job_id: str) -> None:
     with pytest.raises(ValueError, match="lowercase UUIDv4"):
         worker.parse_job_id(job_id)
+
+
+def test_legacy_windows_heartbeat_does_not_report_compaction(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    with closing(worker.open_database(db_path)) as db:
+        worker.initialize(db)
+        with db:
+            db.execute(
+                "INSERT OR REPLACE INTO worker VALUES (1, ?, ?, ?, ?)",
+                (42, "python.exe", "win32", worker.timestamp()),
+            )
+            db.execute(
+                "INSERT INTO worker_capabilities VALUES (1, ?, ?, ?)",
+                (42, "old-timestamp", worker.MAINTENANCE_PROTOCOL),
+            )
+
+    status = worker.worker_status(db_path)
+    assert status["state"] == "ready"
+    assert "maintenance_protocol" not in status
+    with pytest.raises(RuntimeError, match="updated, running Windows worker"):
+        worker.submit(tmp_path, "compact")
+    assert not (tmp_path / "requests").exists()
+
+
+def test_expired_compaction_request_is_discarded(tmp_path: Path) -> None:
+    import os
+
+    job_id = str(uuid4())
+    inbox = tmp_path / "requests"
+    worker.write_request(inbox, {"job_id": job_id, "operation": "compact"})
+    request = inbox / f"{job_id}.json"
+    old_time = time.time() - worker.ACK_TIMEOUT - 1
+    os.utime(request, (old_time, old_time))
+
+    worker.run_worker(tmp_path, once=True)
+
+    assert not request.exists()
+    assert worker.job_status(tmp_path / "jobs.sqlite3", job_id) is None
+    log = (tmp_path / "logs" / "worker.log").read_text(encoding="utf-8")
+    assert "compaction_request_expired" in log
+
+
+def test_worker_keeps_heartbeat_during_compaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    job_id = str(uuid4())
+    monkeypatch.setattr(worker, "HEARTBEAT_INTERVAL", 0.01)
+
+    def active_job(*_args: object) -> tuple[str, dict[str, bool]]:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if worker.worker_status(db_path).get("heartbeat_at") != initial:
+                return "completed", {"compaction_ok": True}
+            time.sleep(0.01)
+        pytest.fail("The worker stopped publishing its heartbeat during compaction.")
+
+    monkeypatch.setattr(worker, "run_compaction", active_job)
+    with closing(worker.open_database(db_path)) as db:
+        worker.initialize(db)
+        with db:
+            db.execute(
+                "INSERT INTO jobs (job_id, state, accepted_at, operation) "
+                "VALUES (?, 'accepted', ?, 'compact')",
+                (job_id, worker.timestamp()),
+            )
+        worker.heartbeat(db)
+        initial = worker.worker_status(db_path)["heartbeat_at"]
+        assert (
+            worker.process_compaction(
+                db, tmp_path, job_id, worker.maintenance_runtime.WindowsHost
+            )
+            == "completed"
+        )
+    assert worker.job_status(db_path, job_id)["state"] == "completed"
+
+
+def test_hold_acknowledgment_requires_verified_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    job_id = str(uuid4())
+    with closing(worker.open_database(db_path)) as db:
+        worker.initialize(db)
+        with db:
+            db.execute(
+                "INSERT INTO jobs (job_id, state, accepted_at, operation, result) "
+                "VALUES (?, 'attention', ?, 'compact', ?)",
+                (job_id, worker.timestamp(), '{"compaction_ok": false}'),
+            )
+
+    class Host:
+        released = False
+
+        def installed_target(self) -> dict[str, str]:
+            return {"vhdx": "target"}
+
+        def verify_released(self, target: dict[str, str]) -> None:
+            assert target["vhdx"] == "target"
+            if not self.released:
+                raise RuntimeError("Disk is locked.")
+
+    host = Host()
+    monkeypatch.setattr(worker.maintenance_runtime, "WindowsHost", lambda: host)
+    with pytest.raises(RuntimeError, match="locked"):
+        worker.acknowledge_hold(tmp_path, job_id)
+    with closing(worker.open_database(db_path, read_only=True)) as db:
+        assert worker.pending_hold(db) == job_id
+
+    host.released = True
+    status = worker.acknowledge_hold(tmp_path, job_id)
+    assert status["state"] == "acknowledged"
+    assert status["result"]["compaction_ok"] is False
+    assert "hold_acknowledged_at" in status["result"]
+    with closing(worker.open_database(db_path, read_only=True)) as db:
+        assert worker.pending_hold(db) is None

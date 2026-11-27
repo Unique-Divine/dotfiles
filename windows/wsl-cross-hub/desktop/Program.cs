@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -87,7 +88,6 @@ internal sealed class DesktopApp : ApplicationContext
     private readonly HotkeyWindow hotkey = new();
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 5 * 60 * 1000 };
     private readonly ToolStripMenuItem startupItem;
-    private readonly ToolStripMenuItem pinItem;
     private readonly ContextMenuStrip menu = new();
     private Task? pipeServer;
     private bool closing;
@@ -98,7 +98,6 @@ internal sealed class DesktopApp : ApplicationContext
         window = new PanelWindow(settings, shutdown.Token);
         // Own a handle while hidden so signal handlers can always marshal to the desktop thread.
         _ = window.Handle;
-        window.TogglePin = TogglePin;
         var open = new ToolStripMenuItem("Open WSL Cross Hub", null, (_, _) => window.ShowPanel());
         var refresh = new ToolStripMenuItem("Refresh", null, async (_, _) => await window.RefreshAsync());
         var chord = new ToolStripMenuItem("Set global hotkey…", null, (_, _) => EditHotkey());
@@ -114,19 +113,18 @@ internal sealed class DesktopApp : ApplicationContext
                 item.Checked = item.Text == window.DataFontName;
         };
         startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) => ToggleStartup());
-        pinItem = new ToolStripMenuItem("Keep on top", null, (_, _) => TogglePin());
-        menu.Items.AddRange(new ToolStripItem[] { open, refresh, new ToolStripSeparator(), chord, fonts, startupItem, pinItem });
+        var taskbarSettings = new ToolStripMenuItem("Taskbar settings", null, (_, _) => OpenTaskbarSettings());
+        menu.Items.AddRange(new ToolStripItem[] { open, refresh, new ToolStripSeparator(), chord, fonts, startupItem, taskbarSettings });
         menu.Opening += (_, _) =>
         {
             startupItem.Checked = settings.StartupEnabled;
             startupItem.Enabled = Environment.ProcessPath?.Equals(DesktopFiles.InstallExe,
                 StringComparison.OrdinalIgnoreCase) == true;
-            pinItem.Checked = settings.KeepOnTop;
         };
 
         tray = new NotifyIcon
         {
-            Text = "WSL Cross Hub", Icon = SystemIcons.Application,
+            Text = "WSL Cross Hub", Icon = DesktopFiles.AppIcon,
             ContextMenuStrip = menu, Visible = true,
         };
         tray.MouseClick += (_, e) =>
@@ -234,11 +232,20 @@ internal sealed class DesktopApp : ApplicationContext
         SaveSettings();
     }
 
-    private void TogglePin()
+    private void OpenTaskbarSettings()
     {
-        settings.KeepOnTop = !settings.KeepOnTop;
-        window.TopMost = settings.KeepOnTop;
-        SaveSettings();
+        try
+        {
+            using var settingsWindow = Process.Start(new ProcessStartInfo("ms-settings:taskbar")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Win32Exception error)
+        {
+            DesktopFiles.Log($"could not open taskbar settings: {error.Message}");
+            tray.ShowBalloonTip(5000, "WSL Cross Hub", "Open Taskbar settings from the Windows taskbar.", ToolTipIcon.Warning);
+        }
     }
 
     private void ToggleStartup()

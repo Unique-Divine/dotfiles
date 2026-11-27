@@ -104,7 +104,10 @@ def parse_plan(value: object) -> Plan:
     if decision == "blocked":
         if steps or not blockers:
             raise ValueError("a blocked plan needs blockers and no steps")
-    elif blockers or steps not in (maintenance_steps(False), maintenance_steps(True)):
+    elif blockers or steps not in (
+        maintenance_steps(False), maintenance_steps(True),
+        maintenance_steps(False, stop_docker=True), maintenance_steps(True, stop_docker=True),
+    ):
         raise ValueError("eligible plan steps must match the offline planner order")
     return {
         "schemaVersion": 1,

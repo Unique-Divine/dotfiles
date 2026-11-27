@@ -9,6 +9,7 @@ import time
 from base64 import b64encode
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -199,7 +200,140 @@ def test_setup_publishes_worker_before_uac(
     worker = app / "worker.py"
     assert worker.read_bytes() == (HUB / "worker.py").read_bytes()
     assert not (state / "jobs.sqlite3").exists()
-    assert list(app.iterdir()) == [worker]
+    assert {path.name for path in app.iterdir()} == {
+        "worker.py",
+        "maintenance_runtime.py",
+    }
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_maintenance_setup_dispatches_one_installer(
+    powershell: Path, windows_python: Path, tmp_path: Path, apply: bool
+) -> None:
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    for name in (
+        "wsl-cross-hub.ps1",
+        "worker.py",
+        "maintenance_runtime.py",
+        "setup_core.py",
+    ):
+        shutil.copyfile(HUB / name, hub / name)
+    (hub / "install-compaction.ps1").write_text(
+        """param([switch]$Preview, [string]$BootPythonExe,
+            [string]$BootStateDir, [string]$BootInstallRoot)
+        [ordered]@{ preview = [bool]$Preview; python = $BootPythonExe;
+            state = $BootStateDir; root = $BootInstallRoot } | ConvertTo-Json
+        exit 0
+        """,
+        encoding="utf-8",
+    )
+    state = tmp_path / "state with spaces"
+    flags = ["-MaintenanceSetup"] + (["-Apply"] if apply else [])
+    result = run_hub(powershell, state, *flags, hub=hub, python=windows_python)
+    assert result["preview"] == (not apply)
+    if not apply:
+        assert not state.exists()
+        return
+    assert Path(result["python"]) == windows_python
+    assert Path(result["state"]) == state
+    root = Path(result["root"])
+    assert root.parent == state / "app-versions"
+    assert {path.name for path in root.iterdir()} == {
+        "worker.py",
+        "maintenance_runtime.py",
+    }
+    assert not (state / "app").exists()
+
+
+def test_windows_client_can_read_an_open_maintenance_journal(
+    powershell: Path, tmp_path: Path
+) -> None:
+    job_id = str(uuid4())
+    directory = tmp_path / "maintenance"
+    directory.mkdir()
+    entry = '{"stage":"diskpart-output","line":"Compaction in progress"}'
+    with (directory / f"{job_id}.jsonl").open("a", encoding="utf-8") as journal:
+        journal.write(entry + "\n")
+        journal.flush()
+        read = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                HUB / "client.ps1",
+                "-Operation",
+                "logs",
+                "-StateDir",
+                tmp_path,
+                "-JobId",
+                job_id,
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.strip() == entry
+
+
+def test_desktop_compaction_routes_only_the_approved_target(
+    powershell: Path, tmp_path: Path
+) -> None:
+    status_script = tmp_path / "status.ps1"
+    shutil.copyfile(HUB / "status.ps1", status_script)
+    (tmp_path / "wsl-cross-hub.ps1").write_text(
+        """'{"runtime":{"state":"ready","path":"python.exe"},
+        "compaction":{"state":"ready","distro":"Ubuntu-24.04"},
+        "stateDir":"test-state"}'
+        exit 0
+        """,
+        encoding="utf-8",
+    )
+    (tmp_path / "client.ps1").write_text(
+        """param($Operation, $PythonExe, $StateDir)
+        if ($Operation -ne 'compact' -or $StateDir -ne 'test-state') { exit 2 }
+        Add-Content -LiteralPath (Join-Path $PSScriptRoot 'submissions') -Value $Operation
+        '{"job_id":"fixture-job","state":"accepted"}'
+        exit 0
+        """,
+        encoding="utf-8",
+    )
+    command = [
+        str(powershell),
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(status_script),
+        "-Operation",
+        "compact",
+        "-Distro",
+    ]
+    mismatch = subprocess.run(
+        [*command, "docker-desktop"],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert mismatch.returncode != 0
+    assert b"approved compaction target" in mismatch.stderr
+    assert not (tmp_path / "submissions").exists()
+
+    approved = subprocess.run(
+        [*command, "Ubuntu-24.04"],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert approved.returncode == 0, approved.stderr
+    assert json.loads(approved.stdout)["state"] == "accepted"
+    assert (tmp_path / "submissions").read_text().splitlines() == ["compact"]
 
 
 def test_setup_reports_publish_failure_before_uac(
@@ -239,6 +373,7 @@ def test_bundled_uv_provisions_isolated_windows_python(
         "install-task.ps1",
         "setup_core.py",
         "worker.py",
+        "maintenance_runtime.py",
     ):
         shutil.copyfile(HUB / filename, bundle / filename)
     shutil.copyfile(uv, bundled_uv)

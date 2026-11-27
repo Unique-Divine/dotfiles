@@ -5,7 +5,8 @@ param(
     [string]$UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [string]$StateDir,
     [string]$InstallRoot,
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$Replace
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,8 +36,9 @@ if (($Apply -or !$explicitInstallRoot) -and
 if ([IO.Path]::GetExtension($python) -ne ".exe") {
     throw "Pass the absolute path to Windows python.exe."
 }
-if ($InstallRoot -notmatch '^[a-zA-Z]:\\' -or
-    $python -notmatch '^[a-zA-Z]:\\') {
+if ($InstallRoot -notmatch '^[a-zA-Z]:\\[^"\r\n]+$' -or
+    $python -notmatch '^[a-zA-Z]:\\[^"\r\n]+$' -or
+    $StateDir -match '["\r\n]') {
     throw "The worker and Python must live on a local Windows drive."
 }
 
@@ -78,21 +80,68 @@ if (!$administrator.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
         "trigger. The worker runs with Limited privileges.")
 }
 
-if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-    throw "Task $taskName already exists. Inspect or remove it before reinstalling."
+$existing = Get-ScheduledTask -TaskName $taskName -TaskPath '\' `
+    -ErrorAction SilentlyContinue
+$replaceExisting = $false
+if ($existing) {
+    if (!$Replace) {
+        throw "Task $taskName already exists. Inspect or remove it before reinstalling."
+    }
+    $actions = @($existing.Actions)
+    $previous = Join-Path $StateDir 'app\worker.py'
+    $previousArguments = '-I -S "{0}" --state-dir "{1}" worker' -f $previous, $StateDir
+    $existingUser = $existing.Principal.UserId
+    if ($existingUser -notmatch '^S-1-') {
+        $account = New-Object Security.Principal.NTAccount($existingUser)
+        $existingUser = $account.Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+    if ($UserId -ne $identity.Name -or $existingUser -ne $identity.User.Value -or
+        $existing.Principal.RunLevel.ToString() -ne 'Limited' -or
+        $existing.Principal.LogonType.ToString() -ne 'S4U' -or
+        $existing.State.ToString() -eq 'Disabled' -or $actions.Count -ne 1 -or
+        $actions[0].Execute -ine $action.Execute) {
+        throw "Task $taskName does not match the supported Cross Hub boot worker."
+    }
+    if ($actions[0].Arguments -eq $action.Arguments) {
+        $summary.registered = $true
+        if ($existing.State.ToString() -ne 'Running') {
+            Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+            $summary.startRequested = $true
+        }
+        [pscustomobject]$summary | ConvertTo-Json
+        return
+    }
+    $versionedArguments = '^-I -S "{0}\\app-versions\\[0-9A-F]{{16}}-[0-9A-F]{{16}}\\worker\.py" --state-dir "{0}" worker$' -f
+        [regex]::Escape($StateDir)
+    if ($actions[0].Arguments -ne $previousArguments -and
+        $actions[0].Arguments -notmatch $versionedArguments) {
+        throw "The existing boot worker is outside the supported Cross Hub installation."
+    }
+    $replaceExisting = $true
 }
 # Register metadata only. The potentially user-writable Python and worker
 # run under the Limited task principal, never under this admin token.
-Register-ScheduledTask -TaskName $taskName -Action $action `
-    -Trigger @($boot, $watchdog) -Principal $principal -Settings $settings `
-    -Description "Run the unprivileged WSL Cross Hub worker before sign-in." |
-    Out-Null
-$summary.registered = $true
+if ($replaceExisting) {
+    Disable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
+}
 try {
-    Start-ScheduledTask -TaskName $taskName
+    if ($replaceExisting) {
+        Stop-ScheduledTask -TaskName $taskName -TaskPath '\'
+    }
+    Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action `
+        -Trigger @($boot, $watchdog) -Principal $principal -Settings $settings `
+        -Force:$replaceExisting `
+        -Description "Run the unprivileged WSL Cross Hub worker before sign-in." |
+        Out-Null
+    $summary.registered = $true
+    Start-ScheduledTask -TaskName $taskName -TaskPath '\'
 } catch {
+    if ($replaceExisting -and !$summary.registered) {
+        Enable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
+        Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    }
     [pscustomobject]$summary | ConvertTo-Json
-    throw "Task $taskName was registered but could not be started: $_"
+    throw "Could not register or start task $taskName. $_"
 }
 $summary.startRequested = $true
 [pscustomobject]$summary | ConvertTo-Json

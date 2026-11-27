@@ -9,27 +9,32 @@ the fixed `probe` operation. The client can also check worker or job status.
 
 Install the panel with `just wsl-cross-hub-desktop-install` from the dotfiles
 checkout. On Windows, run `install-desktop.cmd` from the synced
-`%USERPROFILE%\.files\windows\wsl-cross-hub` directory. Building from
+`%USERPROFILE%\dotfiles\windows\wsl-cross-hub` directory. Building from
 source uses the .NET 10 SDK. The installed desktop executable includes
 its .NET runtime. Cross Hub uses Windows `uv` to provision Python 3.13.
 
 Launch **WSL Cross Hub** from the Start Menu, click its tray icon, or
-press `Ctrl+Alt+F3`. Use **Set global hotkey** in the tray menu to change
+press `Alt+Shift+C`. Use **Set global hotkey** in the tray menu to change
 the chord. **Start with Windows** starts the panel quietly at sign-in.
-Closing the window or pressing `Esc` hides it to the
-tray. `Win+Down` minimizes it. Drag the title bar or use `Shift+hjkl`
-to move it. Use `j/k` to select, `l` or `Enter` for detail, and `h` to go
-back. **Keep on top** pins the window over other apps.
-Use **Data font** in the tray menu to change the font for measurements,
-probe results, and logs. The default is Consolas. Select Segoe UI for
-the original look or Cascadia Mono if installed.
+To see the icon beside Wi-Fi, drag it out of the tray overflow or enable
+it under **Settings → Personalization → Taskbar → Other system tray icons**.
+Close the window or press `Esc` from the overview to hide it to the tray.
+Drag the title bar or use `Shift+hjkl` to move it. Use `j/k` to select,
+`l` or `Enter` to open, and `h` or `Esc` to go back. Click or press `?`
+for help with the actions, data, and shortcuts. **Data font** in the tray
+menu changes the font for measurements and details. Consolas is the default.
 
-The panel shows C: free space, recent changes, WSL distro and VHDX file
-size information, Docker Desktop state, and the worker heartbeat. Use
-**Preview maintenance** to inspect the proposed steps and blockers for a
-selected distro. **Run probe** submits the two-second test job to a ready
-worker. Its job ID and result remain visible after you hide the window.
-The inventory and preview leave WSL running as they found it.
+The panel shows C: free space, WSL distribution and VHDX sizes, Docker
+Desktop state, and the worker heartbeat. **Compact Ubuntu disk** opens a
+preview. Windows starts the job after you choose **Start compaction**.
+**Diagnostics and logs** contains **Test Windows worker**, which sends a
+small job to check that Windows can accept and complete a request.
+
+**Recent measurements** reads `status-history.json` and shows one row per
+sample. The tray app samples about every five minutes and keeps up to 288
+readings from the last 24 hours. Refresh takes another sample. Windows
+stores job state in `jobs.sqlite3` and each compaction timeline in
+`maintenance\<job-id>.jsonl`.
 
 From a native Windows shell, including the `main-ud-win` Herdr session,
 read the latest snapshot without opening the panel.
@@ -54,10 +59,72 @@ installer and goes into `%LOCALAPPDATA%\WslCrossHub\build` by default.
 Pass `-UvExe` with a Windows `uv.exe` for the target architecture to
 include it in the package.
 
+## Command Line
+
+Run `wsl-cross-hub` from WSL. The CLI uses Python through `uv` and has no
+third-party runtime dependencies. The Windows worker continues after your
+WSL terminal disconnects.
+
+The CLI uses the Windows scripts staged by `just win-sync` when available.
+It also works through the scripts in the installed Windows app, so a sync
+from a checkout without Cross Hub can remove the staged copy without
+breaking the CLI.
+
+```sh
+wsl-cross-hub doctor
+wsl-cross-hub setup
+wsl-cross-hub setup --apply
+wsl-cross-hub doctor
+```
+
+The first command checks the worker and the compaction task. The setup
+preview requests no elevation. Apply setup while signed in at the Windows
+desktop and approve the Windows UAC dialog once. Setup installs fixed
+DiskPart and SSH recovery tasks in an administrator-protected directory and starts the
+updated, unprivileged boot worker. The disk task runs on demand. Closing
+the desktop panel does not stop the boot worker.
+The approved VHDX must be on the same local NTFS volume as Program Files.
+Setup can upgrade an installed worker while compaction is idle.
+Routine runs use the protected tasks without a UAC prompt.
+
+Once the doctor reports compaction ready, finish active WSL work and
+submit compaction from WSL. The Windows worker gracefully stops Docker
+Desktop if it is running and waits for its distributions to stop. Docker
+stays stopped after the run.
+
+```sh
+wsl-cross-hub compact
+wsl-cross-hub job <job-id>
+wsl-cross-hub logs <job-id>
+```
+
+Save the job ID before disconnecting. The Windows worker runs TRIM, shuts
+down WSL, waits for the DiskPart task to compact and release the VHDX,
+then starts the configured distro and checks recovery. It records phase
+changes and DiskPart output in `maintenance\<job-id>.jsonl` under the state
+directory. Actual elevation and reboot behavior require a live Windows test.
+
+From a Windows Herdr pane, use the native client while the Linux side is
+offline. It uses the registered Windows Python runtime.
+
+```powershell
+$client = "$env:USERPROFILE\dotfiles\windows\wsl-cross-hub\client.cmd"
+& $client -Operation status -JobId $jobId
+& $client -Operation logs -JobId $jobId
+```
+
+Set `$jobId` to the ID returned by `compact`. If a job reports `attention`
+or `interrupted` and Ubuntu remains offline, the Windows client command
+`-Operation acknowledge-hold -JobId $jobId` checks task state, the pinned
+disk identity, and exclusive access before clearing the hold. If the check
+fails, keep WSL offline and inspect the protected DiskPart journal and any
+stranded `compaction-*.vhdx` alias under `%ProgramFiles%\WslCrossHubMaintenance`.
+If the check passes, start Ubuntu from Windows and check remote access.
+
 ## Boot Worker Setup
 
 Run `just win-sync` in dotfiles to copy the scripts to
-`%USERPROFILE%\.files\windows\wsl-cross-hub`. Windows `uv.exe` is the
+`%USERPROFILE%\dotfiles\windows\wsl-cross-hub`. Windows `uv.exe` is the
 only runtime prerequisite for a fresh setup. Cross Hub finds it next to
 the launcher at `runtime\uv.exe`, on the Windows PATH, or in its local
 runtime directory. A packaged Windows build can ship an architecture-matched
@@ -66,7 +133,7 @@ runtime directory. A packaged Windows build can ship an architecture-matched
 From an ordinary Windows terminal, run:
 
 ```powershell
-$root = "$env:USERPROFILE\.files\windows\wsl-cross-hub"
+$root = "$env:USERPROFILE\dotfiles\windows\wsl-cross-hub"
 & "$root\wsl-cross-hub.cmd"
 & "$root\wsl-cross-hub.cmd" -Setup
 ```
@@ -110,7 +177,7 @@ Installing a newer worker for that task requires a separate update.
 Run the worker in one Windows PowerShell window:
 
 ```powershell
-$root = "$env:USERPROFILE\.files\windows\wsl-cross-hub"
+$root = "$env:USERPROFILE\dotfiles\windows\wsl-cross-hub"
 $python = "C:\path\to\python.exe"
 & $python -I -S "$root\worker.py" worker
 ```
@@ -202,9 +269,10 @@ and keeps three backups.
 Get-Content "$env:LOCALAPPDATA\WslCrossHub\logs\worker.log" -Tail 30
 ```
 
-This is an unprivileged installation. Use a separately installed,
-administrator-protected worker for any future elevated operation. The
-user-profile copy exists for ordinary dotfiles sync.
+The worker runs with limited privileges from the user profile. Setup
+registers the administrator-protected DiskPart task separately. Its
+installation pins the WSL distribution and disk, and the task accepts no
+caller-supplied arguments.
 
 Run `benchmark.cmd -Samples 8` on Windows to compare starting a native
 PowerShell process with sending a fixed request to a warm process. It

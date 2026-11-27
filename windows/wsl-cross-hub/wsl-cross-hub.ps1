@@ -3,6 +3,9 @@ param(
     [string]$PythonExe,
     [string]$StateDir,
     [switch]$Setup,
+    [switch]$MaintenanceSetup,
+    [switch]$RuntimeOnly,
+    [switch]$ReadOnly,
     [switch]$Apply
 )
 
@@ -11,11 +14,17 @@ $taskName = "Unique-WslCrossHub"
 $taskPath = "\"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if ($ReadOnly -and ($Setup -or $MaintenanceSetup -or $Apply)) {
+    throw 'Read-only status cannot be combined with setup.'
+}
+if (!$ReadOnly -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "Run WSL Cross Hub from a regular Windows terminal."
 }
-if ($Apply -and !$Setup) {
-    throw "Use -Setup -Apply to request boot task registration."
+if ($Setup -and $MaintenanceSetup) {
+    throw "Choose -Setup or -MaintenanceSetup."
+}
+if ($Apply -and !($Setup -or $MaintenanceSetup)) {
+    throw "Use -Setup -Apply for the probe worker or -MaintenanceSetup -Apply for compaction."
 }
 
 function Get-HubTask {
@@ -139,12 +148,84 @@ function Get-HubWorker {
     }
 }
 
+function Get-HubCompaction {
+    if ($runtime.state -ne 'ready') {
+        return [ordered]@{ state = 'unavailable'; hint = $runtime.hint }
+    }
+    try {
+        $result = & $runtime.path -I -S "$PSScriptRoot\worker.py" `
+            --state-dir $StateDir maintenance-health 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "The compaction health check returned exit code $LASTEXITCODE."
+        }
+        $health = $result | ConvertFrom-Json
+        if ($health.state -eq 'setup-required') { $health.state = 'missing' }
+        if (!$health.hint -and $health.message) {
+            $health | Add-Member -Force -NotePropertyName hint -NotePropertyValue $health.message
+        }
+        return $health
+    } catch {
+        return [ordered]@{ state = 'unavailable'; hint = $_.Exception.Message }
+    }
+}
+
 function Publish-HubWorker([string]$InstallRoot) {
     $message = & $runtime.path -I -S "$PSScriptRoot\setup_core.py" `
         "$PSScriptRoot\worker.py" $InstallRoot
     if ($LASTEXITCODE -ne 0) {
         if ($message) { throw ($message -join " ") }
         throw "Worker publishing failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Invoke-HubMaintenanceSetup {
+    $installer = Join-Path $PSScriptRoot 'install-compaction.ps1'
+    if ($task.status -notin @('registered', 'missing')) {
+        throw "Windows could not inspect the existing boot task. Check Task Scheduler."
+    }
+    if (!$Apply) {
+        $global:LASTEXITCODE = 0
+        $plan = & $installer -Preview
+        if ($LASTEXITCODE -ne 0) { return }
+        $summary = $plan | ConvertFrom-Json
+        $summary | Add-Member -Force -NotePropertyName setup `
+            -NotePropertyValue 'Register compaction and refresh the boot worker'
+        $bootWorker = [ordered]@{
+            task = $taskName
+            operation = if ($task.status -eq 'registered') { 'install or retain maintenance worker' } else { 'register' }
+            runLevel = 'Limited'
+            trigger = 'Startup and every minute'
+        }
+        $summary | Add-Member -NotePropertyName bootWorker -NotePropertyValue $bootWorker
+        $summary | ConvertTo-Json -Depth 8
+        return
+    }
+    if ($runtime.state -eq 'provisionable') {
+        Install-UvPython
+        $script:runtime = Get-HubRuntime
+    }
+    if ($runtime.state -ne 'ready') {
+        throw "Native Windows Python 3.13 is unavailable. $($runtime.hint)"
+    }
+    # Version by content so the running probe keeps its installed files intact.
+    $files = @('worker.py', 'maintenance_runtime.py')
+    $hashes = $files | ForEach-Object {
+        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $_) -Algorithm SHA256).Hash
+    }
+    $version = ($hashes | ForEach-Object { $_.Substring(0, 16) }) -join '-'
+    $installRoot = Join-Path $StateDir "app-versions\$version"
+    Publish-HubWorker -InstallRoot $installRoot
+    $lockPath = Join-Path $StateDir 'compact-submit.lock'
+    $gate = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    try {
+        $gate.Lock(0, 1)
+        $check = & $runtime.path -I -S "$installRoot\worker.py" --state-dir $StateDir require-idle
+        if ($LASTEXITCODE -ne 0) { throw "Cross Hub upgrade blocked. $check" }
+        & $installer -BootPythonExe $runtime.path -BootStateDir $StateDir `
+            -BootInstallRoot $installRoot
+    } finally {
+        $gate.Dispose()
     }
 }
 
@@ -187,7 +268,7 @@ function Invoke-HubSetup {
 $task = Get-HubTask
 $installer = Join-Path $PSScriptRoot "install-task.ps1"
 $installerSource = $null
-if ($Apply -and $task.status -eq "missing") {
+if ($Setup -and $Apply -and $task.status -eq "missing") {
     # Capture the reviewed bytes before running any user-profile interpreter.
     $installerSource = [IO.File]::ReadAllBytes($installer)
 }
@@ -207,6 +288,14 @@ if ($StateDir.Length -lt 3) {
 
 $uv = Get-HubUv
 $runtime = Get-HubRuntime
+if ($RuntimeOnly) {
+    @{ stateDir = $StateDir; runtime = $runtime } | ConvertTo-Json -Depth 4
+    exit 0
+}
+if ($MaintenanceSetup) {
+    Invoke-HubMaintenanceSetup
+    exit $LASTEXITCODE
+}
 $worker = Get-HubWorker
 $outcome = 0
 $setupResult = [ordered]@{ state = "available" }
@@ -282,6 +371,7 @@ if ($outcome -ne 0) {
     runtime = $runtime
     task = $task
     worker = $worker
+    compaction = Get-HubCompaction
     setup = $setupResult
 } | ConvertTo-Json -Depth 5
 exit $outcome

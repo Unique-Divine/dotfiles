@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Generator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -21,6 +21,7 @@ from worker import (
     ACK_TIMEOUT,
     default_state_dir,
     job_status,
+    open_database,
     parse_job_id,
     timestamp,
     worker_lock,
@@ -323,6 +324,98 @@ def latest_probe(state_dir: Path) -> Json | None:
         return probe_result(state_dir, job_id, tracked)
 
 
+def latest_maintenance(state_dir: Path) -> Json | None:
+    database = state_dir / "jobs.sqlite3"
+    if not database.is_file():
+        return None
+    with closing(open_database(database, read_only=True)) as db:
+        columns = db.execute("PRAGMA table_info(jobs)").fetchall()
+        if not any(column["name"] == "operation" for column in columns):
+            return None
+        row = db.execute(
+            "SELECT job_id FROM jobs WHERE operation = 'compact' "
+            "ORDER BY accepted_at DESC, job_id DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return None
+    job_id = parse_job_id(row["job_id"])
+    job = job_status(database, job_id)
+    if job is None:
+        return None
+
+    journal = state_dir / "maintenance" / f"{job_id}.jsonl"
+    milestones = {}
+    milestone_stages = {
+        "accepted-on-windows",
+        "windows-services-started",
+        "windows-tailscale-warning",
+        "windows-access-ready",
+        "docker-stop-started",
+        "docker-stopped",
+        "preflight-passed",
+        "trim-started",
+        "trim-completed",
+        "shutdown-requested",
+        "shutdown-observed",
+        "compaction-started",
+        "detach-observed",
+        "windows-result",
+        "restart-requested",
+        "ubuntu-started",
+        "recovery-waiting",
+        "recovery-ready",
+        "phase-failed",
+        "recovery-failed",
+        "recovery-deferred",
+        "job-finished",
+    }
+    page_size = 65536
+    try:
+        with journal.open("rb") as handle:
+            end = handle.seek(0, os.SEEK_END)
+            handle.seek(0)
+            if end <= 2 * page_size:
+                lines = handle.read(2 * page_size).split(b"\n")[:-1]
+            else:
+                lines = handle.read(page_size).split(b"\n")[:-1]
+                handle.seek(end - page_size)
+                lines.extend(handle.read(page_size).split(b"\n")[1:-1])
+    except FileNotFoundError:
+        return job
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(event, dict) or event.get("job_id") != job_id:
+            continue
+        stage = event.get("stage")
+        if isinstance(event.get("at"), str):
+            job["last_event_at"] = event["at"]
+        if isinstance(stage, str) and stage != "compaction-heartbeat":
+            job["stage"] = stage
+            if stage in milestone_stages and isinstance(event.get("at"), str):
+                note = next(
+                    (
+                        event[key]
+                        for key in ("error", "message", "output")
+                        if isinstance(event.get(key), str) and event[key]
+                    ),
+                    None,
+                )
+                milestones[stage] = {
+                    "stage": stage,
+                    "at": event["at"],
+                    "note": note[:500] if note else None,
+                    "verified": event.get("verified") is True,
+                }
+        percent = event.get("percent")
+        if type(percent) is int and 0 <= percent <= 100:
+            job["percent"] = percent
+    job["milestones"] = sorted(milestones.values(), key=lambda event: str(event["at"]))
+    return job
+
+
 def run_probe(state_dir: Path, *, timeout: float = ACK_TIMEOUT) -> Json:
     with status_lock(state_dir):
         if worker_status(state_dir / "jobs.sqlite3")["state"] != "ready":
@@ -439,7 +532,8 @@ def status(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=["collect", "latest", "preview", "probe", "job"]
+        "operation",
+        choices=["collect", "latest", "preview", "probe", "job", "maintenance"],
     )
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--distro")
@@ -458,6 +552,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             case "probe":
                 result = run_probe(state_dir)
+            case "maintenance":
+                result = {"job": latest_maintenance(state_dir)}
             case "job":
                 with status_lock(state_dir):
                     result = probe_result(

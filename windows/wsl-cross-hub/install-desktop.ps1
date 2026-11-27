@@ -3,7 +3,8 @@ param(
     [string]$PackagePath,
     [string]$InstallDirectory,
     [string]$ProgramsDirectory,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [ValidatePattern('^([0-9a-f]{7,40}(-dirty)?|local)$')][string]$SourceRevision = 'local'
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,7 +58,7 @@ if (!$PackagePath) {
         $PackagePath = $PSScriptRoot
     } else {
         $PackagePath = Join-Path $desktopStateRoot "build\$nativeRuntime"
-        & (Join-Path $PSScriptRoot "build-desktop.ps1") -OutputDirectory $PackagePath
+        & (Join-Path $PSScriptRoot "build-desktop.ps1") -OutputDirectory $PackagePath -SourceRevision $SourceRevision
     }
 }
 $package = [IO.Path]::GetFullPath($PackagePath)

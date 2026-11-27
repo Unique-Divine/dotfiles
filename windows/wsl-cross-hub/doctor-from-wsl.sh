@@ -23,7 +23,7 @@ fi
 command='
 $ErrorActionPreference = "Stop"
 [Console]::WriteLine("WSL_CROSS_HUB_READY")
-$hub = Join-Path $env:USERPROFILE ".files\windows\wsl-cross-hub\wsl-cross-hub.ps1"
+$hub = Join-Path $env:USERPROFILE "dotfiles\windows\wsl-cross-hub\wsl-cross-hub.ps1"
 if (!(Test-Path -LiteralPath $hub -PathType Leaf)) {
     [Console]::Error.WriteLine("WSL Cross Hub is missing at $hub. Run just win-sync from dotfiles.")
     exit 66

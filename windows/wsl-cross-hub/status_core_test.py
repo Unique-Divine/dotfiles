@@ -2,12 +2,14 @@ import json
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from status_core import (
     MAX_GUEST_REPORT_BYTES,
     MAX_SAMPLES,
     guest_report_path,
+    latest_maintenance,
     latest_probe,
     read_history,
     run_probe,
@@ -18,6 +20,56 @@ from worker import heartbeat, initialize, open_database, run_worker
 
 NOW = datetime(2026, 11, 21, 14, 0, tzinfo=UTC)
 GUEST_DISTRO = "Ubuntu-24.04"
+
+
+def test_latest_maintenance_keeps_progress_during_heartbeat(tmp_path: Path) -> None:
+    job_id = str(uuid4())
+    with closing(open_database(tmp_path / "jobs.sqlite3")) as db:
+        initialize(db)
+        with db:
+            db.execute(
+                "INSERT INTO jobs (job_id, operation, state, accepted_at) VALUES (?, ?, ?, ?)",
+                (job_id, "compact", "accepted", NOW.isoformat()),
+            )
+            db.execute(
+                "INSERT INTO jobs (job_id, operation, state, accepted_at) VALUES (?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    "probe",
+                    "accepted",
+                    (NOW + timedelta(seconds=1)).isoformat(),
+                ),
+            )
+    journal = tmp_path / "maintenance" / f"{job_id}.jsonl"
+    journal.parent.mkdir()
+    journal.write_text(
+        "\n".join(
+            json.dumps({"job_id": job_id, **event})
+            for event in (
+                {"stage": "preflight-passed", "at": NOW.isoformat()},
+                *({"stage": "compaction-heartbeat", "details": "x" * 90},) * 1000,
+                {
+                    "stage": "trim-completed",
+                    "at": (NOW + timedelta(seconds=1)).isoformat(),
+                    "output": "48.4 GiB trimmed",
+                },
+                {"stage": "diskpart-output", "percent": 42},
+                {"stage": "compaction-heartbeat"},
+            )
+        )
+        + '\n{"stage":',
+        encoding="utf-8",
+    )
+    current = latest_maintenance(tmp_path)
+    assert current is not None
+    assert current["job_id"] == job_id
+    assert current["stage"] == "diskpart-output"
+    assert current["percent"] == 42
+    assert [event["stage"] for event in current["milestones"]] == [
+        "preflight-passed",
+        "trim-completed",
+    ]
+    assert current["milestones"][1]["note"] == "48.4 GiB trimmed"
 
 
 def sample(when: datetime, free: int = 1024) -> dict[str, object]:
@@ -181,9 +233,9 @@ def test_missing_guest_report_keeps_windows_status(tmp_path: Path) -> None:
         (b" " * (MAX_GUEST_REPORT_BYTES + 1), "exceeds 512 KiB"),
         (json.dumps(guest_sample(NOW, "Different")).encode(), "registration"),
         (
-            json.dumps(guest_sample(NOW)).encode().replace(
-                b'"availableBytes": 55', b'"availableBytes": 65'
-            ),
+            json.dumps(guest_sample(NOW))
+            .encode()
+            .replace(b'"availableBytes": 55', b'"availableBytes": 65'),
             "exceed filesystem capacity",
         ),
         (

@@ -12,7 +12,26 @@ internal sealed record Distro(string Name, long? VhdLengthBytes, bool? VhdExists
 internal sealed record Inventory(
     long? CFreeBytes, bool? DockerDesktopRunning, string[]? RunningDistros,
     Distro[]? Distributions, Diagnostic[]? Errors);
-internal sealed record Worker(string State, [property: JsonPropertyName("heartbeat_at")] DateTimeOffset? HeartbeatAt, int? Pid);
+internal sealed record Worker(
+    string State, [property: JsonPropertyName("heartbeat_at")] DateTimeOffset? HeartbeatAt, int? Pid,
+    [property: JsonPropertyName("maintenance_protocol")] int MaintenanceProtocol);
+internal sealed record CompactionHealth(string State, string? Hint, string? Distro = null, string? Vhdx = null);
+internal sealed record MaintenanceSnapshot(MaintenanceJob? Job);
+internal sealed record MaintenanceJob(string State, string? Stage, int? Percent, MaintenanceResult? Result,
+    MaintenanceMilestone[]? Milestones = null, [property: JsonPropertyName("job_id")] string? Id = null,
+    [property: JsonPropertyName("accepted_at")] DateTimeOffset? AcceptedAt = null,
+    [property: JsonPropertyName("finished_at")] DateTimeOffset? FinishedAt = null,
+    [property: JsonPropertyName("last_event_at")] DateTimeOffset? LastEventAt = null)
+{
+    internal bool IsPending => State is "queued" or "accepted" or "running";
+}
+internal sealed record MaintenanceMilestone(string Stage, DateTimeOffset At, string? Note, bool Verified);
+internal sealed record MaintenanceResult(
+    [property: JsonPropertyName("c_free_delta_bytes")] long? FreeSpaceChange,
+    [property: JsonPropertyName("vhdx_reduction_bytes")] long? DiskReduction,
+    [property: JsonPropertyName("compaction_ok")] bool? CompactionOk = null,
+    [property: JsonPropertyName("recovery_ok")] bool? RecoveryOk = null,
+    string? Error = null);
 internal sealed record Job(
     [property: JsonPropertyName("job_id")] string Id,
     string State,
@@ -35,12 +54,15 @@ internal sealed record GuestReport(string Distro, string State, GuestMeasurement
 internal sealed record Snapshot(
     int SchemaVersion, DateTimeOffset? ObservedAt, Inventory? Inventory,
     Worker? Worker, Inventory? PreviousInventory, Job? LatestProbe, Diagnostic[]? Errors,
-    bool InventoryStale, Measurement[]? History, GuestReport[]? GuestReports);
+    bool InventoryStale, Measurement[]? History, GuestReport[]? GuestReports,
+    CompactionHealth? Compaction);
 internal sealed record Blocker(string Code, string Message);
 internal sealed record Preview(string Distro, string Decision, Blocker[] Blockers, string[] Steps);
 
 internal static class DesktopFiles
 {
+    internal static Icon AppIcon { get; } = Icon.ExtractAssociatedIcon(Application.ExecutablePath)
+        ?? SystemIcons.Application;
     internal static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WslCrossHub");
     internal static readonly string InstallExe = Path.Combine(
@@ -103,12 +125,13 @@ internal static class DesktopFiles
 
 internal sealed class DesktopSettings
 {
-    internal const string DefaultHotkey = "Ctrl+Alt+F3";
+    internal const string DefaultHotkey = "Alt+Shift+C";
+    private const int CurrentHotkeyDefaultVersion = 1;
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     public bool StartupEnabled { get; set; } = true;
     public string Hotkey { get; set; } = DefaultHotkey;
+    public int HotkeyDefaultVersion { get; set; }
     public string DataFont { get; set; } = "Consolas";
-    public bool KeepOnTop { get; set; }
     public int? Left { get; set; }
     public int? Top { get; set; }
 
@@ -117,8 +140,7 @@ internal sealed class DesktopSettings
         try
         {
             return File.Exists(DesktopFiles.SettingsPath)
-                ? JsonSerializer.Deserialize<DesktopSettings>(File.ReadAllText(DesktopFiles.SettingsPath), JsonOptions)
-                    ?? new DesktopSettings()
+                ? Read(File.ReadAllText(DesktopFiles.SettingsPath))
                 : new DesktopSettings();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -128,8 +150,20 @@ internal sealed class DesktopSettings
         }
     }
 
+    internal static DesktopSettings Read(string json)
+    {
+        var settings = JsonSerializer.Deserialize<DesktopSettings>(json, JsonOptions) ?? new DesktopSettings();
+        if (settings.HotkeyDefaultVersion < CurrentHotkeyDefaultVersion
+            && HotkeyWindow.Parse(settings.Hotkey, out uint modifiers, out uint key)
+            && HotkeyWindow.Parse("Ctrl+Alt+F3", out uint legacyModifiers, out uint legacyKey)
+            && modifiers == legacyModifiers && key == legacyKey)
+            settings.Hotkey = DefaultHotkey;
+        return settings;
+    }
+
     internal void Save()
     {
+        HotkeyDefaultVersion = Math.Max(HotkeyDefaultVersion, CurrentHotkeyDefaultVersion);
         Directory.CreateDirectory(DesktopFiles.Root);
         var temporary = DesktopFiles.SettingsPath + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOptions));
@@ -276,7 +310,7 @@ internal sealed class HotkeyWindow : NativeWindow, IDisposable
     internal string? Register(string? chord)
     {
         if (!Parse(chord, out uint modifiers, out uint key))
-            return "Use modifiers and a letter, number, or function key, such as Ctrl+Alt+F3.";
+            return $"Use modifiers and a letter, number, or function key, such as {DesktopSettings.DefaultHotkey}.";
         if (registered)
             UnregisterHotKey(Handle, Id);
         registered = RegisterHotKey(Handle, Id, modifiers | NoRepeat, key);

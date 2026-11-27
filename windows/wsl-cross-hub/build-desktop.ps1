@@ -2,7 +2,8 @@
 param(
     [ValidateSet("win-arm64", "win-x64")][string]$RuntimeIdentifier,
     [string]$OutputDirectory,
-    [string]$UvExe
+    [string]$UvExe,
+    [ValidatePattern('^([0-9a-f]{7,40}(-dirty)?|local)$')][string]$SourceRevision = 'local'
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,9 +20,11 @@ $dotnet = Get-Command dotnet.exe -CommandType Application -ErrorAction SilentlyC
 if (!$dotnet) { throw "Install the .NET 10 SDK before building the desktop package." }
 $project = Join-Path $PSScriptRoot "desktop\Desktop.csproj"
 $files = @(
-    "client.cmd", "client.ps1", "desktop-package.ps1", "install-desktop.cmd",
+    "client.cmd", "client.ps1", "compact-vhdx.ps1", "desktop-package.ps1",
+    "install-compaction.cmd", "install-compaction.ps1", "install-desktop.cmd",
     "install-desktop.ps1", "install-task.cmd", "install-task.ps1", "inventory.cmd",
     "inventory.ps1", "maintenance_plan.py", "maintenance_rehearsal.py",
+    "maintenance_runtime.py",
     "setup_core.py", "status.cmd", "status.ps1",
     "status_core.py", "uninstall-desktop.cmd", "uninstall-desktop.ps1", "worker.py",
     "wsl-cross-hub.cmd", "wsl-cross-hub.ps1"
@@ -61,6 +64,7 @@ $artifacts = New-DesktopSibling $output "artifacts"
 $backup = New-DesktopSibling $output "previous"
 try {
     & $dotnet.Source publish $project -c Release -r $RuntimeIdentifier --self-contained true `
+        "-p:InformationalVersion=1.0.0+$SourceRevision" -p:IncludeSourceRevisionInInformationalVersion=false `
         --artifacts-path $artifacts -o $stage | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Desktop publish failed for $RuntimeIdentifier." }
     if (!(Test-Path -LiteralPath (Join-Path $stage $desktopExeName) -PathType Leaf)) {
