@@ -36,7 +36,7 @@ readings from the last 24 hours. Refresh takes another sample. Windows
 stores job state in `jobs.sqlite3` and each compaction timeline in
 `maintenance\<job-id>.jsonl`.
 
-From a native Windows shell, including the `main-ud-win` Herdr session,
+From a native Windows shell, including the configured Windows Herdr session,
 read the latest snapshot without opening the panel.
 
 ```powershell
@@ -468,3 +468,75 @@ Windows can read inventory, cached Linux measurements, job status, and logs
 while Ubuntu is stopped. `doctor --checks` marks offline guest checks
 unavailable. Compaction still needs the approved Ubuntu distro running so
 the worker can TRIM before shutdown.
+
+## Native Windows Recovery Over Tailscale
+
+Use a native Windows connection for work that must continue while WSL is
+stopped. On a paired workstation, record the Windows and Ubuntu aliases
+separately. A common convention uses `<machine>-win` for Windows and
+`<machine>` for Ubuntu. Test a fresh Windows SSH command using the
+configured port and pinned host key before taking Ubuntu offline.
+
+Set up Cross Hub and confirm that the Windows worker supports the
+recovery protocol. In a regular Windows PowerShell window under the
+worker owner's account, run command `.\install-tailnet-api.ps1 -Prepare`.
+Under the same account in an elevated Windows PowerShell window, run
+command `.\install-tailnet-api.ps1 -Apply`. Pass the same state directory
+and port options for both steps if overriding the defaults. The adapter
+task runs with limited privileges and binds to `127.0.0.1:8765` by default.
+
+Enable Windows Tailscale unattended mode, then publish the loopback
+backend to approved tailnet clients through a dedicated Serve listener.
+For a host with port 443 available, use:
+
+```powershell
+tailscale serve --bg --https=443 http://127.0.0.1:8765
+```
+
+Use the HTTPS URL reported by `tailscale serve status`. Restrict the
+listener with tailnet access policy and keep the signing credential in
+access-controlled storage. The credential authorizes the recovery jobs
+exposed by this adapter, including compaction.
+
+Use `GET /healthz` to verify the native HTTP process and `GET /v1/status`
+to read the Windows volume free space, worker heartbeat, and configured
+distro state. Status can be checked while Ubuntu is stopped. A null
+`distro_running` value means Windows could not establish the guest state.
+
+Use the included Python client with an access-controlled local copy of
+the signing credential. Supply a fresh UUIDv4 for a new job.
+
+```text
+python tailnet_client.py --url <windows-serve-url> --token-file <credential-file> status
+python tailnet_client.py --url <windows-serve-url> --token-file <credential-file> start-ubuntu --job-id <uuidv4>
+python tailnet_client.py --url <windows-serve-url> --token-file <credential-file> job --job-id <uuidv4>
+```
+
+The `audit-storage` and `compact` commands follow the same job interface.
+The client signs the request method, path, job ID, time, and nonce, and
+verifies the response signature. This keeps the signing credential off
+the proxy connection, including when the loopback listener is down.
+The Windows and client clocks must agree within 90 seconds. Repeat the
+same job ID if the connection drops. A disconnect or client timeout does
+not revoke a request already sent. The worker rejects a job ID reused
+for another operation.
+
+A queued job has a durable inbox entry. The worker reports acceptance
+after writing the job to SQLite. A compact request has a limited
+acknowledgment window. The worker records an expired request as failed
+without entering Ubuntu. Start and audit requests can remain queued
+across a worker restart. The worker rechecks maintenance holds before
+entering the guest. Review an interrupted accepted job in Windows
+before requesting new work.
+
+For an offline recovery drill, stop only the configured distro from an
+independent Windows session. Verify that a fresh Windows command and
+authenticated status request succeed while Linux SSH fails. Start Ubuntu
+through Cross Hub, then check the job receipt, a fresh Linux SSH command,
+and the configured Herdr session.
+
+To retire a dedicated HTTPS listener on port 443, run
+`tailscale serve --https=443 off` on Windows. Stop and unregister the
+`Unique-WslCrossHub-Tailnet` task, then revoke the operator's copy of the
+adapter credential. Cross Hub's local worker and saved jobs are available
+through the native Windows client throughout the change.
