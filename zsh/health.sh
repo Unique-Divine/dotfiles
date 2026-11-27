@@ -25,6 +25,7 @@ zsh_files=(
   zsh/goenv-init.zsh
   zsh/docker-init.zsh
   zsh/completions.zsh
+  zsh/ssh-agent.zsh
 )
 
 for file in "${bash_files[@]}"; do
