@@ -25,8 +25,18 @@ export VISUAL="$EDITOR"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}"
 export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR%/}/ssh-agent.socket"
 
-# pinentry needs a real terminal. $TTY is empty in non-interactive zsh.
-[[ -n "${TTY:-}" ]] && export GPG_TTY="$TTY"
+# pinentry needs a real terminal. $TTY is empty when zsh has no terminal.
+# Agent and script shells get no prompt: pass decrypts from the gpg-agent
+# cache or fails at once instead of hanging on pinentry. Each branch clears
+# the other's variable, since both leak across a terminal started from an
+# agent shell, or an agent started from a terminal.
+if [[ -n "${TTY:-}" ]]; then
+  export GPG_TTY="$TTY"
+  unset PASSWORD_STORE_GPG_OPTS
+else
+  unset GPG_TTY
+  export PASSWORD_STORE_GPG_OPTS="--pinentry-mode error"
+fi
 
 export HUSKY="0" # Husky hooks can get out of hand.
 
