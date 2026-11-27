@@ -209,10 +209,17 @@ function Invoke-HubMaintenanceSetup {
     }
     # Version by content so the running probe keeps its installed files intact.
     $files = @('worker.py', 'maintenance_runtime.py')
-    $hashes = $files | ForEach-Object {
-        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $_) -Algorithm SHA256).Hash
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hashes = foreach ($file in $files) {
+            $stream = [IO.File]::OpenRead((Join-Path $PSScriptRoot $file))
+            try { [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "").Substring(0, 16) }
+            finally { $stream.Dispose() }
+        }
+    } finally {
+        $sha256.Dispose()
     }
-    $version = ($hashes | ForEach-Object { $_.Substring(0, 16) }) -join '-'
+    $version = $hashes -join '-'
     $installRoot = Join-Path $StateDir "app-versions\$version"
     Publish-HubWorker -InstallRoot $installRoot
     $lockPath = Join-Path $StateDir 'compact-submit.lock'
