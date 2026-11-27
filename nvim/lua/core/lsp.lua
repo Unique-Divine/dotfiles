@@ -178,7 +178,7 @@ local function plugin_config()
   })
 
   require('mason-lspconfig').setup {
-    ensure_installed = vim.tbl_keys(lsp_servers_mason),
+    ensure_installed = vim.env.WSL_CROSS_HUB_VIEW and {} or vim.tbl_keys(lsp_servers_mason),
     automatic_enable = {
       exclude = { "rust_analyzer" },
     },

@@ -37,6 +37,7 @@ const cases: [string, string[], string[]][] = [
   ["embedded skill", ["herdr/skills/herdr/SKILL.md"], ["herdr_native"]],
   ["embedded schema", ["herdr/docs/api/herdr-api.schema.json"], ["herdr_native"]],
   ["Windows packaging", ["herdr/scripts/package_windows_conpty.ps1"], ["herdr_native"]],
+  ["Cross Hub worker", ["windows/wsl-cross-hub/worker.py"], ["cross_hub"]],
   ["Windows Known Folders", ["windows/known-folders/sync.ps1"], ["windows_setup"]],
   ["Windows PowerShell profile", ["windows/terminal-profile/interactive.ps1"], ["windows_setup"]],
   ["hidden native config", ["herdr/.cargo/config.toml"], ["herdr_native"]],
@@ -107,7 +108,7 @@ async function decide(
 
 const off = {
   bun: "false", rust: "false", herdr_native: "false", herdr_tmux: "false",
-  windows_setup: "false", validate: "false", publish: "false",
+  windows_setup: "false", cross_hub: "false", validate: "false", publish: "false",
 }
 
 test("PRs and main pushes use component decisions and cross-dependencies", async () => {
@@ -147,6 +148,7 @@ const selectors: Record<string, keyof typeof off> = {
   bun: "bun", "rust-test": "rust", clippy: "rust", tmux: "herdr_tmux",
   "tmux-release-build": "herdr_tmux",
   "windows-setup": "windows_setup",
+  "cross-hub-python": "cross_hub", "cross-hub-desktop": "cross_hub",
   validate: "validate", build: "herdr_native", prepare: "herdr_native", publish: "publish",
 }
 function results(selected: Record<string, string>) {
@@ -159,7 +161,7 @@ function results(selected: Record<string, string>) {
 }
 
 for (const selected of [off, { ...off, bun: "true", validate: "true" },
-  { ...off, windows_setup: "true" },
+  { ...off, windows_setup: "true" }, { ...off, cross_hub: "true" },
   Object.fromEntries(Object.keys(off).map((key) => [key, "true"]))]) {
   test(`aggregate accepts successful selections ${JSON.stringify(selected)}`, async () => {
     const result = await runStep(gate.run, { NEEDS: JSON.stringify(results(selected)) })
@@ -175,6 +177,8 @@ for (const [job, status, selected] of [
   ["tmux-release-build", "failure", { ...off, herdr_tmux: "true" }],
   ["tmux-release-build", "skipped", { ...off, herdr_tmux: "true" }],
   ["windows-setup", "failure", { ...off, windows_setup: "true" }],
+  ["cross-hub-python", "failure", { ...off, cross_hub: "true" }],
+  ["cross-hub-desktop", "skipped", { ...off, cross_hub: "true" }],
   ["windows-setup", "skipped", { ...off, windows_setup: "true" }],
   ["build", "cancelled", { ...off, herdr_native: "true" }],
   ["prepare", "skipped", { ...off, herdr_native: "true" }],
