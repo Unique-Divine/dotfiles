@@ -141,7 +141,9 @@ describe("ssh_auto_setup", () => {
       envFor(f),
     )
     expect(add.exitCode).toBe(0)
-    await zshOnTerminal(f, "ssh_auto_setup")
+    const r = await zshOnTerminal(f, "ssh_auto_setup && echo SKIPPED-CLEANLY")
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain("SKIPPED-CLEANLY")
     expect(await loadedComments(f)).toEqual(["peggyWSL"])
   })
 
