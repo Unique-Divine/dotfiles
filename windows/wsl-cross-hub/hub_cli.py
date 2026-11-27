@@ -283,12 +283,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     display_flags(parser)
     commands = parser.add_subparsers(dest="action", required=True)
     doctor = commands.add_parser("doctor", help="check Windows setup and permissions")
+    checks_or_job = doctor.add_mutually_exclusive_group()
+    checks_or_job.add_argument("--checks", action="store_true", help="show actionable health checks")
+    check_ids = ("windows-ssh", "windows-herdr", "ubuntu-herdr")
+    editor_ids = ("windows-neovim", "ubuntu-neovim")
+    checks_or_job.add_argument("--investigate", choices=check_ids, metavar="CHECK")
+    checks_or_job.add_argument("--cure", choices=check_ids + editor_ids, metavar="CHECK")
+    doctor.add_argument("--runner", choices=("codex", "claude"), default="codex")
     submission = commands.add_parser("compact", help="submit Ubuntu compaction")
     submission.add_argument("--yes", action="store_true", help="confirm WSL shutdown")
     job = commands.add_parser("job", help="inspect a Windows job")
     job.add_argument("job_id", type=canonical_job_id)
     logs = commands.add_parser("logs", help="read a Windows job's maintenance journal")
     logs.add_argument("job_id", type=canonical_job_id)
+    logs.add_argument("--agent", action="store_true", help="read redacted Doctor agent events")
     probe = commands.add_parser("probe", help="submit a Windows worker health probe")
     setup = commands.add_parser("setup", help="preview the one-time maintenance setup")
     setup.add_argument(
@@ -302,6 +310,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         match args.action:
             case "doctor":
+                if check := args.investigate or args.cure:
+                    mode = "cure" if args.cure else "investigate"
+                    runner = "managed" if check in editor_ids else args.runner
+                    result = invoke_windows(
+                        f"& $client -Operation doctor-job -Mode '{mode}' "
+                        f"-CheckId '{check}' -Runner '{runner}'"
+                    )
+                    show_job(json_object(result), machine=machine)
+                    return 0
+                if args.checks:
+                    result = json_object(invoke_windows("& $client -Operation doctor"))
+                    if machine:
+                        print(json.dumps(result, ensure_ascii=False))
+                    else:
+                        for item in result["checks"]:
+                            runners = ", ".join(item["runners"]) or "none"
+                            print(f"{item['id']}: {item['state']} · {item['detail']} · runners: {runners}")
+                        for item in result.get("editors", []):
+                            version = item["version"] or "missing"
+                            config = "matches dotfiles" if item["configMatches"] else "unverified"
+                            print(f"{item['id']}: {item['state']} · {version} / {item['expectedVersion']} · "
+                                  f"config {config} · {item['detail']}")
+                    return 0
                 report = json_object(invoke_windows("& $hub"))
                 show(report, machine=machine)
                 return 0 if all(ready for ready, _ in checks(report)) else 1
@@ -313,10 +344,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 show_job(json_object(result), machine=machine)
             case "logs":
+                operation = "doctor-agent-logs" if args.agent else "logs"
                 result = invoke_windows(
-                    f"& $client -Operation logs -JobId '{args.job_id}'"
+                    f"& $client -Operation {operation} -JobId '{args.job_id}'"
                 )
-                show_logs(result, machine=machine)
+                show_logs(result, machine=machine or args.agent)
             case "probe":
                 result = invoke_windows("& $client -Operation probe")
                 show_job(json_object(result), machine=machine)

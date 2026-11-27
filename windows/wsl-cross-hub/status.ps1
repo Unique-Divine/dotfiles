@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("collect", "latest", "preview", "probe", "job", "rehearse", "maintenance", "compact")]
+    [ValidateSet("collect", "latest", "preview", "probe", "job", "rehearse", "maintenance", "compact", "doctor", "doctor-job", "doctor-logs", "diagnostic-logs", "editor-open")]
     [string]$Operation = "latest",
     [string]$Distro,
     [string]$JobId,
     [string]$Scenario,
-    [string]$StateDir
+    [string]$StateDir,
+    [ValidateSet("investigate", "cure", "auto")][string]$Mode,
+    [ValidateSet("windows-ssh", "windows-herdr", "ubuntu-herdr", "windows-neovim", "ubuntu-neovim")][string]$CheckId,
+    [ValidateSet("codex", "claude", "managed")][string]$Runner,
+    [ValidateSet("doctor", "logs")][string]$View
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,11 +20,93 @@ $OutputEncoding = $utf8
 if (($Operation -in @("preview", "rehearse", "compact")) -ne [bool]$Distro) {
     throw "Pass -Distro to preview, rehearse, or compact."
 }
-if (($Operation -eq "job") -ne [bool]$JobId) {
-    throw "Pass -JobId only to the job operation."
+if (($Operation -in @("job", "doctor-logs")) -ne [bool]$JobId) {
+    throw "Pass -JobId to job or doctor-logs."
 }
 if ($Scenario -and $Operation -ne "rehearse") {
     throw "Pass -Scenario only to the rehearse operation."
+}
+
+if ($Operation -eq "editor-open") {
+    if (!$View) { throw "Pass -View to editor-open." }
+    $client = Join-Path $PSScriptRoot "client.ps1"
+    $editor = & $client -Operation editor-launch | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $ticket = [guid]::NewGuid().ToString("N")
+    $ready = Join-Path ([IO.Path]::GetTempPath()) "cross-hub-nvim-$ticket"
+    $label = if ($View -eq "doctor") { "Doctor" } else { "Logs" }
+    $title = "WSL Cross Hub $label [$($ticket.Substring(0, 8))]"
+    $env:WSL_CROSS_HUB_BOOTSTRAP = Join-Path $PSScriptRoot "nvim-cross-hub.lua"
+    $env:WSL_CROSS_HUB_PACKAGEDIR = $PSScriptRoot
+    $env:WSL_CROSS_HUB_VIEW = $View
+    $env:WSL_CROSS_HUB_READY = $ready
+    $env:WSL_CROSS_HUB_TITLE = $title
+    # Use a dedicated visible console instead of letting the default terminal
+    # attach Neovim to a window or tab that Cross Hub cannot activate.
+    $console = Join-Path $env:SystemRoot "System32\conhost.exe"
+    Start-Process -FilePath $console -WindowStyle Normal -WorkingDirectory $env:USERPROFILE `
+        -ArgumentList @(('"{0}"' -f $editor.executable), "-i", "NONE", "-c", '"lua dofile(vim.env.WSL_CROSS_HUB_BOOTSTRAP)"')
+    try {
+        $until = [DateTime]::UtcNow.AddSeconds(20)
+        $editorPid = 0
+        while ([DateTime]::UtcNow -lt $until) {
+            if ([IO.File]::Exists($ready) -and [int]::TryParse([IO.File]::ReadAllText($ready).Trim(), [ref]$editorPid) -and $editorPid -gt 0) {
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if ($editorPid -le 0) {
+            throw "Neovim did not report that the Cross Hub buffer was ready. Check the terminal window for startup errors."
+        }
+        @{ pid = $editorPid; title = $title } | ConvertTo-Json
+    } finally {
+        [IO.File]::Delete($ready)
+    }
+    exit 0
+}
+
+if ($Operation -eq "diagnostic-logs") {
+    $root = if ($StateDir) { $StateDir } else { Join-Path $env:LOCALAPPDATA "WslCrossHub" }
+    $lines = @()
+    foreach ($name in @("desktop", "worker")) {
+        $lines += @("$name log", "")
+        $path = Join-Path $root "logs\$name.log"
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            try { $lines += @(Get-Content -LiteralPath $path -Encoding UTF8 -Tail 200) }
+            catch { $lines += "Log unavailable: $($_.Exception.Message)" }
+        } else { $lines += "No log has been written yet." }
+        $lines += ""
+    }
+    @{ lines = $lines } | ConvertTo-Json -Depth 4
+    exit 0
+}
+
+if ($Operation -in @("doctor", "doctor-job", "doctor-logs")) {
+    $client = Join-Path $PSScriptRoot "client.ps1"
+    $options = @{}
+    if ($StateDir) { $options.StateDir = $StateDir }
+    if ($Operation -eq "doctor-logs") {
+        $doctor = & "$PSScriptRoot\wsl-cross-hub.ps1" @options -ReadOnly -RuntimeOnly |
+            ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $state = $doctor.stateDir
+        $journal = & $client -StateDir $state -Operation logs -JobId $JobId
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $lines = @(($journal -join "`n") -split '\r?\n' | Where-Object { $_ })
+        $agent = Join-Path $state "maintenance\$JobId.agent.jsonl"
+        if (Test-Path -LiteralPath $agent -PathType Leaf) {
+            $events = & $client -StateDir $state -Operation doctor-agent-logs -JobId $JobId
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $lines += @('', 'Agent events')
+            $lines += @(($events -join "`n") -split '\r?\n' | Where-Object { $_ })
+        }
+        @{ lines = $lines } | ConvertTo-Json -Depth 4
+    } elseif ($Operation -eq "doctor-job") {
+        & $client @options -Operation doctor-job -Mode $Mode -CheckId $CheckId -Runner $Runner
+    } else {
+        & $client @options -Operation doctor
+    }
+    exit $LASTEXITCODE
 }
 
 $options = @{}

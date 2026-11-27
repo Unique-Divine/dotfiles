@@ -208,7 +208,7 @@ function Invoke-HubMaintenanceSetup {
         throw "Native Windows Python 3.13 is unavailable. $($runtime.hint)"
     }
     # Version by content so the running probe keeps its installed files intact.
-    $files = @('worker.py', 'maintenance_runtime.py')
+    $files = @('worker.py', 'maintenance_runtime.py', 'cure_runtime.py', 'editor_runtime.py')
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         $hashes = foreach ($file in $files) {

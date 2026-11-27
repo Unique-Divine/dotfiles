@@ -35,6 +35,7 @@ test-bun:
 # Neovim Lua unit tests; no plugins load.
 test-nvim:
   nvim --headless -u NONE -l nvim/tests/lsp_tooling_test.lua
+  nvim --headless -u NONE -l windows/wsl-cross-hub/nvim-cross-hub-test.lua
 
 alias t := test
 
@@ -406,6 +407,11 @@ win-sync:
   rsync -rt --exclude '*.test.ts' --exclude 'audio-capture/ac/' \
     windows/ "$dest/"
   echo "synced windows/ -> $win_home\\dotfiles\\windows"
+  python3 windows/wsl-cross-hub/editor_runtime.py "$PWD" "$dotfiles_root"
+
+# Install the pinned Windows Neovim release and the synced dotfiles config.
+win-neovim-install: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\wsl-cross-hub\client.cmd -Operation editor-install'
 
 # Preview or sync WSL skills and portable MCP entries to native Windows Codex.
 windows-codex-sync *ARGS:

@@ -15,7 +15,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         var command = args.Length == 0 ? "--show" : args[0];
-        if (args.Length > 1 || command is not ("--show" or "--tray" or "--quit" or "--self-test"))
+        if (args.Length > 1 || command is not ("--show" or "--tray" or "--quit" or "--self-test"
+            or "--doctor-auto-off" or "--doctor-auto-codex" or "--doctor-auto-claude"))
             return 2;
         if (command == "--self-test")
             return DesktopSelfTest.Run();
@@ -28,6 +29,8 @@ internal static class Program
         using var ownership = new Mutex(initiallyOwned: true, $@"Local\{address}", out var first);
         if (!first)
             return Signal(address, command);
+        if (command.StartsWith("--doctor-auto-", StringComparison.Ordinal))
+            return 1;
         if (command == "--quit")
             return 0;
 
@@ -61,6 +64,9 @@ internal static class Program
             {
                 "--quit" => (byte)'q',
                 "--tray" => (byte)'t',
+                "--doctor-auto-off" => (byte)'o',
+                "--doctor-auto-codex" => (byte)'c',
+                "--doctor-auto-claude" => (byte)'l',
                 _ => (byte)'s',
             });
             return 0;
@@ -100,6 +106,8 @@ internal sealed class DesktopApp : ApplicationContext
         _ = window.Handle;
         var open = new ToolStripMenuItem("Open WSL Cross Hub", null, (_, _) => window.ShowPanel());
         var refresh = new ToolStripMenuItem("Refresh", null, async (_, _) => await window.RefreshAsync());
+        var doctor = new ToolStripMenuItem("Doctor in Windows panel", null,
+            async (_, _) => await window.OpenWindowsDoctorAsync());
         var chord = new ToolStripMenuItem("Set global hotkey…", null, (_, _) => EditHotkey());
         var fonts = new ToolStripMenuItem("Data font");
         foreach (string family in new[] { "Consolas", "Cascadia Mono", "Segoe UI" })
@@ -114,7 +122,7 @@ internal sealed class DesktopApp : ApplicationContext
         };
         startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) => ToggleStartup());
         var taskbarSettings = new ToolStripMenuItem("Taskbar settings", null, (_, _) => OpenTaskbarSettings());
-        menu.Items.AddRange(new ToolStripItem[] { open, refresh, new ToolStripSeparator(), chord, fonts, startupItem, taskbarSettings });
+        menu.Items.AddRange(new ToolStripItem[] { open, refresh, doctor, new ToolStripSeparator(), chord, fonts, startupItem, taskbarSettings });
         menu.Opening += (_, _) =>
         {
             startupItem.Checked = settings.StartupEnabled;
@@ -167,6 +175,8 @@ internal sealed class DesktopApp : ApplicationContext
                         ExitThread();
                     else if (input[0] == 's')
                         window.ShowPanel();
+                    else if (input[0] is (byte)'o' or (byte)'c' or (byte)'l')
+                        window.SetAutomaticDoctor(input[0] switch { (byte)'c' => "codex", (byte)'l' => "claude", _ => "off" });
                 });
             }
             catch (OperationCanceledException) when (cancel.IsCancellationRequested) { return; }

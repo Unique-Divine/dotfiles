@@ -62,6 +62,18 @@ internal static class PanelHelp
         completion. This is called a probe in the CLI. It leaves WSL
         running and does no disk cleanup.
 
+        Diagnose an access problem
+
+        Doctor checks Windows SSH and the saved Windows and Ubuntu Herdr
+        sessions. Select a check and an available runner. Investigate
+        gathers evidence without changing the machine. Cure asks for
+        confirmation before Cross Hub can apply the action for that check.
+        Open journal to see the job's observations, actions, and result.
+
+        Auto-investigate starts Off. Choose Codex or Claude to let the
+        agent investigate recurring failures. Doctor checks while the
+        panel is open and pauses during compaction.
+
         Find Cross Hub again
 
         Click the Cross Hub icon in the Windows system tray or use the

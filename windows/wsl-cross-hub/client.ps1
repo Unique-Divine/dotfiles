@@ -1,32 +1,47 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("probe", "status", "compact", "logs", "acknowledge-hold")]
+    [ValidateSet("probe", "status", "compact", "logs", "acknowledge-hold", "doctor", "doctor-job", "doctor-agent-logs", "editor-launch", "editor-install")]
     [string]$Operation,
     [string]$PythonExe,
     [string]$JobId,
-    [string]$StateDir
+    [string]$StateDir,
+    [ValidateSet("investigate", "cure", "auto")][string]$Mode,
+    [ValidateSet("windows-ssh", "windows-herdr", "ubuntu-herdr", "windows-neovim", "ubuntu-neovim")][string]$CheckId,
+    [ValidateSet("codex", "claude", "managed")][string]$Runner
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
-if ($JobId -and $Operation -notin @("status", "logs", "acknowledge-hold")) {
-    throw "Only status, logs, and acknowledge-hold accept a job ID."
+if ($JobId -and $Operation -notin @("status", "logs", "acknowledge-hold", "doctor-agent-logs")) {
+    throw "This operation does not accept a job ID."
 }
-if ($Operation -in @("logs", "acknowledge-hold") -and !$JobId) {
+if ($Operation -in @("logs", "acknowledge-hold", "doctor-agent-logs") -and !$JobId) {
     throw "Pass a job ID to $Operation."
 }
 if ($JobId -and $JobId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') {
     throw "Expected a lowercase UUIDv4 job ID."
 }
 
-$needRuntime = $Operation -ne "logs" -and !$PythonExe
-$needLogPath = $Operation -eq "logs" -and !$StateDir
+if ($Operation -eq "doctor-job") {
+    if (!$Mode -or !$CheckId -or !$Runner) { throw "Pass Mode, CheckId, and Runner to doctor-job." }
+} elseif ($Mode -or $CheckId -or $Runner) {
+    throw "Mode, CheckId, and Runner apply only to doctor-job."
+}
+
+$readingLogs = $Operation -in @("logs", "doctor-agent-logs")
+$needRuntime = !$readingLogs -and !$PythonExe
+$needLogPath = $readingLogs -and !$StateDir
 if ($needRuntime -or $needLogPath) {
     $options = @{}
     if ($StateDir) { $options.StateDir = $StateDir }
-    if ($Operation -in @("status", "logs")) { $options.ReadOnly = $true; $options.RuntimeOnly = $true }
+    if ($Operation -in @("status", "logs", "doctor", "doctor-agent-logs", "editor-launch")) {
+        $options.ReadOnly = $true
+    }
+    if ($options.ReadOnly -or $Operation -in @("doctor-job", "editor-install")) {
+        $options.RuntimeOnly = $true
+    }
     $doctor = & "$PSScriptRoot\wsl-cross-hub.ps1" @options | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw "Cross Hub doctor returned exit code $LASTEXITCODE." }
     $StateDir = $doctor.stateDir
@@ -38,8 +53,9 @@ if ($needRuntime -or $needLogPath) {
     }
 }
 
-if ($Operation -eq "logs") {
-    $journal = Join-Path $StateDir "maintenance\$JobId.jsonl"
+if ($readingLogs) {
+    $file = if ($Operation -eq "doctor-agent-logs") { "$JobId.agent.jsonl" } else { "$JobId.jsonl" }
+    $journal = Join-Path $StateDir "maintenance\$file"
     if (!(Test-Path -LiteralPath $journal -PathType Leaf)) {
         throw "There is no maintenance journal for $JobId. Check the job status."
     }
@@ -47,7 +63,7 @@ if ($Operation -eq "logs") {
         [IO.FileShare]::ReadWrite)
     try {
         $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
-        try { [Console]::Write($reader.ReadToEnd()) }
+        try { Write-Output $reader.ReadToEnd().TrimEnd("`r", "`n") }
         finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     exit 0
@@ -57,7 +73,12 @@ $python = (Get-Item -LiteralPath $PythonExe).FullName
 # Keep sibling imports while ignoring Python environment variables and site hooks.
 $workerArgs = @("-E", "-s", "-S", "-X", "utf8", (Join-Path $PSScriptRoot "worker.py"))
 if ($StateDir) { $workerArgs += @("--state-dir", $StateDir) }
-$workerArgs += if ($Operation -eq "compact") { "submit-compact" } else { $Operation.ToLowerInvariant() }
+$workerArgs += switch ($Operation) {
+    "compact" { "submit-compact" }
+    "doctor" { "doctor-checks" }
+    "doctor-job" { "submit-doctor"; $Mode.ToLowerInvariant(); $CheckId.ToLowerInvariant(); $Runner.ToLowerInvariant() }
+    default { $Operation.ToLowerInvariant() }
+}
 if ($JobId) { $workerArgs += $JobId }
 & $python @workerArgs
 exit $LASTEXITCODE

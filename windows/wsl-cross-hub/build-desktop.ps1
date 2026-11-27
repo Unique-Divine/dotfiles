@@ -24,8 +24,8 @@ $files = @(
     "install-compaction.cmd", "install-compaction.ps1", "install-desktop.cmd",
     "install-desktop.ps1", "install-task.cmd", "install-task.ps1", "inventory.cmd",
     "inventory.ps1", "maintenance_plan.py", "maintenance_rehearsal.py",
-    "maintenance_runtime.py",
-    "setup_core.py", "status.cmd", "status.ps1",
+    "maintenance_runtime.py", "cure_runtime.py", "editor_runtime.py",
+    "nvim-cross-hub.lua", "setup_core.py", "status.cmd", "status.ps1",
     "status_core.py", "uninstall-desktop.cmd", "uninstall-desktop.ps1", "worker.py",
     "wsl-cross-hub.cmd", "wsl-cross-hub.ps1"
 )

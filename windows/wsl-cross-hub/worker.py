@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, TypeVar, cast
 from uuid import UUID, uuid4
 
 # The scheduled worker and Windows client use -I -S. Load the sibling
@@ -34,13 +34,29 @@ LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUP_COUNT = 3
 
 
-Operation = Literal["probe", "compact"]
+Operation = Literal["probe", "compact", "investigate", "cure"]
+DoctorMode = Literal["investigate", "cure", "auto"]
+DOCTOR_CHECKS = ("windows-ssh", "windows-herdr", "ubuntu-herdr")
+DOCTOR_RUNNERS = ("codex", "claude")
+EDITOR_CHECKS = ("windows-neovim", "ubuntu-neovim")
+DOCTOR_OPERATIONS = ("investigate", "cure")
 MAINTENANCE_PROTOCOL = 1
+DOCTOR_PROTOCOL = 1
+EDITOR_PROTOCOL = 2
+AUTO_MIN_INTERVAL = 45
+AUTO_MAX_INTERVAL = 180
+RunResult = TypeVar("RunResult")
 
 
 class Request(TypedDict):
     job_id: str
     operation: Operation
+    check: NotRequired[str]
+    runner: NotRequired[str]
+
+
+class WorkerBusy(RuntimeError):
+    pass
 
 
 def timestamp() -> str:
@@ -80,7 +96,12 @@ def worker_lock(path: Path) -> Generator[None]:
         except OSError as error:
             if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                 raise
-            raise RuntimeError("a WSL Cross Hub worker is already running") from error
+            message = (
+                "a WSL Cross Hub worker is already running"
+                if path.name == "worker.lock"
+                else "Cross Hub is busy checking or submitting maintenance. Retry shortly."
+            )
+            raise WorkerBusy(message) from error
         yield
 
 
@@ -138,12 +159,24 @@ def read_request(path: Path) -> Request:
     if len(encoded) > MAX_REQUEST_BYTES:
         raise ValueError("request exceeds size limit")
     request: object = json.loads(encoded)
-    if request not in (
-        {"job_id": job_id, "operation": "probe"},
-        {"job_id": job_id, "operation": "compact"},
-    ):
+    if not isinstance(request, dict) or request.get("job_id") != job_id:
         raise ValueError("request must have a matching job_id and supported operation")
+    operation = request.get("operation")
+    if operation in ("probe", "compact") and set(request) == {"job_id", "operation"}:
+        return cast(Request, request)
+    if (
+        operation not in DOCTOR_OPERATIONS
+        or set(request) != {"job_id", "operation", "check", "runner"}
+        or not doctor_target(operation, request["check"], request["runner"])
+    ):
+        raise ValueError("invalid Doctor operation, check, or runner")
     return cast(Request, request)
+
+
+def doctor_target(mode: object, check: object, runner: object) -> bool:
+    if check in EDITOR_CHECKS:
+        return mode == "cure" and runner == "managed"
+    return check in DOCTOR_CHECKS and runner in DOCTOR_RUNNERS
 
 
 def open_database(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
@@ -164,7 +197,9 @@ def initialize(db: sqlite3.Connection) -> list[str]:
             accepted_at TEXT NOT NULL,
             finished_at TEXT,
             result TEXT,
-            operation TEXT NOT NULL DEFAULT 'probe'
+            operation TEXT NOT NULL DEFAULT 'probe',
+            check_id TEXT,
+            runner TEXT
         );
         CREATE TABLE IF NOT EXISTS worker (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -179,20 +214,44 @@ def initialize(db: sqlite3.Connection) -> list[str]:
             heartbeat_at TEXT NOT NULL,
             maintenance_protocol INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS doctor_capabilities (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            pid INTEGER NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            protocol INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS doctor_observations (
+            check_id TEXT PRIMARY KEY,
+            count INTEGER NOT NULL,
+            failed_at REAL NOT NULL,
+            dispatched INTEGER NOT NULL
+        );
         """)
     with db:
-        if not any(
-            row["name"] == "operation" for row in db.execute("PRAGMA table_info(jobs)")
-        ):
+        job_columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        if "operation" not in job_columns:
             db.execute(
                 "ALTER TABLE jobs ADD COLUMN operation TEXT NOT NULL DEFAULT 'probe'"
             )
+        if "check_id" not in job_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN check_id TEXT")
+        if "runner" not in job_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN runner TEXT")
         interrupted = db.execute(
             "UPDATE jobs SET state = 'interrupted', finished_at = ? "
             "WHERE state = 'accepted' RETURNING job_id",
             (timestamp(),),
         ).fetchall()
     return [row["job_id"] for row in interrupted]
+
+
+def has_doctor_protocol(db: sqlite3.Connection) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doctor_capabilities'"
+        ).fetchone()
+        is not None
+    )
 
 
 def heartbeat(db: sqlite3.Connection) -> None:
@@ -205,6 +264,10 @@ def heartbeat(db: sqlite3.Connection) -> None:
         db.execute(
             "INSERT OR REPLACE INTO worker_capabilities VALUES (1, ?, ?, ?)",
             (os.getpid(), observed, MAINTENANCE_PROTOCOL),
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO doctor_capabilities VALUES (1, ?, ?, ?)",
+            (os.getpid(), observed, EDITOR_PROTOCOL),
         )
 
 
@@ -223,19 +286,32 @@ def claim_request(
         return None
 
     job_id = request["job_id"]
-    if request["operation"] == "compact":
+    if request["operation"] != "probe":
         try:
             if time.time() - path.stat().st_mtime >= ACK_TIMEOUT:
-                log.warning("compaction_request_expired job_id=%s", job_id)
+                operation = request["operation"]
+                event = (
+                    "compaction_request_expired"
+                    if operation == "compact"
+                    else "doctor_request_expired"
+                )
+                log.warning("%s job_id=%s", event, job_id)
                 path.unlink(missing_ok=True)
                 return None
         except FileNotFoundError:
             return None
     with db:
         cursor = db.execute(
-            "INSERT OR IGNORE INTO jobs (job_id, state, accepted_at, operation) "
-            "VALUES (?, 'accepted', ?, ?)",
-            (job_id, timestamp(), request["operation"]),
+            "INSERT OR IGNORE INTO jobs "
+            "(job_id, state, accepted_at, operation, check_id, runner) "
+            "VALUES (?, 'accepted', ?, ?, ?, ?)",
+            (
+                job_id,
+                timestamp(),
+                request["operation"],
+                request.get("check"),
+                request.get("runner"),
+            ),
         )
     claimed = cursor.rowcount == 1
     if claimed:
@@ -358,17 +434,78 @@ def process_compaction(
         finish_job(db, job_id, "failed", {"error": error})
         return "failed"
 
+    state, result = run_with_heartbeat(
+        db, lambda: run_compaction(state_dir, job_id, host_factory)
+    )
+    finish_job(db, job_id, state, result)
+    return state
+
+
+def run_with_heartbeat(
+    db: sqlite3.Connection, run: Callable[[], RunResult]
+) -> RunResult:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(run_compaction, state_dir, job_id, host_factory)
+        future = executor.submit(run)
         while not future.done():
             try:
-                future.result(timeout=HEARTBEAT_INTERVAL)
+                return future.result(timeout=HEARTBEAT_INTERVAL)
             except TimeoutError:
                 if not future.done():
                     heartbeat(db)
-        state, result = future.result()
+        return future.result()
+
+
+def process_doctor(
+    db: sqlite3.Connection,
+    state_dir: Path,
+    request: Request,
+    log: logging.Logger,
+) -> str:
+    job_id = request["job_id"]
+    try:
+        if pending := pending_hold(db):
+            raise RuntimeError(hold_message(pending))
+        if request.get("check") in EDITOR_CHECKS:
+            from editor_runtime import execute_cure as execute
+        else:
+            from cure_runtime import execute_doctor as execute
+        result = run_with_heartbeat(db, lambda: execute(state_dir, request))
+        state = "failed" if result.get("outcome") == "failed" else "completed"
+    except Exception as error:  # noqa: BLE001 - A runner crash cannot kill the worker.
+        # Agent output can be part of an exception. Log its type only.
+        log.error("doctor_failed job_id=%s error_type=%s", job_id, type(error).__name__)
+        state = "failed"
+        result = {
+            "outcome": "failed",
+            "error": "Doctor job could not finish. Check its journal.",
+        }
+        try:
+            append_doctor_terminal(state_dir, job_id, state, error=result["error"])
+        except OSError:
+            result["error"] = "Doctor job could not finish or write its journal."
     finish_job(db, job_id, state, result)
     return state
+
+
+def append_doctor_terminal(
+    state_dir: Path, job_id: str, state: str, **details: object
+) -> None:
+    directory = state_dir / "maintenance"
+    directory.mkdir(parents=True, exist_ok=True)
+    event = {
+        "at": timestamp(),
+        "job_id": job_id,
+        "stage": "job-finished",
+        "state": state,
+        **details,
+    }
+    path = directory / f"{job_id}.jsonl"
+    if maintenance_runtime.has_link(directory) or path.is_symlink():
+        raise OSError("Doctor journal cannot be linked")
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(event) + "\n")
+        file.flush()
+        os.fsync(file.fileno())
 
 
 def run_worker(
@@ -388,6 +525,21 @@ def run_worker(
     ):
         for job_id in initialize(db):
             log.warning("job_interrupted job_id=%s", job_id)
+            interrupted = db.execute(
+                "SELECT operation, check_id, runner FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if interrupted["operation"] in DOCTOR_OPERATIONS:
+                try:
+                    append_doctor_terminal(
+                        state_dir,
+                        job_id,
+                        "interrupted",
+                        check=interrupted["check_id"],
+                        runner=interrupted["runner"],
+                    )
+                except OSError:
+                    log.warning("doctor_journal_unavailable job_id=%s", job_id)
         next_heartbeat = 0.0
         while True:
             if time.monotonic() >= next_heartbeat:
@@ -400,6 +552,8 @@ def run_worker(
                 job_id = request["job_id"]
                 if request["operation"] == "compact":
                     state = process_compaction(db, state_dir, job_id, host_factory)
+                elif request["operation"] in DOCTOR_OPERATIONS:
+                    state = process_doctor(db, state_dir, request, log)
                 else:
                     run_probe(db, job_id)
                     state = "completed"
@@ -423,6 +577,10 @@ def job_status(db_path: Path, job_id: str) -> dict[str, object] | None:
         if row is None:
             return None
         result: dict[str, object] = dict(row)
+        if check := result.pop("check_id", None):
+            result["check"] = check
+        if result.get("runner") is None:
+            result.pop("runner", None)
         if row["result"] is not None:
             result["result"] = json.loads(row["result"])
         return result
@@ -455,6 +613,16 @@ def worker_status(db_path: Path) -> dict[str, object]:
                                 "maintenance_protocol"
                             ]
                             result["capabilities"] = ["probe", "compact"]
+                            doctor = None
+                            if has_doctor_protocol(db):
+                                doctor = db.execute(
+                                    "SELECT protocol FROM doctor_capabilities "
+                                    "WHERE id = 1 AND pid = ? AND heartbeat_at = ?",
+                                    (row["pid"], row["heartbeat_at"]),
+                                ).fetchone()
+                            if doctor and doctor["protocol"] in (DOCTOR_PROTOCOL, EDITOR_PROTOCOL):
+                                result["doctor_protocol"] = doctor["protocol"]
+                                result["capabilities"].extend(DOCTOR_OPERATIONS)
                     return result
     return {"state": "offline"}
 
@@ -475,23 +643,188 @@ def submit(state_dir: Path, operation: Operation) -> dict[str, object]:
         with closing(open_database(db_path, read_only=True)) as db:
             if held := pending_hold(db):
                 raise RuntimeError(hold_message(held))
-            active = db.execute(
-                "SELECT job_id FROM jobs WHERE operation = 'compact' AND state = 'accepted' LIMIT 1"
-            ).fetchone()
+            active = active_maintenance(db)
         if active:
-            raise RuntimeError(f"Compaction job {active['job_id']} is already running.")
+            label = "Compaction" if active["operation"] == "compact" else "Doctor"
+            raise RuntimeError(f"{label} job {active['job_id']} is already running.")
         return submit_request(state_dir, operation)
 
 
-def submit_request(state_dir: Path, operation: Operation) -> dict[str, object]:
+def active_maintenance(db: sqlite3.Connection) -> sqlite3.Row | None:
+    return db.execute(
+        "SELECT job_id, operation FROM jobs WHERE operation IN "
+        "('compact', 'investigate', 'cure') AND state = 'accepted' LIMIT 1"
+    ).fetchone()
+
+
+def doctor_compaction_blocked(state_dir: Path) -> bool:
+    # Submission can crash after writing a request but before acknowledgement.
+    # Claiming a request adds its database row before removing the file.
+    if any((state_dir / "requests").glob("*.json")):
+        return True
+    db_path = state_dir / "jobs.sqlite3"
+    if not db_path.exists():
+        return False
+    with closing(open_database(db_path, read_only=True)) as db:
+        columns = db.execute("PRAGMA table_info(jobs)")
+        if not any(row["name"] == "operation" for row in columns):
+            return False
+        return (
+            pending_hold(db) is not None
+            or db.execute(
+                "SELECT 1 FROM jobs WHERE operation = 'compact' AND state = 'accepted'"
+            ).fetchone()
+            is not None
+        )
+
+
+def auto_observation(
+    db: sqlite3.Connection,
+    check: str,
+    observation: dict[str, object],
+    runner: str,
+    now: float,
+) -> str:
+    row = db.execute(
+        "SELECT count, failed_at, dispatched FROM doctor_observations WHERE check_id = ?",
+        (check,),
+    ).fetchone()
+    state = observation.get("state")
+    if state == "healthy" or (state != "failed" and row and not row["dispatched"]):
+        db.execute("DELETE FROM doctor_observations WHERE check_id = ?", (check,))
+    if state != "failed" or (row and row["dispatched"]):
+        return "suppressed"
+
+    elapsed = now - row["failed_at"] if row else None
+    if elapsed is not None and 0 <= elapsed < AUTO_MIN_INTERVAL:
+        return "observed"
+    count = 1
+    if (
+        row
+        and elapsed is not None
+        and AUTO_MIN_INTERVAL <= elapsed <= AUTO_MAX_INTERVAL
+    ):
+        count = min(2, row["count"] + 1)
+    runners = observation.get("runners")
+    dispatch = (
+        count >= 2
+        and isinstance(runners, list)
+        and runner in runners
+        and not active_maintenance(db)
+        and not pending_hold(db)
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO doctor_observations VALUES (?, ?, ?, ?)",
+        (check, count, now, int(dispatch)),
+    )
+    if dispatch:
+        return "dispatch"
+    return "observed" if count == 1 else "suppressed"
+
+
+def submit_doctor(
+    state_dir: Path, mode: DoctorMode, check: str, runner: str
+) -> dict[str, object]:
+    import cure_runtime
+
+    if not doctor_target(mode, check, runner):
+        raise ValueError("Invalid Doctor operation, check, or runner.")
+    editor = check in EDITOR_CHECKS
+    db_path = state_dir / "jobs.sqlite3"
+    status = worker_status(db_path)
+    if status["state"] != "ready" or status.get("doctor_protocol") not in (
+        (EDITOR_PROTOCOL,) if editor else (DOCTOR_PROTOCOL, EDITOR_PROTOCOL)
+    ):
+        raise RuntimeError("An updated Windows worker is required for Doctor jobs.")
+
+    with worker_lock(state_dir / "compact-submit.lock"):
+        if mode == "auto":
+            if doctor_compaction_blocked(state_dir):
+                return {"state": "suppressed", "check": check}
+            observation = cure_runtime.doctor_check(check, state_dir)
+            with closing(open_database(db_path)) as db, db:
+                decision = auto_observation(db, check, observation, runner, time.time())
+            if decision != "dispatch":
+                return {"state": decision, "check": check}
+        else:
+            with closing(open_database(db_path, read_only=True)) as db:
+                if held := pending_hold(db):
+                    raise RuntimeError(hold_message(held))
+                if active := active_maintenance(db):
+                    raise RuntimeError(
+                        f"Maintenance job {active['job_id']} is already running."
+                    )
+        operation = "investigate" if mode == "auto" else mode
+        return submit_request(state_dir, operation, check=check, runner=runner)
+
+
+def doctor_checks(state_dir: Path) -> dict[str, object]:
+    import cure_runtime
+    import editor_runtime
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    # Even a WSL status command can start a distro after shutdown. Keep live
+    # observations out of the compaction window, including while submitting.
+    checks = None
+    editors = None
+    try:
+        with worker_lock(state_dir / "compact-submit.lock"):
+            if not doctor_compaction_blocked(state_dir):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    editor_report = pool.submit(editor_runtime.editor_checks)
+                    checks = cure_runtime.doctor_checks(state_dir)["checks"]
+                    editors = editor_report.result()
+    except WorkerBusy:
+        pass
+    if checks is None:
+        checks = [
+            {
+                "id": check,
+                "host": check.split("-", 1)[0],
+                "state": "unavailable",
+                "detail": "Doctor checks are paused while Cross Hub handles maintenance.",
+                "runners": [],
+            }
+            for check in DOCTOR_CHECKS
+        ]
+    result: dict[str, object] = {
+        "checks": checks,
+        "editors": editors if editors is not None else [
+            editor_runtime.unavailable(check, "Doctor checks are paused while Cross Hub handles maintenance.")
+            for check in EDITOR_CHECKS
+        ],
+    }
+    db_path = state_dir / "jobs.sqlite3"
+    if db_path.exists():
+        with closing(open_database(db_path, read_only=True)) as db:
+            if has_doctor_protocol(db):
+                latest = db.execute(
+                    "SELECT job_id FROM jobs WHERE operation IN ('investigate', 'cure') "
+                    "ORDER BY accepted_at DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+                if latest:
+                    result["latestJob"] = job_status(db_path, latest["job_id"])
+    return result
+
+
+def submit_request(
+    state_dir: Path,
+    operation: Operation,
+    *,
+    check: str | None = None,
+    runner: str | None = None,
+) -> dict[str, object]:
     job_id = str(uuid4())
-    write_request(state_dir / "requests", {"job_id": job_id, "operation": operation})
+    request: Request = {"job_id": job_id, "operation": operation}
+    if check is not None and runner is not None:
+        request.update(check=check, runner=runner)
+    write_request(state_dir / "requests", request)
     deadline = time.monotonic() + ACK_TIMEOUT
     while time.monotonic() < deadline:
         if result := job_status(state_dir / "jobs.sqlite3", job_id):
             return result
         time.sleep(0.05)
-    if operation == "compact":
+    if operation != "probe":
         (state_dir / "requests" / f"{job_id}.json").unlink(missing_ok=True)
         if result := job_status(state_dir / "jobs.sqlite3", job_id):
             return result
@@ -508,6 +841,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("worker")
     commands.add_parser("probe")
     commands.add_parser("submit-compact")
+    doctor = commands.add_parser("submit-doctor")
+    doctor.add_argument("mode", choices=("investigate", "cure", "auto"))
+    doctor.add_argument("check", choices=DOCTOR_CHECKS + EDITOR_CHECKS)
+    doctor.add_argument("runner", choices=DOCTOR_RUNNERS + ("managed",))
+    commands.add_parser("doctor-checks")
+    commands.add_parser("editor-launch")
+    commands.add_parser("editor-install")
     commands.add_parser("require-idle")
     commands.add_parser("maintenance-health")
     acknowledge = commands.add_parser("acknowledge-hold")
@@ -526,6 +866,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = submit(state_dir, "probe")
             case "submit-compact":
                 result = submit(state_dir, "compact")
+            case "submit-doctor":
+                result = submit_doctor(state_dir, args.mode, args.check, args.runner)
+            case "doctor-checks":
+                result = doctor_checks(state_dir)
+            case "editor-launch":
+                from editor_runtime import windows_launch
+
+                result = windows_launch()
+            case "editor-install":
+                from editor_runtime import windows_install
+
+                state_dir.mkdir(parents=True, exist_ok=True)
+                with worker_lock(state_dir / "compact-submit.lock"):
+                    db_path = state_dir / "jobs.sqlite3"
+                    if db_path.exists():
+                        with closing(open_database(db_path, read_only=True)) as db:
+                            if active_maintenance(db) or pending_hold(db):
+                                raise RuntimeError("Finish maintenance before installing Neovim.")
+                    result = windows_install()
             case "require-idle":
                 # The setup caller holds the submit lock. The worker writes its
                 # accepted row before removing the request, so check the inbox first.
@@ -536,12 +895,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     with closing(open_database(db_path, read_only=True)) as db:
                         columns = db.execute("PRAGMA table_info(jobs)").fetchall()
                         if any(row["name"] == "operation" for row in columns):
-                            active = db.execute(
-                                "SELECT job_id FROM jobs WHERE operation = 'compact' "
-                                "AND state = 'accepted' LIMIT 1"
-                            ).fetchone()
+                            active = active_maintenance(db)
                             if active or pending_hold(db):
-                                raise RuntimeError("Finish or reconcile compaction before upgrading Cross Hub.")
+                                raise RuntimeError(
+                                    "Finish or reconcile maintenance before upgrading Cross Hub."
+                                )
                 result = {"state": "idle"}
             case "maintenance-health":
                 result = maintenance_runtime.maintenance_health()

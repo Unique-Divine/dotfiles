@@ -85,7 +85,10 @@ def main() -> int:
         publish_worker(
             options.source,
             options.install_root,
-            companions=(options.source.with_name("maintenance_runtime.py"),),
+            companions=tuple(
+                options.source.with_name(name)
+                for name in ("maintenance_runtime.py", "cure_runtime.py", "editor_runtime.py")
+            ),
         )
     except (OSError, ValueError) as error:
         # The launcher captures stdout and includes the error in its JSON result.

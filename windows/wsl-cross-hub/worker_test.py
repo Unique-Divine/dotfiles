@@ -6,6 +6,7 @@ import time
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -175,7 +176,8 @@ def test_legacy_windows_heartbeat_does_not_report_compaction(tmp_path: Path) -> 
                 (42, "python.exe", "win32", worker.timestamp()),
             )
             db.execute(
-                "INSERT INTO worker_capabilities VALUES (1, ?, ?, ?)",
+                "INSERT INTO worker_capabilities "
+                "(id, pid, heartbeat_at, maintenance_protocol) VALUES (1, ?, ?, ?)",
                 (42, "old-timestamp", worker.MAINTENANCE_PROTOCOL),
             )
 
@@ -280,6 +282,218 @@ def test_hold_acknowledgment_requires_verified_release(
     with closing(worker.open_database(db_path, read_only=True)) as db:
         assert worker.pending_hold(db) is None
 
+
+def test_doctor_protocol_preserves_legacy_maintenance(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    with closing(worker.open_database(db_path)) as db, db:
+        db.executescript("""
+            CREATE TABLE worker_capabilities (
+                id INTEGER PRIMARY KEY, pid INTEGER, heartbeat_at TEXT,
+                maintenance_protocol INTEGER NOT NULL
+            );
+        """)
+        worker.initialize(db)
+        worker.heartbeat(db)
+        db.execute("UPDATE worker SET platform = 'win32'")
+    status = worker.worker_status(db_path)
+    assert status["maintenance_protocol"] == 1
+    assert status["doctor_protocol"] == worker.EDITOR_PROTOCOL
+    assert status["capabilities"] == ["probe", "compact", "investigate", "cure"]
+
+    with closing(worker.open_database(db_path)) as db, db:
+        old_heartbeat = worker.timestamp()
+        db.execute(
+            "INSERT OR REPLACE INTO worker VALUES (1, ?, ?, ?, ?)",
+            (42, "python.exe", "win32", old_heartbeat),
+        )
+        # The previous worker uses positional VALUES for its entire table.
+        db.execute(
+            "INSERT OR REPLACE INTO worker_capabilities VALUES (1, ?, ?, ?)",
+            (42, old_heartbeat, 1),
+        )
+    status = worker.worker_status(db_path)
+    assert status["maintenance_protocol"] == 1
+    assert "doctor_protocol" not in status
+    assert status["capabilities"] == ["probe", "compact"]
+
+
+def test_worker_tracks_doctor_outcome_and_latest_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = str(uuid4())
+    request: worker.Request = {
+        "job_id": job_id,
+        "operation": "cure",
+        "check": "windows-ssh",
+        "runner": "claude",
+    }
+
+    def execute(state_dir: Path, message: worker.Request) -> dict[str, str]:
+        assert message == request
+        journal = worker.maintenance_runtime.Journal(state_dir / "maintenance", job_id)
+        journal("job-finished", state="completed", outcome="cured")
+        return {"outcome": "cured"}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "cure_runtime",
+        SimpleNamespace(
+            execute_doctor=execute,
+            doctor_checks=lambda state_dir: {"checks": []},
+        ),
+    )
+    worker.write_request(tmp_path / "requests", request)
+    worker.run_worker(tmp_path, once=True)
+
+    job = worker.job_status(tmp_path / "jobs.sqlite3", job_id)
+    assert job is not None
+    assert job["state"] == "completed"
+    assert job["check"] == "windows-ssh"
+    assert job["runner"] == "claude"
+    assert job["result"] == {"outcome": "cured"}
+    assert worker.doctor_checks(tmp_path)["latestJob"] == job
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"command": "arbitrary"}, {"runner": "powershell"}, {"check": "../check"}],
+)
+def test_doctor_request_rejects_unreviewed_arguments(
+    tmp_path: Path, override: dict[str, str]
+) -> None:
+    job_id = str(uuid4())
+    request = {
+        "job_id": job_id,
+        "operation": "cure",
+        "check": "windows-ssh",
+        "runner": "codex",
+        **override,
+    }
+    path = tmp_path / f"{job_id}.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid Doctor"):
+        worker.read_request(path)
+
+
+def test_auto_investigation_waits_for_two_polls_and_resets_after_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    observed = {"state": "failed", "runners": ["codex"]}
+    submitted: list[tuple[str, str, str]] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "cure_runtime",
+        SimpleNamespace(
+            doctor_check=lambda check, state_dir: observed,
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "worker_status",
+        lambda path: {
+            "state": "ready",
+            "doctor_protocol": worker.DOCTOR_PROTOCOL,
+        },
+    )
+
+    def queue(
+        state_dir: Path, operation: str, *, check: str, runner: str
+    ) -> dict[str, str]:
+        submitted.append((operation, check, runner))
+        return {"state": "accepted"}
+
+    monkeypatch.setattr(worker, "submit_request", queue)
+    with closing(worker.open_database(db_path)) as db:
+        worker.initialize(db)
+
+    for current, check_state, outcome in [
+        (1, "failed", "observed"),
+        (2, "failed", "observed"),
+        (61, "failed", "accepted"),
+        (121, "unavailable", "suppressed"),
+        (181, "failed", "suppressed"),
+        (241, "healthy", "suppressed"),
+        (301, "failed", "observed"),
+        (361, "failed", "accepted"),
+    ]:
+        observed["state"] = check_state
+        monkeypatch.setattr(worker.time, "time", lambda current=current: current)
+        assert (
+            worker.submit_doctor(tmp_path, "auto", "windows-ssh", "codex")["state"]
+            == outcome
+        )
+
+    assert submitted == [("investigate", "windows-ssh", "codex")] * 2
+
+
+@pytest.mark.parametrize("state", ["accepted", "attention", "interrupted"])
+def test_compaction_pauses_doctor_observations_and_submissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    db_path = tmp_path / "jobs.sqlite3"
+    with closing(worker.open_database(db_path)) as db, db:
+        worker.initialize(db)
+        db.execute(
+            "INSERT INTO jobs (job_id, state, accepted_at, operation) "
+            "VALUES (?, ?, ?, 'compact')",
+            (str(uuid4()), state, worker.timestamp()),
+        )
+
+    def unexpected_probe(*args: object) -> None:
+        pytest.fail("Doctor probed the host during compaction")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "cure_runtime",
+        SimpleNamespace(
+            doctor_check=unexpected_probe,
+            doctor_checks=unexpected_probe,
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "worker_status",
+        lambda path: {
+            "state": "ready",
+            "doctor_protocol": worker.DOCTOR_PROTOCOL,
+        },
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Maintenance job .* is already running|Review compaction job",
+    ):
+        worker.submit_doctor(tmp_path, "cure", "windows-ssh", "codex")
+    assert (
+        worker.submit_doctor(tmp_path, "auto", "windows-ssh", "codex")["state"]
+        == "suppressed"
+    )
+    assert {check["state"] for check in worker.doctor_checks(tmp_path)["checks"]} == {
+        "unavailable"
+    }
+    assert not (tmp_path / "requests").exists()
+
+
+def test_doctor_checks_pause_during_compaction_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_probe(*args: object) -> None:
+        pytest.fail("Doctor probed the host during a compaction submission")
+
+    monkeypatch.setitem(
+        sys.modules, "cure_runtime", SimpleNamespace(doctor_checks=unexpected_probe)
+    )
+    with worker.worker_lock(tmp_path / "compact-submit.lock"):
+        assert {
+            check["state"] for check in worker.doctor_checks(tmp_path)["checks"]
+        } == {"unavailable"}
+    worker.write_request(
+        tmp_path / "requests", {"job_id": str(uuid4()), "operation": "compact"}
+    )
+    assert {check["state"] for check in worker.doctor_checks(tmp_path)["checks"]} == {
+        "unavailable"
+    }
 def test_worker_upgrade_refuses_unacknowledged_request(tmp_path: Path, capsys) -> None:
     worker.write_request(tmp_path / "requests", {
         "job_id": str(uuid4()), "operation": "compact",

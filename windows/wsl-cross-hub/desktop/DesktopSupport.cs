@@ -58,6 +58,42 @@ internal sealed record Snapshot(
     CompactionHealth? Compaction);
 internal sealed record Blocker(string Code, string Message);
 internal sealed record Preview(string Distro, string Decision, Blocker[] Blockers, string[] Steps);
+internal sealed record DoctorReport(DoctorCheck[]? Checks, DoctorJob? LatestJob = null, EditorCheck[]? Editors = null);
+internal sealed record EditorCheck(string Id, string Host, string State, string Detail,
+    string? Version, string ExpectedVersion, bool ConfigMatches, bool CanCure)
+{
+    internal DoctorCheck ToDoctorCheck() => new(Id, Host, State,
+        $"Neovim {Version ?? "unavailable"} / {ExpectedVersion} · Config {(ConfigMatches ? "matches dotfiles" : "unverified")}{Environment.NewLine}{Detail}",
+        CanCure ? ["managed"] : [], IsEditor: true);
+}
+internal sealed record EditorLaunch(int Pid, string Title);
+internal sealed record DoctorCheck(string Id, string Host, string State, string Detail, string[]? Runners,
+    bool IsEditor = false)
+{
+    internal string Label => Id switch
+    {
+        "windows-ssh" => "Windows SSH",
+        "windows-herdr" => "Windows Herdr",
+        "ubuntu-herdr" => "Ubuntu Herdr",
+        "windows-neovim" => "Windows Neovim",
+        "ubuntu-neovim" => "Ubuntu Neovim",
+        _ => Id,
+    };
+
+    public override string ToString() => $"{Label} · {State}";
+}
+
+internal sealed record DoctorJob(
+    [property: JsonPropertyName("job_id")] string? Id,
+    string State,
+    JsonElement? Result,
+    [property: JsonPropertyName("mode")] string? Mode = null,
+    [property: JsonPropertyName("check_id")] string? CheckId = null,
+    string? Runner = null)
+{
+    internal bool IsPending => State is "queued" or "accepted" or "running";
+}
+internal sealed record DoctorJournal(string[]? Lines);
 
 internal static class DesktopFiles
 {
@@ -134,6 +170,8 @@ internal sealed class DesktopSettings
     public string DataFont { get; set; } = "Consolas";
     public int? Left { get; set; }
     public int? Top { get; set; }
+    public string AutoInvestigate { get; set; } = "off";
+    public string? LastDoctorJobId { get; set; }
 
     internal static DesktopSettings Load()
     {
@@ -158,6 +196,8 @@ internal sealed class DesktopSettings
             && HotkeyWindow.Parse("Ctrl+Alt+F3", out uint legacyModifiers, out uint legacyKey)
             && modifiers == legacyModifiers && key == legacyKey)
             settings.Hotkey = DefaultHotkey;
+        if (settings.AutoInvestigate is not ("codex" or "claude"))
+            settings.AutoInvestigate = "off";
         return settings;
     }
 
@@ -210,7 +250,7 @@ internal sealed class DesktopSettings
 internal static class StatusClient
 {
     internal static async Task<T> RunAsync<T>(string operation, CancellationToken cancellation,
-        string? option = null, string? value = null)
+        params string[] arguments)
     {
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         var start = new ProcessStartInfo(Path.Combine(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
@@ -225,11 +265,8 @@ internal static class StatusClient
         foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", Path.Combine(AppContext.BaseDirectory, "status.ps1"), "-Operation", operation })
             start.ArgumentList.Add(argument);
-        if (option is not null && value is not null)
-        {
-            start.ArgumentList.Add(option);
-            start.ArgumentList.Add(value);
-        }
+        foreach (var argument in arguments)
+            start.ArgumentList.Add(argument);
 
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start status helper.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);

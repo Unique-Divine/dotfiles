@@ -111,7 +111,7 @@ if ($existing) {
         [pscustomobject]$summary | ConvertTo-Json
         return
     }
-    $versionedArguments = '^-I -S "{0}\\app-versions\\[0-9A-F]{{16}}-[0-9A-F]{{16}}\\worker\.py" --state-dir "{0}" worker$' -f
+    $versionedArguments = '^-I -S "{0}\\app-versions\\[0-9A-F]{{16}}(?:-[0-9A-F]{{16}}){{1,3}}\\worker\.py" --state-dir "{0}" worker$' -f
         [regex]::Escape($StateDir)
     if ($actions[0].Arguments -ne $previousArguments -and
         $actions[0].Arguments -notmatch $versionedArguments) {

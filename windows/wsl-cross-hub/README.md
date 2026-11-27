@@ -121,6 +121,92 @@ fails, keep WSL offline and inspect the protected DiskPart journal and any
 stranded `compaction-*.vhdx` alias under `%ProgramFiles%\WslCrossHubMaintenance`.
 If the check passes, start Ubuntu from Windows and check remote access.
 
+
+## Doctor and Cure
+
+Open **Doctor** from the Windows overview. Cross Hub opens your native Windows
+Neovim with the shared dotfiles config. The selected row shows what Enter will
+do. Use `/` to search, Enter to accept the search, and `n` or `N` to move to
+matches. `F5` refreshes the current view, and Escape goes back or closes it.
+**Open journal** displays Doctor job logs in a searchable buffer. From
+**Diagnostics and logs**, choose **Open logs in Neovim** for the desktop and
+worker logs. The tray menu also has **Doctor in Windows panel**.
+
+Doctor checks Windows SSH and the saved Windows and Ubuntu Herdr servers. It
+checks every minute while Doctor is open
+and pauses during compaction. **Auto-investigate** defaults to **Off**. Choose
+**Codex** or **Claude** to investigate once after two failures for the same
+check. A healthy check resets that incident.
+
+Run these commands from Ubuntu:
+
+```sh
+wsl-cross-hub doctor --checks
+wsl-cross-hub doctor --investigate windows-ssh --runner codex
+wsl-cross-hub doctor --cure ubuntu-herdr --runner claude
+wsl-cross-hub job <job-id>
+wsl-cross-hub logs <job-id>
+wsl-cross-hub logs <job-id> --agent
+```
+
+Run the equivalent commands from Windows PowerShell:
+
+```powershell
+$client = "$env:LOCALAPPDATA\Programs\WslCrossHub\client.cmd"
+& $client -Operation doctor
+& $client -Operation doctor-job -Mode investigate -CheckId windows-ssh -Runner codex
+& $client -Operation doctor-job -Mode cure -CheckId ubuntu-herdr -Runner claude
+& $client -Operation status -JobId $jobId
+& $client -Operation logs -JobId $jobId
+& $client -Operation doctor-agent-logs -JobId $jobId
+```
+
+Check which runners Doctor offers before choosing one. Cross Hub uses the
+selected CLI's existing sign-in and runs it on the affected host. Run the
+one-time Cross Hub setup after installing an updated worker. Windows
+investigations can still run when Ubuntu is offline.
+
+For a nonstandard installation, put runner paths in `doctor-runners.json` in
+the Cross Hub state directory. Under `windows` or `ubuntu`, add a `codex` or
+`claude` object with the runner's absolute `executable` and `home` paths. Use
+paths native to that host. `home` is the runner's existing configuration and
+sign-in directory.
+
+An investigation only proposes a next step. A manual cure can start the saved
+Herdr server on the selected host or invoke the Windows recovery task for SSH.
+That task can also start Tailscale if installed. The worker checks the live state before
+starting anything and reruns the check before reporting **Cured**. The job
+journal records the diagnosis, requested action, and check results. Its
+companion agent stream contains bounded, redacted event information.
+
+### Neovim Setup and Cure
+
+Run these from the dotfiles checkout in WSL:
+
+```sh
+just win-neovim-install
+just wsl-cross-hub-desktop-install
+wsl-cross-hub setup --apply
+```
+
+`just win-sync` stages the shared config and plugin lock. The editor installer
+verifies the checksum of the pinned upstream ZIP for the Windows architecture
+and installs it under your Windows user profile. It applies the staged config
+to the normal Windows Neovim config directory. It preserves an unmanaged
+directory and backs up the previous managed copy before replacing it. Run
+`just win-neovim-install` again after updating the shared config or editor pin.
+The tray uses the managed binary. Your shell's existing Neovim install
+and PATH are managed separately.
+
+Doctor shows the managed Neovim version and config status for both Windows and
+WSL. **Cure** on a Windows editor check applies the staged config and verified
+ZIP. **Cure** on a WSL editor check uses the existing mise lock and restores the
+managed config link to the checkout that supplied the staged config. Both
+actions require confirmation in the UI
+and run through the Windows worker. They use the dotfiles installer and record
+the verification result in the same journal as other Doctor jobs.
+
+
 ## Boot Worker Setup
 
 Run `just win-sync` in dotfiles to copy the scripts to

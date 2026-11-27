@@ -27,8 +27,11 @@ if os.environ.get('HUB_INTEROP_FAIL'):
     sys.exit(1)
 
 print('WSL_CROSS_HUB_READY')
-if '& $client -Operation logs' in script:
+if '& $client -Operation logs' in script or '& $client -Operation doctor-agent-logs' in script:
     print(os.environ['HUB_TEST_JOURNAL'], end='')
+elif '& $client -Operation doctor\n' in script:
+    print(json.dumps({'checks': [{'id': 'windows-ssh', 'host': 'windows',
+        'state': 'failed', 'detail': 'Service is stopped', 'runners': ['codex'] }]}))
 elif '& $client' in script:
     print(json.dumps({'job_id': os.environ['HUB_TEST_JOB'], 'state': 'accepted'}))
 elif '-MaintenanceSetup' in script:
@@ -188,3 +191,34 @@ def test_compaction_inspection_error_does_not_suggest_setup(
     assert health.returncode == 1
     assert "Task Scheduler is offline." in health.stdout
     assert "setup --apply" not in health.stdout
+
+def test_doctor_check_and_manual_cure(windows: Path) -> None:
+    checks = run_cli("doctor", "--checks", "--json")
+    assert checks.returncode == 0
+    assert json.loads(checks.stdout)["checks"][0]["id"] == "windows-ssh"
+
+    cure = run_cli("doctor", "--cure", "windows-ssh", "--runner", "claude")
+    assert cure.returncode == 0
+    assert os.environ["HUB_TEST_JOB"] in cure.stdout
+    assert commands(windows) == [
+        "& $client -Operation doctor",
+        "& $client -Operation doctor-job -Mode 'cure' -CheckId 'windows-ssh' -Runner 'claude'",
+    ]
+
+
+def test_doctor_agent_log_reads_the_companion_stream(
+    windows: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    event = {"stage": "agent-result", "runner": "codex"}
+    monkeypatch.setenv("HUB_TEST_JOURNAL", json.dumps(event) + "\n")
+    job = os.environ["HUB_TEST_JOB"]
+    logs = run_cli("logs", job, "--agent")
+    assert logs.returncode == 0
+    assert json.loads(logs.stdout) == event
+    assert commands(windows) == [f"& $client -Operation doctor-agent-logs -JobId '{job}'"]
+
+
+def test_doctor_rejects_unknown_check_before_calling_windows(windows: Path) -> None:
+    result = run_cli("doctor", "--cure", "unknown")
+    assert result.returncode == 2
+    assert not windows.exists()

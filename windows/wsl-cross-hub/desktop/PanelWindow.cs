@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 namespace WslCrossHub.Desktop;
 
-internal sealed class PanelWindow : Form
+internal sealed partial class PanelWindow : Form
 {
     private static readonly TimeSpan StaleAge = TimeSpan.FromMinutes(10);
     private static readonly Color Background = Color.FromArgb(21, 27, 35);
@@ -46,6 +46,7 @@ internal sealed class PanelWindow : Form
     private readonly Button cancel = ActionButton("Cancel");
     private readonly Button start = ActionButton("Start compaction");
     private readonly Button testWorker = ActionButton("Test Windows worker");
+    private readonly Button browseLogs = ActionButton("Open logs in Neovim");
     private readonly Button help = ActionButton("?");
     private readonly FlowLayoutPanel diagnosticsActions = new()
     {
@@ -146,9 +147,12 @@ internal sealed class PanelWindow : Form
         viewport.Controls.Add(columns);
         viewport.Controls.Add(confirmation);
         viewport.Controls.Add(diagnosticsActions);
+        InitializeDoctorControls(viewport);
         diagnosticsActions.Controls.Add(testWorker);
+        diagnosticsActions.Controls.Add(browseLogs);
         testWorker.AccessibleDescription = "Send a small job to check that the Windows worker responds.";
         testWorker.Click += async (_, _) => await ProbeAsync();
+        browseLogs.Click += async (_, _) => await OpenEditorAsync("logs");
         cancel.DialogResult = DialogResult.None;
         cancel.Click += (_, _) => ShowOverview();
         start.Click += async (_, _) => await SubmitCompactionAsync();
@@ -169,6 +173,9 @@ internal sealed class PanelWindow : Form
         layout.Controls.Add(viewport, 0, 2);
         layout.Controls.Add(maintenance, 0, 3);
         layout.Controls.Add(maintenanceProgress, 0, 4);
+        layout.RowCount++;
+        layout.RowStyles.Insert(5, new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(doctorIndicator, 0, 5);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -177,14 +184,23 @@ internal sealed class PanelWindow : Form
         help.Click += (_, _) => ShowHelp();
         footer.Controls.Add(message, 0, 0);
         footer.Controls.Add(help, 1, 0);
-        layout.Controls.Add(footer, 0, 5);
+        layout.Controls.Add(footer, 0, 6);
         Controls.Add(layout);
-        maintenanceTimer.Tick += async (_, _) => await RefreshMaintenanceAsync();
+        maintenanceTimer.Tick += async (_, _) =>
+        {
+            await RefreshMaintenanceAsync();
+            await RefreshDoctorJobAsync();
+        };
         VisibleChanged += async (_, _) =>
         {
             maintenanceTimer.Enabled = Visible;
+            doctorTimer.Enabled = Visible;
             if (Visible)
+            {
                 await RefreshMaintenanceAsync();
+                await RefreshDoctorAsync(periodic: true);
+                await RefreshDoctorJobAsync();
+            }
         };
         Render();
     }
@@ -387,8 +403,16 @@ internal sealed class PanelWindow : Form
             _ = ProbeAsync();
             return true;
         }
+        if (diagnosticsDetails && browseLogs.Focused && keyData == Keys.Enter)
+        {
+            _ = OpenEditorAsync("logs");
+            return true;
+        }
         if (keyData == Keys.Escape)
         {
+            if (doctorDetails && (doctorCheckSelector.DroppedDown || doctorRunnerSelector.DroppedDown
+                || doctorAutoSelector.DroppedDown))
+                return base.ProcessCmdKey(ref msg, keyData);
             if (details.Visible || previewing)
                 ShowOverview();
             else
@@ -397,9 +421,11 @@ internal sealed class PanelWindow : Form
         }
         if (keyData == Keys.F5)
         {
-            _ = RefreshAsync();
+            _ = doctorDetails ? RefreshDoctorAsync(periodic: false) : RefreshAsync();
             return true;
         }
+        if (doctorDetails && HandleDoctorKey(keyData))
+            return true;
 
         var nudge = keyData switch
         {
@@ -429,7 +455,8 @@ internal sealed class PanelWindow : Form
             }
             return true;
         }
-        if (keyData is Keys.J or Keys.K or Keys.Down or Keys.Up || PageDirection(keyData) != 0)
+        if (!doctorCheckSelector.Focused && !doctorRunnerSelector.Focused && !doctorAutoSelector.Focused
+            && (keyData is Keys.J or Keys.K or Keys.Down or Keys.Up || PageDirection(keyData) != 0))
         {
             int page = PageDirection(keyData);
             int direction = page != 0 ? page : keyData is Keys.J or Keys.Down ? 1 : -1;
@@ -580,6 +607,7 @@ internal sealed class PanelWindow : Form
             if (submitting && status.Job?.Id != latestMaintenance?.Id && latestMaintenance?.IsPending == true)
                 return;
             latestMaintenance = status.Job;
+            UpdateDoctorActions();
             var message = MaintenanceMessage(status.Job);
             maintenance.Visible = message is not null;
             maintenance.Text = message is null ? "" : message + MaintenanceElapsed(status.Job);
@@ -898,8 +926,9 @@ internal sealed class PanelWindow : Form
                 AddGuestRow(guest);
             choices.Items.Add(new Choice("heading:space", ""));
             choices.Items.Add(new Choice("heading:actions", "Action", Description: "Description"));
-            choices.Items.Add(new Choice("compact", "Compact Ubuntu disk", Description: "Reclaim C: space and restart Ubuntu"));
             choices.Items.Add(new Choice("refresh", "Refresh status", Description: "Read current disk and worker status"));
+            choices.Items.Add(new Choice("doctor", "Doctor", Description: "Check Windows and Ubuntu access"));
+            choices.Items.Add(new Choice("compact", "Compact Ubuntu disk", Description: "Reclaim C: space and restart Ubuntu"));
             choices.Items.Add(new Choice("maintenance", "Compaction details", Description: "Follow the job timeline and result"));
             choices.Items.Add(new Choice("history", "Recent measurements", Description: "Compare previous disk readings"));
             choices.Items.Add(new Choice("diagnostics", "Diagnostics and logs", Description: "Inspect the Windows worker and logs"));
@@ -981,7 +1010,11 @@ internal sealed class PanelWindow : Form
         switch (item.Key)
         {
             case "compact": await PreviewAsync(compaction: true); return;
-            case "refresh": await RefreshAsync(); return;
+            case "refresh":
+                await RefreshAsync();
+                await RefreshDoctorAsync(periodic: false);
+                return;
+            case "doctor": await OpenEditorAsync("doctor"); return;
         }
         if (item.Distro is not null)
         {
@@ -1182,6 +1215,7 @@ internal sealed class PanelWindow : Form
     private void ShowDetails(string text, bool followMaintenance = false, bool followDiagnostics = false)
     {
         navigationVersion++;
+        HideDoctorControls();
         confirmedDistro = null;
         confirmation.Hide();
         maintenanceDetails = followMaintenance;
@@ -1201,6 +1235,7 @@ internal sealed class PanelWindow : Form
     private void ShowOverview()
     {
         navigationVersion++;
+        HideDoctorControls();
         confirmedDistro = null;
         maintenanceDetails = false;
         measurementDetails = false;
@@ -1236,7 +1271,10 @@ internal sealed class PanelWindow : Form
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
             maintenanceTimer.Dispose();
+            doctorTimer.Dispose();
+        }
         base.Dispose(disposing);
         if (disposing)
         {
@@ -1383,6 +1421,15 @@ internal static class DesktopSelfTest
             || !PanelHelp.Text.Contains("status-history.json", StringComparison.Ordinal)
             || !PanelHelp.Text.Contains("Test Windows", StringComparison.Ordinal))
             return 62;
+        var doctor = JsonSerializer.Deserialize<DoctorReport>(
+            """{"checks":[{"id":"windows-ssh","host":"Windows","state":"failed","detail":"Windows SSH is stopped.","runners":["codex","claude"]}],"latestJob":{"job_id":"earlier","state":"cured"}}""",
+            DesktopSettings.JsonOptions);
+        if (oldSettings.AutoInvestigate != "off"
+            || DesktopSettings.Read("""{"autoInvestigate":"claude"}""").AutoInvestigate != "claude"
+            || DesktopSettings.Read("""{"autoInvestigate":"on"}""").AutoInvestigate != "off"
+            || doctor?.Checks is not [{ Id: "windows-ssh", Host: "Windows", Runners: ["codex", "claude"] }]
+            || doctor.LatestJob is not { Id: "earlier", IsPending: false })
+            return 63;
         return 0;
     }
 }

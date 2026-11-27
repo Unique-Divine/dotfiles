@@ -71,7 +71,7 @@ local function plugin_config()
     return not vim.list_contains(installed, lang)
   end, parsers)
 
-  if #missing > 0 then
+  if #missing > 0 and (vim.fn.has('win32') == 0 or vim.fn.executable('tree-sitter') == 1) then
     nvim_treesitter.install(missing)
   end
 

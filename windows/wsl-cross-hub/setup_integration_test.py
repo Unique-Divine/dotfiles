@@ -203,6 +203,8 @@ def test_setup_publishes_worker_before_uac(
     assert {path.name for path in app.iterdir()} == {
         "worker.py",
         "maintenance_runtime.py",
+        "cure_runtime.py",
+        "editor_runtime.py",
     }
 
 
@@ -216,6 +218,8 @@ def test_maintenance_setup_dispatches_one_installer(
         "wsl-cross-hub.ps1",
         "worker.py",
         "maintenance_runtime.py",
+        "cure_runtime.py",
+        "editor_runtime.py",
         "setup_core.py",
     ):
         shutil.copyfile(HUB / name, hub / name)
@@ -239,9 +243,12 @@ def test_maintenance_setup_dispatches_one_installer(
     assert Path(result["state"]) == state
     root = Path(result["root"])
     assert root.parent == state / "app-versions"
+    # The require-idle probe may create a bytecode directory after publication.
     assert {path.name for path in root.iterdir() if path.is_file()} == {
         "worker.py",
         "maintenance_runtime.py",
+        "cure_runtime.py",
+        "editor_runtime.py",
     }
     assert not (state / "app").exists()
 
@@ -279,6 +286,48 @@ def test_windows_client_can_read_an_open_maintenance_journal(
         )
     assert read.returncode == 0, read.stderr
     assert read.stdout.strip() == entry
+
+
+def test_desktop_doctor_logs_return_journal_and_agent_events(
+    powershell: Path, tmp_path: Path
+) -> None:
+    job_id = str(uuid4())
+    directory = tmp_path / "maintenance"
+    directory.mkdir()
+    journal = '{"stage":"doctor-verified","state":"healthy"}'
+    event = '{"type":"turn.completed"}'
+    (directory / f"{job_id}.jsonl").write_text(journal + "\n", encoding="utf-8")
+    (directory / f"{job_id}.agent.jsonl").write_text(event + "\n", encoding="utf-8")
+    for name in ("client.ps1", "status.ps1"):
+        shutil.copyfile(HUB / name, tmp_path / name)
+    (tmp_path / "wsl-cross-hub.ps1").write_text(
+        "param($StateDir, [switch]$ReadOnly, [switch]$RuntimeOnly)\n"
+        "@{ stateDir = $StateDir } | ConvertTo-Json\nexit 0\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        (
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            tmp_path / "status.ps1",
+            "-Operation",
+            "doctor-logs",
+            "-StateDir",
+            tmp_path,
+            "-JobId",
+            job_id,
+        ),
+        capture_output=True,
+        encoding="utf-8",
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"lines": [journal, "", "Agent events", event]}
 
 
 def test_desktop_compaction_routes_only_the_approved_target(
@@ -374,6 +423,8 @@ def test_bundled_uv_provisions_isolated_windows_python(
         "setup_core.py",
         "worker.py",
         "maintenance_runtime.py",
+        "cure_runtime.py",
+        "editor_runtime.py",
     ):
         shutil.copyfile(HUB / filename, bundle / filename)
     shutil.copyfile(uv, bundled_uv)
