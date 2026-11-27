@@ -1,10 +1,13 @@
+import io
 import json
+import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import status_core
 from status_core import (
     MAX_GUEST_REPORT_BYTES,
     MAX_SAMPLES,
@@ -315,3 +318,14 @@ def test_timed_out_probe_tracks_same_job_until_complete(tmp_path: Path) -> None:
     assert completed is not None
     assert completed["job_id"] == queued["job_id"]
     assert completed["state"] == "completed"
+
+
+def test_native_status_accepts_bom_prefixed_worker_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO('\ufeff{"state":"ready"}'))
+    monkeypatch.setattr(
+        status_core, "status", lambda state_dir, worker, *, refresh: {"worker": worker}
+    )
+    assert status_core.main(["collect", "--state-dir", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"worker": {"state": "ready"}}

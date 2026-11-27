@@ -550,7 +550,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         match args.operation:
             case "collect" | "latest":
-                worker = expect_mapping(json.load(sys.stdin), "worker")
+                document = sys.stdin.read().removeprefix("\ufeff")
+                worker = expect_mapping(json.loads(document), "worker")
                 result = status(state_dir, worker, refresh=args.operation == "collect")
             case "preview":
                 result = plan_maintenance(
