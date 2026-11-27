@@ -578,42 +578,55 @@ class WindowsHost:
         return int(result)
 
     def guest(
-        self, target: Target, *args: str, timeout: float = 15, root: bool = False
+        self,
+        target: Target,
+        *args: str,
+        timeout: float = 15,
+        root: bool = False,
+        deadline: float | None = None,
     ) -> str:
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise RuntimeError("Ubuntu startup deadline elapsed.")
         user = ("-u", "root") if root else ()
         return self.command(
             self.wsl, "-d", target["distro"], *user, "--exec", *args, timeout=timeout
         )
 
-    def guest_identity(self, target: Target) -> Guest:
-        uid = self.guest(target, "/usr/bin/id", "-u")
+    def guest_identity(self, target: Target, *, deadline: float | None = None) -> Guest:
+        def read(*args: str) -> str:
+            return self.guest(target, *args, deadline=deadline)
+
+        uid = read("/usr/bin/id", "-u")
         if not uid.isdecimal() or uid == "0":
             raise RuntimeError(
                 "Set the distribution default user to the account used by Herdr."
             )
-        home = PurePosixPath(self.guest(target, "/usr/bin/printenv", "HOME"))
+        home = PurePosixPath(read("/usr/bin/printenv", "HOME"))
         if not home.is_absolute():
             raise RuntimeError("Could not determine the Ubuntu user's home directory.")
         herdr = str(home / ".local/bin/herdr")
-        self.guest(target, "/usr/bin/test", "-x", herdr)
-        address = self.guest(target, "/usr/bin/tailscale", "ip", "-4")
+        read("/usr/bin/test", "-x", herdr)
+        address = read("/usr/bin/tailscale", "ip", "-4")
         addr = ipaddress.IPv4Address(address)
         if addr not in ipaddress.IPv4Network("100.64.0.0/10"):
             raise RuntimeError(
                 "The Linux Tailscale address is outside the expected range."
             )
-        hostname = self.guest(target, "/bin/hostname")
+        hostname = read("/bin/hostname")
         try:
-            self.guest(
-                target, "/usr/bin/test", "-d", str(home / ".config/herdr/sessions" / hostname)
-            )
+            read("/usr/bin/test", "-d", str(home / ".config/herdr/sessions" / hostname))
         except RuntimeError:
             hostname = ""
-        return Guest(self.boot_id(target), uid, herdr, address, hostname or None)
+        return Guest(
+            self.boot_id(target, deadline=deadline), uid, herdr, address, hostname or None
+        )
 
-    def boot_id(self, target: Target) -> str:
+    def boot_id(self, target: Target, *, deadline: float | None = None) -> str:
         value = self.guest(
-            target, "/bin/cat", "/proc/sys/kernel/random/boot_id", timeout=12
+            target, "/bin/cat", "/proc/sys/kernel/random/boot_id", timeout=12,
+            deadline=deadline,
         )
         return str(UUID(value))
 
@@ -634,15 +647,50 @@ class WindowsHost:
             return {"size_bytes": size, "used_bytes": used, "available_bytes": available}
         if operation != "start-ubuntu":
             raise ValueError("Unsupported recovery operation.")
-        boot = self.boot_id(target)
-        self.guest(
-            target, "/usr/bin/systemctl", "start", "tailscaled", "ssh.socket",
-            root=True, timeout=30,
+        deadline = time.monotonic() + 90
+        services_boot = None
+        last_error = ""
+        while time.monotonic() < deadline:
+            try:
+                boot = self.boot_id(target, deadline=deadline)
+                if services_boot != boot:
+                    self.guest(
+                        target, "/usr/bin/systemctl", "start", "tailscaled", "ssh.socket",
+                        root=True, timeout=30, deadline=deadline,
+                    )
+                    services_boot = boot
+                guest = self.guest_identity(target, deadline=deadline)
+                if guest.boot_id != boot:
+                    raise RuntimeError("Ubuntu restarted during startup checks.")
+                break
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+                if str(error) != last_error:
+                    last_error = str(error)
+                    journal("startup-waiting", error=last_error)
+                time.sleep(max(0, min(2, deadline - time.monotonic())))
+        else:
+            raise RuntimeError(f"Ubuntu startup checks timed out. {last_error}")
+
+        self.recover(target, guest, False, journal)
+        markers = self.guest(
+            target, "/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat"
         )
-        self.recover(target, self.guest_identity(target), False, journal)
-        pid1_stat = self.guest(target, "/bin/cat", "/proc/1/stat")
-        pid1_start_ticks = int(pid1_stat.rsplit(")", 1)[1].split()[19])
-        return {"boot_id": boot, "pid1_start_ticks": pid1_start_ticks, "already_running": running}
+        try:
+            boot_value, pid1_stat = markers.split("\n", 1)
+            boot_id = str(UUID(boot_value))
+            comm, fields = pid1_stat.rsplit(")", 1)
+            pid1_start_ticks = int(fields.split()[19])
+            if not comm.startswith("1 (") or pid1_start_ticks < 0:
+                raise ValueError("Invalid PID 1 stat")
+        except (IndexError, ValueError) as error:
+            raise RuntimeError("Could not read Ubuntu boot and PID 1 markers.") from error
+        if boot_id != guest.boot_id:
+            raise RuntimeError("Ubuntu restarted before its ready boot markers could be read.")
+        return {
+            "boot_id": boot_id,
+            "pid1_start_ticks": pid1_start_ticks,
+            "already_running": running,
+        }
 
     def shutdown(self) -> None:
         self.command(self.wsl, "--shutdown", timeout=60)

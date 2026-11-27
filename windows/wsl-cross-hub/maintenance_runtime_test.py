@@ -494,3 +494,115 @@ def test_shadowed_user_bus_restarts_the_owner_manager_only(monkeypatch):
         {"root": True, "timeout": 25},
     )
     assert events == [("repairing-shadowed-user-runtime", {"uid": "1000"})]
+
+
+class StartupClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class StartupHost(runtime.WindowsHost):
+    boot = "079bbf10-7ea0-412a-8b9c-15c285101683"
+    marker_command = ("/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat")
+
+    def __init__(self, *, another_boot: bool = False, start_fails: bool = False) -> None:
+        self.wsl = Path("wsl.exe")
+        self.calls: list[tuple[tuple[str | Path, ...], float]] = []
+        self.services_attempts = 0
+        self.tailscale_attempts = 0
+        self.recovered = False
+        self.another_boot = another_boot
+        self.start_fails = start_fails
+
+    def installed_target(self) -> runtime.Target:
+        return TARGET
+
+    def running_distros(self) -> list[str]:
+        return []
+
+    def command(self, *args: str | Path, timeout: float = 15) -> str:
+        self.calls.append((args, timeout))
+        guest_args = args[args.index("--exec") + 1:]
+        command = guest_args[0]
+        if guest_args == self.marker_command:
+            assert self.recovered
+            boot = str(uuid4()) if self.another_boot else self.boot
+            return f"{boot}\n1 (test)comm) S " + "0 " * 18 + "1729"
+        if command == "/bin/cat":
+            if self.start_fails:
+                raise RuntimeError("WSL cold start failed")
+            return self.boot
+        if command == "/usr/bin/systemctl":
+            assert "-u" in args and "root" in args
+            assert guest_args == ("/usr/bin/systemctl", "start", "tailscaled", "ssh.socket")
+            self.services_attempts += 1
+            if self.services_attempts == 1:
+                raise RuntimeError("systemd is still starting")
+        if command == "/usr/bin/tailscale":
+            self.tailscale_attempts += 1
+            if self.tailscale_attempts == 1:
+                raise RuntimeError("Tailscale IP is not ready")
+            return GUEST.tailscale_ipv4
+        return {
+            "/usr/bin/id": GUEST.uid,
+            "/usr/bin/printenv": "/home/name",
+            "/bin/hostname": "fixture",
+        }.get(command, "")
+
+    def recover(
+        self, target: runtime.Target, guest: runtime.Guest, must_reboot: bool,
+        journal: runtime.Journal,
+    ) -> None:
+        assert self.tailscale_attempts == 2
+        assert guest == runtime.Guest(
+            self.boot, GUEST.uid, GUEST.herdr, GUEST.tailscale_ipv4, "fixture"
+        )
+        assert not must_reboot
+        self.recovered = True
+
+
+@pytest.mark.parametrize("another_boot", [False, True])
+def test_start_ubuntu_retries_bootstrap_and_reads_ready_markers_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, another_boot: bool
+) -> None:
+    host = StartupHost(another_boot=another_boot)
+    monkeypatch.setattr(runtime, "time", StartupClock())
+    journal = runtime.Journal(tmp_path, str(uuid4()))
+
+    if another_boot:
+        with pytest.raises(RuntimeError, match="restarted before its ready boot markers"):
+            host.run_recovery_operation("start-ubuntu", journal)
+    else:
+        assert host.run_recovery_operation("start-ubuntu", journal) == {
+            "boot_id": host.boot,
+            "pid1_start_ticks": 1729,
+            "already_running": False,
+        }
+
+    assert host.services_attempts == 2
+    assert host.tailscale_attempts == 2
+    assert host.calls[-1][0][-3:] == host.marker_command
+    assert "systemd is still starting" in journal.path.read_text()
+    assert "Tailscale IP is not ready" in journal.path.read_text()
+
+
+def test_start_ubuntu_bounds_bootstrap_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = StartupHost(start_fails=True)
+    clock = StartupClock()
+    monkeypatch.setattr(runtime, "time", clock)
+
+    with pytest.raises(RuntimeError, match="Ubuntu startup checks timed out. WSL cold start"):
+        host.run_recovery_operation("start-ubuntu", runtime.Journal(tmp_path, str(uuid4())))
+
+    assert clock.now == 90
+    assert host.calls[0][1] == 12
+    assert host.calls[-1][1] == 2
+    assert not host.recovered
