@@ -1,4 +1,4 @@
-"""Call Cross Hub HTTPS with a signed request and verify its response."""
+"""Call WSL Cross Hub HTTPS with a signed request and verify its response."""
 
 import argparse
 import hmac
@@ -55,13 +55,13 @@ def main() -> int:
                 len(body) > MAX_RESPONSE_BYTES or not re.fullmatch(r"[0-9a-f]{64}", signature)
                 or not hmac.compare_digest(signature, expected)
             ):
-                raise ValueError("Cross Hub did not return an authenticated response.")
+                raise ValueError("WSL Cross Hub did not return an authenticated response.")
             print(json.dumps(json.loads(body)))
             return int(response.status >= 400)
         finally:
             conn.close()
     except (HTTPException, OSError, ValueError) as error:
-        parser.exit(1, f"Cross Hub: {error}\n")
+        parser.exit(1, f"WSL Cross Hub: {error}\n")
 
 
 if __name__ == "__main__":

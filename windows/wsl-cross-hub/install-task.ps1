@@ -213,7 +213,7 @@ if ($existing) {
         $existing.Principal.LogonType.ToString() -ne 'S4U' -or
         $existing.State.ToString() -eq 'Disabled' -or $actions.Count -ne 1 -or
         (Resolve-HubPython $actions[0].Execute) -ine $action.Execute) {
-        throw "Task $taskName does not match the supported Cross Hub boot worker."
+        throw "Task $taskName does not match the supported WSL Cross Hub boot worker."
     }
     if ($actions[0].Arguments -eq $action.Arguments) {
         $summary.registered = $true
@@ -228,7 +228,7 @@ if ($existing) {
         [regex]::Escape($StateDir)
     if ($actions[0].Arguments -ne $previousArguments -and
         $actions[0].Arguments -notmatch $versionedArguments) {
-        throw "The existing boot worker is outside the supported Cross Hub installation."
+        throw "The existing boot worker is outside the supported WSL Cross Hub installation."
     }
     $replaceExisting = $true
 }

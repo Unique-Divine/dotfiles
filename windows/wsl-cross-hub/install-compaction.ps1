@@ -269,7 +269,7 @@ $root = Get-CompactionRoot
 $installDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
 if ($installDrive.DriveFormat -ne 'NTFS' -or
     $installDrive.RootDirectory.FullName -ine [IO.Path]::GetPathRoot($registration.vhdx)) {
-    throw 'The WSL disk and Cross Hub maintenance install must be on the same NTFS drive.'
+    throw 'The WSL disk and WSL Cross Hub maintenance install must be on the same NTFS drive.'
 }
 Initialize-CompactionFileApi ([IO.Path]::GetTempPath())
 $pins = [WslCrossHub.FilePins]::new($registration.vhdx)
@@ -348,7 +348,7 @@ try {
     try { $hash = [Convert]::ToBase64String($sha.ComputeHash($bytes)) }
     finally { $sha.Dispose() }
     if ($hash -cne $script:CrossHubApprovedOptions.setup_hash) {
-        throw 'The Cross Hub installer changed after the approval request.'
+        throw 'The WSL Cross Hub installer changed after the approval request.'
     }
     & ([scriptblock]::Create($utf8.GetString($bytes)))
     exit 0
@@ -358,7 +358,7 @@ try {
     if ($script:CrossHubApprovedOptions.setup_attempt) {
         Write-EventLog -LogName 'Windows PowerShell' -Source 'PowerShell' `
             -EventId 41000 -EntryType Error -ErrorAction SilentlyContinue `
-            -Message ("Cross Hub setup {0}: {1}" -f $script:CrossHubApprovedOptions.setup_attempt, $detail)
+            -Message ("WSL Cross Hub setup {0}: {1}" -f $script:CrossHubApprovedOptions.setup_attempt, $detail)
     }
     exit 1
 }
@@ -379,12 +379,12 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 $process = Start-Process @launch
 if ($process.ExitCode -ne 0) {
-    $pattern = 'Cross Hub setup ' + $options.setup_attempt + ':'
+    $pattern = 'WSL Cross Hub setup ' + $options.setup_attempt + ':'
     $event = Get-WinEvent -FilterHashtable @{LogName='Windows PowerShell'; Id=41000} `
         -MaxEvents 20 -ErrorAction SilentlyContinue |
         Where-Object { $_.Properties[0].Value -like "$pattern*" } | Select-Object -First 1
     $detail = if ($event) { $event.Properties[0].Value } else { '' }
-    throw "Cross Hub administrator setup failed (exit $($process.ExitCode)). $detail"
+    throw "WSL Cross Hub administrator setup failed (exit $($process.ExitCode)). $detail"
 }
 $previewData.registered = $true
 $previewData.startRequested = [bool]$requestedBoot

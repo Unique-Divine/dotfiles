@@ -104,7 +104,7 @@ def worker_lock(path: Path) -> Generator[None]:
             message = (
                 "a WSL Cross Hub worker is already running"
                 if path.name == "worker.lock"
-                else "Cross Hub is busy checking or submitting maintenance. Retry shortly."
+                else "WSL Cross Hub is busy checking or submitting maintenance. Retry shortly."
             )
             raise WorkerBusy(message) from error
         yield
@@ -905,7 +905,7 @@ def doctor_checks(state_dir: Path) -> dict[str, object]:
                 "id": check,
                 "host": check.split("-", 1)[0],
                 "state": "unavailable",
-                "detail": "Doctor checks are paused while Cross Hub handles maintenance.",
+                "detail": "Doctor checks are paused while WSL Cross Hub handles maintenance.",
                 "runners": [],
             }
             for check in DOCTOR_CHECKS
@@ -913,7 +913,7 @@ def doctor_checks(state_dir: Path) -> dict[str, object]:
     result: dict[str, object] = {
         "checks": checks,
         "editors": editors if editors is not None else [
-            editor_runtime.unavailable(check, "Doctor checks are paused while Cross Hub handles maintenance.")
+            editor_runtime.unavailable(check, "Doctor checks are paused while WSL Cross Hub handles maintenance.")
             for check in EDITOR_CHECKS
         ],
     }
@@ -1008,7 +1008,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # The setup caller holds the submit lock. The worker writes its
                 # accepted row before removing the request, so check the inbox first.
                 if any((state_dir / "requests").glob("*.json")):
-                    raise RuntimeError("Wait for queued Cross Hub requests before upgrading.")
+                    raise RuntimeError("Wait for queued WSL Cross Hub requests before upgrading.")
                 db_path = state_dir / "jobs.sqlite3"
                 if db_path.exists():
                     with closing(open_database(db_path, read_only=True)) as db:
@@ -1017,7 +1017,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             active = active_maintenance(db)
                             if active or pending_hold(db):
                                 raise RuntimeError(
-                                    "Finish or reconcile maintenance before upgrading Cross Hub."
+                                    "Finish or reconcile maintenance before upgrading WSL Cross Hub."
                                 )
                 result = {"state": "idle"}
             case "maintenance-health":

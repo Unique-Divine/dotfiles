@@ -65,7 +65,7 @@ OAuth sessions, and server headers on the Linux side.
 Use `just windows-codex-sync --wsl-servers NAME` to preview an optional
 bridge for a named WSL stdio server. Add `--apply` to install the bridge.
 These entries can start WSL when Windows Codex starts. Keep them out of the
-Windows config if you need Codex to stay open during Cross Hub compaction.
+Windows config if you need Codex to stay open during WSL Cross Hub compaction.
 The periodic job only copies skills and adds native HTTP entries.
 
 Check sync runs with

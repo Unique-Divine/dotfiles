@@ -470,11 +470,11 @@ internal sealed partial class PanelWindow
         string scope = mode == "cure" ? check.Id switch
         {
             "windows-ssh" => "The Windows recovery task can start OpenSSH and Tailscale if installed.",
-            "windows-herdr" => "Cross Hub can start the saved Windows Herdr session.",
-            "ubuntu-herdr" => "Cross Hub can start Ubuntu's existing Herdr server.",
+            "windows-herdr" => "WSL Cross Hub can start the saved Windows Herdr session.",
+            "ubuntu-herdr" => "WSL Cross Hub can start Ubuntu's existing Herdr server.",
             "windows-neovim" => "Install the pinned Windows Neovim release and apply the staged dotfiles config.",
             "ubuntu-neovim" => "Install Neovim with the mise lock and restore the managed dotfiles config link.",
-            _ => "Cross Hub can run the approved action for this check.",
+            _ => "WSL Cross Hub can run the approved action for this check.",
         } : "The agent can inspect the failure and suggest a next step.";
         if (MessageBox.Show(this, $"{task} {check.Label} on {check.Host} with {DoctorRunnerLabel(runner)}?\n\n{scope}",
             "Doctor", MessageBoxButtons.OKCancel, MessageBoxIcon.Question,

@@ -43,7 +43,7 @@ if ($needRuntime -or $needLogPath) {
         $options.RuntimeOnly = $true
     }
     $doctor = & "$PSScriptRoot\wsl-cross-hub.ps1" @options | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0) { throw "Cross Hub doctor returned exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "WSL Cross Hub doctor returned exit code $LASTEXITCODE." }
     $StateDir = $doctor.stateDir
     if ($needRuntime) {
         if ($doctor.runtime.state -ne "ready") {

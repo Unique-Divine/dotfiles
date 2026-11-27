@@ -258,7 +258,7 @@ try {
         Assert-CompactionReady $scratch
         throw 'The installer accepted missing compaction files.'
     } catch {
-        if ($_.Exception.Message -notlike 'Missing Cross Hub compaction setup file:*') { throw }
+        if ($_.Exception.Message -notlike 'Missing WSL Cross Hub compaction setup file:*') { throw }
     }
     foreach ($name in @('target.json', 'compact-vhdx.ps1', 'diskpart.jsonl')) {
         [IO.File]::WriteAllText((Join-Path $root $name), '')
@@ -268,7 +268,7 @@ try {
             Assert-CompactionReady $scratch
             throw 'The installer accepted a compaction task that was not ready.'
         } catch {
-            if ($_.Exception.Message -notlike 'Cross Hub compaction must be configured and idle.*') { throw }
+            if ($_.Exception.Message -notlike 'WSL Cross Hub compaction must be configured and idle.*') { throw }
         }
     }
     $taskState = 'Ready'

@@ -174,7 +174,7 @@ def validate_task(
     )
     if not all(checks):
         raise SetupRequired(
-            "The registered compaction task does not match Cross Hub setup."
+            "The registered compaction task does not match WSL Cross Hub setup."
         )
 
 
@@ -541,14 +541,14 @@ class WindowsHost:
             regular_item(self.install_root / "recover-access.ps1")
         except (OSError, RuntimeError) as error:
             raise SetupRequired(
-                "Install the one-time Cross Hub Windows recovery task."
+                "Install the one-time WSL Cross Hub Windows recovery task."
             ) from error
         validate_task(xml, target, self.powershell, self.install_root, "recover-access.ps1")
         validate_task_security(
             self.ps(read_task_script(TASK_SECURITY_QUERY, RECOVERY_TASK)), target
         )
         if self.ps(read_task_script(TASK_RUN, RECOVERY_TASK)) != "accepted":
-            raise RuntimeError("Windows did not accept the Cross Hub recovery task.")
+            raise RuntimeError("Windows did not accept the WSL Cross Hub recovery task.")
 
     def verify_windows_ssh(self, pid: int) -> None:
         listeners = self.ps(
@@ -942,6 +942,12 @@ def parse_compaction_result(row: dict[str, object]) -> CompactionResult:
         or (compacted and not started)
     ):
         raise ValueError("The Windows compaction helper returned an invalid result.")
+    if isinstance(error, str):
+        # Translate the wording emitted by the existing protected helper.
+        error = error.replace(
+            "Run Cross Hub setup to approve the new disk.",
+            "Run WSL Cross Hub setup to approve the new disk.",
+        )
     return {
         "work_started": started,
         "compaction_ok": compacted,
@@ -976,6 +982,8 @@ def wait_for_compaction(
                 )
             if stage == "diskpart-result":
                 result = parse_compaction_result(row)
+                if "error" in row:
+                    row["error"] = result["error"]
             elevated_at = row.pop("at", None)
             journal(stage, elevated_at=elevated_at, elevated_run_id=run_id, **row)
         if result is not None and host.task_state() == TASK_READY:

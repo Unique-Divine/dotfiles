@@ -360,7 +360,7 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
                 status, body = HTTPStatus.CONFLICT, {"error": str(error)}
             except (OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError):
                 status, body = HTTPStatus.SERVICE_UNAVAILABLE, {
-                    "error": "Cross Hub is unavailable, check Windows diagnostics"
+                    "error": "WSL Cross Hub is unavailable, check Windows diagnostics"
                 }
             self.reply(status, body, request_mac)
 

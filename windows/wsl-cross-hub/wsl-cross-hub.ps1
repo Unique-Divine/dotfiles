@@ -228,7 +228,7 @@ function Invoke-HubMaintenanceSetup {
     try {
         $gate.Lock(0, 1)
         $check = & $runtime.path -I -S "$installRoot\worker.py" --state-dir $StateDir require-idle
-        if ($LASTEXITCODE -ne 0) { throw "Cross Hub upgrade blocked. $check" }
+        if ($LASTEXITCODE -ne 0) { throw "WSL Cross Hub upgrade blocked. $check" }
         & $installer -BootPythonExe $runtime.path -BootStateDir $StateDir `
             -BootInstallRoot $installRoot
     } finally {

@@ -11,7 +11,7 @@ Install the panel with `just wsl-cross-hub-desktop-install` from the dotfiles
 checkout. On Windows, run `install-desktop.cmd` from the synced
 `%USERPROFILE%\dotfiles\windows\wsl-cross-hub` directory. Building from
 source uses the .NET 10 SDK. The installed desktop executable includes
-its .NET runtime. Cross Hub uses Windows `uv` to provision Python 3.13.
+its .NET runtime. WSL Cross Hub uses Windows `uv` to provision Python 3.13.
 
 Launch **WSL Cross Hub** from the Start Menu, click its tray icon, or
 press `Alt+Shift+C`. Use **Set global hotkey** in the tray menu to change
@@ -67,7 +67,7 @@ WSL terminal disconnects.
 
 The CLI uses the Windows scripts staged by `just win-sync` when available.
 It also works through the scripts in the installed Windows app, so a sync
-from a checkout without Cross Hub can remove the staged copy without
+from a checkout without WSL Cross Hub can remove the staged copy without
 breaking the CLI.
 
 ```sh
@@ -124,7 +124,7 @@ If the check passes, start Ubuntu from Windows and check remote access.
 
 ## Doctor and Cure
 
-Open **Doctor** from the Windows overview. Cross Hub opens your native Windows
+Open **Doctor** from the Windows overview. WSL Cross Hub opens your native Windows
 Neovim with the shared dotfiles config. The selected row shows what Enter will
 do. Use `/` to search, Enter to accept the search, and `n` or `N` to move to
 matches. `F5` refreshes the current view, and Escape goes back or closes it.
@@ -161,13 +161,13 @@ $client = "$env:LOCALAPPDATA\Programs\WslCrossHub\client.cmd"
 & $client -Operation doctor-agent-logs -JobId $jobId
 ```
 
-Check which runners Doctor offers before choosing one. Cross Hub uses the
+Check which runners Doctor offers before choosing one. WSL Cross Hub uses the
 selected CLI's existing sign-in and runs it on the affected host. Run the
-one-time Cross Hub setup after installing an updated worker. Windows
+one-time WSL Cross Hub setup after installing an updated worker. Windows
 investigations can still run when Ubuntu is offline.
 
 For a nonstandard installation, put runner paths in `doctor-runners.json` in
-the Cross Hub state directory. Under `windows` or `ubuntu`, add a `codex` or
+the WSL Cross Hub state directory. Under `windows` or `ubuntu`, add a `codex` or
 `claude` object with the runner's absolute `executable` and `home` paths. Use
 paths native to that host. `home` is the runner's existing configuration and
 sign-in directory.
@@ -211,7 +211,7 @@ the verification result in the same journal as other Doctor jobs.
 
 Run `just win-sync` in dotfiles to copy the scripts to
 `%USERPROFILE%\dotfiles\windows\wsl-cross-hub`. Windows `uv.exe` is the
-only runtime prerequisite for a fresh setup. Cross Hub finds it next to
+only runtime prerequisite for a fresh setup. WSL Cross Hub finds it next to
 the launcher at `runtime\uv.exe`, on the Windows PATH, or in its local
 runtime directory. A packaged Windows build can ship an architecture-matched
 `runtime\uv.exe` in that first location.
@@ -544,11 +544,11 @@ before requesting new work.
 For an offline recovery drill, stop only the configured distro from an
 independent Windows session. Verify that a fresh Windows command and
 authenticated status request succeed while Linux SSH fails. Start Ubuntu
-through Cross Hub, then check the job receipt, a fresh Linux SSH command,
+through WSL Cross Hub, then check the job receipt, a fresh Linux SSH command,
 and the configured Herdr session.
 
 To retire a dedicated HTTPS listener on port 443, run
 `tailscale serve --https=443 off` on Windows. Stop and unregister the
 `Unique-WslCrossHub-Tailnet` task, then revoke the operator's copy of the
-adapter credential. Cross Hub's local worker and saved jobs are available
+adapter credential. WSL Cross Hub's local worker and saved jobs are available
 through the native Windows client throughout the change.

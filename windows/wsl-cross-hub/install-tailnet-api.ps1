@@ -59,7 +59,7 @@ function Get-SafeLocalPath([string]$Path) {
     while ($item -and $item -ne $root) {
         if (Test-Path -LiteralPath $item) {
             if ((Get-Item -LiteralPath $item -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                throw "Cross Hub cannot use a reparse path: $item"
+                throw "WSL Cross Hub cannot use a reparse path: $item"
             }
         }
         $item = [IO.Path]::GetDirectoryName($item)
@@ -72,12 +72,12 @@ function Assert-CompactionReady([string]$ProgramFiles) {
     foreach ($name in @('target.json', 'compact-vhdx.ps1', 'diskpart.jsonl')) {
         $path = Get-SafeLocalPath (Join-Path $root $name)
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Missing Cross Hub compaction setup file: $path. Run wsl-cross-hub setup --apply."
+            throw "Missing WSL Cross Hub compaction setup file: $path. Run wsl-cross-hub setup --apply."
         }
     }
     $task = Get-ScheduledTask -TaskName 'Unique-WslCrossHub-Compact' -TaskPath '\' -ErrorAction SilentlyContinue
     if (!$task -or $task.State.ToString() -ne 'Ready') {
-        throw 'Cross Hub compaction must be configured and idle. Check wsl-cross-hub doctor.'
+        throw 'WSL Cross Hub compaction must be configured and idle. Check wsl-cross-hub doctor.'
     }
 }
 
@@ -107,7 +107,7 @@ function Get-CompatibleWorkerRoot($Task, [string]$StateDir) {
     $shape = '^-I -S "({0}\\app-versions\\[0-9A-F]{{16}}(?:-[0-9A-F]{{16}}){{3}})\\worker\.py" --state-dir "{0}" worker$' -f
         [regex]::Escape($StateDir)
     if ($Task.Actions[0].Arguments -notmatch $shape) {
-        throw 'The boot worker must point to a versioned Cross Hub installation for this state directory.'
+        throw 'The boot worker must point to a versioned WSL Cross Hub installation for this state directory.'
     }
     $workerRoot = Get-SafeLocalPath $Matches[1]
     $workerPath = Join-Path $workerRoot 'worker.py'
@@ -270,7 +270,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $ownerSid = $identity.User.Value
 if (!(Test-Path -LiteralPath $StateDir -PathType Container)) {
-    throw 'Install and start the Cross Hub boot worker first.'
+    throw 'Install and start the WSL Cross Hub boot worker first.'
 }
 $adapterSource = Get-SafeLocalPath (Join-Path $PSScriptRoot 'tailnet_api.py')
 $adapterBytes = [IO.File]::ReadAllBytes($adapterSource)
@@ -280,7 +280,7 @@ finally { $sha256.Dispose() }
 $adapter = Join-Path $serviceRoot "tailnet_api-$adapterHash.py"
 
 if ($Prepare) {
-    if ($elevated) { throw 'Run -Prepare from a standard PowerShell window as the Cross Hub owner.' }
+    if ($elevated) { throw 'Run -Prepare from a standard PowerShell window as the WSL Cross Hub owner.' }
     Initialize-PrivateRoot $serviceRoot $ownerSid
     $random = [Security.Cryptography.RandomNumberGenerator]::Create()
     try {
@@ -330,7 +330,7 @@ if ($oldTask) {
     $oldArguments = '^-I -S "[A-Za-z]:\\[^"\r\n]+\\tailnet_api(?:-[0-9A-F]{{64}})?\.py" --worker-root "{0}\\app-versions\\[0-9A-F]{{16}}(?:-[0-9A-F]{{16}}){{1,3}}" --state-dir "{0}" --token-file "{1}" --port [0-9]{{4,5}}$' -f
         [regex]::Escape($StateDir), [regex]::Escape($tokenPath)
     if ($oldTask.Actions[0].Arguments -notmatch $oldArguments) {
-        throw 'The existing adapter task does not match the supported Cross Hub installation.'
+        throw 'The existing adapter task does not match the supported WSL Cross Hub installation.'
     }
     $oldXml = Export-ScheduledTask -TaskName $taskName -TaskPath '\'
     $wasRunning = $oldTask.State.ToString() -eq 'Running'
@@ -370,7 +370,7 @@ try {
 
     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action `
         -Trigger @($boot, $watchdog) -Principal $taskPrincipal -Settings $settings `
-        -Description 'Run the limited Cross Hub loopback recovery adapter.' -Force:([bool]$oldTask) |
+        -Description 'Run the limited WSL Cross Hub loopback recovery adapter.' -Force:([bool]$oldTask) |
         Out-Null
     $registered = $true
     Start-ScheduledTask -TaskName $taskName -TaskPath '\'

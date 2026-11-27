@@ -34,7 +34,7 @@ $root = $roots | Where-Object {
     (Test-Path -LiteralPath (Join-Path $_ 'client.ps1') -PathType Leaf)
 } | Select-Object -First 1
 if (!$root) {
-    [Console]::Error.WriteLine('Cross Hub is missing on Windows. Install the desktop app or run just win-sync from the Cross Hub checkout.')
+    [Console]::Error.WriteLine('WSL Cross Hub is missing on Windows. Install the desktop app or run just win-sync from the WSL Cross Hub checkout.')
     exit 66
 }
 $hub = Join-Path $root 'wsl-cross-hub.ps1'
@@ -101,7 +101,7 @@ def invoke_windows(action: str, *, timeout: int = 25) -> str:
         )
     except subprocess.TimeoutExpired as error:
         raise HubError(
-            "Windows command timed out. Check Cross Hub before retrying."
+            "Windows command timed out. Check WSL Cross Hub before retrying."
         ) from error
     except OSError as error:
         raise HubError(

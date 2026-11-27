@@ -509,4 +509,4 @@ def test_worker_upgrade_refuses_unacknowledged_request(tmp_path: Path, capsys) -
         "job_id": str(uuid4()), "operation": "compact",
     })
     assert worker.main(["--state-dir", str(tmp_path), "require-idle"]) == 1
-    assert "queued Cross Hub requests" in capsys.readouterr().err
+    assert "queued WSL Cross Hub requests" in capsys.readouterr().err

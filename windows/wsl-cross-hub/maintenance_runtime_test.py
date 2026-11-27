@@ -238,6 +238,30 @@ def test_recovers_when_safe_after_a_failure(tmp_path: Path, problem: str) -> Non
     assert host.calls[-1] == "recover"
 
 
+@pytest.mark.parametrize("change", ["disk was replaced", "registration changed"])
+def test_legacy_helper_diagnostic_uses_full_tool_name(tmp_path: Path, change: str) -> None:
+    host = RecordingHost(tmp_path / "diskpart.jsonl")
+    journal = runtime.Journal(tmp_path / "jobs", str(uuid4()))
+    run_id = str(uuid4())
+    legacy = f"The WSL {change}. Run Cross Hub setup to approve the new disk."
+    expected = f"The WSL {change}. Run WSL Cross Hub setup to approve the new disk."
+    host.event("diskpart-started", run_id)
+    host.event(
+        "diskpart-result",
+        run_id,
+        work_started=False,
+        compaction_ok=False,
+        detach_verified=False,
+        error=legacy,
+    )
+
+    result = runtime.wait_for_compaction(host, 0, journal)
+
+    assert result["error"] == expected
+    assert read_events(journal.path)[-1]["error"] == expected
+    assert read_events(host.task_log)[-1]["error"] == legacy
+
+
 def test_partial_line_and_journal_truncation(tmp_path: Path) -> None:
     path = tmp_path / "diskpart.jsonl"
     path.write_bytes(b'{"stage": "ready"}\n{"stage":')
