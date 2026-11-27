@@ -511,13 +511,13 @@ class StartupHost(runtime.WindowsHost):
     boot = "079bbf10-7ea0-412a-8b9c-15c285101683"
     marker_command = ("/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat")
 
-    def __init__(self, *, another_boot: bool = False, start_fails: bool = False) -> None:
+    def __init__(self, *, restart: str | None = None, start_fails: bool = False) -> None:
         self.wsl = Path("wsl.exe")
         self.calls: list[tuple[tuple[str | Path, ...], float]] = []
         self.services_attempts = 0
         self.tailscale_attempts = 0
         self.recovered = False
-        self.another_boot = another_boot
+        self.restart = restart
         self.start_fails = start_fails
 
     def installed_target(self) -> runtime.Target:
@@ -531,12 +531,12 @@ class StartupHost(runtime.WindowsHost):
         guest_args = args[args.index("--exec") + 1:]
         command = guest_args[0]
         if guest_args == self.marker_command:
-            assert self.recovered
-            boot = str(uuid4()) if self.another_boot else self.boot
-            return f"{boot}\n1 (test)comm) S " + "0 " * 18 + "1729"
-        if command == "/bin/cat":
             if self.start_fails:
                 raise RuntimeError("WSL cold start failed")
+            boot = str(uuid4()) if self.recovered and self.restart == "kernel" else self.boot
+            ticks = 1730 if self.recovered and self.restart == "pid1" else 1729
+            return f"{boot}\n1 (test)comm) S " + "0 " * 18 + str(ticks)
+        if command == "/bin/cat":
             return self.boot
         if command == "/usr/bin/systemctl":
             assert "-u" in args and "root" in args
@@ -567,15 +567,15 @@ class StartupHost(runtime.WindowsHost):
         self.recovered = True
 
 
-@pytest.mark.parametrize("another_boot", [False, True])
-def test_start_ubuntu_retries_bootstrap_and_reads_ready_markers_together(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, another_boot: bool
+@pytest.mark.parametrize("restart", [None, "kernel", "pid1"])
+def test_start_ubuntu_requires_the_same_ready_guest_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restart: str | None
 ) -> None:
-    host = StartupHost(another_boot=another_boot)
+    host = StartupHost(restart=restart)
     monkeypatch.setattr(runtime, "time", StartupClock())
     journal = runtime.Journal(tmp_path, str(uuid4()))
 
-    if another_boot:
+    if restart:
         with pytest.raises(RuntimeError, match="restarted before its ready boot markers"):
             host.run_recovery_operation("start-ubuntu", journal)
     else:
@@ -587,6 +587,7 @@ def test_start_ubuntu_retries_bootstrap_and_reads_ready_markers_together(
 
     assert host.services_attempts == 2
     assert host.tailscale_attempts == 2
+    assert host.calls[0][0][-3:] == host.marker_command
     assert host.calls[-1][0][-3:] == host.marker_command
     assert "systemd is still starting" in journal.path.read_text()
     assert "Tailscale IP is not ready" in journal.path.read_text()

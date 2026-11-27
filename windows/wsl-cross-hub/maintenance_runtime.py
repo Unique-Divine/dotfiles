@@ -630,6 +630,24 @@ class WindowsHost:
         )
         return str(UUID(value))
 
+    def boot_markers(
+        self, target: Target, *, deadline: float | None = None
+    ) -> tuple[str, int]:
+        markers = self.guest(
+            target, "/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat",
+            timeout=12, deadline=deadline,
+        )
+        try:
+            boot_value, pid1_stat = markers.split("\n", 1)
+            boot_id = str(UUID(boot_value))
+            comm, fields = pid1_stat.rsplit(")", 1)
+            pid1_start_ticks = int(fields.split()[19])
+            if not comm.startswith("1 (") or pid1_start_ticks < 0:
+                raise ValueError("Invalid PID 1 stat")
+        except (IndexError, ValueError) as error:
+            raise RuntimeError("Could not read Ubuntu boot and PID 1 markers.") from error
+        return boot_id, pid1_start_ticks
+
     def run_recovery_operation(
         self, operation: str, journal: Journal
     ) -> dict[str, object]:
@@ -648,19 +666,19 @@ class WindowsHost:
         if operation != "start-ubuntu":
             raise ValueError("Unsupported recovery operation.")
         deadline = time.monotonic() + 90
-        services_boot = None
+        services_generation = None
         last_error = ""
         while time.monotonic() < deadline:
             try:
-                boot = self.boot_id(target, deadline=deadline)
-                if services_boot != boot:
+                generation = self.boot_markers(target, deadline=deadline)
+                if services_generation != generation:
                     self.guest(
                         target, "/usr/bin/systemctl", "start", "tailscaled", "ssh.socket",
                         root=True, timeout=30, deadline=deadline,
                     )
-                    services_boot = boot
+                    services_generation = generation
                 guest = self.guest_identity(target, deadline=deadline)
-                if guest.boot_id != boot:
+                if guest.boot_id != generation[0]:
                     raise RuntimeError("Ubuntu restarted during startup checks.")
                 break
             except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
@@ -672,19 +690,8 @@ class WindowsHost:
             raise RuntimeError(f"Ubuntu startup checks timed out. {last_error}")
 
         self.recover(target, guest, False, journal)
-        markers = self.guest(
-            target, "/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat"
-        )
-        try:
-            boot_value, pid1_stat = markers.split("\n", 1)
-            boot_id = str(UUID(boot_value))
-            comm, fields = pid1_stat.rsplit(")", 1)
-            pid1_start_ticks = int(fields.split()[19])
-            if not comm.startswith("1 (") or pid1_start_ticks < 0:
-                raise ValueError("Invalid PID 1 stat")
-        except (IndexError, ValueError) as error:
-            raise RuntimeError("Could not read Ubuntu boot and PID 1 markers.") from error
-        if boot_id != guest.boot_id:
+        boot_id, pid1_start_ticks = self.boot_markers(target)
+        if (boot_id, pid1_start_ticks) != generation:
             raise RuntimeError("Ubuntu restarted before its ready boot markers could be read.")
         return {
             "boot_id": boot_id,
