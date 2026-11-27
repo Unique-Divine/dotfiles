@@ -527,6 +527,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "submit-compact":
                 result = submit(state_dir, "compact")
             case "require-idle":
+                # The setup caller holds the submit lock. The worker writes its
+                # accepted row before removing the request, so check the inbox first.
+                if any((state_dir / "requests").glob("*.json")):
+                    raise RuntimeError("Wait for queued Cross Hub requests before upgrading.")
                 db_path = state_dir / "jobs.sqlite3"
                 if db_path.exists():
                     with closing(open_database(db_path, read_only=True)) as db:

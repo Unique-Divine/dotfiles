@@ -279,3 +279,10 @@ def test_hold_acknowledgment_requires_verified_release(
     assert "hold_acknowledged_at" in status["result"]
     with closing(worker.open_database(db_path, read_only=True)) as db:
         assert worker.pending_hold(db) is None
+
+def test_worker_upgrade_refuses_unacknowledged_request(tmp_path: Path, capsys) -> None:
+    worker.write_request(tmp_path / "requests", {
+        "job_id": str(uuid4()), "operation": "compact",
+    })
+    assert worker.main(["--state-dir", str(tmp_path), "require-idle"]) == 1
+    assert "queued Cross Hub requests" in capsys.readouterr().err
