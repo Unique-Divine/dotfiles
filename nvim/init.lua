@@ -40,6 +40,16 @@ package.path = package.path .. ';./?.lua'
 --    https://github.com/folke/lazy.nvim
 --    `:help lazy.nvim.txt` for more info
 local lazypath = vim.fn.stdpath 'data' .. '/lazy/lazy.nvim'
+if vim.fn.has('win32') == 1 and vim.fn.executable('git') == 0 then
+  for _, root in ipairs({ vim.env.ProgramFiles or '', vim.env.LOCALAPPDATA or '' }) do
+    local relative = root == vim.env.ProgramFiles and 'Git/cmd' or 'Programs/Git/cmd'
+    local directory = vim.fs.joinpath(root, relative)
+    if root ~= '' and vim.fn.executable(vim.fs.joinpath(directory, 'git.exe')) == 1 then
+      vim.env.PATH = directory .. ';' .. vim.env.PATH
+      break
+    end
+  end
+end
 if not (vim.uv or vim.loop).fs_stat(lazypath) then
   vim.fn.system {
     'git',
@@ -337,6 +347,24 @@ local lazyPlugins = {
 }
 --- @type LazyConfig
 local lazyConfig = {}
+if vim.fn.has('win32') == 1 then
+  -- Lazy rewrites its working lockfile when it discovers the host's plugins.
+  -- Keep that state outside the shared config snapshot.
+  local source = vim.fs.joinpath(vim.fn.stdpath('config'), 'lazy-lock.json')
+  local state = vim.fn.stdpath('state')
+  local lock = vim.fs.joinpath(state, 'dotfiles-lazy-lock.json')
+  local stamp = vim.fs.joinpath(state, 'dotfiles-lazy-lock.sha256')
+  if vim.fn.filereadable(source) == 1 then
+    local pins = vim.fn.readfile(source, 'b')
+    local digest = vim.fn.sha256(table.concat(pins, '\n'))
+    if vim.fn.filereadable(lock) == 0 or vim.fn.filereadable(stamp) == 0 or vim.fn.readfile(stamp)[1] ~= digest then
+      vim.fn.mkdir(state, 'p')
+      vim.fn.writefile(pins, lock, 'b')
+      vim.fn.writefile({ digest }, stamp)
+    end
+  end
+  lazyConfig.lockfile = lock
+end
 -- If 'loadplugins' is off, lazy.setup() returns before defining :Lazy (see folke/lazy.nvim
 -- lua/lazy/init.lua). That happens with `nvim --noplugin` or :set noloadplugins.
 vim.o.loadplugins = true

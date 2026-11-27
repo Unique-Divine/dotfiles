@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bin_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+root=${bin_path%/bin/*}
+exec uv --no-config run --script "$root/windows/wsl-cross-hub/hub_cli.py" "$@"
