@@ -29,6 +29,8 @@ if os.environ.get('HUB_INTEROP_FAIL'):
 print('WSL_CROSS_HUB_READY')
 if '& $client -Operation logs' in script or '& $client -Operation doctor-agent-logs' in script:
     print(os.environ['HUB_TEST_JOURNAL'], end='')
+elif '-Operation job-detail' in script:
+    print(json.dumps({'job_id': os.environ['HUB_TEST_JOB'], 'state': 'accepted'}))
 elif '& $status' in script:
     print(os.environ['HUB_TEST_STATUS'])
 elif '& $client -Operation doctor\n' in script:
@@ -145,7 +147,7 @@ def test_job_and_maintenance_journal(
     assert job_id in status.stdout
     assert json.loads(journal.stdout) == event
     assert commands(windows) == [
-        f"& $client -Operation status -JobId '{job_id}'",
+        f"& $status -Operation job-detail -JobId '{job_id}'",
         f"& $client -Operation logs -JobId '{job_id}'",
     ]
 
