@@ -60,8 +60,17 @@ ssh_auto_setup() {
   # The kernel releases the lock when this shell's descriptor closes, even if
   # the shell is killed at the passphrase prompt.
   zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null || return 0
-  ssh_setup
-  local rc=$?
-  zsystem flock -u $lock_fd
+  local rc=0
+  {
+    ssh_setup || rc=$?
+  } always {
+    zsystem flock -u $lock_fd
+    # Ctrl-C at the passphrase prompt would otherwise unwind past this
+    # function and skip the rest of zshrc.
+    if (( TRY_BLOCK_INTERRUPT )); then
+      (( TRY_BLOCK_INTERRUPT = 0 ))
+      rc=1
+    fi
+  }
   return $rc
 }

@@ -72,6 +72,9 @@ const zsh = (f: Fixture, body: string, env: Record<string, string> = {}) =>
     ...env,
   })
 
+/** Quote one argument for a POSIX shell. */
+const shellQuote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`
+
 /** Run zsh as an interactive shell on a real pty, as a new terminal does. */
 const zshOnTerminal = (f: Fixture, body: string) => {
   const inner = `source ${modulePath}; ${body}`
@@ -140,6 +143,34 @@ describe("ssh_auto_setup", () => {
     expect(add.exitCode).toBe(0)
     await zshOnTerminal(f, "ssh_auto_setup")
     expect(await loadedComments(f)).toEqual(["peggyWSL"])
+  })
+
+  test("Ctrl-C at the passphrase prompt lets the shell carry on", async () => {
+    const f = await makeFixture([])
+    const key = join(f.home, ".ssh", "id_ed25519")
+    const keygen = await spawn(
+      ["ssh-keygen", "-q", "-t", "ed25519", "-N", "secret", "-f", key],
+      {},
+    )
+    expect(keygen.exitCode).toBe(0)
+    const lock = join(f.runtimeDir, "ssh-setup.lock")
+    // After ssh_auto_setup, the shell must keep running zshrc (the marker)
+    // and must have released the lock, so a later terminal can take it.
+    const inner =
+      `source ${modulePath}; ssh_auto_setup; echo AFTER-SETUP; ` +
+      `zsh -f -c "zmodload zsh/system; ` +
+      `zsystem flock -t 0 -f fd ${lock} && echo LOCK-FREE"`
+    const terminal =
+      `script -qec ${shellQuote(`zsh -f -i -c ${shellQuote(inner)}`)} ` +
+      "/dev/null"
+    // Wait for the passphrase prompt, then press Ctrl-C.
+    const r = await spawn(
+      ["bash", "-c", `(sleep 1; printf '\\003'; sleep 2) | ${terminal}`],
+      envFor(f),
+    )
+    expect(r.stdout).toContain("AFTER-SETUP")
+    expect(r.stdout).toContain("LOCK-FREE")
+    expect(await loadedComments(f)).toEqual([])
   })
 
   test("skips while another terminal holds the lock", async () => {
