@@ -35,6 +35,7 @@ test-bun:
 # Neovim Lua unit tests; no plugins load.
 test-nvim:
   nvim --headless -u NONE -l nvim/tests/lsp_tooling_test.lua
+  nvim --headless -u NONE -l windows/wsl-cross-hub/nvim-cross-hub-test.lua
 
 alias t := test
 
@@ -406,6 +407,11 @@ win-sync:
   rsync -rt --exclude '*.test.ts' --exclude 'audio-capture/ac/' \
     windows/ "$dest/"
   echo "synced windows/ -> $win_home\\dotfiles\\windows"
+  python3 windows/wsl-cross-hub/editor_runtime.py "$PWD" "$dotfiles_root"
+
+# Install the pinned Windows Neovim release and the synced dotfiles config.
+win-neovim-install: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\wsl-cross-hub\client.cmd -Operation editor-install'
 
 # Preview or sync WSL skills and portable MCP entries to native Windows Codex.
 windows-codex-sync *ARGS:
@@ -434,6 +440,32 @@ audio-capture-run *ARGS:
 # Run the audio-capture unit tests against the built exe.
 audio-capture-test:
   cd /mnt/c && "$(wslpath -u "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/Programs/audio-capture/audio-capture.exe" --self-test
+
+# Build a self-contained WSL Cross Hub desktop package for this Windows host.
+wsl-cross-hub-desktop-build: (_wsl-cross-hub-desktop "build")
+
+# Install the WSL Cross Hub tray app with per-user Windows shortcuts.
+wsl-cross-hub-desktop-install: (_wsl-cross-hub-desktop "install")
+
+[private]
+_wsl-cross-hub-desktop operation: win-sync
+  #!/usr/bin/env bash
+  set -euo pipefail
+  revision="$(git rev-parse --short=12 HEAD)"
+  if [[ -n "$(git status --porcelain -- windows/wsl-cross-hub)" ]]; then
+    revision="$revision-dirty"
+  fi
+  cd /mnt/c
+  cmd.exe /c "%USERPROFILE%\dotfiles\windows\wsl-cross-hub\{{operation}}-desktop.cmd -SourceRevision $revision"
+
+# Remove the WSL Cross Hub tray app and its shortcuts while keeping state.
+wsl-cross-hub-desktop-uninstall: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\dotfiles\windows\wsl-cross-hub\uninstall-desktop.cmd'
+
+# Measure Linux storage from inside an already-running WSL distro.
+[positional-arguments]
+wsl-cross-hub-guest-report *ARGS:
+  python3 windows/wsl-cross-hub/guest_report.py "$@"
 
 # Generate the ShareX hotkey JSON used by Windows.
 sharex-generate:

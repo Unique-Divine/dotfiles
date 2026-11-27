@@ -64,3 +64,9 @@ windows_setup:
   - 'windows/terminal-profile/**'
   - '.github/filters.yml'
   - '.github/workflows/ci.yml'
+cross_hub:
+  - 'bin/wsl-cross-hub'
+  - 'windows/wsl-cross-hub/**'
+  - 'nvim/**'
+  - '.github/filters.yml'
+  - '.github/workflows/ci.yml'

@@ -83,7 +83,7 @@ vim.opt.shiftwidth = 2
 vim.opt.expandtab = true
 
 -- Store a directory to keep a massive history of undos
-vim.opt.undodir = os.getenv("HOME") .. "/.vim/undodir"
+vim.opt.undodir = vim.fs.joinpath(vim.uv.os_homedir(), ".vim", "undodir")
 -- Save undo history
 vim.opt.undofile = true
 
@@ -102,17 +102,13 @@ vim.o.mouse = 'a'
 --  Remove this option if you want your OS clipboard to remain independent.
 --  See `:help 'clipboard'`
 vim.o.clipboard = 'unnamed,unnamedplus'
-vim.g.clipboard = {
-  name = "WSL persistent clipboard",
-  copy = {
-    ["+"] = "pbcopy",
-    ["*"] = "pbcopy",
-  },
-  paste = {
-    ["+"] = "pbpaste",
-    ["*"] = "pbpaste",
-  },
-}
+if vim.fn.has('win32') == 0 then
+  vim.g.clipboard = {
+    name = "WSL persistent clipboard",
+    copy = { ["+"] = "pbcopy", ["*"] = "pbcopy" },
+    paste = { ["+"] = "pbpaste", ["*"] = "pbpaste" },
+  }
+end
 
 vim.api.nvim_create_user_command('WY', function(opts)
   -- Yank text into the '+' register: if a range was provided, yank that range;
