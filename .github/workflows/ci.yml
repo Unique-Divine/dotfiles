@@ -21,6 +21,7 @@ jobs:
       herdr_native: ${{ steps.decision.outputs.herdr_native }}
       herdr_tmux: ${{ steps.decision.outputs.herdr_tmux }}
       windows_setup: ${{ steps.decision.outputs.windows_setup }}
+      cross_hub: ${{ steps.decision.outputs.cross_hub }}
       validate: ${{ steps.decision.outputs.validate }}
       publish: ${{ steps.decision.outputs.publish }}
     steps:
@@ -45,6 +46,7 @@ jobs:
           PATHS_HERDR_NATIVE: ${{ steps.paths.outputs.herdr_native }}
           PATHS_HERDR_TMUX: ${{ steps.paths.outputs.herdr_tmux }}
           PATHS_WINDOWS_SETUP: ${{ steps.paths.outputs.windows_setup }}
+          PATHS_CROSS_HUB: ${{ steps.paths.outputs.cross_hub }}
         run: |
           set -euo pipefail
           bun=false
@@ -52,6 +54,7 @@ jobs:
           herdr_native=false
           herdr_tmux=false
           windows_setup=false
+          cross_hub=false
           publish=false
           mode="Changed paths"
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
@@ -60,6 +63,7 @@ jobs:
             herdr_native=true
             herdr_tmux=true
             windows_setup=true
+            cross_hub=true
             mode="Manual full verification"
           elif [[ "$EVENT_NAME" == push && "$REF" == refs/tags/herdr-ud/* ]]; then
             herdr_native=true
@@ -76,6 +80,7 @@ jobs:
             herdr_native="$PATHS_HERDR_NATIVE"
             herdr_tmux="$PATHS_HERDR_TMUX"
             windows_setup="$PATHS_WINDOWS_SETUP"
+            cross_hub="$PATHS_CROSS_HUB"
           fi
           validate=false
           if [[ "$bun" == true || "$herdr_native" == true ]]; then
@@ -90,7 +95,7 @@ jobs:
             echo '| --- | --- | --- |'
           } >> "$GITHUB_STEP_SUMMARY"
           for decision in "bun=$bun" "rust=$rust" "herdr_native=$herdr_native" \
-            "herdr_tmux=$herdr_tmux" "windows_setup=$windows_setup" \
+            "herdr_tmux=$herdr_tmux" "windows_setup=$windows_setup" "cross_hub=$cross_hub" \
             "validate=$validate" "publish=$publish"; do
             component="${decision%%=*}"
             value="${decision#*=}"
@@ -206,6 +211,46 @@ jobs:
       - name: Verify Known Folder file migration
         shell: powershell
         run: ./windows/known-folders/tests/Test-Migration.ps1
+  cross-hub-python:
+    needs: changes
+    if: needs.changes.outputs.cross_hub == 'true'
+    name: Python fixtures (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: python -m pip install pytest
+      - run: python -m pytest -q windows/wsl-cross-hub
+  cross-hub-desktop:
+    needs: changes
+    if: needs.changes.outputs.cross_hub == 'true'
+    name: Windows desktop package smoke test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and exercise the package in an isolated directory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path $env:RUNNER_TEMP 'cross-hub-package'
+          & .\windows\wsl-cross-hub\build-desktop.ps1 -OutputDirectory $package -RuntimeIdentifier win-x64
+          $exe = Join-Path $package 'wsl-cross-hub-desktop.exe'
+          $test = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Cross Hub self-test failed: $($test.ExitCode)" }
+          & .\windows\wsl-cross-hub\desktop-package.test.ps1
   validate:
     needs: changes
     if: needs.changes.outputs.validate == 'true'
@@ -302,7 +347,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [changes, bun, rust-test, clippy, tmux, tmux-release-build, windows-setup, validate, build, prepare, publish]
+    needs: [changes, bun, rust-test, clippy, tmux, tmux-release-build, windows-setup, cross-hub-python, cross-hub-desktop, validate, build, prepare, publish]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -340,6 +385,8 @@ jobs:
           tmux herdr_tmux
           tmux-release-build herdr_tmux
           windows-setup windows_setup
+          cross-hub-python cross_hub
+          cross-hub-desktop cross_hub
           validate validate
           build herdr_native
           prepare herdr_native
