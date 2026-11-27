@@ -116,7 +116,14 @@ class Recovery:
                 "CREATE TABLE IF NOT EXISTS nonces ("
                 "nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)"
             )
-            db.execute("DELETE FROM nonces WHERE expires_at < ?", (time.time(),))
+            # A writer may have waited on SQLite past the initial MAC check.
+            db.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            if abs(now - created) > SIGNATURE_WINDOW_SECONDS:
+                raise worker.MaintenanceConflict(
+                    "This signed request expired. Sign a new request with the same job ID."
+                )
+            db.execute("DELETE FROM nonces WHERE expires_at < ?", (now,))
             row = db.execute(
                 "INSERT OR IGNORE INTO nonces VALUES (?, ?)",
                 (nonce, created + SIGNATURE_WINDOW_SECONDS),
@@ -200,6 +207,8 @@ class HeaderReader(RawIOBase):
         super().__init__()
         self.connection = connection
         self.deadline = time.monotonic() + seconds
+        self.complete = False
+        self.trailing = b""
 
     def readable(self) -> bool:
         return True
@@ -209,7 +218,14 @@ class HeaderReader(RawIOBase):
         if remaining <= 0:
             raise TimeoutError("HTTP request headers expired")
         self.connection.settimeout(remaining)
-        return self.connection.recv_into(buffer)
+        size = self.connection.recv_into(buffer)
+        if not self.complete:
+            if not size:
+                raise ConnectionError("Socket closed before HTTP headers ended")
+            received = self.trailing + bytes(memoryview(buffer)[:size])
+            self.complete = b"\n\r\n" in received or b"\n\n" in received
+            self.trailing = received[-3:]
+        return size
 
 
 class RecoveryServer(ThreadingHTTPServer):
@@ -249,9 +265,19 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
             self.header_reader = HeaderReader(self.connection, self.header_deadline)
             self.rfile = BufferedReader(self.header_reader)
 
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except ConnectionError:
+                # A client may close or abort while reading or sending headers.
+                pass
+
         def parse_request(self) -> bool:
             parsed = super().parse_request()
-            if parsed and time.monotonic() < self.header_reader.deadline:
+            if (
+                parsed and self.header_reader.complete
+                and time.monotonic() < self.header_reader.deadline
+            ):
                 self.connection.settimeout(self.timeout)
                 return True
             return False

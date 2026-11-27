@@ -213,7 +213,7 @@ def test_incomplete_headers_release_server_slots(recovery, monkeypatch):
             for connection in slow:
                 try:
                     assert connection.recv(1) == b""
-                except ConnectionResetError:
+                except (ConnectionResetError, ConnectionAbortedError):
                     pass
             # On Windows a closed socket can signal EOF before its handler returns.
             for _ in slow:
@@ -269,7 +269,6 @@ def test_compaction_reports_separate_outcomes_without_internal_error(recovery):
     assert public["result"] == {key: value for key, value in result.items() if key != "error"}
 
 
-
 def test_authenticated_rejection_consumes_signed_attempt_across_restart(recovery):
     from uuid import uuid4
 
@@ -299,3 +298,29 @@ def test_authenticated_rejection_consumes_signed_attempt_across_restart(recovery
     assert post(restarted, signed) == 409
     assert restarted.job(job_id) is None
     assert post(restarted, tailnet_api.signed_headers(TOKEN, "POST", path, job_id)) == 202
+
+
+def test_nonce_expiry_is_checked_inside_the_write_transaction(recovery, monkeypatch):
+    created = 1_800_000_000
+    nonce = "a" * 32
+    with monkeypatch.context() as clock:
+        clock.setattr(tailnet_api.time, "time", lambda: created)
+        assert recovery.consume_nonce(nonce, created)
+
+    open_database = worker.open_database
+
+    def observe_database(path):
+        db = open_database(path)
+        db.set_trace_callback(statements.append)
+        return db
+
+    statements = []
+
+    def expiry_after_claim_lock():
+        assert statements[-1] == "BEGIN IMMEDIATE"
+        return created + tailnet_api.SIGNATURE_WINDOW_SECONDS + 1
+
+    monkeypatch.setattr(worker, "open_database", observe_database)
+    monkeypatch.setattr(tailnet_api.time, "time", expiry_after_claim_lock)
+    with pytest.raises(worker.MaintenanceConflict, match="expired"):
+        recovery.consume_nonce(nonce, created)
