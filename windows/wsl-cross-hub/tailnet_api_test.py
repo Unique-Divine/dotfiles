@@ -211,8 +211,11 @@ def test_incomplete_headers_release_server_slots(recovery, monkeypatch):
                     except OSError:
                         pass
             for connection in slow:
-                assert connection.recv(1) == b""
-            # An expired socket can signal EOF before its handler returns.
+                try:
+                    assert connection.recv(1) == b""
+                except ConnectionResetError:
+                    pass
+            # On Windows a closed socket can signal EOF before its handler returns.
             for _ in slow:
                 assert server.slots.acquire(timeout=2)
             for _ in slow:
@@ -225,25 +228,6 @@ def test_incomplete_headers_release_server_slots(recovery, monkeypatch):
                 connection.close()
             server.shutdown()
             thread.join()
-
-
-def test_parsed_headers_win_over_late_timeout_callback(recovery):
-    import socket
-    from threading import Lock, Timer
-    import time
-
-    instance = object.__new__(tailnet_api.handler(recovery, TOKEN))
-    instance.header_lock = Lock()
-    instance.reading_headers = True
-    instance.header_expiry = time.monotonic() + 2
-    instance.header_timer = Timer(2, instance.expire_headers)
-    server, client = socket.socketpair()
-    with server, client:
-        instance.connection = server
-        assert instance.finish_headers()
-        instance.expire_headers()
-        client.sendall(b"x")
-        assert server.recv(1) == b"x"
 
 
 def test_signed_route_rejects_a_changed_job_and_authenticates_responses(recovery):
@@ -283,3 +267,35 @@ def test_compaction_reports_separate_outcomes_without_internal_error(recovery):
     public = recovery.job(job_id)
     assert public["state"] == "failed"
     assert public["result"] == {key: value for key, value in result.items() if key != "error"}
+
+
+
+def test_authenticated_rejection_consumes_signed_attempt_across_restart(recovery):
+    from uuid import uuid4
+
+    blocked = str(uuid4())
+    recovery.submit("compact", blocked)
+    job_id = str(uuid4())
+    path = "/v1/jobs/start-ubuntu"
+    signed = tailnet_api.signed_headers(TOKEN, "POST", path, job_id)
+
+    def post(instance, headers):
+        with tailnet_api.RecoveryServer(("127.0.0.1", 0), tailnet_api.handler(instance, TOKEN)) as server:
+            thread = Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                with closing(HTTPConnection("127.0.0.1", server.server_port, timeout=3)) as client:
+                    client.request("POST", path, headers=headers)
+                    response = client.getresponse()
+                    response.read()
+                    return response.status
+            finally:
+                server.shutdown()
+                thread.join()
+
+    assert post(recovery, signed) == 409
+    (recovery.inbox / f"{blocked}.json").unlink()
+    restarted = tailnet_api.Recovery(recovery.state, recovery.host)
+    assert post(restarted, signed) == 409
+    assert restarted.job(job_id) is None
+    assert post(restarted, tailnet_api.signed_headers(TOKEN, "POST", path, job_id)) == 202

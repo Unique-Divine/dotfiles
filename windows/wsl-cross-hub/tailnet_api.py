@@ -1,9 +1,11 @@
 """Serve the Windows recovery queue on native IPv4 loopback."""
 
 import argparse
+from contextlib import closing
 import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BufferedReader, RawIOBase
 import json
 import re
 from secrets import token_hex
@@ -13,7 +15,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
-from threading import BoundedSemaphore, Lock, Timer
+from threading import BoundedSemaphore
 import time
 from typing import cast
 
@@ -75,6 +77,7 @@ class Recovery:
         self.host = host
         self.inbox = state / "requests"
         self.inventory_slot = BoundedSemaphore()
+        self.replay_database = state / "adapter-replays.sqlite3"
 
     def status(self) -> dict[str, object]:
         heartbeat = worker.worker_status(self.database)
@@ -104,6 +107,21 @@ class Recovery:
             return distro, None
         finally:
             self.inventory_slot.release()
+
+    def consume_nonce(self, nonce: str, created: int) -> bool:
+        # These receipts include authenticated attempts rejected before enqueue.
+        # Keep them across adapter restarts for the full signature window.
+        with closing(worker.open_database(self.replay_database)) as db, db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS nonces ("
+                "nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)"
+            )
+            db.execute("DELETE FROM nonces WHERE expires_at < ?", (time.time(),))
+            row = db.execute(
+                "INSERT OR IGNORE INTO nonces VALUES (?, ?)",
+                (nonce, created + SIGNATURE_WINDOW_SECONDS),
+            )
+            return row.rowcount == 1
 
     def lookup(self, job_id: str) -> dict[str, object] | None:
         if job := worker.job_status(self.database, job_id):
@@ -177,6 +195,23 @@ class Recovery:
             return {"job_id": job_id, "operation": operation, "state": "queued"}
 
 
+class HeaderReader(RawIOBase):
+    def __init__(self, connection: socket.socket, seconds: float) -> None:
+        super().__init__()
+        self.connection = connection
+        self.deadline = time.monotonic() + seconds
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP request headers expired")
+        self.connection.settimeout(remaining)
+        return self.connection.recv_into(buffer)
+
+
 class RecoveryServer(ThreadingHTTPServer):
     request_queue_size = 16
 
@@ -210,40 +245,16 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
 
         def setup(self) -> None:
             super().setup()
-            self.header_lock = Lock()
-            self.reading_headers = True
-            self.header_expiry = time.monotonic() + self.header_deadline
-            self.header_timer = Timer(self.header_deadline, self.expire_headers)
-            self.header_timer.daemon = True
-            self.header_timer.start()
-
-        def expire_headers(self) -> None:
-            with self.header_lock:
-                if not self.reading_headers:
-                    return
-                self.reading_headers = False
-                try:
-                    self.connection.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-
-        def finish_headers(self) -> bool:
-            with self.header_lock:
-                timely = self.reading_headers and time.monotonic() < self.header_expiry
-                self.reading_headers = False
-            self.header_timer.cancel()
-            return timely
+            self.rfile.close()
+            self.header_reader = HeaderReader(self.connection, self.header_deadline)
+            self.rfile = BufferedReader(self.header_reader)
 
         def parse_request(self) -> bool:
-            try:
-                parsed = super().parse_request()
-            finally:
-                timely = self.finish_headers()
-            return parsed and timely
-
-        def finish(self) -> None:
-            self.finish_headers()
-            super().finish()
+            parsed = super().parse_request()
+            if parsed and time.monotonic() < self.header_reader.deadline:
+                self.connection.settimeout(self.timeout)
+                return True
+            return False
 
         def reply(
             self, status: HTTPStatus, body: dict[str, object], request_mac: str | None = None,
@@ -261,7 +272,7 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             pass
 
-        def request_mac(self) -> str | None:
+        def request_mac(self) -> tuple[str, str, int] | None:
             authorization = self.headers.get_all("Authorization", [])
             keys = self.headers.get_all("Idempotency-Key", [])
             if len(authorization) != 1 or len(keys) > 1 or not self.path.isascii():
@@ -277,7 +288,7 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
                 return None
             expected = request_signature(token, created, nonce, self.command, self.path, job_id)
             if hmac.compare_digest(expected, received):
-                return received
+                return received, nonce, int(created)
             return None
 
         def read(self) -> tuple[HTTPStatus, dict[str, object]]:
@@ -306,11 +317,16 @@ def handler(recovery: Recovery, token: bytes) -> type[BaseHTTPRequestHandler]:
             return code, job
 
         def handle_request(self, *, submit: bool) -> None:
-            request_mac = self.request_mac()
-            if request_mac is None:
+            credential = self.request_mac()
+            if credential is None:
                 self.reply(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return
+            request_mac, nonce, created = credential
             try:
+                if submit and not recovery.consume_nonce(nonce, created):
+                    raise worker.MaintenanceConflict(
+                        "This signed request was already used. Sign a new request with the same job ID."
+                    )
                 status, body = self.submit() if submit else self.read()
             except ValueError:
                 status, body = HTTPStatus.BAD_REQUEST, {"error": "invalid request"}
