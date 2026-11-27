@@ -34,8 +34,9 @@ function Get-CompactionTaskAction([string]$Root, [string]$Script) {
 
 function Assert-ProtectedCompactionItem([string]$Path, [string]$OwnerSid) {
     $item = Get-Item -LiteralPath $Path -Force
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "The protected maintenance path is a reparse point: $Path"
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $item.LinkType -eq 'HardLink') {
+        throw "The protected maintenance path is redirected or linked: $Path"
     }
     $acl = Get-Acl -LiteralPath $Path
     $admins = 'S-1-5-32-544'
@@ -52,22 +53,30 @@ function Assert-ProtectedCompactionItem([string]$Path, [string]$OwnerSid) {
         $system = $full
         $OwnerSid = $read
     }
+    $security = [Security.AccessControl.RawSecurityDescriptor]::new(
+        $acl.GetSecurityDescriptorBinaryForm(), 0)
+    if (!$acl.AreAccessRulesProtected -or $null -eq $security.DiscretionaryAcl) {
+        throw "The protected maintenance path must have a protected DACL: $Path"
+    }
+    $flags = [Security.AccessControl.AceFlags]::None
+    if ($item.PSIsContainer) {
+        $flags = [Security.AccessControl.AceFlags]'ContainerInherit,ObjectInherit'
+    }
     $seen = @{}
-    $rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-    foreach ($rule in $rules) {
-        $sid = $rule.IdentityReference.Value
-        if (!$allowed.ContainsKey($sid) -or
-            $rule.AccessControlType -ne 'Allow' -or
-            ($rule.FileSystemRights -band (-bnot [int]$allowed[$sid])) -ne 0) {
+    foreach ($ace in $security.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or
+            $ace.AceType -ne 'AccessAllowed' -or $ace.AceFlags -ne $flags) {
+            throw "The maintenance path has an unexpected access entry: $Path"
+        }
+        $sid = $ace.SecurityIdentifier.Value
+        if (!$allowed.ContainsKey($sid) -or $seen.ContainsKey($sid) -or
+            $ace.AccessMask -ne [int]$allowed[$sid]) {
             throw "The maintenance path has unexpected permissions: $Path"
         }
-        if (!$seen.ContainsKey($sid)) { $seen[$sid] = 0 }
-        $seen[$sid] = $seen[$sid] -bor [int]$rule.FileSystemRights
+        $seen[$sid] = $true
     }
-    foreach ($sid in $allowed.Keys) {
-        if (($seen[$sid] -band [int]$allowed[$sid]) -ne [int]$allowed[$sid]) {
-            throw "The maintenance path is missing required permissions: $Path"
-        }
+    if ($seen.Count -ne $allowed.Count) {
+        throw "The maintenance path is missing required permissions: $Path"
     }
 }
 
@@ -357,8 +366,18 @@ try {
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
     $command.Replace('CROSS_HUB_PAYLOAD', $payload)))
 $action = Get-CompactionTaskAction (Get-CompactionRoot) "compact-vhdx.ps1"
-$process = Start-Process -FilePath $action.executable -Verb RunAs -PassThru -Wait `
-    -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+$launch = @{
+    FilePath = $action.executable
+    WorkingDirectory = [Environment]::SystemDirectory
+    ArgumentList = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+    PassThru = $true
+    Wait = $true
+}
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $launch.Verb = 'RunAs'
+}
+$process = Start-Process @launch
 if ($process.ExitCode -ne 0) {
     $pattern = 'Cross Hub setup ' + $options.setup_attempt + ':'
     $event = Get-WinEvent -FilterHashtable @{LogName='Windows PowerShell'; Id=41000} `

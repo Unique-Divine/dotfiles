@@ -10,10 +10,126 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
 $taskName = "Unique-WslCrossHub"
+
+function Resolve-HubPython([string]$Path) {
+    if ($Path -notmatch '^[a-zA-Z]:\\[^"\r\n]+$') {
+        throw 'Pass the absolute local path to Windows python.exe.'
+    }
+    $Path = [IO.Path]::GetFullPath($Path)
+    if ([IO.Path]::GetFileName($Path) -ine 'python.exe') {
+        throw 'Pass the absolute path to Windows python.exe.'
+    }
+    $parent = Get-Item -LiteralPath ([IO.Path]::GetDirectoryName($Path)) -Force
+    if ($parent.LinkType -eq 'Junction') {
+        $targets = @($parent.Target)
+        if ($targets.Count -ne 1 -or $targets[0] -notmatch '^[a-zA-Z]:\\[^"\r\n]+$' -or
+            [IO.Path]::GetPathRoot($targets[0]) -ine [IO.Path]::GetPathRoot($Path)) {
+            throw 'The Windows Python junction must have one local target on the same drive.'
+        }
+        $Path = Join-Path $targets[0] 'python.exe'
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer) { throw 'The Windows Python executable is a directory.' }
+    return $item.FullName
+}
+
+function Get-HubWorkerProcess([string]$Arguments) {
+    # Task Scheduler may quote the executable. Compare the complete argument tail.
+    $command = '^\s*(?:"[^"]+"|[^\s"]+)\s+' + [regex]::Escape($Arguments) + '$'
+    Get-CimInstance -ClassName Win32_Process -Filter "Name = 'python.exe'" |
+        Where-Object { $_.CommandLine -match $command }
+}
+
+function Stop-HubWorkerTask($TaskFolder, [string]$Arguments) {
+    Disable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
+    $task = $TaskFolder.GetTask($taskName)
+    $sawInstance = $false
+    $stopRequested = $false
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        # Disabled is a task state, not evidence that its last instance exited.
+        if ($task.GetInstances(0).Count -gt 0) {
+            if (!$stopRequested) {
+                $null = $task.Stop(0)
+                $stopRequested = $true
+            }
+            $sawInstance = $true
+        } elseif (Get-HubWorkerProcess $Arguments) {
+            $sawInstance = $true
+        } else {
+            return $sawInstance
+        }
+        Start-Sleep -Milliseconds 200
+    } while ($elapsed.Elapsed.TotalSeconds -lt 15)
+    throw "Timed out waiting for the previous $taskName process to exit."
+}
+
+function Test-HubWorkerTaskInstance($Task, $Process) {
+    $instances = $Task.GetInstances(0)
+    for ($index = 1; $index -le $instances.Count; $index++) {
+        $enginePid = [uint32]$instances.Item($index).EnginePID
+        if ($enginePid -eq 0) { continue }
+        if ($enginePid -eq $Process.ProcessId) { return $true }
+        if ($enginePid -ne $Process.ParentProcessId) { continue }
+
+        # The scheduler may use a separate engine process to start the action.
+        # Check its lifetime so a recycled parent PID cannot satisfy the check.
+        $engine = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $enginePid"
+        if ($engine.CreationDate -and $engine.CreationDate -le $Process.CreationDate) { return $true }
+    }
+    return $false
+}
+
+function Wait-HubWorkerHeartbeat($Task, $Action, [string]$StateDir, [DateTimeOffset]$StartedAt,
+    [string]$OwnerSid) {
+    $path = Join-Path $StateDir 'worker-heartbeat.json'
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $heartbeat = $null
+        try {
+            $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+            if ($item -and !$item.PSIsContainer -and
+                !($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $item.Length -le 4096) {
+                # A shared read lets the worker atomically replace the heartbeat.
+                $stream = [IO.File]::Open($path, 'Open', 'Read', 'Read,Delete')
+                try {
+                    if ($stream.Length -le 4096) {
+                        $reader = [IO.StreamReader]::new($stream)
+                        try { $heartbeat = $reader.ReadToEnd() | ConvertFrom-Json }
+                        finally { $reader.Dispose() }
+                    }
+                } finally { $stream.Dispose() }
+            }
+        } catch [IO.IOException], [ArgumentException], [InvalidOperationException] {
+            # The heartbeat may be absent during startup or replaced between reads.
+        }
+        $beatAt = [DateTimeOffset]::MinValue
+        if ($heartbeat.platform -ceq 'win32' -and
+            $heartbeat.pid -is [int] -and $heartbeat.pid -gt 0 -and
+            [DateTimeOffset]::TryParse($heartbeat.heartbeat_at, [ref]$beatAt) -and
+            $beatAt -ge $StartedAt -and
+            $beatAt -le [DateTimeOffset]::UtcNow -and
+            ([DateTimeOffset]::UtcNow - $beatAt).TotalSeconds -lt 15) {
+            foreach ($process in (Get-HubWorkerProcess $Action.Arguments)) {
+                if ($process.ProcessId -ne $heartbeat.pid -or
+                    $process.ExecutablePath -ine $Action.Execute -or !$process.CreationDate -or
+                    [DateTimeOffset]$process.CreationDate -lt $StartedAt -or
+                    [DateTimeOffset]$process.CreationDate -gt $beatAt) { continue }
+                $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
+                if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $OwnerSid -and
+                    (Test-HubWorkerTaskInstance $Task $process)) { return }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ($elapsed.Elapsed.TotalSeconds -lt 30)
+    throw "The replacement $taskName did not publish a fresh heartbeat from its running task instance."
+}
+
 $explicitInstallRoot = [bool]$InstallRoot
 if (!$InstallRoot) { $InstallRoot = $PSScriptRoot }
-$python = (Get-Item -LiteralPath $PythonExe).FullName
+$python = Resolve-HubPython $PythonExe
 $worker = Join-Path $InstallRoot "worker.py"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (!$StateDir) {
@@ -32,9 +148,6 @@ if ($StateDir.Length -lt 3) {
 if (($Apply -or !$explicitInstallRoot) -and
     !(Test-Path -LiteralPath $worker -PathType Leaf)) {
     throw "Missing worker at $worker."
-}
-if ([IO.Path]::GetExtension($python) -ne ".exe") {
-    throw "Pass the absolute path to Windows python.exe."
 }
 if ($InstallRoot -notmatch '^[a-zA-Z]:\\[^"\r\n]+$' -or
     $python -notmatch '^[a-zA-Z]:\\[^"\r\n]+$' -or
@@ -99,7 +212,7 @@ if ($existing) {
         $existing.Principal.RunLevel.ToString() -ne 'Limited' -or
         $existing.Principal.LogonType.ToString() -ne 'S4U' -or
         $existing.State.ToString() -eq 'Disabled' -or $actions.Count -ne 1 -or
-        $actions[0].Execute -ine $action.Execute) {
+        (Resolve-HubPython $actions[0].Execute) -ine $action.Execute) {
         throw "Task $taskName does not match the supported Cross Hub boot worker."
     }
     if ($actions[0].Arguments -eq $action.Arguments) {
@@ -122,12 +235,18 @@ if ($existing) {
 # Register metadata only. The potentially user-writable Python and worker
 # run under the Limited task principal, never under this admin token.
 if ($replaceExisting) {
-    Disable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
+    $rollbackXml = Export-ScheduledTask -TaskName $taskName -TaskPath '\'
+    $wasRunning = $existing.State.ToString() -eq 'Running'
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    $taskFolder = $scheduler.GetFolder('\')
 }
 try {
     if ($replaceExisting) {
-        Stop-ScheduledTask -TaskName $taskName -TaskPath '\'
+        $stoppedInstance = Stop-HubWorkerTask $taskFolder $actions[0].Arguments
+        $wasRunning = $wasRunning -or $stoppedInstance
     }
+    $startedAt = [DateTimeOffset]::UtcNow
     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action `
         -Trigger @($boot, $watchdog) -Principal $principal -Settings $settings `
         -Force:$replaceExisting `
@@ -135,13 +254,38 @@ try {
         Out-Null
     $summary.registered = $true
     Start-ScheduledTask -TaskName $taskName -TaskPath '\'
-} catch {
-    if ($replaceExisting -and !$summary.registered) {
-        Enable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
-        Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+    if ($replaceExisting) {
+        $candidateTask = $taskFolder.GetTask($taskName)
+        Wait-HubWorkerHeartbeat $candidateTask $action $StateDir $startedAt $identity.User.Value
     }
+} catch {
+    $failure = $_.Exception.Message
+    $rollbackFailures = [Collections.Generic.List[string]]::new()
+    if ($replaceExisting -and $summary.registered) {
+        try { $null = Stop-HubWorkerTask $taskFolder $action.Arguments }
+        catch { $rollbackFailures.Add("Candidate cleanup failed. $($_.Exception.Message)") }
+    }
+    try {
+        if ($replaceExisting) {
+            Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml $rollbackXml -Force |
+                Out-Null
+            # Restore the registration even if cleanup failed. Let its watchdog
+            # restart the old worker if the candidate may still be exiting.
+            if ($wasRunning -and $rollbackFailures.Count -eq 0) {
+                Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+            }
+        } elseif ($summary.registered) {
+            Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
+        }
+    } catch {
+        $rollbackFailures.Add("Task restoration failed. $($_.Exception.Message)")
+    }
+    if ($rollbackFailures.Count) {
+        throw "Could not register or start task $taskName. $failure $($rollbackFailures -join ' ')"
+    }
+    $summary.registered = $false
     [pscustomobject]$summary | ConvertTo-Json
-    throw "Could not register or start task $taskName. $_"
+    throw "Could not register or start task $taskName. $failure"
 }
 $summary.startRequested = $true
 [pscustomobject]$summary | ConvertTo-Json
