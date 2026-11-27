@@ -91,6 +91,7 @@ internal sealed class DesktopApp : ApplicationContext
     private readonly ContextMenuStrip menu = new();
     private Task? pipeServer;
     private bool closing;
+    private bool disposed;
 
     internal DesktopApp(string address, bool show)
     {
@@ -289,8 +290,9 @@ internal sealed class DesktopApp : ApplicationContext
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !disposed)
         {
+            disposed = true;
             shutdown.Cancel();
             timer.Dispose();
             hotkey.Dispose();
