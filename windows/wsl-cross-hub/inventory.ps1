@@ -49,6 +49,9 @@ function Get-RunningDistributions {
         }
         $output = Read-WslOutput -Bytes ($stdout.ToArray())
         $diagnostic = (Read-WslOutput -Bytes ($stderr.ToArray())).Trim()
+        $noRunning = '^(Windows Subsystem for Linux has no running distributions|There are no running distributions)\.?$'
+        if (($output.Trim() -match $noRunning -and !$diagnostic) -or
+            ($diagnostic -match $noRunning -and !$output.Trim())) { return }
         if ($process.ExitCode -ne 0 -or $diagnostic) {
             throw "WSL list returned exit $($process.ExitCode). $diagnostic"
         }

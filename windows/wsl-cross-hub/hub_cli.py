@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
@@ -24,11 +25,12 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::WriteLine('WSL_CROSS_HUB_READY')
 $roots = @(
+    $env:WSL_CROSS_HUB_CLI_ROOT,
     (Join-Path $env:USERPROFILE 'dotfiles\windows\wsl-cross-hub'),
     (Join-Path $env:LOCALAPPDATA 'Programs\WslCrossHub')
 )
 $root = $roots | Where-Object {
-    (Test-Path -LiteralPath (Join-Path $_ 'wsl-cross-hub.ps1') -PathType Leaf) -and
+    $_ -and (Test-Path -LiteralPath (Join-Path $_ 'wsl-cross-hub.ps1') -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $_ 'client.ps1') -PathType Leaf)
 } | Select-Object -First 1
 if (!$root) {
@@ -37,6 +39,7 @@ if (!$root) {
 }
 $hub = Join-Path $root 'wsl-cross-hub.ps1'
 $client = Join-Path $root 'client.ps1'
+$status = Join-Path $root 'status.ps1'
 """
 SYSTEM_POWERSHELL = Path(
     "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -62,17 +65,20 @@ def powershell() -> str:
         native = Path(system_root) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     else:
         native = SYSTEM_POWERSHELL
+    if sys.platform == "win32" and native.is_file():
+        return str(native)
     path = shutil.which("powershell.exe")
     if path:
         return path
     if native.is_file():
         return str(native)
-    raise HubError("Windows PowerShell is unavailable. Run this command from WSL.")
+    raise HubError("Windows PowerShell is unavailable.")
 
 
 def invoke_windows(action: str, *, timeout: int = 25) -> str:
     # Callers use fixed PowerShell text and validated UUIDs only.
     script = f"{WINDOWS_BOOTSTRAP}\n{action}\nexit $LASTEXITCODE"
+    env = dict(os.environ, WSL_CROSS_HUB_CLI_ROOT=str(Path(__file__).resolve().parent) if sys.platform == "win32" else "")
     try:
         result = subprocess.run(
             [
@@ -85,6 +91,7 @@ def invoke_windows(action: str, *, timeout: int = 25) -> str:
                 script,
             ],
             cwd="/mnt/c" if Path("/mnt/c").is_dir() else None,
+            env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             encoding="utf-8",
@@ -98,12 +105,13 @@ def invoke_windows(action: str, *, timeout: int = 25) -> str:
         ) from error
     except OSError as error:
         raise HubError(
-            f"Could not start Windows PowerShell through WSL interop. {error}"
+            f"Could not start Windows PowerShell. {error}"
         ) from error
     header, _, body = result.stdout.partition("\n")
     if header.strip() != BRIDGE_READY:
         details = result.stderr.strip() or result.stdout.strip()
-        message = "Windows PowerShell did not start through WSL interop."
+        transport = "" if sys.platform == "win32" else " through WSL interop"
+        message = f"Windows PowerShell did not start{transport}."
         raise HubError(f"{message} {details}" if details else message)
     if result.returncode != 0:
         raise HubError(
@@ -241,7 +249,9 @@ def show_job(result: dict[str, object], *, machine: bool) -> None:
     if machine:
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return
-    print(f"Job {result.get('job_id')} is {result.get('state')}.")
+    phase = f" · {result['stage']}" if result.get("stage") else ""
+    progress = f" · {result['percent']}%" if result.get("percent") is not None else ""
+    print(f"Job {result.get('job_id')} is {result.get('state')}{phase}{progress}.")
     details = result.get("result")
     if details is not None:
         print(json.dumps(details, ensure_ascii=False, indent=2))
@@ -268,6 +278,68 @@ def show_logs(output: str, *, machine: bool) -> None:
         print(f"{at} {stage}" + (f"  {detail}" if detail else ""))
 
 
+def snapshot(*, cached: bool) -> dict[str, object]:
+    operation = "latest" if cached else "collect"
+    return json_object(invoke_windows(f"& $status -Operation {operation}"))
+
+
+def display_json(value: object, *, machine: bool) -> None:
+    print(json.dumps(value, ensure_ascii=False, indent=None if machine else 2))
+
+
+def size(value: object) -> str:
+    return f"{value / (1024 ** 3):,.1f} GiB" if isinstance(value, int) else "unknown"
+
+
+def show_status(result: dict[str, object], *, machine: bool) -> None:
+    if machine:
+        display_json(result, machine=True)
+        return
+    inventory = field(result, "inventory")
+    freshness = "stale" if result.get("inventoryStale") else "current"
+    print(f"C: {size(inventory.get('cFreeBytes'))} free · {freshness} · {result.get('observedAt') or 'unobserved'}")
+    running = inventory.get("runningDistros")
+    for distro in inventory.get("distributions") or []:
+        name = distro["name"]
+        state = "unknown" if running is None else "running" if name in running else "stopped"
+        print(f"  {name}: {state} · VHDX {size(distro.get('vhdLengthBytes'))}")
+    for guest in result.get("guestReports") or []:
+        report = field(guest, "report")
+        free = field(report, "filesystem").get("availableBytes")
+        print(f"  {guest['distro']} filesystem: {size(free)} free · {guest['state']} · "
+              f"{report.get('observedAt') or 'unobserved'}")
+    print(f"Worker: {field(result, 'worker').get('state', 'unknown')}")
+    compaction = field(result, "compaction")
+    print(f"Compaction: {compaction.get('state', 'unknown')}")
+    for error in result.get("errors") or []:
+        print(f"  {error['source']}: {error['message']}")
+
+
+def job_read(job_id: str | None, latest: str | None, *, enriched: bool) -> dict[str, object]:
+    if latest is not None:
+        op = "maintenance" if latest == "compaction" else "latest-doctor"
+        wrapper = json_object(invoke_windows(f"& $status -Operation {op}"))
+        if result := field(wrapper, "job"):
+            return result
+        raise HubError(f"No {latest} job has been recorded.")
+    if enriched:
+        return json_object(invoke_windows(f"& $status -Operation job-detail -JobId '{job_id}'"))
+    return json_object(invoke_windows(f"& $client -Operation status -JobId '{job_id}'"))
+
+
+def watch_job(result: dict[str, object], *, machine: bool) -> int:
+    job_id = canonical_job_id(str(result.get("job_id")))
+    while True:
+        show_job(result, machine=machine)
+        sys.stdout.flush()
+        if result.get("state") not in {"queued", "accepted", "running"}:
+            return 0 if result.get("state") == "completed" else 1
+        previous = result
+        while result == previous:
+            time.sleep(2)
+            result = job_read(job_id, None, enriched=True)
+
+
 def display_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -290,25 +362,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     checks_or_job.add_argument("--investigate", choices=check_ids, metavar="CHECK")
     checks_or_job.add_argument("--cure", choices=check_ids + editor_ids, metavar="CHECK")
     doctor.add_argument("--runner", choices=("codex", "claude"), default="codex")
+    overview = commands.add_parser("status", help="show storage and worker status")
+    overview.add_argument("--cached", action="store_true", help="read the latest available host sample")
+    history = commands.add_parser("history", help="show recorded disk measurements")
+    preview = commands.add_parser("preview", help="show the approved compaction prerequisites")
     submission = commands.add_parser("compact", help="submit Ubuntu compaction")
     submission.add_argument("--yes", action="store_true", help="confirm WSL shutdown")
     job = commands.add_parser("job", help="inspect a Windows job")
-    job.add_argument("job_id", type=canonical_job_id)
+    job_target = job.add_mutually_exclusive_group(required=True)
+    job_target.add_argument("job_id", type=canonical_job_id, nargs="?")
+    job_target.add_argument("--latest", choices=("compaction", "doctor"))
+    job.add_argument("--watch", action="store_true", help="stream changes until the job finishes")
     logs = commands.add_parser("logs", help="read a Windows job's maintenance journal")
-    logs.add_argument("job_id", type=canonical_job_id)
+    log_target = logs.add_mutually_exclusive_group(required=True)
+    log_target.add_argument("job_id", type=canonical_job_id, nargs="?")
+    log_target.add_argument("--diagnostics", action="store_true", help="read desktop and worker logs")
     logs.add_argument("--agent", action="store_true", help="read redacted Doctor agent events")
     probe = commands.add_parser("probe", help="submit a Windows worker health probe")
     setup = commands.add_parser("setup", help="preview the one-time maintenance setup")
     setup.add_argument(
         "--apply", action="store_true", help="apply setup and request UAC"
     )
-    for command in (doctor, submission, job, logs, probe, setup):
+    for command in (overview, history, preview, doctor, submission, job, logs, probe, setup):
         display_flags(command)
     args = parser.parse_args(argv)
+    if args.action == "logs" and args.diagnostics and args.agent:
+        parser.error("--agent requires a job ID")
     machine = getattr(args, "machine", False)
 
     try:
         match args.action:
+            case "status":
+                show_status(snapshot(cached=args.cached), machine=machine)
+            case "history":
+                history = snapshot(cached=True).get("history", [])
+                if machine:
+                    display_json(history, machine=True)
+                else:
+                    for sample in history:
+                        print(f"{sample['observedAt']} · C: {size(sample.get('cFreeBytes'))} free")
+                        for distro in sample.get("distributions", []):
+                            print(f"  {distro['name']}: {size(distro.get('vhdLengthBytes'))}")
+            case "preview":
+                result = json_object(invoke_windows("& $status -Operation approved-preview"))
+                display_json(result, machine=machine)
             case "doctor":
                 if check := args.investigate or args.cure:
                     mode = "cure" if args.cure else "investigate"
@@ -339,11 +436,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "compact":
                 return compact(machine, confirmed=args.yes)
             case "job":
-                result = invoke_windows(
-                    f"& $client -Operation status -JobId '{args.job_id}'"
-                )
-                show_job(json_object(result), machine=machine)
+                result = job_read(args.job_id, args.latest, enriched=args.watch or not machine)
+                if args.watch:
+                    return watch_job(result, machine=machine)
+                show_job(result, machine=machine)
             case "logs":
+                if args.diagnostics:
+                    result = json_object(invoke_windows("& $status -Operation diagnostic-logs"))
+                    if machine:
+                        display_json(result, machine=True)
+                    else:
+                        print("\n".join(result["lines"]))
+                    return 0
                 operation = "doctor-agent-logs" if args.agent else "logs"
                 result = invoke_windows(
                     f"& $client -Operation {operation} -JobId '{args.job_id}'"

@@ -20,7 +20,7 @@ $dotnet = Get-Command dotnet.exe -CommandType Application -ErrorAction SilentlyC
 if (!$dotnet) { throw "Install the .NET 10 SDK before building the desktop package." }
 $project = Join-Path $PSScriptRoot "desktop\Desktop.csproj"
 $files = @(
-    "client.cmd", "client.ps1", "compact-vhdx.ps1", "desktop-package.ps1",
+    "cli.ps1", "hub_cli.py", "client.cmd", "client.ps1", "compact-vhdx.ps1", "desktop-package.ps1",
     "install-compaction.cmd", "install-compaction.ps1", "install-desktop.cmd",
     "install-desktop.ps1", "install-task.cmd", "install-task.ps1", "inventory.cmd",
     "inventory.ps1", "maintenance_plan.py", "maintenance_rehearsal.py",

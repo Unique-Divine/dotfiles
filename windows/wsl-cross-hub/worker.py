@@ -767,6 +767,20 @@ def submit_doctor(
         return result
 
 
+def latest_doctor_job(state_dir: Path) -> dict[str, object] | None:
+    database = state_dir / "jobs.sqlite3"
+    if not database.exists():
+        return None
+    with closing(open_database(database, read_only=True)) as db:
+        if not has_doctor_protocol(db):
+            return None
+        latest = db.execute(
+            "SELECT job_id FROM jobs WHERE operation IN ('investigate', 'cure') "
+            "ORDER BY accepted_at DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+    return job_status(database, latest["job_id"]) if latest else None
+
+
 def doctor_checks(state_dir: Path) -> dict[str, object]:
     import cure_runtime
     import editor_runtime
@@ -803,16 +817,8 @@ def doctor_checks(state_dir: Path) -> dict[str, object]:
             for check in EDITOR_CHECKS
         ],
     }
-    db_path = state_dir / "jobs.sqlite3"
-    if db_path.exists():
-        with closing(open_database(db_path, read_only=True)) as db:
-            if has_doctor_protocol(db):
-                latest = db.execute(
-                    "SELECT job_id FROM jobs WHERE operation IN ('investigate', 'cure') "
-                    "ORDER BY accepted_at DESC, rowid DESC LIMIT 1"
-                ).fetchone()
-                if latest:
-                    result["latestJob"] = job_status(db_path, latest["job_id"])
+    if latest := latest_doctor_job(state_dir):
+        result["latestJob"] = latest
     return result
 
 

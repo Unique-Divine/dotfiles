@@ -63,7 +63,15 @@ if ($readingLogs) {
         [IO.FileShare]::ReadWrite)
     try {
         $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
-        try { Write-Output $reader.ReadToEnd().TrimEnd("`r", "`n") }
+        try {
+            $journal = $reader.ReadToEnd()
+            if ($journal -and !$journal.EndsWith("`n")) {
+                $lastBreak = $journal.LastIndexOf("`n") + 1
+                try { $null = $journal.Substring($lastBreak) | ConvertFrom-Json }
+                catch { $journal = $journal.Substring(0, $lastBreak) }
+            }
+            Write-Output $journal.TrimEnd("`r", "`n")
+        }
         finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     exit 0

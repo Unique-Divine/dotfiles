@@ -29,6 +29,8 @@ if os.environ.get('HUB_INTEROP_FAIL'):
 print('WSL_CROSS_HUB_READY')
 if '& $client -Operation logs' in script or '& $client -Operation doctor-agent-logs' in script:
     print(os.environ['HUB_TEST_JOURNAL'], end='')
+elif '& $status' in script:
+    print(os.environ['HUB_TEST_STATUS'])
 elif '& $client -Operation doctor\n' in script:
     print(json.dumps({'checks': [{'id': 'windows-ssh', 'host': 'windows',
         'state': 'failed', 'detail': 'Service is stopped', 'runners': ['codex'] }]}))
@@ -192,6 +194,7 @@ def test_compaction_inspection_error_does_not_suggest_setup(
     assert "Task Scheduler is offline." in health.stdout
     assert "setup --apply" not in health.stdout
 
+
 def test_doctor_check_and_manual_cure(windows: Path) -> None:
     checks = run_cli("doctor", "--checks", "--json")
     assert checks.returncode == 0
@@ -215,10 +218,83 @@ def test_doctor_agent_log_reads_the_companion_stream(
     logs = run_cli("logs", job, "--agent")
     assert logs.returncode == 0
     assert json.loads(logs.stdout) == event
-    assert commands(windows) == [f"& $client -Operation doctor-agent-logs -JobId '{job}'"]
+    assert commands(windows) == [
+        f"& $client -Operation doctor-agent-logs -JobId '{job}'"
+    ]
 
 
 def test_doctor_rejects_unknown_check_before_calling_windows(windows: Path) -> None:
     result = run_cli("doctor", "--cure", "unknown")
     assert result.returncode == 2
     assert not windows.exists()
+
+
+def test_offline_storage_and_history(
+    windows: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hub_cli
+
+    fixture = {
+        "observedAt": "2026-11-26T10:00:00Z",
+        "inventoryStale": False,
+        "inventory": {
+            "cFreeBytes": 1024**3,
+            "runningDistros": [],
+            "distributions": [{"name": "Ubuntu", "vhdLengthBytes": 1024**3}],
+        },
+        "worker": {"state": "ready"},
+        "guestReports": [
+            {
+                "distro": "Ubuntu",
+                "state": "stale",
+                "report": {"filesystem": {"availableBytes": 1024**3}},
+            }
+        ],
+        "history": [],
+    }
+    monkeypatch.setenv("HUB_TEST_STATUS", json.dumps(fixture))
+    result = run_cli("status")
+    assert result.returncode == 0
+    assert "Ubuntu: stopped" in result.stdout
+    assert "Ubuntu filesystem: 1.0 GiB free · stale" in result.stdout
+    assert json.loads(run_cli("status", "--cached", "--json").stdout) == fixture
+    assert json.loads(run_cli("history", "--json").stdout) == []
+    assert commands(windows) == [
+        "& $status -Operation collect",
+        "& $status -Operation latest",
+        "& $status -Operation latest",
+    ]
+    assert hub_cli.size(None) == "unknown"
+
+
+def test_watch_latest_keeps_original_job(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    import hub_cli
+
+    job_id = str(uuid4())
+    calls = []
+    reports = iter(
+        [
+            {"job": {"job_id": job_id, "state": "accepted"}},
+            {"job_id": job_id, "state": "accepted"},
+            {"job_id": job_id, "state": "running", "percent": 38},
+            {"job_id": job_id, "state": "completed", "percent": 100},
+        ]
+    )
+
+    def bridge(action):
+        calls.append(action)
+        return json.dumps(next(reports))
+
+    monkeypatch.setattr(hub_cli, "invoke_windows", bridge)
+    monkeypatch.setattr(hub_cli.time, "sleep", lambda _delay: None)
+    assert hub_cli.main(["job", "--latest", "compaction", "--watch", "--json"]) == 0
+    assert (
+        calls
+        == ["& $status -Operation maintenance"]
+        + [f"& $status -Operation job-detail -JobId '{job_id}'"] * 3
+    )
+    assert [
+        json.loads(row)["state"] for row in capsys.readouterr().out.splitlines()
+    ] == ["accepted", "running", "completed"]

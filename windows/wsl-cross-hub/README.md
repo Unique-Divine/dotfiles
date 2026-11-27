@@ -443,3 +443,28 @@ and `--trim-bytes` with the byte count you observed. Linux used bytes,
 TRIM bytes, VHDX length, and Windows volume free space describe different
 measurements. Compare the Windows baseline and result to measure host
 space recovered by compaction.
+
+## Terminal Status And Job Progress
+
+Windows and WSL use the same commands after setup. On Windows, run the
+installed launcher from PowerShell:
+
+```powershell
+$hub = "$env:LOCALAPPDATA\Programs\WslCrossHub\wsl-cross-hub.cmd"
+& $hub status
+& $hub preview --json
+& $hub job --latest compaction --watch
+& $hub logs --diagnostics
+```
+
+From WSL, replace `& $hub` with `wsl-cross-hub`. Use `status --cached` for the
+latest available host sample and `history` for earlier disk measurements.
+`job --latest doctor` reads the latest investigation or Cure without running
+new checks. Pass a job UUID to read a specific job and add `--watch` to follow
+it through completion. With `--json --watch`, each changed result is a JSON
+line. Pass `--agent` to `logs <job-id>` for the redacted agent event stream.
+
+Windows can read inventory, cached Linux measurements, job status, and logs
+while Ubuntu is stopped. `doctor --checks` marks offline guest checks
+unavailable. Compaction still needs the approved Ubuntu distro running so
+the worker can TRIM before shutdown.

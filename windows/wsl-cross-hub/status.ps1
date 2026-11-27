@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("collect", "latest", "preview", "probe", "job", "rehearse", "maintenance", "compact", "doctor", "doctor-job", "doctor-logs", "diagnostic-logs", "editor-open")]
+    [ValidateSet("collect", "latest", "preview", "probe", "job", "rehearse", "maintenance", "compact", "doctor", "doctor-job", "doctor-logs", "diagnostic-logs", "editor-open", "approved-preview", "job-detail", "latest-doctor")]
     [string]$Operation = "latest",
     [string]$Distro,
     [string]$JobId,
@@ -20,8 +20,8 @@ $OutputEncoding = $utf8
 if (($Operation -in @("preview", "rehearse", "compact")) -ne [bool]$Distro) {
     throw "Pass -Distro to preview, rehearse, or compact."
 }
-if (($Operation -in @("job", "doctor-logs")) -ne [bool]$JobId) {
-    throw "Pass -JobId to job or doctor-logs."
+if (($Operation -in @("job", "doctor-logs", "job-detail")) -ne [bool]$JobId) {
+    throw "Pass -JobId to job, job-detail, or doctor-logs."
 }
 if ($Scenario -and $Operation -ne "rehearse") {
     throw "Pass -Scenario only to the rehearse operation."
@@ -111,9 +111,24 @@ if ($Operation -in @("doctor", "doctor-job", "doctor-logs")) {
 
 $options = @{}
 if ($StateDir) { $options.StateDir = $StateDir }
-if ($Operation -eq 'maintenance') { $options.RuntimeOnly = $true }
+if ($Operation -in @('maintenance', 'job-detail', 'latest-doctor')) {
+    $options.RuntimeOnly = $true
+    $options.ReadOnly = $true
+}
 $doctor = & "$PSScriptRoot\wsl-cross-hub.ps1" @options | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Cross Hub doctor returned exit code $LASTEXITCODE." }
+
+if ($Operation -eq "approved-preview") {
+    $Distro = $doctor.compaction.distro
+    if ($doctor.compaction.state -ne "ready" -or !$Distro) {
+        @{
+            distro = $Distro; decision = "blocked"; steps = @()
+            blockers = @(@{ code = "permission"; message = ($doctor.compaction.hint, $doctor.compaction.message, "Compaction readiness unavailable." | Where-Object { $_ } | Select-Object -First 1) })
+        } | ConvertTo-Json -Depth 5
+        exit 0
+    }
+    $Operation = "preview"
+}
 
 if ($doctor.runtime.state -ne "ready") {
     if ($Operation -notin @("collect", "latest")) {
@@ -158,7 +173,7 @@ if ($Operation -eq "rehearse") {
     $rehearsal = $pythonOptions + @("$PSScriptRoot\maintenance_rehearsal.py")
     if ($Scenario) { $rehearsal += "--scenario=$Scenario" }
     $plan | & $python @rehearsal
-} elseif ($Operation -eq 'maintenance') {
+} elseif ($Operation -in @('maintenance', 'job-detail', 'latest-doctor')) {
     & $python @arguments
 } elseif ($Operation -in @('collect', 'latest')) {
     $sample = $doctor.worker | ConvertTo-Json -Depth 5 -Compress | & $python @arguments

@@ -338,8 +338,14 @@ def latest_maintenance(state_dir: Path) -> Json | None:
         ).fetchone()
     if row is None:
         return None
-    job_id = parse_job_id(row["job_id"])
-    job = job_status(database, job_id)
+    return maintenance_detail(state_dir, row["job_id"])
+
+
+def maintenance_detail(state_dir: Path, job_id: str) -> Json | None:
+    job_id = parse_job_id(job_id)
+    job = job_status(state_dir / "jobs.sqlite3", job_id)
+    if job is not None and job.get("operation") != "compact":
+        return job
     if job is None:
         return None
 
@@ -533,7 +539,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
-        choices=["collect", "latest", "preview", "probe", "job", "maintenance"],
+        choices=["collect", "latest", "preview", "probe", "job", "maintenance", "job-detail", "latest-doctor"],
     )
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--distro")
@@ -554,6 +560,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = run_probe(state_dir)
             case "maintenance":
                 result = {"job": latest_maintenance(state_dir)}
+            case "job-detail":
+                result = maintenance_detail(state_dir, args.job_id)
+                if result is None:
+                    raise ValueError(f"Job {args.job_id} was not found.")
+            case "latest-doctor":
+                from worker import latest_doctor_job
+
+                result = {"job": latest_doctor_job(state_dir)}
             case "job":
                 with status_lock(state_dir):
                     result = probe_result(
