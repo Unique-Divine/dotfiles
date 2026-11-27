@@ -31,7 +31,7 @@ From an empty directory, download the archive and verify its SHA-256 checksum.
 Set the `target` variable to the value for your platform.
 
 ```bash
-version=0.2.0
+version=0.3.0
 target=x86_64-unknown-linux-musl
 archive="herdr-tmux-v$version-$target.tar.gz"
 base="https://github.com/Unique-Divine/dotfiles/releases/download/herdr-tmux/v$version"
@@ -70,7 +70,7 @@ With Rust and Cargo installed, Herdr can build and register the source plugin
 at a pinned release tag.
 
 ```bash
-herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
+herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.3.0
 ```
 
 ### Build from crates.io
@@ -78,7 +78,7 @@ herdr plugin install Unique-Divine/dotfiles/herdr-tmux --ref herdr-tmux/v0.2.0
 When the version is available on crates.io, use Cargo to build the executable.
 
 ```bash
-cargo install herdr-tmux --version 0.2.0 --locked
+cargo install herdr-tmux --version 0.3.0 --locked
 herdr-tmux plugin register
 ```
 
@@ -115,6 +115,7 @@ herdr-tmux layout even-vertical
 herdr-tmux layout even-horizontal
 herdr-tmux focus-pane
 herdr-tmux focus-agent
+herdr-tmux edit-tabs
 ```
 
 `even-vertical` stacks panes top-to-bottom. `even-horizontal` spreads panes
@@ -183,6 +184,22 @@ Unicode symbols without requiring an icon font.
 For development or tests outside a Herdr-managed pane, pass the command-line
 overrides `--socket-path`, `--tab-id`, and `--pane-id`.
 
+The `reorder-tabs` plugin action opens **Tabs · Neovim**. The buffer groups
+tabs by workspace and shows each tab's pane count and agent status. Run
+`herdr-tmux edit-tabs` to open the editor directly in a pane.
+
+Press `V` to select whole rows and `J` or `K` to move them down or up. Move
+rows under another workspace heading to transfer those tabs. Use `/` to
+search, `:w` to apply, `:wq` to apply and close, or `:q!` to discard.
+Keep workspace headings in order, each tab row once, and one or more tabs in
+each workspace. Reopen the editor if the session's tabs changed before saving.
+
+Moving tabs between workspaces requires a Herdr server that supports API
+method `tab.reorder`. Older servers can reorder tabs within each workspace.
+The editor uses `nvim` from the server's
+`PATH`. When that points to a mise shim or `nvim` is missing, it tries the
+Neovim installation resolved by mise.
+
 ## Plugin bindings
 
 Add these commands to Herdr's `config.toml`, then reload the configuration:
@@ -211,6 +228,12 @@ key = "prefix+a"
 type = "plugin_action"
 command = "unique-divine.herdr-tmux.focus-agent"
 description = "select agent by number"
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "unique-divine.herdr-tmux.reorder-tabs"
+description = "reorder tabs"
 ```
 
 Plugin actions open pickers over the active pane. Plugin context identifies the

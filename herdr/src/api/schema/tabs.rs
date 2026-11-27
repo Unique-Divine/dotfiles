@@ -37,6 +37,18 @@ pub struct TabMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceTabOrder {
+    pub workspace_id: String,
+    pub tab_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabReorderParams {
+    pub original: Vec<WorkspaceTabOrder>,
+    pub desired: Vec<WorkspaceTabOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,

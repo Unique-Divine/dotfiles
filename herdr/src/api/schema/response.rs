@@ -94,6 +94,11 @@ pub enum ResponseResult {
     TabList {
         tabs: Vec<TabInfo>,
     },
+    TabReorder {
+        order: Vec<super::tabs::WorkspaceTabOrder>,
+        tab_id_changes: std::collections::BTreeMap<String, String>,
+        pane_id_changes: std::collections::BTreeMap<String, String>,
+    },
     AgentInfo {
         agent: AgentInfo,
     },
