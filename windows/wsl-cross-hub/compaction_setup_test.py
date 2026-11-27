@@ -222,6 +222,72 @@ if ($errors.Count -ne 2 -or $errors[0] -notlike '*disable failed*' -or $errors[1
     assert result.returncode == 0, result.stderr
 
 
+def test_adapter_requires_configured_compaction_target(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$tokens = $null
+$parseErrors = $null
+$syntax = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+foreach ($name in @('Get-SafeLocalPath', 'Assert-CompactionReady', 'Test-AdapterReady')) {
+    $function = $syntax.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $false)
+    if (!$function) { throw "Missing installer function: $name" }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+
+function Get-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    if ($TaskName -cne 'Unique-WslCrossHub-Compact' -or $TaskPath -cne '\') {
+        throw 'The installer queried the wrong task.'
+    }
+    if ($taskState) { [pscustomobject]@{State = $taskState} }
+}
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+$root = Join-Path $scratch 'WslCrossHubMaintenance'
+$null = [IO.Directory]::CreateDirectory($root)
+try {
+    $taskState = 'Ready'
+    try {
+        Assert-CompactionReady $scratch
+        throw 'The installer accepted missing compaction files.'
+    } catch {
+        if ($_.Exception.Message -notlike 'Missing Cross Hub compaction setup file:*') { throw }
+    }
+    foreach ($name in @('target.json', 'compact-vhdx.ps1', 'diskpart.jsonl')) {
+        [IO.File]::WriteAllText((Join-Path $root $name), '')
+    }
+    foreach ($taskState in @($null, 'Disabled', 'Running', 'Queued')) {
+        try {
+            Assert-CompactionReady $scratch
+            throw 'The installer accepted a compaction task that was not ready.'
+        } catch {
+            if ($_.Exception.Message -notlike 'Cross Hub compaction must be configured and idle.*') { throw }
+        }
+    }
+    $taskState = 'Ready'
+    Assert-CompactionReady $scratch
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+
+$status = [pscustomobject]@{worker_state = 'ready'; recovery_protocol = 1; distro = $null; distro_running = $null}
+if (Test-AdapterReady $status 1) { throw 'An unconfigured target reported ready.' }
+$status.distro = 'Ubuntu'
+$status.distro_running = $false
+if (!(Test-AdapterReady $status 1)) { throw 'A configured, offline target did not report ready.' }
+if (Test-AdapterReady $status 2) { throw 'An incompatible worker reported ready.' }
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_diskpart_alias_preserves_disk_identity(
     windows_shell: tuple[Path, str, Path],
 ) -> None:

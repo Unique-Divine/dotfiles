@@ -67,6 +67,27 @@ function Get-SafeLocalPath([string]$Path) {
     return $fullPath
 }
 
+function Assert-CompactionReady([string]$ProgramFiles) {
+    $root = Join-Path $ProgramFiles 'WslCrossHubMaintenance'
+    foreach ($name in @('target.json', 'compact-vhdx.ps1', 'diskpart.jsonl')) {
+        $path = Get-SafeLocalPath (Join-Path $root $name)
+        if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Missing Cross Hub compaction setup file: $path. Run wsl-cross-hub setup --apply."
+        }
+    }
+    $task = Get-ScheduledTask -TaskName 'Unique-WslCrossHub-Compact' -TaskPath '\' -ErrorAction SilentlyContinue
+    if (!$task -or $task.State.ToString() -ne 'Ready') {
+        throw 'Cross Hub compaction must be configured and idle. Check wsl-cross-hub doctor.'
+    }
+}
+
+function Test-AdapterReady($Status, [int]$Protocol) {
+    return $Status.worker_state -ceq 'ready' -and
+        ($Status.recovery_protocol -is [int] -or $Status.recovery_protocol -is [long]) -and
+        $Status.recovery_protocol -eq $Protocol -and $Status.distro -is [string] -and
+        ![string]::IsNullOrWhiteSpace($Status.distro)
+}
+
 function Get-TaskOwnerSid($Task) {
     if ($Task.Principal.UserId -match '^S-1-') { return $Task.Principal.UserId }
     $account = [Security.Principal.NTAccount]::new($Task.Principal.UserId)
@@ -292,6 +313,7 @@ if ($Prepare) {
     return
 }
 
+Assert-CompactionReady $env:ProgramFiles
 $bootTask = Get-ScheduledTask -TaskName $bootTaskName -TaskPath '\'
 Assert-LimitedTask $bootTask $ownerSid
 $workerRoot = Get-CompatibleWorkerRoot $bootTask $StateDir
@@ -356,13 +378,11 @@ try {
     $deadline = (Get-Date).AddSeconds(20)
     do {
         $status = Read-AdapterStatus $Port $token
-        $ready = $status.worker_state -ceq 'ready' -and
-            ($status.recovery_protocol -is [int] -or $status.recovery_protocol -is [long]) -and
-            $status.recovery_protocol -eq $protocol
+        $ready = Test-AdapterReady $status $protocol
         if ($ready) { break }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
-    if (!$ready) { throw "The adapter did not report a ready worker with recovery protocol $protocol." }
+    if (!$ready) { throw "The adapter did not report a configured Ubuntu target and a ready worker with recovery protocol $protocol." }
     $summary.registered = $true
 } catch {
     $failure = $_.Exception.Message
