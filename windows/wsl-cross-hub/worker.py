@@ -715,7 +715,7 @@ def auto_observation(
     )
     db.execute(
         "INSERT OR REPLACE INTO doctor_observations VALUES (?, ?, ?, ?)",
-        (check, count, now, int(dispatch)),
+        (check, count, now, 0),
     )
     if dispatch:
         return "dispatch"
@@ -755,7 +755,16 @@ def submit_doctor(
                         f"Maintenance job {active['job_id']} is already running."
                     )
         operation = "investigate" if mode == "auto" else mode
-        return submit_request(state_dir, operation, check=check, runner=runner)
+        result = submit_request(state_dir, operation, check=check, runner=runner)
+        if mode == "auto":
+            # Submission returns only after Windows records the job. A failed
+            # publication must leave this incident eligible for another poll.
+            with closing(open_database(db_path)) as db, db:
+                db.execute(
+                    "UPDATE doctor_observations SET dispatched = 1 WHERE check_id = ?",
+                    (check,),
+                )
+        return result
 
 
 def doctor_checks(state_dir: Path) -> dict[str, object]:

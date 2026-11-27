@@ -375,8 +375,9 @@ def test_doctor_request_rejects_unreviewed_arguments(
         worker.read_request(path)
 
 
+@pytest.mark.parametrize("reject_first", [False, True])
 def test_auto_investigation_waits_for_two_polls_and_resets_after_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reject_first: bool
 ) -> None:
     db_path = tmp_path / "jobs.sqlite3"
     observed = {"state": "failed", "runners": ["codex"]}
@@ -401,6 +402,8 @@ def test_auto_investigation_waits_for_two_polls_and_resets_after_recovery(
         state_dir: Path, operation: str, *, check: str, runner: str
     ) -> dict[str, str]:
         submitted.append((operation, check, runner))
+        if reject_first and len(submitted) == 1:
+            raise OSError("The request was never published.")
         return {"state": "accepted"}
 
     monkeypatch.setattr(worker, "submit_request", queue)
@@ -410,21 +413,25 @@ def test_auto_investigation_waits_for_two_polls_and_resets_after_recovery(
     for current, check_state, outcome in [
         (1, "failed", "observed"),
         (2, "failed", "observed"),
-        (61, "failed", "accepted"),
-        (121, "unavailable", "suppressed"),
-        (181, "failed", "suppressed"),
+        (61, "failed", "error" if reject_first else "accepted"),
+        (121, "failed", "accepted" if reject_first else "suppressed"),
+        (181, "unavailable", "suppressed"),
         (241, "healthy", "suppressed"),
         (301, "failed", "observed"),
         (361, "failed", "accepted"),
     ]:
         observed["state"] = check_state
         monkeypatch.setattr(worker.time, "time", lambda current=current: current)
+        if outcome == "error":
+            with pytest.raises(OSError, match="never published"):
+                worker.submit_doctor(tmp_path, "auto", "windows-ssh", "codex")
+            continue
         assert (
             worker.submit_doctor(tmp_path, "auto", "windows-ssh", "codex")["state"]
             == outcome
         )
 
-    assert submitted == [("investigate", "windows-ssh", "codex")] * 2
+    assert submitted == [("investigate", "windows-ssh", "codex")] * (3 if reject_first else 2)
 
 
 @pytest.mark.parametrize("state", ["accepted", "attention", "interrupted"])
@@ -494,6 +501,7 @@ def test_doctor_checks_pause_during_compaction_submission(
     assert {check["state"] for check in worker.doctor_checks(tmp_path)["checks"]} == {
         "unavailable"
     }
+
 def test_worker_upgrade_refuses_unacknowledged_request(tmp_path: Path, capsys) -> None:
     worker.write_request(tmp_path / "requests", {
         "job_id": str(uuid4()), "operation": "compact",
