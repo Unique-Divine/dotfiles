@@ -169,6 +169,59 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_adapter_rollback_restores_old_task_after_cleanup_failure(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$tokens = $null
+$parseErrors = $null
+$syntax = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$function = $syntax.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Restore-AdapterTask'
+}, $false)
+if (!$function) { throw 'Missing adapter rollback function.' }
+. ([scriptblock]::Create($function.Extent.Text))
+
+$calls = [Collections.Generic.List[string]]::new()
+function Disable-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('disable')
+    throw 'disable failed'
+}
+function Stop-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('stop')
+    throw 'stop failed'
+}
+function Register-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath, $Xml, [switch]$Force)
+    if ($TaskName -cne 'adapter' -or $Xml -cne '<old/>' -or !$Force) {
+        throw 'The previous registration was not restored.'
+    }
+    $calls.Add('register')
+}
+function Start-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('start')
+}
+
+$errors = @(Restore-AdapterTask 'adapter' $true '<old/>' $true)
+if (($calls -join ',') -cne 'disable,stop,register,start') {
+    throw "Unexpected rollback operations: $($calls -join ',')"
+}
+if ($errors.Count -ne 2 -or $errors[0] -notlike '*disable failed*' -or $errors[1] -notlike '*stop failed*') {
+    throw "Unexpected rollback diagnostics: $($errors -join ',')"
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_diskpart_alias_preserves_disk_identity(
     windows_shell: tuple[Path, str, Path],
 ) -> None:

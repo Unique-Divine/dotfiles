@@ -477,11 +477,14 @@ separately. A common convention uses `<machine>-win` for Windows and
 `<machine>` for Ubuntu. Test a fresh Windows SSH command using the
 configured port and pinned host key before taking Ubuntu offline.
 
-Set up Cross Hub and confirm that the Windows worker supports the
-recovery protocol. In a regular Windows PowerShell window under the
-worker owner's account, run command `.\install-tailnet-api.ps1 -Prepare`.
+Before upgrading, wait until the maintenance queue is empty, all active
+jobs have finished, and no maintenance hold remains. Run
+`wsl-cross-hub setup --apply` to install the content-versioned Windows
+worker that supports the adapter's recovery protocol. In a regular Windows
+PowerShell window under the worker owner's account, run
+`.\install-tailnet-api.ps1 -Prepare`.
 Under the same account in an elevated Windows PowerShell window, run
-command `.\install-tailnet-api.ps1 -Apply`. Pass the same state directory
+`.\install-tailnet-api.ps1 -Apply`. Pass the same state directory
 and port options for both steps if overriding the defaults. The adapter
 task runs with limited privileges and binds to `127.0.0.1:8765` by default.
 

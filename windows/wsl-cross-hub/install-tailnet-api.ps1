@@ -17,6 +17,35 @@ $taskName = 'Unique-WslCrossHub-Tailnet'
 $bootTaskName = 'Unique-WslCrossHub'
 $protocol = 1
 
+function Restore-AdapterTask(
+    [string]$TaskName, [bool]$CandidateRegistered, [string]$OldXml, [bool]$WasRunning
+) {
+    if ($CandidateRegistered) {
+        try {
+            Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+        } catch {
+            "Could not disable the candidate task. $($_.Exception.Message)"
+        }
+        try {
+            Stop-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
+        } catch {
+            "Could not stop the candidate task. $($_.Exception.Message)"
+        }
+    }
+    try {
+        if ($OldXml) {
+            Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $OldXml -Force -ErrorAction Stop | Out-Null
+            if ($WasRunning) {
+                Start-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
+            }
+        } elseif ($CandidateRegistered) {
+            Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false -ErrorAction Stop
+        }
+    } catch {
+        "Could not restore the previous task state. $($_.Exception.Message)"
+    }
+}
+
 function Get-SafeLocalPath([string]$Path) {
     if ($Path -notmatch '^[A-Za-z]:\\[^"\r\n:]+$') {
         throw "Expected an absolute local Windows path: $Path"
@@ -84,7 +113,12 @@ function Assert-PrivateItem([string]$Path, [string]$OwnerSid, [bool]$Directory) 
         ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Unexpected adapter storage item: $Path"
     }
-    $security = Get-Acl -LiteralPath $Path
+    $sections = [Security.AccessControl.AccessControlSections]'Access,Owner'
+    $security = if ($Directory) {
+        [IO.Directory]::GetAccessControl($Path, $sections)
+    } else {
+        [IO.File]::GetAccessControl($Path, $sections)
+    }
     if (!$security.AreAccessRulesProtected -or
         $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $OwnerSid) {
         throw "The adapter storage must have a private DACL and be owned by the current user: $Path"
@@ -267,6 +301,8 @@ if ($python -notmatch '^[A-Za-z]:\\[^"\r\n:]+\\python\.exe$' -or
     throw 'The boot worker does not specify an existing local Windows python.exe.'
 }
 $oldTask = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+$oldXml = $null
+$wasRunning = $false
 if ($oldTask) {
     Assert-LimitedTask $oldTask $ownerSid
     $oldArguments = '^-I -S "[A-Za-z]:\\[^"\r\n]+\\tailnet_api(?:-[0-9A-F]{{64}})?\.py" --worker-root "{0}\\app-versions\\[0-9A-F]{{16}}(?:-[0-9A-F]{{16}}){{1,3}}" --state-dir "{0}" --token-file "{1}" --port [0-9]{{4,5}}$' -f
@@ -330,19 +366,9 @@ try {
     $summary.registered = $true
 } catch {
     $failure = $_.Exception.Message
-    try {
-        if ($registered) {
-            Disable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
-            Stop-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
-        }
-        if ($oldTask) {
-            Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml $oldXml -Force | Out-Null
-            if ($wasRunning) { Start-ScheduledTask -TaskName $taskName -TaskPath '\' }
-        } elseif ($registered) {
-            Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
-        }
-    } catch {
-        throw "Could not enable the adapter. $failure Rollback failed. $_"
+    $rollbackFailures = @(Restore-AdapterTask $taskName $registered $oldXml $wasRunning)
+    if ($rollbackFailures.Count) {
+        throw "Could not enable the adapter. $failure Rollback reported errors. $($rollbackFailures -join ' ')"
     }
     throw "Could not enable the adapter. $failure"
 }
