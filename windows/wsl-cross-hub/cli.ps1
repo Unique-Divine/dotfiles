@@ -4,8 +4,9 @@ $hub = Join-Path $PSScriptRoot "wsl-cross-hub.ps1"
 $report = & $hub -ReadOnly -RuntimeOnly | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($report.runtime.state -ne "ready") {
-    if ($args[0] -ieq "setup" -and @($args | Select-Object -Skip 1 | Where-Object {
-        $_ -notin @("--apply", "--json")
+    $options = @($args | Where-Object { $_ -ne "--json" })
+    if ($options[0] -ieq "setup" -and @($options | Select-Object -Skip 1 | Where-Object {
+        $_ -ne "--apply"
     }).Count -eq 0) {
         & $hub -MaintenanceSetup -Apply:("--apply" -in $args)
         exit $LASTEXITCODE

@@ -115,3 +115,28 @@ def test_native_status_does_not_wake_wsl(
     assert status["inventory"]["runningDistros"] == []
     assert isinstance(status["inventory"]["cFreeBytes"], int)
     assert trace.read_text().splitlines() == ["--list --running --quiet"]
+
+
+@pytest.mark.parametrize("args", [("setup", "--json"), ("--json", "setup")])
+def test_native_unprovisioned_setup_honors_json_flag_position(
+    tmp_path: Path, args: tuple[str, str]
+) -> None:
+    for name in ("wsl-cross-hub.cmd", "cli.ps1"):
+        shutil.copyfile(HUB / name, tmp_path / name)
+    (tmp_path / "wsl-cross-hub.ps1").write_text(
+        "param([switch]$ReadOnly,[switch]$RuntimeOnly,[switch]$MaintenanceSetup,[switch]$Apply)\n"
+        'if ($RuntimeOnly) { \'{"runtime":{"state":"missing"}}\'; exit 0 }\n'
+        'if ($MaintenanceSetup -and !$Apply) { \'{"setup":{"state":"preview"}}\'; exit 0 }\n'
+        "exit 1\n",
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        [os.environ["ComSpec"], "/d", "/c", "wsl-cross-hub.cmd", *args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=25,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["setup"]["state"] == "preview"
