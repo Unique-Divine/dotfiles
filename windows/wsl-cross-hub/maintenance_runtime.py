@@ -86,6 +86,13 @@ class Guest:
     uid: str
     herdr: str
     tailscale_ipv4: str
+    herdr_session: str | None = None
+
+    @property
+    def herdr_command(self) -> tuple[str, ...]:
+        if self.herdr_session:
+            return self.herdr, "--session", self.herdr_session
+        return (self.herdr,)
 
 
 class Journal:
@@ -196,6 +203,12 @@ def parse_target(contents: str) -> Target:
         "volume_serial": row["volume_serial"],
         "file_id": row["file_id"],
     }
+
+
+def read_target_manifest(install_root: Path) -> Target:
+    manifest = install_root / "target.json"
+    regular_item(manifest)
+    return parse_target(manifest.read_text(encoding="utf-8-sig"))
 
 
 def read_task_script(statement: str, task_name: str = TASK_LEAF_NAME) -> str:
@@ -382,9 +395,8 @@ class WindowsHost:
         return f"0x{int(text) & 0xFFFFFFFF:08X}"
 
     def installed_target(self) -> Target:
-        manifest = self.install_root / "target.json"
         try:
-            regular_item(manifest)
+            target = read_target_manifest(self.install_root)
             regular_item(self.install_root / EXPECTED_HELPER)
             regular_item(self.task_log)
             with self.task_log.open("rb"):
@@ -393,8 +405,6 @@ class WindowsHost:
             raise SetupMissing(
                 "Windows needs the one-time administrator setup for compaction."
             ) from None
-        try:
-            target = parse_target(manifest.read_text(encoding="utf-8-sig"))
         except ValueError as error:
             raise SetupRequired(str(error)) from error
         try:
@@ -523,26 +533,7 @@ class WindowsHost:
         else:
             raise RuntimeError("Windows OpenSSH did not become reachable. Ubuntu is still running.")
 
-        herdr = Path(os.environ["USERPROFILE"]) / ".local" / "bin" / "herdr.exe"
-        args = (herdr, "--session", "main-ud-win")
-        deadline = time.monotonic() + 25
-        started = False
-        while time.monotonic() < deadline:
-            try:
-                if "status: running" in self.command(*args, "status", "server", timeout=5):
-                    journal("windows-access-ready", windows_sshd=ssh_pid, herdr="main-ud-win")
-                    return
-            except (RuntimeError, subprocess.TimeoutExpired):
-                pass
-            if not started:
-                with journal.path.with_suffix(".windows-herdr.log").open("ab") as log:
-                    subprocess.Popen(
-                        [*map(str, args), "server"], stdin=subprocess.DEVNULL,
-                        stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW,
-                    )
-                started = True
-            time.sleep(1)
-        raise RuntimeError("Windows Herdr session main-ud-win did not become ready.")
+        journal("windows-access-ready", windows_sshd=ssh_pid)
 
     def start_windows_services(self, target: Target) -> None:
         try:
@@ -611,13 +602,47 @@ class WindowsHost:
             raise RuntimeError(
                 "The Linux Tailscale address is outside the expected range."
             )
-        return Guest(self.boot_id(target), uid, herdr, address)
+        hostname = self.guest(target, "/bin/hostname")
+        try:
+            self.guest(
+                target, "/usr/bin/test", "-d", str(home / ".config/herdr/sessions" / hostname)
+            )
+        except RuntimeError:
+            hostname = ""
+        return Guest(self.boot_id(target), uid, herdr, address, hostname or None)
 
     def boot_id(self, target: Target) -> str:
         value = self.guest(
             target, "/bin/cat", "/proc/sys/kernel/random/boot_id", timeout=12
         )
         return str(UUID(value))
+
+    def run_recovery_operation(
+        self, operation: str, journal: Journal
+    ) -> dict[str, object]:
+        target = self.installed_target()
+        running = target["distro"].casefold() in {
+            name.casefold() for name in self.running_distros()
+        }
+        if operation == "audit-storage":
+            if not running:
+                raise RuntimeError("Start the configured Ubuntu distro before auditing storage.")
+            disk = self.guest(
+                target, "/usr/bin/df", "-B1", "--output=size,used,avail", "/"
+            )
+            size, used, available = map(int, disk.splitlines()[-1].split())
+            return {"size_bytes": size, "used_bytes": used, "available_bytes": available}
+        if operation != "start-ubuntu":
+            raise ValueError("Unsupported recovery operation.")
+        boot = self.boot_id(target)
+        self.guest(
+            target, "/usr/bin/systemctl", "start", "tailscaled", "ssh.socket",
+            root=True, timeout=30,
+        )
+        self.recover(target, self.guest_identity(target), False, journal)
+        pid1_stat = self.guest(target, "/bin/cat", "/proc/1/stat")
+        pid1_start_ticks = int(pid1_stat.rsplit(")", 1)[1].split()[19])
+        return {"boot_id": boot, "pid1_start_ticks": pid1_start_ticks, "already_running": running}
 
     def shutdown(self) -> None:
         self.command(self.wsl, "--shutdown", timeout=60)
@@ -697,7 +722,7 @@ class WindowsHost:
                     "-d",
                     target["distro"],
                     "--exec",
-                    guest.herdr,
+                    *guest.herdr_command,
                     "server",
                 ],
                 cwd=os.environ["USERPROFILE"],
@@ -709,6 +734,29 @@ class WindowsHost:
             )
         journal("herdr-launch-requested", windows_pid=process.pid)
 
+    def repair_shadowed_user_runtime(
+        self, target: Target, uid: str, journal: Journal
+    ) -> bool:
+        if not uid.isdecimal() or uid == "0":
+            raise ValueError("The WSL user runtime requires a non-root UID.")
+        runtime = f"/run/user/{uid}"
+        try:
+            self.guest(target, "/usr/bin/test", "-S", f"{runtime}/bus")
+            return False
+        except RuntimeError:
+            mounts = self.guest(
+                target, "/usr/bin/findmnt", "-rn", "-o", "TARGET", "--mountpoint", runtime
+            )
+        if mounts.splitlines().count(runtime) < 2:
+            return False
+        # WSLg may mount over the user manager's sockets after lingering starts.
+        journal("repairing-shadowed-user-runtime", uid=uid)
+        self.guest(
+            target, "/usr/bin/systemctl", "restart", f"user@{uid}.service",
+            root=True, timeout=25,
+        )
+        return True
+
     def recover(
         self, target: Target, guest: Guest, must_reboot: bool, journal: Journal
     ) -> None:
@@ -718,6 +766,7 @@ class WindowsHost:
         observed_boot: str | None = None
         launched_herdr = False
         started_guest_services = False
+        repaired_user_runtime = False
         while time.monotonic() < deadline:
             try:
                 boot = self.boot_id(target)
@@ -744,6 +793,10 @@ class WindowsHost:
                         "The prior Ubuntu Tailscale address is not ready."
                     )
                 runtime = f"/run/user/{guest.uid}"
+                if not repaired_user_runtime:
+                    repaired_user_runtime = self.repair_shadowed_user_runtime(
+                        target, guest.uid, journal
+                    )
                 moshi = self.guest(
                     target,
                     "/usr/bin/env",
@@ -759,7 +812,7 @@ class WindowsHost:
                     raise RuntimeError("The Moshi hook is not active.")
                 try:
                     herdr = self.guest(
-                        target, guest.herdr, "status", "server", timeout=6
+                        target, *guest.herdr_command, "status", "server", timeout=6
                     )
                 except (RuntimeError, subprocess.TimeoutExpired):
                     herdr = ""

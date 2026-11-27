@@ -470,3 +470,27 @@ def test_docker_uses_graceful_native_shutdown(
     assert [event["stage"] for event in read_events(journal.path)] == [
         "docker-stop-started", "docker-stopped", "docker-stopped",
     ]
+
+
+def test_shadowed_user_bus_restarts_the_owner_manager_only(monkeypatch):
+    host = object.__new__(runtime.WindowsHost)
+    calls = []
+
+    def guest(target, *args, **kwargs):
+        calls.append((args, kwargs))
+        if args[0] == "/usr/bin/test":
+            raise RuntimeError("User bus is hidden")
+        if args[0] == "/usr/bin/findmnt":
+            return "/run/user/1000\n/run/user/1000"
+        return ""
+
+    events = []
+    monkeypatch.setattr(host, "guest", guest)
+    assert host.repair_shadowed_user_runtime(
+        {}, "1000", lambda stage, **details: events.append((stage, details))
+    )
+    assert calls[-1] == (
+        ("/usr/bin/systemctl", "restart", "user@1000.service"),
+        {"root": True, "timeout": 25},
+    )
+    assert events == [("repairing-shadowed-user-runtime", {"uid": "1000"})]
