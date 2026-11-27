@@ -1,0 +1,291 @@
+# WSL Cross Hub
+
+The probe checks whether a Windows worker can accept a request from WSL,
+acknowledge it, and finish after the caller exits. It waits two seconds and
+records its Windows process ID and Python executable. The worker accepts
+the fixed `probe` operation. The client can also check worker or job status.
+
+## Windows Panel
+
+Install the panel with `just wsl-cross-hub-desktop-install` from the dotfiles
+checkout. On Windows, run `install-desktop.cmd` from the synced
+`%USERPROFILE%\.files\windows\wsl-cross-hub` directory. Building from
+source uses the .NET 10 SDK. The installed desktop executable includes
+its .NET runtime. Cross Hub uses Windows `uv` to provision Python 3.13.
+
+Launch **WSL Cross Hub** from the Start Menu, click its tray icon, or
+press `Ctrl+Alt+F3`. Use **Set global hotkey** in the tray menu to change
+the chord. **Start with Windows** starts the panel quietly at sign-in.
+Closing the window or pressing `Esc` hides it to the
+tray. `Win+Down` minimizes it. Drag the title bar or use `Shift+hjkl`
+to move it. Use `j/k` to select, `l` or `Enter` for detail, and `h` to go
+back. **Keep on top** pins the window over other apps.
+Use **Data font** in the tray menu to change the font for measurements,
+probe results, and logs. The default is Consolas. Select Segoe UI for
+the original look or Cascadia Mono if installed.
+
+The panel shows C: free space, recent changes, WSL distro and VHDX file
+size information, Docker Desktop state, and the worker heartbeat. Use
+**Preview maintenance** to inspect the proposed steps and blockers for a
+selected distro. **Run probe** submits the two-second test job to a ready
+worker. Its job ID and result remain visible after you hide the window.
+The inventory and preview leave WSL running as they found it.
+
+From a native Windows shell, including the `main-ud-win` Herdr session,
+read the latest snapshot without opening the panel.
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\WslCrossHub\status.cmd"
+```
+
+Pass `-Operation collect` to take and store a fresh sample. With no
+arguments, the command reuses the last sample if available and checks the
+current worker heartbeat. Desktop diagnostics are in `logs\desktop.log`.
+
+Desktop settings and logs are under `%LOCALAPPDATA%\WslCrossHub`. The
+desktop install uses its own program directory and shortcuts. It leaves
+the existing boot task and installed worker in place. Uninstall with
+`just wsl-cross-hub-desktop-uninstall` or the Windows
+`uninstall-desktop.cmd` script. Settings, measurements, and logs remain.
+
+Use `build-desktop.cmd -RuntimeIdentifier win-x64` to publish a package
+for Homebox or `win-arm64` for the laptop. The package contains its own
+installer and goes into `%LOCALAPPDATA%\WslCrossHub\build` by default.
+Pass `-UvExe` with a Windows `uv.exe` for the target architecture to
+include it in the package.
+
+## Boot Worker Setup
+
+Run `just win-sync` in dotfiles to copy the scripts to
+`%USERPROFILE%\.files\windows\wsl-cross-hub`. Windows `uv.exe` is the
+only runtime prerequisite for a fresh setup. Cross Hub finds it next to
+the launcher at `runtime\uv.exe`, on the Windows PATH, or in its local
+runtime directory. A packaged Windows build can ship an architecture-matched
+`runtime\uv.exe` in that first location.
+
+From an ordinary Windows terminal, run:
+
+```powershell
+$root = "$env:USERPROFILE\.files\windows\wsl-cross-hub"
+& "$root\wsl-cross-hub.cmd"
+& "$root\wsl-cross-hub.cmd" -Setup
+```
+
+The first command reports uv, the Windows Python runtime, the task's
+registration and last result, and the worker heartbeat. The second
+previews boot registration if the task is missing. To accept the preview,
+repeat it with `-Setup -Apply`. Setup uses uv to install native Windows
+Python 3.13 if needed, then requests Windows UAC under the same account.
+Status and preview never download Python or request elevation. If the task
+is already registered, the launcher checks its configured interpreter.
+Check for worker state `ready` after Windows accepts the task start request.
+
+From WSL, including an SSH session, use the read-only wrapper from the
+dotfiles checkout:
+
+```bash
+bash windows/wsl-cross-hub/doctor-from-wsl.sh
+bash windows/wsl-cross-hub/doctor-from-wsl.sh --setup-preview
+```
+
+The wrapper uses Windows PowerShell and looks for the synced Hub in the
+Windows user's profile. Run `just win-sync` if that copy is missing. A
+WSL interop failure has a separate diagnostic. The wrapper keeps the
+Windows command's exit code.
+
+Task registration is the only elevated operation. The installer registers
+a Limited task and asks Task Scheduler to start it. Task Scheduler runs
+the user-profile Python and worker under that Limited Windows account.
+It launches the provisioned interpreter directly so that boot can work
+offline. Use `-PythonExe` to select an explicit interpreter for diagnostics.
+Before requesting UAC, setup copies the worker to the state directory's
+`app\worker.py`. The task uses that copy, so later dotfiles syncs can
+replace or remove the staged scripts independently. Ordinary diagnostics
+and setup previews leave the installed worker and state directory alone.
+An existing boot task keeps using its installed worker after `just win-sync`.
+Installing a newer worker for that task requires a separate update.
+
+## Run a Probe Without the Task
+
+Run the worker in one Windows PowerShell window:
+
+```powershell
+$root = "$env:USERPROFILE\.files\windows\wsl-cross-hub"
+$python = "C:\path\to\python.exe"
+& $python -I -S "$root\worker.py" worker
+```
+
+In another window, submit a probe and query its status. The first command
+returns once the worker has committed the job acknowledgment. The response
+includes the job ID for later queries.
+
+```powershell
+$ack = & "$root\client.cmd" -Operation probe -PythonExe $python |
+    ConvertFrom-Json
+& "$root\client.cmd" -Operation status -PythonExe $python -JobId $ack.job_id
+```
+
+From WSL, use the same Windows paths with the PowerShell entry point:
+
+```sh
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File "$windows_root\client.ps1" -Operation probe -PythonExe "$windows_python"
+```
+
+The PowerShell variables `$root` and `$python` correspond to the shell
+variables `$windows_root` and `$windows_python` in that example. Use
+`status` without a job ID to get the worker PID and heartbeat. If a probe
+times out waiting for its acknowledgment, its request can still complete
+later. Query the ID printed in the error before retrying.
+
+## Manage the Boot Task
+
+For a manual installation, preview the task directly with the installer:
+
+```powershell
+& "$root\install-task.cmd" -PythonExe $python
+```
+
+The direct installer uses the worker next to it. To use an existing
+stable copy, pass its directory to the installer with `-InstallRoot`.
+
+Stop any foreground worker before switching to the scheduled task.
+Open **Windows PowerShell as Administrator** on Windows and rerun the
+command with `-Apply`. Registration of a startup trigger requires an
+administrator. The task action itself runs with Limited privileges as
+your Windows account, including when you use S4U for noninteractive logon.
+For manual registration with a different account, pass the intended user
+with `-UserId`, pass that user's absolute local state path with
+`-StateDir`, and use the intended user's staged paths. Verify whether
+S4U starts successfully under the selected account. If you override the
+state directory, pass the same value to the client with `-StateDir`.
+
+The task `Unique-WslCrossHub` starts at boot and has a
+one-minute trigger to recover after the worker exits. It skips launches
+while an instance is running. It has no execution time limit and can
+run on battery. The installer reports registration and a request to start.
+Check the worker heartbeat separately and inspect the last task result:
+
+```powershell
+Get-ScheduledTask -TaskName Unique-WslCrossHub
+Get-ScheduledTaskInfo -TaskName Unique-WslCrossHub
+& "$root\client.cmd" -Operation status -PythonExe $python
+```
+
+If S4U cannot log on, check the account's **Log on as a batch job** right
+and the Task Scheduler Operational log. For a password-backed task,
+open the task's **General** tab in Task Scheduler, keep **Run whether user
+is logged on or not** selected, and clear **Do not store password**. Enter
+the account password in the Windows dialog when you save. Keep **Run with
+highest privileges** cleared.
+
+Use the task's **Disable** action to pause automatic starts before you stop
+it, or **Delete** to unregister the experiment. Test startup without sign-in
+during an agreed reboot window.
+
+## State and Timing
+
+The worker stores requests and job records under
+`%LOCALAPPDATA%\WslCrossHub`. It holds an operating-system lock
+for the lifetime of the worker, commits job state in SQLite, and marks an
+unfinished accepted probe as interrupted when it starts again. The worker
+and client can share a separate test directory via flag `--state-dir` on
+the Python script and flag `-StateDir` on the PowerShell client. Keep the
+directory on local NTFS on Windows.
+
+The worker writes `logs\worker.log` under the state directory. Entries use
+UTC timestamps and include the worker PID. They record startup, failures,
+rejected requests, and probe outcomes by job ID. The log rotates at 1 MiB
+and keeps three backups.
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\WslCrossHub\logs\worker.log" -Tail 30
+```
+
+This is an unprivileged installation. Use a separately installed,
+administrator-protected worker for any future elevated operation. The
+user-profile copy exists for ordinary dotfiles sync.
+
+Run `benchmark.cmd -Samples 8` on Windows to compare starting a native
+PowerShell process with sending a fixed request to a warm process. It
+reports startup and request latency separately. These measurements cover
+PowerShell, independent of the worker and the WSL-to-Windows handoff.
+
+## Tests
+
+From the dotfiles checkout in WSL, run `uvx pytest -q windows/wsl-cross-hub`.
+The suite skips native Windows launcher tests under Linux Python. Some
+publication tests also skip when the filesystem disallows symbolic links.
+
+From Windows PowerShell, use native Python 3.13 to include the launcher
+tests. Set `$uv` to the path of Windows `uv.exe`.
+
+```powershell
+& $uv tool run --python 3.13 --from pytest pytest -q $root
+```
+
+To include the fresh setup test, set `$env:WSL_CROSS_HUB_TEST_UV = $uv`
+before running pytest. It copies uv into a disposable bundle, installs
+Python into an empty temporary directory, and mocks the UAC request.
+
+## Inventory and Maintenance Preview
+
+Run `inventory.cmd` for a JSON snapshot of C: free space, registered and
+running WSL distros, VHDX file lengths and sparse flags, and the Docker
+Desktop process. An unavailable observation appears as `null` with a
+diagnostic in `errors`. The inventory lists distros without starting them.
+
+Pass the snapshot to the planner with the Windows registration name.
+In Windows PowerShell, use UTF-8 when piping JSON to native Python.
+
+```powershell
+& {
+    $OutputEncoding = New-Object Text.UTF8Encoding($false)
+    & "$root\inventory.ps1" | & $python -I -S "$root\maintenance_plan.py" --distro Ubuntu-24.04
+}
+```
+
+The planner reports `eligible` with symbolic steps or `blocked` with reasons.
+Both decisions exit with status 0. Invalid input exits with status 2.
+The current plan covers offline compaction without TRIM. It blocks when
+Docker Desktop or another distro is running because the current Windows
+compaction script can shut down all of WSL. The planner has no executor.
+
+From Windows PowerShell, rehearse the stages in the current plan and
+inspect the simulated journal.
+
+```powershell
+$status = "$env:LOCALAPPDATA\Programs\WslCrossHub\status.cmd"
+& $status -Operation rehearse -Distro Ubuntu-24.04 -Scenario restart-failed
+```
+
+A blocked preview stays blocked in the rehearsal. To exercise every stage,
+pass an eligible fixture plan to `maintenance_rehearsal.py` on stdin.
+The journal labels the result `simulated` and reports compaction and
+recovery separately. It runs no maintenance commands.
+
+## Publish Linux Storage Measurements
+
+Run the guest reporter while you are already inside WSL. It measures the
+Linux root filesystem, home trash, and Cargo build output in the Git
+worktrees you name. It prints candidate paths and allocated bytes for
+review. Verify that a worktree and its build output are idle before
+choosing cleanup targets.
+
+```sh
+just wsl-cross-hub-guest-report \
+  --repo "$HOME/sai-perps" --repo "$HOME/boku/dotfiles" \
+  --target-relative herdr/target
+```
+
+Add `--publish` to save the same report under
+`%LOCALAPPDATA%\WslCrossHub\guest-reports`. Windows reads the saved report
+and displays its timestamp. A report more than 24 hours old is stale.
+Run the same command to refresh it after measuring a cleanup. The Windows
+panel reads the report without launching the distro.
+
+If you separately ran `fstrim`, pass `--trim-at` with its UTC timestamp
+and `--trim-bytes` with the byte count you observed. Linux used bytes,
+TRIM bytes, VHDX length, and Windows volume free space describe different
+measurements. Compare the Windows baseline and result to measure host
+space recovered by compaction.

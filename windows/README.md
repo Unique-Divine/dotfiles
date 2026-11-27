@@ -1,8 +1,8 @@
 # Windows tools
 
-Scripts that run on the Windows side of the machine. Anything that must work
-while WSL is shut down or broken lives here, as Windows PowerShell 5.1 (ships
-with every Windows 10 and 11) with no other dependencies.
+Tools that run on the Windows side of the machine live here. Windows
+PowerShell 5.1 is the default for scripts that must run while WSL is down.
+Tools with additional dependencies document them in their own README.
 
 `just win-sync` copies this folder to `%USERPROFILE%\dotfiles\windows`, so a
 working copy exists on Windows even when WSL is down. Edit the files in the
@@ -34,6 +34,9 @@ Open File Explorer, go to `%USERPROFILE%\dotfiles\windows`, and double-click the
   MP3, that survives a mic unplug. Install with
   `just audio-capture-install`. See its README.
 - `sharex/`: ShareX dual audio capture setup. See its README.
+- [`wsl-cross-hub/`](wsl-cross-hub/README.md): first-run diagnostics, boot
+  task setup, and a Windows worker that finishes probes after WSL callers
+  exit.
 - `terminal-profile/`: Ubuntu-24.04 in Windows Terminal and PowerShell history,
   completion, and editing keys. Run `terminal-profile\sync.cmd` to preview.
   See its [README](terminal-profile/README.md).
@@ -70,6 +73,9 @@ Check sync runs with
 timer, run `systemctl --user disable --now dotfiles-windows-codex-sync.timer`.
 
 ## Conventions for agents
+
+- Use the `z-windows` zone label for work in this directory and start commit
+  subjects with `windows:`. Write the description in sentence case.
 
 - Windows-only or WSL-independent tooling goes here as PowerShell 5.1, with
   one entry in the list above saying what it does and how to run it.

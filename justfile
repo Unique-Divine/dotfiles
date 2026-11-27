@@ -435,6 +435,23 @@ audio-capture-run *ARGS:
 audio-capture-test:
   cd /mnt/c && "$(wslpath -u "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/Programs/audio-capture/audio-capture.exe" --self-test
 
+# Build a self-contained WSL Cross Hub desktop package for this Windows host.
+wsl-cross-hub-desktop-build: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\build-desktop.cmd'
+
+# Install the WSL Cross Hub tray app with per-user Windows shortcuts.
+wsl-cross-hub-desktop-install: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\install-desktop.cmd'
+
+# Remove the WSL Cross Hub tray app and its shortcuts while keeping state.
+wsl-cross-hub-desktop-uninstall: win-sync
+  cd /mnt/c && cmd.exe /c '%USERPROFILE%\.files\windows\wsl-cross-hub\uninstall-desktop.cmd'
+
+# Measure Linux storage from inside an already-running WSL distro.
+[positional-arguments]
+wsl-cross-hub-guest-report *ARGS:
+  python3 windows/wsl-cross-hub/guest_report.py "$@"
+
 # Generate the ShareX hotkey JSON used by Windows.
 sharex-generate:
   bun run windows/sharex/managed-hotkeys.ts --write
