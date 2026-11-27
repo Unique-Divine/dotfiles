@@ -42,7 +42,7 @@ if ($Operation -eq "editor-open") {
     $env:WSL_CROSS_HUB_READY = $ready
     $env:WSL_CROSS_HUB_TITLE = $title
     # Use a dedicated visible console instead of letting the default terminal
-    # attach Neovim to a window or tab that Cross Hub cannot activate.
+    # attach Neovim to a window or tab that WSL Cross Hub cannot activate.
     $console = Join-Path $env:SystemRoot "System32\conhost.exe"
     Start-Process -FilePath $console -WindowStyle Normal -WorkingDirectory $env:USERPROFILE `
         -ArgumentList @(('"{0}"' -f $editor.executable), "-i", "NONE", "-c", '"lua dofile(vim.env.WSL_CROSS_HUB_BOOTSTRAP)"')
@@ -56,7 +56,7 @@ if ($Operation -eq "editor-open") {
             Start-Sleep -Milliseconds 100
         }
         if ($editorPid -le 0) {
-            throw "Neovim did not report that the Cross Hub buffer was ready. Check the terminal window for startup errors."
+            throw "Neovim did not report that the WSL Cross Hub buffer was ready. Check the terminal window for startup errors."
         }
         @{ pid = $editorPid; title = $title } | ConvertTo-Json
     } finally {
@@ -116,7 +116,7 @@ if ($Operation -in @('maintenance', 'job-detail', 'latest-doctor')) {
     $options.ReadOnly = $true
 }
 $doctor = & "$PSScriptRoot\wsl-cross-hub.ps1" @options | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw "Cross Hub doctor returned exit code $LASTEXITCODE." }
+if ($LASTEXITCODE -ne 0) { throw "WSL Cross Hub doctor returned exit code $LASTEXITCODE." }
 
 if ($Operation -eq "approved-preview") {
     $Distro = $doctor.compaction.distro

@@ -63,7 +63,7 @@ $sourceRoot = '{root}'
     )
 
 
-def test_setup_preview_and_mocked_uac(windows_shell: tuple[Path, str, Path]) -> None:
+def test_setup_preview_and_mocked_admin_launch(windows_shell: tuple[Path, str, Path]) -> None:
     result = run_script(
         windows_shell,
         r"""
@@ -75,9 +75,17 @@ catch { if ($_.Exception.Message -match 'no registered|exactly one') { exit 88 }
 
 $global:CrossHubTestApprovalRequests = 0
 function global:Start-Process {
-    param($FilePath, $Verb, $ArgumentList, [switch]$PassThru, [switch]$Wait)
-    if ($Verb -ne 'RunAs' -or $ArgumentList[-2] -ne '-EncodedCommand' -or !$Wait) {
-        throw 'Installer did not use one synchronous elevation request.'
+    param($FilePath, $WorkingDirectory, $Verb, $ArgumentList, [switch]$PassThru, [switch]$Wait)
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $system = [Environment]::SystemDirectory
+    $expectedShell = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
+    if (($elevated -and $Verb) -or (!$elevated -and $Verb -ne 'RunAs') -or
+        $FilePath -ine $expectedShell -or $WorkingDirectory -ine $system -or
+        ($ArgumentList[0..2] -join ' ') -ne '-NoProfile -NonInteractive -EncodedCommand' -or
+        !$PassThru -or !$Wait) {
+        throw 'Installer did not use the expected synchronous system PowerShell launch.'
     }
     $bootstrap = [Text.Encoding]::Unicode.GetString(
         [Convert]::FromBase64String($ArgumentList[-1]))
@@ -114,6 +122,170 @@ if ($global:CrossHubTestApprovalRequests -ne 1) { throw 'Expected one approval.'
     assert preview["registered"] is False
     assert report["applied"]["registered"] is True
     assert report["applied"]["file_id"] == preview["file_id"]
+
+
+def test_adapter_storage_rejects_hard_links(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$tokens = $null
+$parseErrors = $null
+$syntax = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+foreach ($name in @('Assert-PrivateItem', 'Initialize-PrivateRoot', 'Publish-PrivateFile')) {
+    $function = $syntax.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $false)
+    if (!$function) { throw "Missing installer function: $name" }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+$owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+Initialize-PrivateRoot $scratch $owner
+try {
+    foreach ($name in @('token', 'tailnet_api.py')) {
+        $path = Join-Path $scratch $name
+        Publish-PrivateFile $path ([byte[]](1, 2, 3)) $owner
+        $alias = "$path.link"
+        Push-Location -LiteralPath $scratch
+        try { New-Item -Path $alias -ItemType HardLink -Target $path | Out-Null }
+        finally { Pop-Location }
+        try {
+            Assert-PrivateItem $path $owner $false
+            throw "The installer accepted a hard-linked $name."
+        } catch {
+            if ($_.Exception.Message -notlike 'Unexpected adapter storage item:*') { throw }
+        }
+    }
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_adapter_rollback_restores_old_task_after_cleanup_failure(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$tokens = $null
+$parseErrors = $null
+$syntax = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$function = $syntax.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Restore-AdapterTask'
+}, $false)
+if (!$function) { throw 'Missing adapter rollback function.' }
+. ([scriptblock]::Create($function.Extent.Text))
+
+$calls = [Collections.Generic.List[string]]::new()
+function Disable-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('disable')
+    throw 'disable failed'
+}
+function Stop-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('stop')
+    throw 'stop failed'
+}
+function Register-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath, $Xml, [switch]$Force)
+    if ($TaskName -cne 'adapter' -or $Xml -cne '<old/>' -or !$Force) {
+        throw 'The previous registration was not restored.'
+    }
+    $calls.Add('register')
+}
+function Start-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    $calls.Add('start')
+}
+
+$errors = @(Restore-AdapterTask 'adapter' $true '<old/>' $true)
+if (($calls -join ',') -cne 'disable,stop,register,start') {
+    throw "Unexpected rollback operations: $($calls -join ',')"
+}
+if ($errors.Count -ne 2 -or $errors[0] -notlike '*disable failed*' -or $errors[1] -notlike '*stop failed*') {
+    throw "Unexpected rollback diagnostics: $($errors -join ',')"
+}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_adapter_requires_configured_compaction_target(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$tokens = $null
+$parseErrors = $null
+$syntax = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+foreach ($name in @('Get-SafeLocalPath', 'Assert-CompactionReady', 'Test-AdapterReady')) {
+    $function = $syntax.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $false)
+    if (!$function) { throw "Missing installer function: $name" }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+
+function Get-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $TaskPath)
+    if ($TaskName -cne 'Unique-WslCrossHub-Compact' -or $TaskPath -cne '\') {
+        throw 'The installer queried the wrong task.'
+    }
+    if ($taskState) { [pscustomobject]@{State = $taskState} }
+}
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+$root = Join-Path $scratch 'WslCrossHubMaintenance'
+$null = [IO.Directory]::CreateDirectory($root)
+try {
+    $taskState = 'Ready'
+    try {
+        Assert-CompactionReady $scratch
+        throw 'The installer accepted missing compaction files.'
+    } catch {
+        if ($_.Exception.Message -notlike 'Missing WSL Cross Hub compaction setup file:*') { throw }
+    }
+    foreach ($name in @('target.json', 'compact-vhdx.ps1', 'diskpart.jsonl')) {
+        [IO.File]::WriteAllText((Join-Path $root $name), '')
+    }
+    foreach ($taskState in @($null, 'Disabled', 'Running', 'Queued')) {
+        try {
+            Assert-CompactionReady $scratch
+            throw 'The installer accepted a compaction task that was not ready.'
+        } catch {
+            if ($_.Exception.Message -notlike 'WSL Cross Hub compaction must be configured and idle.*') { throw }
+        }
+    }
+    $taskState = 'Ready'
+    Assert-CompactionReady $scratch
+} finally {
+    [IO.Directory]::Delete($scratch, $true)
+}
+
+$status = [pscustomobject]@{worker_state = 'ready'; recovery_protocol = 1; distro = $null; distro_running = $null}
+if (Test-AdapterReady $status 1) { throw 'An unconfigured target reported ready.' }
+$status.distro = 'Ubuntu'
+$status.distro_running = $false
+if (!(Test-AdapterReady $status 1)) { throw 'A configured, offline target did not report ready.' }
+if (Test-AdapterReady $status 2) { throw 'An incompatible worker reported ready.' }
+""",
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_diskpart_alias_preserves_disk_identity(
@@ -277,3 +449,31 @@ try {
 """,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_powershell_readiness_signature_matches_python(
+    windows_shell: tuple[Path, str, Path],
+) -> None:
+    import tailnet_api
+
+    token = "fixture-signing-credential-value"
+    result = run_script(
+        windows_shell,
+        r"""
+$installer = Join-Path $sourceRoot 'install-tailnet-api.ps1'
+$ast = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$null)
+$function = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Get-AdapterMac'
+}, $false)
+. ([scriptblock]::Create($function.Extent.Text))
+$payload = [Text.Encoding]::UTF8.GetBytes("Cross Hub request v1`n1760000000`n0123456789abcdef0123456789abcdef`nGET`n/v1/status`n")
+Get-AdapterMac 'fixture-signing-credential-value' $payload
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == tailnet_api.request_signature(
+        token.encode(), "1760000000", "0123456789abcdef0123456789abcdef",
+        "GET", "/v1/status", "",
+    )

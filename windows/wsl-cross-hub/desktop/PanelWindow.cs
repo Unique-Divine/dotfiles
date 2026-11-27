@@ -26,7 +26,7 @@ internal sealed partial class PanelWindow : Form
         Dock = DockStyle.Fill, Height = 8, AccessibleName = "Compaction progress", Visible = false,
     };
     private readonly System.Windows.Forms.Timer maintenanceTimer = new() { Interval = 5000 };
-    private readonly Label message = new() { Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "Cross Hub diagnostics" };
+    private readonly Label message = new() { Dock = DockStyle.Fill, AutoEllipsis = true, AccessibleName = "WSL Cross Hub diagnostics" };
     private readonly ListBox choices = new()
     {
         Dock = DockStyle.Fill, IntegralHeight = false, AccessibleName = "Distributions and diagnostics",
@@ -41,7 +41,7 @@ internal sealed partial class PanelWindow : Form
     private readonly TextBox details = new()
     {
         Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = ScrollBars.Vertical,
-        BorderStyle = BorderStyle.None, AccessibleName = "Cross Hub details", Visible = false,
+        BorderStyle = BorderStyle.None, AccessibleName = "WSL Cross Hub details", Visible = false,
     };
     private readonly Button cancel = ActionButton("Cancel");
     private readonly Button start = ActionButton("Start compaction");

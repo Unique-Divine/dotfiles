@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -34,7 +35,11 @@ LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUP_COUNT = 3
 
 
-Operation = Literal["probe", "compact", "investigate", "cure"]
+Operation = Literal[
+    "probe", "compact", "investigate", "cure", "start-ubuntu", "audit-storage"
+]
+RECOVERY_OPERATIONS = ("start-ubuntu", "audit-storage")
+RECOVERY_PROTOCOL = 1
 DoctorMode = Literal["investigate", "cure", "auto"]
 DOCTOR_CHECKS = ("windows-ssh", "windows-herdr", "ubuntu-herdr")
 DOCTOR_RUNNERS = ("codex", "claude")
@@ -99,7 +104,7 @@ def worker_lock(path: Path) -> Generator[None]:
             message = (
                 "a WSL Cross Hub worker is already running"
                 if path.name == "worker.lock"
-                else "Cross Hub is busy checking or submitting maintenance. Retry shortly."
+                else "WSL Cross Hub is busy checking or submitting maintenance. Retry shortly."
             )
             raise WorkerBusy(message) from error
         yield
@@ -162,7 +167,9 @@ def read_request(path: Path) -> Request:
     if not isinstance(request, dict) or request.get("job_id") != job_id:
         raise ValueError("request must have a matching job_id and supported operation")
     operation = request.get("operation")
-    if operation in ("probe", "compact") and set(request) == {"job_id", "operation"}:
+    if operation in ("probe", "compact", *RECOVERY_OPERATIONS) and set(request) == {
+        "job_id", "operation"
+    }:
         return cast(Request, request)
     if (
         operation not in DOCTOR_OPERATIONS
@@ -213,6 +220,12 @@ def initialize(db: sqlite3.Connection) -> list[str]:
             pid INTEGER NOT NULL,
             heartbeat_at TEXT NOT NULL,
             maintenance_protocol INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS recovery_capabilities (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            pid INTEGER NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            protocol INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS doctor_capabilities (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -266,9 +279,39 @@ def heartbeat(db: sqlite3.Connection) -> None:
             (os.getpid(), observed, MAINTENANCE_PROTOCOL),
         )
         db.execute(
+            "INSERT OR REPLACE INTO recovery_capabilities VALUES (1, ?, ?, ?)",
+            (os.getpid(), observed, RECOVERY_PROTOCOL),
+        )
+        db.execute(
             "INSERT OR REPLACE INTO doctor_capabilities VALUES (1, ?, ?, ?)",
             (os.getpid(), observed, EDITOR_PROTOCOL),
         )
+    if sys.platform == "win32":
+        database = db.execute("PRAGMA database_list").fetchone()[2]
+        if database:
+            write_heartbeat_receipt(Path(database).parent, observed)
+
+
+def write_heartbeat_receipt(state_dir: Path, observed: str) -> None:
+    # The native installer reads this receipt without loading SQLite as admin.
+    staging = None
+    try:
+        with NamedTemporaryFile(dir=state_dir, delete=False, mode="w", encoding="utf-8") as file:
+            staging = Path(file.name)
+            json.dump({
+                "pid": os.getpid(), "heartbeat_at": observed,
+                "platform": "win32", "recovery_protocol": RECOVERY_PROTOCOL,
+            }, file)
+        staging.replace(state_dir / "worker-heartbeat.json")
+    except OSError:
+        # The SQLite heartbeat remains authoritative for normal work.
+        pass
+    finally:
+        if staging is not None:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def claim_request(
@@ -286,7 +329,7 @@ def claim_request(
         return None
 
     job_id = request["job_id"]
-    if request["operation"] != "probe":
+    if request["operation"] not in ("probe", *RECOVERY_OPERATIONS):
         try:
             if time.time() - path.stat().st_mtime >= ACK_TIMEOUT:
                 operation = request["operation"]
@@ -295,6 +338,16 @@ def claim_request(
                     if operation == "compact"
                     else "doctor_request_expired"
                 )
+                if operation == "compact":
+                    expired_at = timestamp()
+                    with db:
+                        db.execute(
+                            "INSERT OR IGNORE INTO jobs "
+                            "(job_id, state, accepted_at, finished_at, operation, result) "
+                            "VALUES (?, 'failed', ?, ?, ?, ?)",
+                            (job_id, expired_at, expired_at, operation,
+                             json.dumps({"error": "Compaction request expired before acknowledgment."})),
+                        )
                 log.warning("%s job_id=%s", event, job_id)
                 path.unlink(missing_ok=True)
                 return None
@@ -554,6 +607,8 @@ def run_worker(
                     state = process_compaction(db, state_dir, job_id, host_factory)
                 elif request["operation"] in DOCTOR_OPERATIONS:
                     state = process_doctor(db, state_dir, request, log)
+                elif request["operation"] in RECOVERY_OPERATIONS:
+                    state = process_recovery(db, state_dir, request, host_factory, log)
                 else:
                     run_probe(db, job_id)
                     state = "completed"
@@ -562,6 +617,29 @@ def run_worker(
             if once:
                 return
             time.sleep(POLL_INTERVAL)
+
+
+def process_recovery(
+    db: sqlite3.Connection, state_dir: Path, request: Request,
+    host_factory: Callable[[], maintenance_runtime.WindowsHost], log: logging.Logger,
+) -> str:
+    job_id = request["job_id"]
+    if held := pending_hold(db):
+        finish_job(db, job_id, "failed", {"error": hold_message(held)})
+        return "failed"
+    try:
+        journal = maintenance_runtime.Journal(state_dir / "recovery", job_id)
+        result = run_with_heartbeat(
+            db, lambda: host_factory().run_recovery_operation(request["operation"], journal),
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        log.warning(
+            "recovery_operation_failed job_id=%s error_type=%s", job_id, type(error).__name__
+        )
+        finish_job(db, job_id, "failed", {"error": str(error)})
+        return "failed"
+    finish_job(db, job_id, "completed", result)
+    return "completed"
 
 
 def job_status(db_path: Path, job_id: str) -> dict[str, object] | None:
@@ -589,6 +667,8 @@ def job_status(db_path: Path, job_id: str) -> dict[str, object] | None:
 def worker_status(db_path: Path) -> dict[str, object]:
     if db_path.exists():
         with closing(open_database(db_path, read_only=True)) as db:
+            # Read the heartbeat and its capability records from one snapshot.
+            db.execute("BEGIN")
             if db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'worker'"
             ).fetchone():
@@ -623,6 +703,17 @@ def worker_status(db_path: Path) -> dict[str, object]:
                             if doctor and doctor["protocol"] in (DOCTOR_PROTOCOL, EDITOR_PROTOCOL):
                                 result["doctor_protocol"] = doctor["protocol"]
                                 result["capabilities"].extend(DOCTOR_OPERATIONS)
+                    if row["platform"] == "win32" and db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'recovery_capabilities'"
+                    ).fetchone():
+                        recovery = db.execute(
+                            "SELECT protocol FROM recovery_capabilities "
+                            "WHERE id = 1 AND pid = ? AND heartbeat_at = ?",
+                            (row["pid"], row["heartbeat_at"]),
+                        ).fetchone()
+                        if recovery:
+                            result["recovery_protocol"] = recovery["protocol"]
                     return result
     return {"state": "offline"}
 
@@ -640,20 +731,36 @@ def submit(state_dir: Path, operation: Operation) -> dict[str, object]:
             "An updated, running Windows worker is required. Check wsl-cross-hub doctor."
         )
     with worker_lock(state_dir / "compact-submit.lock"):
-        with closing(open_database(db_path, read_only=True)) as db:
-            if held := pending_hold(db):
-                raise RuntimeError(hold_message(held))
-            active = active_maintenance(db)
-        if active:
-            label = "Compaction" if active["operation"] == "compact" else "Doctor"
-            raise RuntimeError(f"{label} job {active['job_id']} is already running.")
+        require_maintenance_slot(state_dir)
         return submit_request(state_dir, operation)
+
+
+class MaintenanceConflict(RuntimeError):
+    pass
+
+
+def require_maintenance_slot(state_dir: Path) -> None:
+    # Check the inbox first. The worker commits the row before unlinking
+    # the request, so a concurrent claim remains visible in one place.
+    for path in (state_dir / "requests").glob("*.json"):
+        try:
+            request = read_request(path)
+        except (FileNotFoundError, ValueError):
+            continue
+        if request["operation"] != "probe":
+            raise MaintenanceConflict(f"Maintenance job {request['job_id']} is queued.")
+    with closing(open_database(state_dir / "jobs.sqlite3", read_only=True)) as db:
+        if held := pending_hold(db):
+            raise MaintenanceConflict(hold_message(held))
+        if active := active_maintenance(db):
+            raise MaintenanceConflict(f"Maintenance job {active['job_id']} is already running.")
 
 
 def active_maintenance(db: sqlite3.Connection) -> sqlite3.Row | None:
     return db.execute(
         "SELECT job_id, operation FROM jobs WHERE operation IN "
-        "('compact', 'investigate', 'cure') AND state = 'accepted' LIMIT 1"
+        "('compact', 'investigate', 'cure', 'start-ubuntu', 'audit-storage') "
+        "AND state = 'accepted' LIMIT 1"
     ).fetchone()
 
 
@@ -746,14 +853,7 @@ def submit_doctor(
                 decision = auto_observation(db, check, observation, runner, time.time())
             if decision != "dispatch":
                 return {"state": decision, "check": check}
-        else:
-            with closing(open_database(db_path, read_only=True)) as db:
-                if held := pending_hold(db):
-                    raise RuntimeError(hold_message(held))
-                if active := active_maintenance(db):
-                    raise RuntimeError(
-                        f"Maintenance job {active['job_id']} is already running."
-                    )
+        require_maintenance_slot(state_dir)
         operation = "investigate" if mode == "auto" else mode
         result = submit_request(state_dir, operation, check=check, runner=runner)
         if mode == "auto":
@@ -805,7 +905,7 @@ def doctor_checks(state_dir: Path) -> dict[str, object]:
                 "id": check,
                 "host": check.split("-", 1)[0],
                 "state": "unavailable",
-                "detail": "Doctor checks are paused while Cross Hub handles maintenance.",
+                "detail": "Doctor checks are paused while WSL Cross Hub handles maintenance.",
                 "runners": [],
             }
             for check in DOCTOR_CHECKS
@@ -813,7 +913,7 @@ def doctor_checks(state_dir: Path) -> dict[str, object]:
     result: dict[str, object] = {
         "checks": checks,
         "editors": editors if editors is not None else [
-            editor_runtime.unavailable(check, "Doctor checks are paused while Cross Hub handles maintenance.")
+            editor_runtime.unavailable(check, "Doctor checks are paused while WSL Cross Hub handles maintenance.")
             for check in EDITOR_CHECKS
         ],
     }
@@ -834,15 +934,19 @@ def submit_request(
     if check is not None and runner is not None:
         request.update(check=check, runner=runner)
     write_request(state_dir / "requests", request)
+    return await_acknowledgment(state_dir, job_id, operation)
+
+
+def await_acknowledgment(state_dir: Path, job_id: str, operation: Operation) -> dict[str, object]:
     deadline = time.monotonic() + ACK_TIMEOUT
     while time.monotonic() < deadline:
         if result := job_status(state_dir / "jobs.sqlite3", job_id):
             return result
         time.sleep(0.05)
-    if operation != "probe":
+    if operation in DOCTOR_OPERATIONS:
         (state_dir / "requests" / f"{job_id}.json").unlink(missing_ok=True)
-        if result := job_status(state_dir / "jobs.sqlite3", job_id):
-            return result
+    if result := job_status(state_dir / "jobs.sqlite3", job_id):
+        return result
     raise RuntimeError(
         f"worker did not acknowledge job {job_id} within {ACK_TIMEOUT:g}s; "
         "check status before retrying"
@@ -904,7 +1008,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # The setup caller holds the submit lock. The worker writes its
                 # accepted row before removing the request, so check the inbox first.
                 if any((state_dir / "requests").glob("*.json")):
-                    raise RuntimeError("Wait for queued Cross Hub requests before upgrading.")
+                    raise RuntimeError("Wait for queued WSL Cross Hub requests before upgrading.")
                 db_path = state_dir / "jobs.sqlite3"
                 if db_path.exists():
                     with closing(open_database(db_path, read_only=True)) as db:
@@ -913,7 +1017,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             active = active_maintenance(db)
                             if active or pending_hold(db):
                                 raise RuntimeError(
-                                    "Finish or reconcile maintenance before upgrading Cross Hub."
+                                    "Finish or reconcile maintenance before upgrading WSL Cross Hub."
                                 )
                 result = {"state": "idle"}
             case "maintenance-health":

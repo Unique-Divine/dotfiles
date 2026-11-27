@@ -35,7 +35,7 @@ internal static class PanelHelp
         Once the job starts, Windows asks Ubuntu to identify unused disk
         blocks, shuts down WSL, compacts the virtual disk, and restarts
         Ubuntu. Save your WSL work first. WSL connections disconnect
-        during the job. You can hide Cross Hub and reopen it later.
+        during the job. You can hide WSL Cross Hub and reopen it later.
 
         Follow a compaction
 
@@ -67,16 +67,16 @@ internal static class PanelHelp
         Doctor checks Windows SSH and the saved Windows and Ubuntu Herdr
         sessions. Select a check and an available runner. Investigate
         gathers evidence without changing the machine. Cure asks for
-        confirmation before Cross Hub can apply the action for that check.
+        confirmation before WSL Cross Hub can apply the action for that check.
         Open journal to see the job's observations, actions, and result.
 
         Auto-investigate starts Off. Choose Codex or Claude to let the
         agent investigate recurring failures. Doctor checks while the
         panel is open and pauses during compaction.
 
-        Find Cross Hub again
+        Find WSL Cross Hub again
 
-        Click the Cross Hub icon in the Windows system tray or use the
+        Click the WSL Cross Hub icon in the Windows system tray or use the
         configured global hotkey. If Windows hides the icon under the
         tray arrow, its Taskbar settings let you show it by the clock.
         """;

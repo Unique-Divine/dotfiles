@@ -34,8 +34,9 @@ function Get-CompactionTaskAction([string]$Root, [string]$Script) {
 
 function Assert-ProtectedCompactionItem([string]$Path, [string]$OwnerSid) {
     $item = Get-Item -LiteralPath $Path -Force
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "The protected maintenance path is a reparse point: $Path"
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $item.LinkType -eq 'HardLink') {
+        throw "The protected maintenance path is redirected or linked: $Path"
     }
     $acl = Get-Acl -LiteralPath $Path
     $admins = 'S-1-5-32-544'
@@ -52,22 +53,30 @@ function Assert-ProtectedCompactionItem([string]$Path, [string]$OwnerSid) {
         $system = $full
         $OwnerSid = $read
     }
+    $security = [Security.AccessControl.RawSecurityDescriptor]::new(
+        $acl.GetSecurityDescriptorBinaryForm(), 0)
+    if (!$acl.AreAccessRulesProtected -or $null -eq $security.DiscretionaryAcl) {
+        throw "The protected maintenance path must have a protected DACL: $Path"
+    }
+    $flags = [Security.AccessControl.AceFlags]::None
+    if ($item.PSIsContainer) {
+        $flags = [Security.AccessControl.AceFlags]'ContainerInherit,ObjectInherit'
+    }
     $seen = @{}
-    $rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-    foreach ($rule in $rules) {
-        $sid = $rule.IdentityReference.Value
-        if (!$allowed.ContainsKey($sid) -or
-            $rule.AccessControlType -ne 'Allow' -or
-            ($rule.FileSystemRights -band (-bnot [int]$allowed[$sid])) -ne 0) {
+    foreach ($ace in $security.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or
+            $ace.AceType -ne 'AccessAllowed' -or $ace.AceFlags -ne $flags) {
+            throw "The maintenance path has an unexpected access entry: $Path"
+        }
+        $sid = $ace.SecurityIdentifier.Value
+        if (!$allowed.ContainsKey($sid) -or $seen.ContainsKey($sid) -or
+            $ace.AccessMask -ne [int]$allowed[$sid]) {
             throw "The maintenance path has unexpected permissions: $Path"
         }
-        if (!$seen.ContainsKey($sid)) { $seen[$sid] = 0 }
-        $seen[$sid] = $seen[$sid] -bor [int]$rule.FileSystemRights
+        $seen[$sid] = $true
     }
-    foreach ($sid in $allowed.Keys) {
-        if (($seen[$sid] -band [int]$allowed[$sid]) -ne [int]$allowed[$sid]) {
-            throw "The maintenance path is missing required permissions: $Path"
-        }
+    if ($seen.Count -ne $allowed.Count) {
+        throw "The maintenance path is missing required permissions: $Path"
     }
 }
 
@@ -260,7 +269,7 @@ $root = Get-CompactionRoot
 $installDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
 if ($installDrive.DriveFormat -ne 'NTFS' -or
     $installDrive.RootDirectory.FullName -ine [IO.Path]::GetPathRoot($registration.vhdx)) {
-    throw 'The WSL disk and Cross Hub maintenance install must be on the same NTFS drive.'
+    throw 'The WSL disk and WSL Cross Hub maintenance install must be on the same NTFS drive.'
 }
 Initialize-CompactionFileApi ([IO.Path]::GetTempPath())
 $pins = [WslCrossHub.FilePins]::new($registration.vhdx)
@@ -339,7 +348,7 @@ try {
     try { $hash = [Convert]::ToBase64String($sha.ComputeHash($bytes)) }
     finally { $sha.Dispose() }
     if ($hash -cne $script:CrossHubApprovedOptions.setup_hash) {
-        throw 'The Cross Hub installer changed after the approval request.'
+        throw 'The WSL Cross Hub installer changed after the approval request.'
     }
     & ([scriptblock]::Create($utf8.GetString($bytes)))
     exit 0
@@ -349,7 +358,7 @@ try {
     if ($script:CrossHubApprovedOptions.setup_attempt) {
         Write-EventLog -LogName 'Windows PowerShell' -Source 'PowerShell' `
             -EventId 41000 -EntryType Error -ErrorAction SilentlyContinue `
-            -Message ("Cross Hub setup {0}: {1}" -f $script:CrossHubApprovedOptions.setup_attempt, $detail)
+            -Message ("WSL Cross Hub setup {0}: {1}" -f $script:CrossHubApprovedOptions.setup_attempt, $detail)
     }
     exit 1
 }
@@ -357,15 +366,25 @@ try {
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
     $command.Replace('CROSS_HUB_PAYLOAD', $payload)))
 $action = Get-CompactionTaskAction (Get-CompactionRoot) "compact-vhdx.ps1"
-$process = Start-Process -FilePath $action.executable -Verb RunAs -PassThru -Wait `
-    -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+$launch = @{
+    FilePath = $action.executable
+    WorkingDirectory = [Environment]::SystemDirectory
+    ArgumentList = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+    PassThru = $true
+    Wait = $true
+}
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $launch.Verb = 'RunAs'
+}
+$process = Start-Process @launch
 if ($process.ExitCode -ne 0) {
-    $pattern = 'Cross Hub setup ' + $options.setup_attempt + ':'
+    $pattern = 'WSL Cross Hub setup ' + $options.setup_attempt + ':'
     $event = Get-WinEvent -FilterHashtable @{LogName='Windows PowerShell'; Id=41000} `
         -MaxEvents 20 -ErrorAction SilentlyContinue |
         Where-Object { $_.Properties[0].Value -like "$pattern*" } | Select-Object -First 1
     $detail = if ($event) { $event.Properties[0].Value } else { '' }
-    throw "Cross Hub administrator setup failed (exit $($process.ExitCode)). $detail"
+    throw "WSL Cross Hub administrator setup failed (exit $($process.ExitCode)). $detail"
 }
 $previewData.registered = $true
 $previewData.startRequested = [bool]$requestedBoot

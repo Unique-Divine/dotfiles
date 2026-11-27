@@ -104,7 +104,7 @@ local function update_hint()
       virt_text_pos = 'eol',
     })
   end
-  local status = state.view == 'doctor' and 'Doctor' or state.view == 'confirm' and 'Confirm' or 'Cross Hub'
+  local status = state.view == 'doctor' and 'Doctor' or state.view == 'confirm' and 'Confirm' or 'WSL Cross Hub'
   local bar = ' ' .. status .. '  ' .. guidance
   vim.wo[state.win].statusline = bar:gsub('%%', '%%%%') .. ' %= / search · n/N matches · F1 keys '
 end
@@ -126,14 +126,14 @@ local function buffer_for(view)
     if row and row.action then
       row.action()
     end
-  end, { buffer = buffer, desc = 'Run selected Cross Hub action' })
+  end, { buffer = buffer, desc = 'Run selected WSL Cross Hub action' })
   vim.keymap.set('n', '<Esc>', function()
     if view == 'doctor' or view == 'logs' then
       vim.cmd('quit')
     else
       show('doctor')
     end
-  end, { buffer = buffer, desc = 'Back or close Cross Hub' })
+  end, { buffer = buffer, desc = 'Back or close WSL Cross Hub' })
   vim.keymap.set('n', '<F5>', function()
     if view == 'doctor' then
       refresh(false)
@@ -141,10 +141,10 @@ local function buffer_for(view)
       load_log(view)
     end
   end, { buffer = buffer, desc = 'Refresh current screen' })
-  -- Keep ? as native backward search. F1 shows Cross Hub mappings.
+  -- Keep ? as native backward search. F1 shows WSL Cross Hub mappings.
   vim.keymap.set('n', '<F1>', function()
     vim.notify('Enter opens the selected row. F5 refreshes. Esc goes back or closes. / and ? search. n/N move to matches.')
-  end, { buffer = buffer, desc = 'Cross Hub keys' })
+  end, { buffer = buffer, desc = 'WSL Cross Hub keys' })
   vim.api.nvim_create_autocmd({ 'CursorMoved', 'BufEnter' }, { buffer = buffer, callback = update_hint })
   return buffer
 end
@@ -214,7 +214,7 @@ end
 
 local function doctor_rows()
   local rows = {}
-  add(rows, nil, 'Cross Hub Doctor')
+  add(rows, nil, 'WSL Cross Hub Doctor')
   if state.note ~= '' then
     add(rows, nil, state.note)
   end
@@ -313,7 +313,7 @@ render = function()
     add(rows, 'cancel', 'Cancel', 'Return to Doctor', function() show('doctor', selected.mode) end)
     add(rows, 'submit', action, 'Submit ' .. action:lower(), function() submit(selected) end)
   else
-    local title = state.view == 'journal' and 'Doctor journal · ' .. text(state.job_id) or 'Cross Hub logs'
+    local title = state.view == 'journal' and 'Doctor journal · ' .. text(state.job_id) or 'WSL Cross Hub logs'
     add(rows, nil, title)
     add(rows, nil, '')
     for _, line in ipairs(state.log_lines or { 'Loading…' }) do
@@ -432,7 +432,7 @@ end
 
 function M.start(view)
   if view ~= 'doctor' and view ~= 'logs' then
-    error('Unknown Cross Hub view: ' .. tostring(view))
+    error('Unknown WSL Cross Hub view: ' .. tostring(view))
   end
   -- Preserve native search in the user's config, with feedback in this editor instance.
   vim.o.hlsearch = true

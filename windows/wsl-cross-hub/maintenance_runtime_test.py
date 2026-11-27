@@ -238,6 +238,30 @@ def test_recovers_when_safe_after_a_failure(tmp_path: Path, problem: str) -> Non
     assert host.calls[-1] == "recover"
 
 
+@pytest.mark.parametrize("change", ["disk was replaced", "registration changed"])
+def test_legacy_helper_diagnostic_uses_full_tool_name(tmp_path: Path, change: str) -> None:
+    host = RecordingHost(tmp_path / "diskpart.jsonl")
+    journal = runtime.Journal(tmp_path / "jobs", str(uuid4()))
+    run_id = str(uuid4())
+    legacy = f"The WSL {change}. Run Cross Hub setup to approve the new disk."
+    expected = f"The WSL {change}. Run WSL Cross Hub setup to approve the new disk."
+    host.event("diskpart-started", run_id)
+    host.event(
+        "diskpart-result",
+        run_id,
+        work_started=False,
+        compaction_ok=False,
+        detach_verified=False,
+        error=legacy,
+    )
+
+    result = runtime.wait_for_compaction(host, 0, journal)
+
+    assert result["error"] == expected
+    assert read_events(journal.path)[-1]["error"] == expected
+    assert read_events(host.task_log)[-1]["error"] == legacy
+
+
 def test_partial_line_and_journal_truncation(tmp_path: Path) -> None:
     path = tmp_path / "diskpart.jsonl"
     path.write_bytes(b'{"stage": "ready"}\n{"stage":')
@@ -470,3 +494,140 @@ def test_docker_uses_graceful_native_shutdown(
     assert [event["stage"] for event in read_events(journal.path)] == [
         "docker-stop-started", "docker-stopped", "docker-stopped",
     ]
+
+
+def test_shadowed_user_bus_restarts_the_owner_manager_only(monkeypatch):
+    host = object.__new__(runtime.WindowsHost)
+    calls = []
+
+    def guest(target, *args, **kwargs):
+        calls.append((args, kwargs))
+        if args[0] == "/usr/bin/test":
+            raise RuntimeError("User bus is hidden")
+        if args[0] == "/usr/bin/findmnt":
+            return "/run/user/1000\n/run/user/1000"
+        return ""
+
+    events = []
+    monkeypatch.setattr(host, "guest", guest)
+    assert host.repair_shadowed_user_runtime(
+        {}, "1000", lambda stage, **details: events.append((stage, details))
+    )
+    assert calls[-1] == (
+        ("/usr/bin/systemctl", "restart", "user@1000.service"),
+        {"root": True, "timeout": 25},
+    )
+    assert events == [("repairing-shadowed-user-runtime", {"uid": "1000"})]
+
+
+class StartupClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class StartupHost(runtime.WindowsHost):
+    boot = "079bbf10-7ea0-412a-8b9c-15c285101683"
+    marker_command = ("/bin/cat", "/proc/sys/kernel/random/boot_id", "/proc/1/stat")
+
+    def __init__(self, *, restart: str | None = None, start_fails: bool = False) -> None:
+        self.wsl = Path("wsl.exe")
+        self.calls: list[tuple[tuple[str | Path, ...], float]] = []
+        self.services_attempts = 0
+        self.tailscale_attempts = 0
+        self.recovered = False
+        self.restart = restart
+        self.start_fails = start_fails
+
+    def installed_target(self) -> runtime.Target:
+        return TARGET
+
+    def running_distros(self) -> list[str]:
+        return []
+
+    def command(self, *args: str | Path, timeout: float = 15) -> str:
+        self.calls.append((args, timeout))
+        guest_args = args[args.index("--exec") + 1:]
+        command = guest_args[0]
+        if guest_args == self.marker_command:
+            if self.start_fails:
+                raise RuntimeError("WSL cold start failed")
+            boot = str(uuid4()) if self.recovered and self.restart == "kernel" else self.boot
+            ticks = 1730 if self.recovered and self.restart == "pid1" else 1729
+            return f"{boot}\n1 (test)comm) S " + "0 " * 18 + str(ticks)
+        if command == "/bin/cat":
+            return self.boot
+        if command == "/usr/bin/systemctl":
+            assert "-u" in args and "root" in args
+            assert guest_args == ("/usr/bin/systemctl", "start", "tailscaled", "ssh.socket")
+            self.services_attempts += 1
+            if self.services_attempts == 1:
+                raise RuntimeError("systemd is still starting")
+        if command == "/usr/bin/tailscale":
+            self.tailscale_attempts += 1
+            if self.tailscale_attempts == 1:
+                raise RuntimeError("Tailscale IP is not ready")
+            return GUEST.tailscale_ipv4
+        return {
+            "/usr/bin/id": GUEST.uid,
+            "/usr/bin/printenv": "/home/name",
+            "/bin/hostname": "fixture",
+        }.get(command, "")
+
+    def recover(
+        self, target: runtime.Target, guest: runtime.Guest, must_reboot: bool,
+        journal: runtime.Journal,
+    ) -> None:
+        assert self.tailscale_attempts == 2
+        assert guest == runtime.Guest(
+            self.boot, GUEST.uid, GUEST.herdr, GUEST.tailscale_ipv4, "fixture"
+        )
+        assert not must_reboot
+        self.recovered = True
+
+
+@pytest.mark.parametrize("restart", [None, "kernel", "pid1"])
+def test_start_ubuntu_requires_the_same_ready_guest_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restart: str | None
+) -> None:
+    host = StartupHost(restart=restart)
+    monkeypatch.setattr(runtime, "time", StartupClock())
+    journal = runtime.Journal(tmp_path, str(uuid4()))
+
+    if restart:
+        with pytest.raises(RuntimeError, match="restarted before its ready boot markers"):
+            host.run_recovery_operation("start-ubuntu", journal)
+    else:
+        assert host.run_recovery_operation("start-ubuntu", journal) == {
+            "boot_id": host.boot,
+            "pid1_start_ticks": 1729,
+            "already_running": False,
+        }
+
+    assert host.services_attempts == 2
+    assert host.tailscale_attempts == 2
+    assert host.calls[0][0][-3:] == host.marker_command
+    assert host.calls[-1][0][-3:] == host.marker_command
+    assert "systemd is still starting" in journal.path.read_text()
+    assert "Tailscale IP is not ready" in journal.path.read_text()
+
+
+def test_start_ubuntu_bounds_bootstrap_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = StartupHost(start_fails=True)
+    clock = StartupClock()
+    monkeypatch.setattr(runtime, "time", clock)
+
+    with pytest.raises(RuntimeError, match="Ubuntu startup checks timed out. WSL cold start"):
+        host.run_recovery_operation("start-ubuntu", runtime.Journal(tmp_path, str(uuid4())))
+
+    assert clock.now == 90
+    assert host.calls[0][1] == 12
+    assert host.calls[-1][1] == 2
+    assert not host.recovered
