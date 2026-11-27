@@ -11,26 +11,10 @@ source $DOTFILES/zsh/bashlib.sh
 # For a full list of active aliases, run `alias`.
 # Set $DOTFILES/zsh/aliases.sh for custom ones.
 
-# Add SSH keys to the persistent systemd-managed agent when a new WSL session
-# needs Git SSH access. New terminals reuse the keys without calling this.
-ssh_setup() {
-  if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
-    print -u2 "SSH agent is unavailable; run: systemctl --user start ssh-agent"
-    return 1
-  fi
-
-  local -a identity_files=(
-    "$HOME/.ssh/personal_sb3_wsl_key"
-    "$HOME/.ssh/peggyWSL"
-    "$HOME/.ssh/personalSB3Key"
-    "$HOME/.ssh/dieselSB3WSL_key"
-  )
-  local identity_file
-  for identity_file in "${identity_files[@]}"; do
-    [[ -r "$identity_file" ]] || continue
-    ssh-add "$identity_file" || return 1
-  done
-}
+# SSH keys: the first terminal after a reboot loads this machine's keys into
+# the shared agent; later terminals reuse them. Run `ssh_setup` to retry.
+source "$DOTFILES/zsh/ssh-agent.zsh"
+ssh_auto_setup
 
 # Load NVM only when `nvm` is invoked. The flag is scoped to this shell session,
 # so NVM is sourced and its default/project version chosen only once.

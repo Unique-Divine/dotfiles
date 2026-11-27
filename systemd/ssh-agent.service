@@ -1,8 +1,9 @@
-# User-level SSH agent for the WSL session.
+# User-level SSH agent for the login session.
 #
 # zshenv exports SSH_AUTH_SOCK to this service's stable socket path, allowing
-# separate shells to reuse one agent process. The zshrc helper `ssh_setup`
-# loads available private keys into the agent with `ssh-add`.
+# separate shells to reuse one agent process. zsh/ssh-agent.zsh loads this
+# machine's keys with `ssh-add` in the first terminal that finds the agent
+# empty; run `ssh_setup` to load them by hand.
 #
 # This file is linked to ~/.config/systemd/user/ssh-agent.service by
 # zsh/managed-links.txt. Enable and start it with:
