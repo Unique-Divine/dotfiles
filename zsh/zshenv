@@ -26,7 +26,13 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}"
 export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR%/}/ssh-agent.socket"
 
 # pinentry needs a real terminal. $TTY is empty in non-interactive zsh.
-[[ -n "${TTY:-}" ]] && export GPG_TTY="$TTY"
+# Agent and script shells get no prompt: pass decrypts from the gpg-agent
+# cache or fails at once instead of hanging on pinentry.
+if [[ -n "${TTY:-}" ]]; then
+  export GPG_TTY="$TTY"
+else
+  export PASSWORD_STORE_GPG_OPTS="--pinentry-mode error"
+fi
 
 export HUSKY="0" # Husky hooks can get out of hand.
 
