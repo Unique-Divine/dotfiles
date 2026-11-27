@@ -189,7 +189,7 @@ def test_legacy_windows_heartbeat_does_not_report_compaction(tmp_path: Path) -> 
     assert not (tmp_path / "requests").exists()
 
 
-def test_expired_compaction_request_is_discarded(tmp_path: Path) -> None:
+def test_expired_compaction_request_records_failure(tmp_path: Path) -> None:
     import os
 
     job_id = str(uuid4())
@@ -202,7 +202,9 @@ def test_expired_compaction_request_is_discarded(tmp_path: Path) -> None:
     worker.run_worker(tmp_path, once=True)
 
     assert not request.exists()
-    assert worker.job_status(tmp_path / "jobs.sqlite3", job_id) is None
+    job = worker.job_status(tmp_path / "jobs.sqlite3", job_id)
+    assert job["state"] == "failed"
+    assert "expired" in job["result"]["error"]
     log = (tmp_path / "logs" / "worker.log").read_text(encoding="utf-8")
     assert "compaction_request_expired" in log
 
